@@ -7,13 +7,18 @@ import { LibretroHost } from './libretro-host';
 const canvas = document.getElementById('screen') as HTMLCanvasElement;
 const btnStart = document.getElementById('btn-start') as HTMLButtonElement;
 const btnReset = document.getElementById('btn-reset') as HTMLButtonElement;
-const btnEject = document.getElementById('btn-eject') as HTMLButtonElement;
+const btnSettings = document.getElementById('btn-settings') as HTMLButtonElement;
+const settingsBackdrop = document.getElementById('settings-backdrop') as HTMLDivElement;
+const settingsCloseBtn = document.getElementById('settings-close') as HTMLButtonElement;
 const biosIplInput = document.getElementById('bios-ipl') as HTMLInputElement;
 const biosCgInput = document.getElementById('bios-cg') as HTMLInputElement;
 const biosIplStatus = document.getElementById('bios-ipl-status') as HTMLSpanElement;
 const biosCgStatus = document.getElementById('bios-cg-status') as HTMLSpanElement;
-const dropzone = document.getElementById('dropzone') as HTMLDivElement;
+const diskSlot = document.getElementById('disk-slot') as HTMLDivElement;
 const diskInput = document.getElementById('disk-input') as HTMLInputElement;
+const btnDiskInsert = document.getElementById('btn-disk-insert') as HTMLButtonElement;
+const btnDiskEject = document.getElementById('btn-disk-eject') as HTMLButtonElement;
+const diskName = document.getElementById('disk-name') as HTMLSpanElement;
 const statFps = document.getElementById('stat-fps') as HTMLElement;
 const statRes = document.getElementById('stat-res') as HTMLElement;
 const statDisk = document.getElementById('stat-disk') as HTMLElement;
@@ -128,8 +133,16 @@ async function restoreDefaultDisk(): Promise<void> {
   const bytes = await fetchBytes(BUNDLED_DISK_URL);
   if (!bytes) return;
   pendingDisk = { name: BUNDLED_DISK_NAME, data: bytes };
-  statDisk.textContent = `${BUNDLED_DISK_NAME} (同梱)`;
-  diskLamp.classList.add('active');
+  setDiskDisplay(`${BUNDLED_DISK_NAME} (同梱)`);
+}
+
+/** ディスク表示(スロット行のドライブ名 + ステータスバー + アクセスランプ + 取り出しボタン)をまとめて更新する。 */
+function setDiskDisplay(name: string | null): void {
+  const label = name ?? '未挿入';
+  diskName.textContent = label;
+  statDisk.textContent = label;
+  diskLamp.classList.toggle('active', name !== null);
+  btnDiskEject.disabled = name === null;
 }
 
 biosIplInput.addEventListener('change', async () => {
@@ -151,8 +164,7 @@ biosCgInput.addEventListener('change', async () => {
 async function handleDiskFile(file: File): Promise<void> {
   const data = await fileToBytes(file);
   pendingDisk = { name: file.name, data };
-  statDisk.textContent = file.name;
-  diskLamp.classList.add('active');
+  setDiskDisplay(file.name);
 
   if (host && running) {
     // HDD イメージは実機同様ホットマウント不可(初回起動時のみ反映)のため、
@@ -171,7 +183,7 @@ async function bootCore(): Promise<void> {
   if (pendingDisk) {
     const path = host.writeDiskImage(pendingDisk.name, pendingDisk.data);
     host.loadGame(path);
-    btnEject.disabled = false;
+    btnDiskEject.disabled = false;
   } else {
     host.loadGameNone();
   }
@@ -194,23 +206,54 @@ async function restartCore(): Promise<void> {
   await bootCore();
 }
 
-dropzone.addEventListener('click', () => diskInput.click());
+// ディスク挿入: WebNP2 の FDスロット行と同じ流儀(アイコンボタンでファイル選択 + スロット行へのD&D)。
+btnDiskInsert.addEventListener('click', () => diskInput.click());
 diskInput.addEventListener('change', () => {
   const file = diskInput.files?.[0];
+  diskInput.value = '';
   if (file) void handleDiskFile(file);
 });
-dropzone.addEventListener('dragover', (e) => {
-  e.preventDefault();
-  dropzone.classList.add('dragover');
+
+// スロット行へのD&D(WebNP2 wireSlotDrop と同じ、dragenter/dragleaveの深さカウントで枠のちらつきを防ぐ)。
+{
+  let depth = 0;
+  diskSlot.addEventListener('dragover', (e) => e.preventDefault());
+  diskSlot.addEventListener('dragenter', (e) => {
+    e.preventDefault();
+    depth++;
+    diskSlot.classList.add('dropzone-active');
+  });
+  diskSlot.addEventListener('dragleave', () => {
+    depth = Math.max(0, depth - 1);
+    if (depth === 0) diskSlot.classList.remove('dropzone-active');
+  });
+  diskSlot.addEventListener('drop', (e) => {
+    e.preventDefault();
+    depth = 0;
+    diskSlot.classList.remove('dropzone-active');
+    const file = e.dataTransfer?.files?.[0];
+    if (file) void handleDiskFile(file);
+  });
+}
+
+// ドロップゾーン外(ページ余白等)に落としたとき、ブラウザが既定動作でファイルを開いてしまうのを抑止する。
+document.addEventListener('dragover', (e) => e.preventDefault());
+document.addEventListener('drop', (e) => e.preventDefault());
+
+// 設定ダイアログ(BIOS登録 + マシン構成)。WebNP2 の ROM登録ダイアログと同じ開閉の仕組み。
+function openSettingsDialog(): void {
+  settingsBackdrop.classList.remove('hidden');
+}
+function closeSettingsDialog(): void {
+  settingsBackdrop.classList.add('hidden');
+}
+btnSettings.addEventListener('click', () => openSettingsDialog());
+settingsCloseBtn.addEventListener('click', () => closeSettingsDialog());
+settingsBackdrop.addEventListener('click', (e) => {
+  if (e.target === settingsBackdrop) closeSettingsDialog();
 });
-dropzone.addEventListener('dragleave', () => {
-  dropzone.classList.remove('dragover');
-});
-dropzone.addEventListener('drop', (e) => {
-  e.preventDefault();
-  dropzone.classList.remove('dragover');
-  const file = e.dataTransfer?.files?.[0];
-  if (file) void handleDiskFile(file);
+window.addEventListener('keydown', (e) => {
+  if (e.key === 'Escape' && !settingsBackdrop.classList.contains('hidden')) closeSettingsDialog();
 });
 
 // キーボード入力: canvas にフォーカスがある間だけ捕捉する
@@ -295,7 +338,7 @@ btnStart.addEventListener('click', async () => {
   }
 
   btnStart.disabled = true;
-  btnStart.textContent = '起動中...';
+  btnStart.title = '起動中...';
 
   try {
     audio = new AudioEngine();
@@ -307,14 +350,14 @@ btnStart.addEventListener('click', async () => {
 
     await bootCore();
 
-    btnStart.textContent = '起動中';
+    btnStart.title = '起動中';
     btnReset.disabled = false;
     canvas.focus();
   } catch (err) {
     console.error(err);
     alert(`起動に失敗しました: ${(err as Error).message ?? err}`);
     btnStart.disabled = false;
-    btnStart.textContent = '起動';
+    btnStart.title = '起動';
   }
 });
 
@@ -322,11 +365,9 @@ btnReset.addEventListener('click', () => {
   host?.reset();
 });
 
-btnEject.addEventListener('click', () => {
+btnDiskEject.addEventListener('click', () => {
   pendingDisk = null;
-  statDisk.textContent = '未挿入';
-  diskLamp.classList.remove('active');
-  btnEject.disabled = true;
+  setDiskDisplay(null);
   if (host && running) void restartCore();
 });
 

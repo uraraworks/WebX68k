@@ -5,18 +5,19 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover" />
   <!-- X68000 縦置きツインタワー筐体の抽象シルエットアイコン(自作) -->
   <link rel="icon" type="image/png" href="./x68icon.png" />
+  <link rel="apple-touch-icon" href="./x68icon.png" />
   <title>WebX68k - X68000 Emulator</title>
 </head>
 <body>
-  <div id="app">
-    <header class="app-header">
-      <div class="app-title-row">
-        <img class="app-icon" src="./x68icon.png" alt="" width="28" height="28" />
-        <h1>WebX68k</h1>
-      </div>
-      <p class="app-tagline">The online X68000 emulator powered by px68k-libretro</p>
-    </header>
+  <header class="app-header">
+    <div class="app-title-row">
+      <img class="app-icon" src="./x68icon.png" alt="" width="28" height="28" />
+      <h1>WebX68k</h1>
+    </div>
+    <p class="app-tagline">The online X68000 emulator powered by px68k-libretro</p>
+  </header>
 
+  <div id="app">
     <main>
       <div class="console-card">
         <div class="stage">
@@ -24,78 +25,37 @@
         </div>
         <div class="console-footer">
           <div class="toolbar">
-            <button id="btn-start" class="primary">
+            <button id="btn-start" type="button" class="icon-btn primary" title="起動" aria-label="起動">
               <svg class="btn-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3v7 M6.2 6.2a7 7 0 1 0 11.6 0"/></svg>
-              起動
             </button>
-            <button id="btn-reset" disabled>
+            <button id="btn-reset" type="button" class="icon-btn" title="リセット" aria-label="リセット" disabled>
               <svg class="btn-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M3 12a9 9 0 1 0 3-6.7M3 4v5h5"/></svg>
-              リセット
             </button>
-            <button id="btn-eject" disabled>
-              <svg class="btn-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5l6 8H6l6-8z M6 19h12"/></svg>
-              ディスク取り出し
+            <button id="btn-settings" type="button" class="icon-btn" title="設定(BIOS / マシン構成)" aria-label="設定">
+              <svg class="btn-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M7 7h10v10H7z M9 9h6v6H9z M7 4v3 M12 4v3 M17 4v3 M7 17v3 M12 17v3 M17 17v3 M4 7h3 M4 12h3 M4 17h3 M17 7h3 M17 12h3 M17 17h3"/></svg>
             </button>
+          </div>
+          <div class="fd-slots">
+            <div id="disk-slot" class="fd-slot">
+              <span id="disk-lamp" class="fd-lamp" role="img" aria-label="ディスクアクセスランプ"></span>
+              <span class="fd-label">FD</span>
+              <span id="disk-name" class="fd-name">未挿入</span>
+              <button id="btn-disk-insert" type="button" class="icon-btn" title="ディスク挿入" aria-label="ディスク挿入">
+                <svg class="btn-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 19l6-8H6l6 8z M6 5h12"/></svg>
+              </button>
+              <input id="disk-input" type="file" class="fd-file-input" accept=".xdf,.dim,.d88,.hdm,.img" />
+              <button id="btn-disk-eject" type="button" class="icon-btn" title="ディスク取り出し" aria-label="ディスク取り出し" disabled>
+                <svg class="btn-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5l6 8H6l6-8z M6 19h12"/></svg>
+              </button>
+            </div>
           </div>
         </div>
       </div>
 
-      <section id="panel">
-        <h2>BIOS 設定</h2>
-        <div class="field-row">
-          <label>IPLROM.DAT</label>
-          <input id="bios-ipl" type="file" accept=".dat" />
-          <span id="bios-ipl-status" class="status-ng">未設定</span>
-        </div>
-        <div class="field-row">
-          <label>CGROM.DAT</label>
-          <input id="bios-cg" type="file" accept=".dat" />
-          <span id="bios-cg-status" class="status-ng">未設定</span>
-        </div>
-
-        <h2 style="margin-top:16px;">マシン構成 <small style="font-weight:normal;color:#888;">(既定: X68000 XVI 相当 = 16MHz / 2MB)</small></h2>
-        <div class="field-row">
-          <label>CPU速度</label>
-          <select id="cfg-cpuspeed">
-            <option value="10Mhz">10Mhz (初代〜SUPER)</option>
-            <option value="16Mhz">16Mhz (XVI)</option>
-            <option value="25Mhz">25Mhz</option>
-            <option value="33Mhz (OC)">33Mhz (OC)</option>
-            <option value="66Mhz (OC)">66Mhz (OC)</option>
-            <option value="100Mhz (OC)">100Mhz (OC)</option>
-          </select>
-        </div>
-        <div class="field-row">
-          <label>RAM</label>
-          <select id="cfg-ramsize">
-            <option value="1MB">1MB</option>
-            <option value="2MB">2MB</option>
-            <option value="3MB">3MB</option>
-            <option value="4MB">4MB</option>
-            <option value="5MB">5MB</option>
-            <option value="6MB">6MB</option>
-            <option value="7MB">7MB</option>
-            <option value="8MB">8MB</option>
-            <option value="9MB">9MB</option>
-            <option value="10MB">10MB</option>
-            <option value="11MB">11MB</option>
-            <option value="12MB">12MB</option>
-          </select>
-        </div>
-
-        <h2 style="margin-top:16px;">ディスクイメージ</h2>
-        <div id="dropzone">
-          <svg class="dropzone-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 19l6-8H6l6 8z M6 5h12"/></svg><br />
-          ここに .xdf / .dim / .d88 / .hdm / .img ファイルをドラッグ＆ドロップ<br />
-          （またはクリックして選択）
-          <input id="disk-input" type="file" accept=".xdf,.dim,.d88,.hdm,.img" style="display:none;" />
-        </div>
-      </section>
-
       <footer id="statusbar">
         <span>FPS: <b id="stat-fps">-</b></span>
         <span>解像度: <b id="stat-res">-</b></span>
-        <span><span id="disk-lamp" class="fd-lamp" role="img" aria-label="ディスクアクセスランプ"></span> ディスク: <b id="stat-disk">未挿入</b></span>
+        <span>ディスク: <b id="stat-disk">未挿入</b></span>
       </footer>
     </main>
 
@@ -104,6 +64,64 @@
       <a href="https://github.com/uraraworks/WebX68k" target="_blank" rel="noopener">GitHubで見る</a><br />
       Powered by <a href="https://github.com/uraraworks/px68k-libretro" target="_blank" rel="noopener">px68k</a> (GPLv2)
     </footer>
+  </div>
+
+  <!-- 設定ダイアログ(BIOS登録 + マシン構成)。WebNP2 の「ROMファイル登録」ダイアログと同じ流儀(rom-modal系)。 -->
+  <div id="settings-backdrop" class="rom-modal-backdrop hidden">
+    <div class="rom-modal" role="dialog" aria-modal="true" aria-labelledby="settings-title">
+      <h2 id="settings-title" class="rom-modal-title">設定</h2>
+      <p class="rom-modal-description">
+        BIOS ファイル(IPLROM.DAT / CGROM.DAT)とマシン構成を設定します。設定はブラウザに保存され、次回起動時から反映されます。
+      </p>
+
+      <h3 class="rom-modal-section-title">BIOS 設定</h3>
+      <div class="field-row">
+        <label for="bios-ipl">IPLROM.DAT</label>
+        <input id="bios-ipl" type="file" accept=".dat" />
+        <span id="bios-ipl-status" class="status-ng">未設定</span>
+      </div>
+      <div class="field-row">
+        <label for="bios-cg">CGROM.DAT</label>
+        <input id="bios-cg" type="file" accept=".dat" />
+        <span id="bios-cg-status" class="status-ng">未設定</span>
+      </div>
+
+      <h3 class="rom-modal-section-title">
+        マシン構成 <small class="rom-modal-section-note">(既定: X68000 XVI 相当 = 16MHz / 2MB)</small>
+      </h3>
+      <div class="field-row">
+        <label for="cfg-cpuspeed">CPU速度</label>
+        <select id="cfg-cpuspeed">
+          <option value="10Mhz">10Mhz (初代〜SUPER)</option>
+          <option value="16Mhz">16Mhz (XVI)</option>
+          <option value="25Mhz">25Mhz</option>
+          <option value="33Mhz (OC)">33Mhz (OC)</option>
+          <option value="66Mhz (OC)">66Mhz (OC)</option>
+          <option value="100Mhz (OC)">100Mhz (OC)</option>
+        </select>
+      </div>
+      <div class="field-row">
+        <label for="cfg-ramsize">RAM</label>
+        <select id="cfg-ramsize">
+          <option value="1MB">1MB</option>
+          <option value="2MB">2MB</option>
+          <option value="3MB">3MB</option>
+          <option value="4MB">4MB</option>
+          <option value="5MB">5MB</option>
+          <option value="6MB">6MB</option>
+          <option value="7MB">7MB</option>
+          <option value="8MB">8MB</option>
+          <option value="9MB">9MB</option>
+          <option value="10MB">10MB</option>
+          <option value="11MB">11MB</option>
+          <option value="12MB">12MB</option>
+        </select>
+      </div>
+
+      <div class="rom-modal-footer">
+        <button id="settings-close" type="button" class="rom-close-btn">閉じる</button>
+      </div>
+    </div>
   </div>
 
   <script src="/core/px68k_libretro.js"></script>

@@ -169,6 +169,16 @@ main {
   gap: 6px;
 }
 
+/* WebNP2 と同じ、アイコンのみ+title属性ツールチップのボタン意匠 */
+.toolbar button.icon-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 6px;
+  width: 32px;
+  height: 32px;
+}
+
 /* WebNP2 のツールバーアイコン意匠を踏襲したインラインSVG(currentColorで縁取り線画) */
 .btn-icon {
   width: 16px;
@@ -203,42 +213,210 @@ main {
   background: var(--accent);
 }
 
-/* BIOS設定・ディスク登録パネル(rom-modal系の見た目を踏襲した白カード) */
-#panel {
-  width: 100%;
-  max-width: 640px;
-  background: var(--bg-panel);
-  border: 1px solid var(--border);
-  border-radius: 8px;
-  padding: 14px 18px;
-  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.06);
+/* ディスクドライブ表示行(WebNP2の fd-slots / fd-slot を踏襲)。区切り線でツールバーと分ける。 */
+.console-footer .fd-slots {
+  border-top: 1px solid var(--footer-border);
+  padding-top: 8px;
 }
 
-#panel h2 {
+.fd-slots {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+  justify-content: center;
+  width: 100%;
+}
+
+.fd-slot {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex: 1 1 auto;
+  min-width: 220px;
+}
+
+/* ドライブが未挿入からD&Dでファイルを受けるときの強調枠(WebNP2の dropzone-active を踏襲) */
+.fd-slot.dropzone-active {
+  outline: 2px dashed var(--accent);
+  outline-offset: -4px;
+  border-radius: 5px;
+}
+
+/* ドライブアクセスランプ。WebNP2の実機LED風表示を踏襲(消灯時も枠だけ残す)。 */
+.fd-lamp {
+  flex: 0 0 auto;
+  display: inline-block;
+  width: 8px;
+  height: 8px;
+  border-radius: 2px;
+  border: 1px solid var(--footer-text-dim);
+  background: transparent;
+  opacity: 0.45;
+  vertical-align: middle;
+}
+
+.fd-lamp.active {
+  background: #e0333a;
+  border-color: #e0333a;
+  opacity: 1;
+  box-shadow: 0 0 5px rgba(224, 51, 58, 0.85);
+}
+
+.fd-label {
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--footer-text-dim);
+  min-width: 20px;
+}
+
+.fd-name {
+  flex: 1 1 auto;
+  font-size: 12px;
+  color: var(--footer-text);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  min-width: 0;
+}
+
+.fd-slot .icon-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--footer-btn-bg);
+  color: var(--footer-text);
+  border: 1px solid var(--footer-btn-border);
+  border-radius: 5px;
+  padding: 4px;
+  width: 28px;
+  height: 28px;
+  cursor: pointer;
+  flex: 0 0 auto;
+}
+
+.fd-slot .icon-btn:hover:not(:disabled) {
+  background: var(--footer-btn-bg-hover);
+}
+
+.fd-slot .icon-btn:disabled {
+  background: var(--footer-disabled-bg);
+  color: var(--footer-disabled-text);
+  border-color: var(--footer-border);
+  opacity: 1;
+  cursor: not-allowed;
+}
+
+.fd-file-input {
+  display: none;
+}
+
+/* 設定ダイアログ(BIOS登録+マシン構成)。WebNP2 の ROM登録ダイアログ(rom-modal系)と同じ見た目・開閉の仕組み。 */
+.rom-modal-backdrop {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.55);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 100;
+  padding: 16px;
+}
+
+.rom-modal-backdrop.hidden {
+  display: none;
+}
+
+.rom-modal {
+  background: var(--bg-panel);
+  color: var(--text);
+  border-radius: 8px;
+  box-shadow: 0 18px 48px rgba(0, 0, 0, 0.4);
+  padding: 20px;
+  width: 100%;
+  max-width: 480px;
+  max-height: 80vh;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.rom-modal-title {
+  margin: 0;
+  font-size: 16px;
+}
+
+.rom-modal-description {
+  margin: 0;
+  font-size: 12px;
+  color: var(--text-dim);
+  line-height: 1.6;
+}
+
+.rom-modal-section-title {
   font-size: 13px;
-  margin: 0 0 10px;
+  margin: 6px 0 0;
   color: var(--text-dim);
   font-weight: 600;
+}
+
+.rom-modal-section-note {
+  font-weight: normal;
+  color: var(--text-dim);
+}
+
+.rom-modal-footer {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-top: 4px;
+}
+
+.rom-close-btn {
+  padding: 6px 14px;
+  font-size: 12px;
+  border-radius: 5px;
+  border: 1px solid var(--border);
+  background: var(--bg);
+  color: var(--text);
+  cursor: pointer;
+}
+
+.rom-close-btn:hover {
+  background: var(--border);
 }
 
 .field-row {
   display: flex;
   align-items: center;
-  gap: 10px;
+  flex-wrap: wrap;
+  gap: 6px 10px;
   margin-bottom: 8px;
   font-size: 13px;
 }
 
 .field-row label {
-  width: 110px;
+  width: 90px;
   color: var(--text-dim);
   flex-shrink: 0;
 }
 
 .field-row input[type='file'] {
-  flex: 1;
+  flex: 1 1 auto;
+  min-width: 0;
   font-size: 12px;
   color: var(--text-dim);
+}
+
+.field-row .status-ok,
+.field-row .status-ng,
+.field-row .status-bundled {
+  flex: 0 0 auto;
+  font-size: 12px;
+  white-space: nowrap;
 }
 
 .status-ok {
@@ -251,53 +429,6 @@ main {
 
 .status-bundled {
   color: var(--status-bundled);
-}
-
-#dropzone {
-  border: 2px dashed var(--border);
-  border-radius: 6px;
-  padding: 14px;
-  text-align: center;
-  font-size: 12px;
-  color: var(--text-dim);
-  transition: border-color 0.15s, color 0.15s;
-  cursor: pointer;
-}
-
-#dropzone.dragover {
-  border-color: var(--accent);
-  color: var(--accent);
-}
-
-/* WebNP2 のFDスロット意匠(挿入アイコン)を踏襲 */
-.dropzone-icon {
-  width: 22px;
-  height: 22px;
-  fill: none;
-  stroke: currentColor;
-  stroke-width: 2;
-  stroke-linecap: round;
-  stroke-linejoin: round;
-  margin-bottom: 4px;
-}
-
-/* ドライブアクセスランプ。WebNP2の実機LED風表示を踏襲(消灯時も枠だけ残す)。 */
-.fd-lamp {
-  display: inline-block;
-  width: 8px;
-  height: 8px;
-  border-radius: 2px;
-  border: 1px solid var(--text-dim);
-  background: transparent;
-  opacity: 0.45;
-  vertical-align: middle;
-}
-
-.fd-lamp.active {
-  background: #e0333a;
-  border-color: #e0333a;
-  opacity: 1;
-  box-shadow: 0 0 5px rgba(224, 51, 58, 0.85);
 }
 
 .field-row select {
