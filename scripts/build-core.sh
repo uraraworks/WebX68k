@@ -12,7 +12,8 @@ source "$EMSDK_DIR/emsdk_env.sh"
 
 echo "== px68k-libretro コアビルド (emscripten) =="
 cd "$CORE_SRC_DIR"
-emmake make -f Makefile.libretro platform=emscripten -j8
+# C68K=0 で Musashi CPU コアを使う (c68k は wasm で C68k_Exec が無限ループする)
+emmake make -f Makefile.libretro platform=emscripten C68K=0 -j8
 
 CORE_BC="$CORE_SRC_DIR/px68k_libretro_emscripten.bc"
 if [ ! -f "$CORE_BC" ]; then
@@ -25,12 +26,13 @@ cp "$CORE_BC" "$WORK_A"
 
 echo "== emcc でリンクし wasm/js を生成 =="
 mkdir -p "$OUT_DIR"
-emcc "$WORK_A" -O2 -o "$OUT_DIR/px68k_libretro.js" \
+SHIM_C="/Users/haruurara/MyProject/_emulator/X68K/WebX68k/src/core-shim.c"
+emcc "$WORK_A" "$SHIM_C" -O2 -o "$OUT_DIR/px68k_libretro.js" \
   -sMODULARIZE=1 \
   -sEXPORT_NAME=PX68K \
   -sALLOW_MEMORY_GROWTH=1 \
   -sALLOW_TABLE_GROWTH=1 \
-  -sEXPORTED_FUNCTIONS=_retro_set_environment,_retro_set_video_refresh,_retro_set_audio_sample,_retro_set_audio_sample_batch,_retro_set_input_poll,_retro_set_input_state,_retro_init,_retro_deinit,_retro_api_version,_retro_get_system_av_info,_retro_reset,_retro_run,_retro_load_game,_retro_unload_game,_malloc,_free \
+  -sEXPORTED_FUNCTIONS=_retro_set_environment,_retro_set_video_refresh,_retro_set_audio_sample,_retro_set_audio_sample_batch,_retro_set_input_poll,_retro_set_input_state,_retro_init,_retro_deinit,_retro_api_version,_retro_get_system_av_info,_retro_reset,_retro_run,_retro_load_game,_retro_unload_game,_get_retro_log_shim,_malloc,_free \
   -sEXPORTED_RUNTIME_METHODS=cwrap,ccall,addFunction,removeFunction,FS,HEAPU8,HEAPU16,HEAP16,HEAP32,HEAPF32,HEAPF64,UTF8ToString,stringToUTF8,lengthBytesUTF8
 
 echo "== 完了 =="

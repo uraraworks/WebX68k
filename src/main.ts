@@ -69,12 +69,41 @@ async function handleDiskFile(file: File): Promise<void> {
   statDisk.textContent = file.name;
 
   if (host && running) {
-    // 起動中ならその場で差し替え
-    host.unloadGame();
-    const path = host.writeDiskImage(file.name, data);
+    // HDD イメージは実機同様ホットマウント不可(初回起動時のみ反映)のため、
+    // 起動中の挿入はコアごと再起動して確実にブートし直す
+    await restartCore();
+  }
+}
+
+/** コアを初期化して起動する(pendingDisk があればそのディスクから) */
+async function bootCore(): Promise<void> {
+  host = new LibretroHost(canvas, (samples) => audio!.push(samples));
+  await host.init(biosIplBytes!, biosCgBytes!);
+
+  if (pendingDisk) {
+    const path = host.writeDiskImage(pendingDisk.name, pendingDisk.data);
     host.loadGame(path);
     btnEject.disabled = false;
+  } else {
+    host.loadGameNone();
   }
+
+  const info = host.fetchAvInfo();
+  statRes.textContent = `${info.baseWidth}x${info.baseHeight}`;
+
+  running = true;
+  lastFrameTime = 0;
+  accumulator = 0;
+  scheduleNext();
+}
+
+/** 実行中のコアを破棄して作り直す */
+async function restartCore(): Promise<void> {
+  running = false;
+  cancelScheduled();
+  host?.dispose();
+  host = null;
+  await bootCore();
 }
 
 dropzone.addEventListener('click', () => diskInput.click());
@@ -116,6 +145,27 @@ let lastFrameTime = 0;
 let accumulator = 0;
 let frameCounter = 0;
 let fpsWindowStart = 0;
+let rafId = 0;
+let timerId: ReturnType<typeof setTimeout> | undefined;
+
+// rAF と setTimeout の両方でスケジュールし、先に発火した方が他方を取り消す。
+// rAF が抑制される環境(非アクティブタブ・ヘッドレス)でもエミュレーションを止めないため。
+// さらに AudioWorklet の tick (タブ非表示でも止まらない) からも enterLoop が呼ばれる。
+function cancelScheduled(): void {
+  cancelAnimationFrame(rafId);
+  if (timerId !== undefined) clearTimeout(timerId);
+  timerId = undefined;
+}
+
+function enterLoop(): void {
+  cancelScheduled();
+  loop(performance.now());
+}
+
+function scheduleNext(): void {
+  rafId = requestAnimationFrame(() => enterLoop());
+  timerId = setTimeout(() => enterLoop(), 32);
+}
 
 function loop(t: number): void {
   if (!running || !host) return;
@@ -147,7 +197,7 @@ function loop(t: number): void {
     fpsWindowStart = t;
   }
 
-  requestAnimationFrame(loop);
+  scheduleNext();
 }
 
 btnStart.addEventListener('click', async () => {
@@ -162,25 +212,12 @@ btnStart.addEventListener('click', async () => {
   try {
     audio = new AudioEngine();
     await audio.start();
+    // タイマーがスロットルされる環境向け: オーディオスレッドの tick でも駆動する
+    audio.setTickHandler(() => {
+      if (running) enterLoop();
+    });
 
-    host = new LibretroHost(canvas, (samples) => audio!.push(samples));
-    await host.init(biosIplBytes, biosCgBytes);
-
-    if (pendingDisk) {
-      const path = host.writeDiskImage(pendingDisk.name, pendingDisk.data);
-      host.loadGame(path);
-      btnEject.disabled = false;
-    } else {
-      host.loadGameNone();
-    }
-
-    const info = host.fetchAvInfo();
-    statRes.textContent = `${info.baseWidth}x${info.baseHeight}`;
-
-    running = true;
-    lastFrameTime = 0;
-    accumulator = 0;
-    requestAnimationFrame(loop);
+    await bootCore();
 
     btnStart.textContent = '起動中';
     btnReset.disabled = false;
@@ -198,10 +235,10 @@ btnReset.addEventListener('click', () => {
 });
 
 btnEject.addEventListener('click', () => {
-  host?.unloadGame();
   pendingDisk = null;
   statDisk.textContent = '未挿入';
   btnEject.disabled = true;
+  if (host && running) void restartCore();
 });
 
 void restoreBiosFromIndexedDb();

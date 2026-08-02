@@ -9,6 +9,7 @@ const RETRO_ENVIRONMENT_SET_INPUT_DESCRIPTORS = 11;
 const RETRO_ENVIRONMENT_SET_KEYBOARD_CALLBACK = 12;
 const RETRO_ENVIRONMENT_SET_DISK_CONTROL_INTERFACE = 13;
 const RETRO_ENVIRONMENT_GET_VARIABLE = 15;
+const RETRO_ENVIRONMENT_GET_LOG_INTERFACE = 27;
 const RETRO_ENVIRONMENT_SET_VARIABLES = 16;
 const RETRO_ENVIRONMENT_SET_SUPPORT_NO_GAME = 18;
 const RETRO_ENVIRONMENT_GET_SAVE_DIRECTORY = 31;
@@ -62,6 +63,7 @@ export interface PX68KModule {
   _retro_run(): void;
   _retro_load_game(gameInfoPtr: number): number;
   _retro_unload_game(): void;
+  _get_retro_log_shim(): number;
 }
 
 declare global {
@@ -221,6 +223,12 @@ export class LibretroHost {
       }
 
       case RETRO_ENVIRONMENT_SET_SUPPORT_NO_GAME:
+        return 1;
+
+      case RETRO_ENVIRONMENT_GET_LOG_INTERFACE:
+        // struct retro_log_callback { retro_log_printf_t log; }
+        // 可変長引数のため C シム(core-shim.c)の関数ポインタを渡す
+        mod.HEAP32[data >> 2] = mod._get_retro_log_shim();
         return 1;
 
       case RETRO_ENVIRONMENT_GET_VARIABLE: {

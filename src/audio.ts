@@ -18,6 +18,12 @@ class WebX68kAudioProcessor extends AudioWorkletProcessor {
   }
 
   process(_inputs, outputs) {
+    // 4ブロック(約11.6ms)ごとにメインスレッドへ tick を送る。
+    // タブ非表示で rAF/setTimeout がスロットルされてもオーディオスレッドは
+    // 止まらないため、これがエミュレーション駆動のフォールバックになる。
+    this._blockCount = (this._blockCount ?? 0) + 1;
+    if (this._blockCount % 4 === 0) this.port.postMessage({ t: 'tick' });
+
     const output = outputs[0];
     const left = output[0];
     const right = output[1] ?? output[0];
@@ -48,6 +54,12 @@ registerProcessor('webx68k-audio-processor', WebX68kAudioProcessor);
 export class AudioEngine {
   private ctx: AudioContext | null = null;
   private node: AudioWorkletNode | null = null;
+  private tickCb: (() => void) | null = null;
+
+  /** AudioWorklet からの周期 tick (約11.6ms) を受け取るコールバックを設定 */
+  setTickHandler(cb: (() => void) | null): void {
+    this.tickCb = cb;
+  }
 
   get context(): AudioContext | null {
     return this.ctx;
@@ -72,6 +84,9 @@ export class AudioEngine {
       numberOfOutputs: 1,
       outputChannelCount: [2],
     });
+    node.port.onmessage = (e) => {
+      if (e.data && e.data.t === 'tick') this.tickCb?.();
+    };
     node.connect(ctx.destination);
     this.ctx = ctx;
     this.node = node;

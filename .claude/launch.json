@@ -4,8 +4,8 @@
     {
       "name": "webx68k-dev",
       "runtimeExecutable": "npm",
-      "runtimeArgs": ["run", "dev"],
-      "port": 5173
+      "runtimeArgs": ["run", "dev", "--prefix", "/Users/haruurara/MyProject/_emulator/X68K/WebX68k", "--", "--port", "5299", "--strictPort", "--host", "127.0.0.1"],
+      "port": 5299
     }
   ]
 }
