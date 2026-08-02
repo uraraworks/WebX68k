@@ -1,6 +1,16 @@
 import './style.css';
 import { AudioEngine } from './audio';
 import { loadBiosFile, saveBiosFile } from './bios-store';
+import {
+  classifyDiskKind,
+  deleteDisk,
+  fileKeyFor,
+  getDisk,
+  listDisks,
+  renameDisk,
+  saveDisk,
+  type StoredDisk,
+} from './disk-store';
 import { codeToRetrok } from './keyboard';
 import { LibretroHost } from './libretro-host';
 
@@ -18,7 +28,11 @@ const diskSlot = document.getElementById('disk-slot') as HTMLDivElement;
 const diskInput = document.getElementById('disk-input') as HTMLInputElement;
 const btnDiskInsert = document.getElementById('btn-disk-insert') as HTMLButtonElement;
 const btnDiskEject = document.getElementById('btn-disk-eject') as HTMLButtonElement;
+const btnDiskLibrary = document.getElementById('btn-disk-library') as HTMLButtonElement;
 const diskName = document.getElementById('disk-name') as HTMLSpanElement;
+const libraryBackdrop = document.getElementById('library-backdrop') as HTMLDivElement;
+const libraryList = document.getElementById('library-list') as HTMLDivElement;
+const libraryCloseBtn = document.getElementById('library-close') as HTMLButtonElement;
 const statFps = document.getElementById('stat-fps') as HTMLElement;
 const statRes = document.getElementById('stat-res') as HTMLElement;
 const statDisk = document.getElementById('stat-disk') as HTMLElement;
@@ -57,6 +71,8 @@ const BUNDLED_IPL_URL = '/system/iplrom.dat';
 const BUNDLED_CG_URL = '/system/cgrom.dat';
 const BUNDLED_DISK_URL = '/system/human302.xdf';
 const BUNDLED_DISK_NAME = 'human302.xdf';
+// 同梱ディスクはIndexedDBには保存せず、ディスクライブラリの先頭に固定表示する(削除不可)。
+const BUNDLED_DISK_SOURCE_KEY = 'bundled:human302';
 
 function setBiosStatus(el: HTMLSpanElement, state: 'user' | 'bundled' | 'none'): void {
   if (state === 'user') {
@@ -136,6 +152,18 @@ async function restoreDefaultDisk(): Promise<void> {
   setDiskDisplay(`${BUNDLED_DISK_NAME} (同梱)`);
 }
 
+/** ディスクをドライブへセットする(pendingDisk更新 + 表示更新)。起動中なら実機同様コアを再起動して反映する。 */
+async function insertDiskBytes(name: string, data: Uint8Array, displayLabel?: string): Promise<void> {
+  pendingDisk = { name, data };
+  setDiskDisplay(displayLabel ?? name);
+
+  if (host && running) {
+    // HDD イメージは実機同様ホットマウント不可(初回起動時のみ反映)のため、
+    // 起動中の挿入はコアごと再起動して確実にブートし直す
+    await restartCore();
+  }
+}
+
 /** ディスク表示(スロット行のドライブ名 + ステータスバー + アクセスランプ + 取り出しボタン)をまとめて更新する。 */
 function setDiskDisplay(name: string | null): void {
   const label = name ?? '未挿入';
@@ -161,17 +189,170 @@ biosCgInput.addEventListener('change', async () => {
   setBiosStatus(biosCgStatus, 'user');
 });
 
+/**
+ * D&D/ファイル選択で受け取ったディスクをドライブへセットする。
+ * WebNP2 のディスクライブラリと同じ流儀で、挿入と同時にディスクライブラリ(IndexedDB)へも自動登録する。
+ */
 async function handleDiskFile(file: File): Promise<void> {
   const data = await fileToBytes(file);
-  pendingDisk = { name: file.name, data };
-  setDiskDisplay(file.name);
+  const sourceKey = fileKeyFor(file.name, file.size);
+  await saveDisk({ sourceKey, name: file.name, bytes: data, savedAt: Date.now() });
+  await insertDiskBytes(file.name, data);
+  if (!libraryBackdrop.classList.contains('hidden')) void refreshLibraryList();
+}
 
-  if (host && running) {
-    // HDD イメージは実機同様ホットマウント不可(初回起動時のみ反映)のため、
-    // 起動中の挿入はコアごと再起動して確実にブートし直す
-    await restartCore();
+/** ディスクライブラリの1件(または同梱ディスク)を現在のドライブへ挿入する。 */
+async function insertFromLibrary(sourceKey: string): Promise<void> {
+  if (sourceKey === BUNDLED_DISK_SOURCE_KEY) {
+    const bytes = await fetchBytes(BUNDLED_DISK_URL);
+    if (!bytes) return;
+    await insertDiskBytes(BUNDLED_DISK_NAME, bytes, `${BUNDLED_DISK_NAME} (同梱)`);
+    return;
+  }
+  const stored = await getDisk(sourceKey);
+  if (!stored) return;
+  await insertDiskBytes(stored.name, stored.bytes, stored.displayName ?? stored.name);
+}
+
+function formatLibrarySize(n: number): string {
+  if (n < 1024) return `${n}B`;
+  if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)}KB`;
+  return `${(n / (1024 * 1024)).toFixed(1)}MB`;
+}
+
+interface LibraryRowEntry {
+  sourceKey: string;
+  name: string;
+  displayName: string;
+  size: number | null;
+  savedAt: number | null;
+  bundled: boolean;
+}
+
+/** ディスクライブラリ1件分の行(バッジ/名前/サイズ/操作ボタン)を組み立てる。 */
+function buildLibraryRow(entry: LibraryRowEntry): HTMLElement {
+  const row = document.createElement('div');
+  row.className = 'library-list-item';
+
+  const kind = classifyDiskKind(entry.name);
+  const badge = document.createElement('span');
+  badge.className = `library-item-badge ${entry.bundled ? 'bundled' : kind === 'hdd' ? 'hdd' : ''}`.trim();
+  badge.textContent = entry.bundled ? '同梱' : kind === 'hdd' ? 'HDD' : 'FD';
+  row.append(badge);
+
+  const nameEl = document.createElement('span');
+  nameEl.className = 'library-item-name';
+  nameEl.textContent = entry.displayName;
+  // リネーム済みなら元のファイル名をツールチップで確認できるようにする。
+  if (entry.displayName !== entry.name) nameEl.title = entry.name;
+  row.append(nameEl);
+
+  const metaEl = document.createElement('span');
+  metaEl.className = 'library-item-meta';
+  metaEl.textContent =
+    entry.size === null || entry.savedAt === null
+      ? '常時利用可能'
+      : `${formatLibrarySize(entry.size)} / ${new Date(entry.savedAt).toLocaleString()}`;
+  row.append(metaEl);
+
+  const actions = document.createElement('div');
+  actions.className = 'library-item-actions';
+
+  const insertBtn = document.createElement('button');
+  insertBtn.type = 'button';
+  insertBtn.className = 'library-action-btn';
+  insertBtn.textContent = '挿入';
+  insertBtn.addEventListener('click', () => {
+    void (async () => {
+      await insertFromLibrary(entry.sourceKey);
+      closeLibraryModal();
+    })();
+  });
+  actions.append(insertBtn);
+
+  if (entry.bundled) {
+    const note = document.createElement('span');
+    note.className = 'library-item-note';
+    note.textContent = '同梱ディスク(削除不可)';
+    actions.append(note);
+  } else {
+    const renameBtn = document.createElement('button');
+    renameBtn.type = 'button';
+    renameBtn.className = 'library-action-btn';
+    renameBtn.textContent = '名前変更';
+    renameBtn.addEventListener('click', () => {
+      const next = prompt(`表示名を入力してください(元のファイル名: ${entry.name})`, entry.displayName);
+      if (next === null) return;
+      void (async () => {
+        await renameDisk(entry.sourceKey, next);
+        await refreshLibraryList();
+      })();
+    });
+    actions.append(renameBtn);
+
+    const deleteBtn = document.createElement('button');
+    deleteBtn.type = 'button';
+    deleteBtn.className = 'library-action-btn danger';
+    deleteBtn.textContent = '削除';
+    deleteBtn.addEventListener('click', () => {
+      if (!confirm(`保存済みデータ「${entry.displayName}」を削除します。よろしいですか？`)) return;
+      void (async () => {
+        await deleteDisk(entry.sourceKey);
+        await refreshLibraryList();
+      })();
+    });
+    actions.append(deleteBtn);
+  }
+
+  row.append(actions);
+  return row;
+}
+
+/** ディスクライブラリ一覧を再描画する。先頭に同梱ディスク(固定・削除不可)、続けて保存時刻降順のユーザー登録分。 */
+async function refreshLibraryList(): Promise<void> {
+  const stored: StoredDisk[] = await listDisks();
+  libraryList.textContent = '';
+
+  libraryList.append(
+    buildLibraryRow({
+      sourceKey: BUNDLED_DISK_SOURCE_KEY,
+      name: BUNDLED_DISK_NAME,
+      displayName: `${BUNDLED_DISK_NAME} (同梱)`,
+      size: null,
+      savedAt: null,
+      bundled: true,
+    }),
+  );
+
+  for (const item of stored) {
+    libraryList.append(
+      buildLibraryRow({
+        sourceKey: item.sourceKey,
+        name: item.name,
+        displayName: item.displayName ?? item.name,
+        size: item.bytes.byteLength,
+        savedAt: item.savedAt,
+        bundled: false,
+      }),
+    );
   }
 }
+
+function openLibraryModal(): void {
+  libraryBackdrop.classList.remove('hidden');
+  void refreshLibraryList();
+}
+function closeLibraryModal(): void {
+  libraryBackdrop.classList.add('hidden');
+}
+btnDiskLibrary.addEventListener('click', () => openLibraryModal());
+libraryCloseBtn.addEventListener('click', () => closeLibraryModal());
+libraryBackdrop.addEventListener('click', (e) => {
+  if (e.target === libraryBackdrop) closeLibraryModal();
+});
+window.addEventListener('keydown', (e) => {
+  if (e.key === 'Escape' && !libraryBackdrop.classList.contains('hidden')) closeLibraryModal();
+});
 
 /** コアを初期化して起動する(pendingDisk があればそのディスクから) */
 async function bootCore(): Promise<void> {

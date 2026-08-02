@@ -43,7 +43,10 @@
               <button id="btn-disk-insert" type="button" class="icon-btn" title="ディスク挿入" aria-label="ディスク挿入">
                 <svg class="btn-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 19l6-8H6l6 8z M6 5h12"/></svg>
               </button>
-              <input id="disk-input" type="file" class="fd-file-input" accept=".xdf,.dim,.d88,.hdm,.img" />
+              <input id="disk-input" type="file" class="fd-file-input" accept=".xdf,.dim,.d88,.hdm,.img,.hdf,.2hd,.dup" />
+              <button id="btn-disk-library" type="button" class="icon-btn" title="ディスクライブラリ" aria-label="ディスクライブラリ">
+                <svg class="btn-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 16h13l3-3V6a1 1 0 0 0-1-1H4a1 1 0 0 0-1 1v9a1 1 0 0 0 1 1z M4 20h13a3 3 0 0 0 3-3 M8 9h6v4H8z"/></svg>
+              </button>
               <button id="btn-disk-eject" type="button" class="icon-btn" title="ディスク取り出し" aria-label="ディスク取り出し" disabled>
                 <svg class="btn-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5l6 8H6l6-8z M6 19h12"/></svg>
               </button>
@@ -120,6 +123,20 @@
 
       <div class="rom-modal-footer">
         <button id="settings-close" type="button" class="rom-close-btn">閉じる</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ディスクライブラリダイアログ(IndexedDB保存済みディスクイメージ一覧)。WebNP2 のディスクライブラリと同じ流儀(rom-modal系+library-list)。 -->
+  <div id="library-backdrop" class="rom-modal-backdrop hidden">
+    <div class="rom-modal" role="dialog" aria-modal="true" aria-labelledby="library-title">
+      <h2 id="library-title" class="rom-modal-title">ディスクライブラリ</h2>
+      <p class="rom-modal-description">
+        これまでに挿入したディスクイメージはブラウザに保存され、ここから再挿入できます。
+      </p>
+      <div id="library-list" class="library-list"></div>
+      <div class="rom-modal-footer">
+        <button id="library-close" type="button" class="rom-close-btn">閉じる</button>
       </div>
     </div>
   </div>
