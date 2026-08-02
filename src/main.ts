@@ -17,10 +17,30 @@ const diskInput = document.getElementById('disk-input') as HTMLInputElement;
 const statFps = document.getElementById('stat-fps') as HTMLElement;
 const statRes = document.getElementById('stat-res') as HTMLElement;
 const statDisk = document.getElementById('stat-disk') as HTMLElement;
+const diskLamp = document.getElementById('disk-lamp') as HTMLElement;
+const cfgCpuSpeed = document.getElementById('cfg-cpuspeed') as HTMLSelectElement;
+const cfgRamSize = document.getElementById('cfg-ramsize') as HTMLSelectElement;
 
 let biosIplBytes: Uint8Array | null = null;
 let biosCgBytes: Uint8Array | null = null;
 let pendingDisk: { name: string; data: Uint8Array } | null = null;
+
+// マシン構成(px68k-libretro のコアオプション px68k_cpuspeed / px68k_ramsize)。
+// libretro_core_options.h の表記(大文字小文字含む)と完全一致させる必要がある。
+const CPU_SPEED_KEY = 'webx68k-cpuspeed';
+const RAM_SIZE_KEY = 'webx68k-ramsize';
+const DEFAULT_CPU_SPEED = '16Mhz';
+const DEFAULT_RAM_SIZE = '4MB';
+
+function loadMachineConfig(): { cpuSpeed: string; ramSize: string } {
+  const cpuSpeed = localStorage.getItem(CPU_SPEED_KEY) || DEFAULT_CPU_SPEED;
+  const ramSize = localStorage.getItem(RAM_SIZE_KEY) || DEFAULT_RAM_SIZE;
+  return { cpuSpeed, ramSize };
+}
+
+let { cpuSpeed, ramSize } = loadMachineConfig();
+cfgCpuSpeed.value = cpuSpeed;
+cfgRamSize.value = ramSize;
 
 let audio: AudioEngine | null = null;
 let host: LibretroHost | null = null;
@@ -108,6 +128,7 @@ async function restoreDefaultDisk(): Promise<void> {
   if (!bytes) return;
   pendingDisk = { name: BUNDLED_DISK_NAME, data: bytes };
   statDisk.textContent = `${BUNDLED_DISK_NAME} (同梱)`;
+  diskLamp.classList.add('active');
 }
 
 biosIplInput.addEventListener('change', async () => {
@@ -130,6 +151,7 @@ async function handleDiskFile(file: File): Promise<void> {
   const data = await fileToBytes(file);
   pendingDisk = { name: file.name, data };
   statDisk.textContent = file.name;
+  diskLamp.classList.add('active');
 
   if (host && running) {
     // HDD イメージは実機同様ホットマウント不可(初回起動時のみ反映)のため、
@@ -141,6 +163,8 @@ async function handleDiskFile(file: File): Promise<void> {
 /** コアを初期化して起動する(pendingDisk があればそのディスクから) */
 async function bootCore(): Promise<void> {
   host = new LibretroHost(canvas, (samples) => audio!.push(samples));
+  host.setCoreOption('px68k_cpuspeed', cpuSpeed);
+  host.setCoreOption('px68k_ramsize', ramSize);
   await host.init(biosIplBytes!, biosCgBytes!);
 
   if (pendingDisk) {
@@ -300,7 +324,20 @@ btnReset.addEventListener('click', () => {
 btnEject.addEventListener('click', () => {
   pendingDisk = null;
   statDisk.textContent = '未挿入';
+  diskLamp.classList.remove('active');
   btnEject.disabled = true;
+  if (host && running) void restartCore();
+});
+
+cfgCpuSpeed.addEventListener('change', () => {
+  cpuSpeed = cfgCpuSpeed.value;
+  localStorage.setItem(CPU_SPEED_KEY, cpuSpeed);
+  if (host && running) void restartCore();
+});
+
+cfgRamSize.addEventListener('change', () => {
+  ramSize = cfgRamSize.value;
+  localStorage.setItem(RAM_SIZE_KEY, ramSize);
   if (host && running) void restartCore();
 });
 

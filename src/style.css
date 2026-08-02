@@ -67,6 +67,20 @@ header.app-header {
     0 2px 6px rgba(0, 0, 0, 0.4);
 }
 
+header.app-header .app-title-row {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+}
+
+header.app-header .app-icon {
+  width: 28px;
+  height: 28px;
+  display: block;
+  border-radius: 6px;
+}
+
 header.app-header h1 {
   font-size: 15px;
   font-weight: 600;
@@ -150,6 +164,21 @@ main {
   padding: 6px 12px;
   font-size: 12px;
   cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+/* WebNP2 のツールバーアイコン意匠を踏襲したインラインSVG(currentColorで縁取り線画) */
+.btn-icon {
+  width: 16px;
+  height: 16px;
+  flex: 0 0 auto;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 2;
+  stroke-linecap: round;
+  stroke-linejoin: round;
 }
 
 .toolbar button:hover:not(:disabled) {
@@ -238,6 +267,47 @@ main {
 #dropzone.dragover {
   border-color: var(--accent);
   color: var(--accent);
+}
+
+/* WebNP2 のFDスロット意匠(挿入アイコン)を踏襲 */
+.dropzone-icon {
+  width: 22px;
+  height: 22px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 2;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  margin-bottom: 4px;
+}
+
+/* ドライブアクセスランプ。WebNP2の実機LED風表示を踏襲(消灯時も枠だけ残す)。 */
+.fd-lamp {
+  display: inline-block;
+  width: 8px;
+  height: 8px;
+  border-radius: 2px;
+  border: 1px solid var(--text-dim);
+  background: transparent;
+  opacity: 0.45;
+  vertical-align: middle;
+}
+
+.fd-lamp.active {
+  background: #e0333a;
+  border-color: #e0333a;
+  opacity: 1;
+  box-shadow: 0 0 5px rgba(224, 51, 58, 0.85);
+}
+
+.field-row select {
+  flex: 1;
+  font-size: 12px;
+  color: var(--text);
+  background: var(--bg-panel);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 3px 6px;
 }
 
 /* ページ最下部の全幅グレー帯 */

@@ -130,6 +130,20 @@ export class LibretroHost {
     else this.keyState.delete(retrok);
   }
 
+  /**
+   * コアオプション(px68k_cpuspeed 等)を設定する。init() 前後どちらでも呼べる。
+   * 値変更時は該当キーの malloc 済み文字列キャッシュを破棄し、次回 GET_VARIABLE で再 malloc させる
+   * (キャッシュを残すと古い文字列ポインタを返し続けてしまうため)。
+   */
+  setCoreOption(key: string, value: string): void {
+    this.coreOptions.set(key, value);
+    const oldPtr = this.coreOptionPtrs.get(key);
+    if (oldPtr !== undefined) {
+      this.coreOptionPtrs.delete(key);
+      if (this.mod) this.mod._free(oldPtr);
+    }
+  }
+
   /** BIOS ファイルを書き込み、コアを初期化する */
   async init(biosIpl: Uint8Array, biosCg: Uint8Array): Promise<void> {
     const mod = await window.PX68K({});

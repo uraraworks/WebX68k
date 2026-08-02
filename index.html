@@ -3,12 +3,17 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover" />
+  <!-- X68000 縦置きツインタワー筐体の抽象シルエットアイコン(自作) -->
+  <link rel="icon" type="image/svg+xml" href="./x68icon.svg" />
   <title>WebX68k - X68000 Emulator</title>
 </head>
 <body>
   <div id="app">
     <header class="app-header">
-      <h1>WebX68k</h1>
+      <div class="app-title-row">
+        <img class="app-icon" src="./x68icon.svg" alt="" width="28" height="28" />
+        <h1>WebX68k</h1>
+      </div>
       <p class="app-tagline">The online X68000 emulator powered by px68k-libretro</p>
     </header>
 
@@ -19,9 +24,18 @@
         </div>
         <div class="console-footer">
           <div class="toolbar">
-            <button id="btn-start" class="primary">起動</button>
-            <button id="btn-reset" disabled>リセット</button>
-            <button id="btn-eject" disabled>ディスク取り出し</button>
+            <button id="btn-start" class="primary">
+              <svg class="btn-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3v7 M6.2 6.2a7 7 0 1 0 11.6 0"/></svg>
+              起動
+            </button>
+            <button id="btn-reset" disabled>
+              <svg class="btn-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M3 12a9 9 0 1 0 3-6.7M3 4v5h5"/></svg>
+              リセット
+            </button>
+            <button id="btn-eject" disabled>
+              <svg class="btn-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5l6 8H6l6-8z M6 19h12"/></svg>
+              ディスク取り出し
+            </button>
           </div>
         </div>
       </div>
@@ -39,8 +53,39 @@
           <span id="bios-cg-status" class="status-ng">未設定</span>
         </div>
 
+        <h2 style="margin-top:16px;">マシン構成</h2>
+        <div class="field-row">
+          <label>CPU速度</label>
+          <select id="cfg-cpuspeed">
+            <option value="10Mhz">10Mhz</option>
+            <option value="16Mhz">16Mhz</option>
+            <option value="25Mhz">25Mhz</option>
+            <option value="33Mhz (OC)">33Mhz (OC)</option>
+            <option value="66Mhz (OC)">66Mhz (OC)</option>
+            <option value="100Mhz (OC)">100Mhz (OC)</option>
+          </select>
+        </div>
+        <div class="field-row">
+          <label>RAM</label>
+          <select id="cfg-ramsize">
+            <option value="1MB">1MB</option>
+            <option value="2MB">2MB</option>
+            <option value="3MB">3MB</option>
+            <option value="4MB">4MB</option>
+            <option value="5MB">5MB</option>
+            <option value="6MB">6MB</option>
+            <option value="7MB">7MB</option>
+            <option value="8MB">8MB</option>
+            <option value="9MB">9MB</option>
+            <option value="10MB">10MB</option>
+            <option value="11MB">11MB</option>
+            <option value="12MB">12MB</option>
+          </select>
+        </div>
+
         <h2 style="margin-top:16px;">ディスクイメージ</h2>
         <div id="dropzone">
+          <svg class="dropzone-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 19l6-8H6l6 8z M6 5h12"/></svg><br />
           ここに .xdf / .dim / .d88 / .hdm / .img ファイルをドラッグ＆ドロップ<br />
           （またはクリックして選択）
           <input id="disk-input" type="file" accept=".xdf,.dim,.d88,.hdm,.img" style="display:none;" />
@@ -50,7 +95,7 @@
       <footer id="statusbar">
         <span>FPS: <b id="stat-fps">-</b></span>
         <span>解像度: <b id="stat-res">-</b></span>
-        <span>ディスク: <b id="stat-disk">未挿入</b></span>
+        <span><span id="disk-lamp" class="fd-lamp" role="img" aria-label="ディスクアクセスランプ"></span> ディスク: <b id="stat-disk">未挿入</b></span>
       </footer>
     </main>
 
