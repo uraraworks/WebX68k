@@ -8,7 +8,8 @@ Vite + TypeScript（フレームワーク無し）の最小構成です。
 
 - `scripts/build-core.sh` … px68k-libretro コアを emscripten でビルドし、`public/core/` に配置する
 - `public/core/` … ビルド済みの `px68k_libretro.js` / `px68k_libretro.wasm`（コミット対象）
-- `public/bios/` … BIOS ファイル置き場（`.gitignore` 対象。中身は各自で用意）
+- `_local/verify/` … 動作検証用の実機 ROM / HDD イメージ置き場（`.gitignore` 対象・非配布）。
+  `public/` 配下に置くとビルド時に `dist/` へコピーされ配布物に混入するため、必ずここに置くこと
 - `src/libretro-host.ts` … libretro コールバックを wasm 関数テーブルに登録し、コアを駆動するホスト実装
 - `src/audio.ts` … AudioWorklet によるストリーミング音声出力
 - `src/keyboard.ts` … `KeyboardEvent.code` → `RETROK_*` のマッピング
