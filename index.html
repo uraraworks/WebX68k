@@ -6,7 +6,7 @@
   <!-- X68000 縦置きツインタワー筐体の抽象シルエットアイコン(自作) -->
   <link rel="icon" type="image/png" href="./x68icon.png" />
   <link rel="apple-touch-icon" href="./x68icon.png" />
-  <title>WebX68k - X68000 Emulator</title>
+  <title id="doc-title">WebX68k - X68000 Emulator</title>
 </head>
 <body>
   <header class="app-header">
@@ -14,7 +14,7 @@
       <img class="app-icon" src="./x68icon.png" alt="" width="28" height="28" />
       <h1>WebX68k</h1>
     </div>
-    <p class="app-tagline">The online X68000 emulator powered by px68k-libretro</p>
+    <p id="header-tagline" class="app-tagline">The online X68000 emulator powered by px68k-libretro</p>
   </header>
 
   <div id="app">
@@ -29,8 +29,8 @@
               <button id="btn-boot-system" type="button" class="start-btn start-btn-system">システムディスクで起動</button>
             </div>
             <div class="overlay-note">
-              <span>音声再生の制限上、クリック操作で起動します。</span><br />
-              <span>ディスクはツールバーのライブラリ、または下のドライブ行から追加できます。</span>
+              <span id="overlay-note-1">音声再生の制限上、クリック操作で起動します。</span><br />
+              <span id="overlay-note-2">ディスクはツールバーのライブラリ、または下のドライブ行から追加できます。</span>
             </div>
           </div>
         </div>
@@ -45,42 +45,67 @@
             <button id="btn-disk-library" type="button" class="icon-btn" title="ディスクライブラリ" aria-label="ディスクライブラリ">
               <svg class="btn-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 16h13l3-3V6a1 1 0 0 0-1-1H4a1 1 0 0 0-1 1v9a1 1 0 0 0 1 1z M4 20h13a3 3 0 0 0 3-3 M8 9h6v4H8z"/></svg>
             </button>
+            <button id="btn-lang" type="button" class="lang-toggle">EN</button>
           </div>
           <div class="fd-slots">
             <div id="slot-fdd0" class="fd-slot">
-              <span id="lamp-fdd0" class="fd-lamp" role="img" aria-label="FDD0 アクセスランプ"></span>
-              <span class="fd-label">FDD0</span>
+              <span id="lamp-fdd0" class="fd-lamp" role="img" aria-label="FDD1 アクセスランプ"></span>
+              <span id="label-fdd0" class="fd-label">FDD1</span>
               <span id="name-fdd0" class="fd-name">未挿入</span>
-              <button id="btn-insert-fdd0" type="button" class="icon-btn" title="ディスク挿入" aria-label="FDD0にディスク挿入">
+              <button id="btn-insert-fdd0" type="button" class="icon-btn" title="ディスク挿入" aria-label="FDD1にディスク挿入">
                 <svg class="btn-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 19l6-8H6l6 8z M6 5h12"/></svg>
               </button>
               <input id="input-fdd0" type="file" class="fd-file-input" accept=".xdf,.dim,.d88,.hdm,.img,.2hd" />
-              <button id="btn-eject-fdd0" type="button" class="icon-btn" title="ディスク取り出し" aria-label="FDD0からディスク取り出し" disabled>
+              <button id="btn-library-fdd0" type="button" class="icon-btn" title="ライブラリから挿入" aria-label="FDD1にライブラリから挿入">
+                <svg class="btn-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 16h13l3-3V6a1 1 0 0 0-1-1H4a1 1 0 0 0-1 1v9a1 1 0 0 0 1 1z M4 20h13a3 3 0 0 0 3-3 M8 9h6v4H8z"/></svg>
+              </button>
+              <button id="btn-blank-fdd0" type="button" class="icon-btn" title="ブランク作成" aria-label="FDD1にブランクディスク作成">
+                <svg class="btn-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M13 3H6a1 1 0 0 0-1 1v16a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1V9l-6-6z M13 3v6h6 M12 12v6 M9 15h6"/></svg>
+              </button>
+              <button id="btn-eject-fdd0" type="button" class="icon-btn" title="ディスク取り出し" aria-label="FDD1からディスク取り出し" disabled>
                 <svg class="btn-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5l6 8H6l6-8z M6 19h12"/></svg>
+              </button>
+              <button id="btn-download-fdd0" type="button" class="icon-btn" title="ダウンロード" aria-label="FDD1のディスクをダウンロード" disabled>
+                <svg class="btn-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3v12m0 0-4-4m4 4 4-4 M4 17v3a1 1 0 0 0 1 1h14a1 1 0 0 0 1-1v-3"/></svg>
               </button>
             </div>
             <div id="slot-fdd1" class="fd-slot">
-              <span id="lamp-fdd1" class="fd-lamp" role="img" aria-label="FDD1 アクセスランプ"></span>
-              <span class="fd-label">FDD1</span>
+              <span id="lamp-fdd1" class="fd-lamp" role="img" aria-label="FDD2 アクセスランプ"></span>
+              <span id="label-fdd1" class="fd-label">FDD2</span>
               <span id="name-fdd1" class="fd-name">未挿入</span>
-              <button id="btn-insert-fdd1" type="button" class="icon-btn" title="ディスク挿入" aria-label="FDD1にディスク挿入">
+              <button id="btn-insert-fdd1" type="button" class="icon-btn" title="ディスク挿入" aria-label="FDD2にディスク挿入">
                 <svg class="btn-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 19l6-8H6l6 8z M6 5h12"/></svg>
               </button>
               <input id="input-fdd1" type="file" class="fd-file-input" accept=".xdf,.dim,.d88,.hdm,.img,.2hd" />
-              <button id="btn-eject-fdd1" type="button" class="icon-btn" title="ディスク取り出し" aria-label="FDD1からディスク取り出し" disabled>
+              <button id="btn-library-fdd1" type="button" class="icon-btn" title="ライブラリから挿入" aria-label="FDD2にライブラリから挿入">
+                <svg class="btn-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 16h13l3-3V6a1 1 0 0 0-1-1H4a1 1 0 0 0-1 1v9a1 1 0 0 0 1 1z M4 20h13a3 3 0 0 0 3-3 M8 9h6v4H8z"/></svg>
+              </button>
+              <button id="btn-blank-fdd1" type="button" class="icon-btn" title="ブランク作成" aria-label="FDD2にブランクディスク作成">
+                <svg class="btn-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M13 3H6a1 1 0 0 0-1 1v16a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1V9l-6-6z M13 3v6h6 M12 12v6 M9 15h6"/></svg>
+              </button>
+              <button id="btn-eject-fdd1" type="button" class="icon-btn" title="ディスク取り出し" aria-label="FDD2からディスク取り出し" disabled>
                 <svg class="btn-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5l6 8H6l6-8z M6 19h12"/></svg>
+              </button>
+              <button id="btn-download-fdd1" type="button" class="icon-btn" title="ダウンロード" aria-label="FDD2のディスクをダウンロード" disabled>
+                <svg class="btn-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3v12m0 0-4-4m4 4 4-4 M4 17v3a1 1 0 0 0 1 1h14a1 1 0 0 0 1-1v-3"/></svg>
               </button>
             </div>
             <div id="slot-hdd" class="fd-slot">
               <span id="lamp-hdd" class="fd-lamp" role="img" aria-label="HDD アクセスランプ"></span>
-              <span class="fd-label">HDD</span>
+              <span id="label-hdd" class="fd-label">HDD</span>
               <span id="name-hdd" class="fd-name">未挿入</span>
               <button id="btn-insert-hdd" type="button" class="icon-btn" title="ディスク挿入" aria-label="HDDにディスク挿入">
                 <svg class="btn-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 19l6-8H6l6 8z M6 5h12"/></svg>
               </button>
               <input id="input-hdd" type="file" class="fd-file-input" accept=".hdf,.dup" />
+              <button id="btn-library-hdd" type="button" class="icon-btn" title="ライブラリから挿入" aria-label="HDDにライブラリから挿入">
+                <svg class="btn-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 16h13l3-3V6a1 1 0 0 0-1-1H4a1 1 0 0 0-1 1v9a1 1 0 0 0 1 1z M4 20h13a3 3 0 0 0 3-3 M8 9h6v4H8z"/></svg>
+              </button>
               <button id="btn-eject-hdd" type="button" class="icon-btn" title="ディスク取り出し" aria-label="HDDからディスク取り出し" disabled>
                 <svg class="btn-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5l6 8H6l6-8z M6 19h12"/></svg>
+              </button>
+              <button id="btn-download-hdd" type="button" class="icon-btn" title="ダウンロード" aria-label="HDDのディスクをダウンロード" disabled>
+                <svg class="btn-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3v12m0 0-4-4m4 4 4-4 M4 17v3a1 1 0 0 0 1 1h14a1 1 0 0 0 1-1v-3"/></svg>
               </button>
             </div>
           </div>
@@ -88,15 +113,15 @@
       </div>
 
       <footer id="statusbar">
-        <span>FPS: <b id="stat-fps">-</b></span>
-        <span>解像度: <b id="stat-res">-</b></span>
+        <span><span id="stat-fps-label">FPS:</span> <b id="stat-fps">-</b></span>
+        <span><span id="stat-res-label">解像度:</span> <b id="stat-res">-</b></span>
       </footer>
     </main>
 
     <footer class="app-footer">
-      <a href="https://www.urara-works.jp/" target="_blank" rel="noopener">© URARA-works</a> /
-      <a href="https://github.com/uraraworks/WebX68k" target="_blank" rel="noopener">GitHubで見る</a><br />
-      Powered by <a href="https://github.com/uraraworks/px68k-libretro" target="_blank" rel="noopener">px68k</a> (GPLv2)
+      <a href="https://www.urara-works.jp/" target="_blank" rel="noopener" id="footer-copyright">© URARA-works</a> /
+      <a href="https://github.com/uraraworks/WebX68k" target="_blank" rel="noopener" id="footer-github">GitHubで見る</a><br />
+      <span><span id="footer-poweredby-prefix">Powered by</span> <a href="https://github.com/uraraworks/px68k-libretro" target="_blank" rel="noopener">px68k</a> <span id="footer-poweredby-suffix">(GPLv2)</span></span>
     </footer>
   </div>
 
@@ -104,11 +129,11 @@
   <div id="settings-backdrop" class="rom-modal-backdrop hidden">
     <div class="rom-modal" role="dialog" aria-modal="true" aria-labelledby="settings-title">
       <h2 id="settings-title" class="rom-modal-title">設定</h2>
-      <p class="rom-modal-description">
+      <p id="settings-description" class="rom-modal-description">
         BIOS ファイル(IPLROM.DAT / CGROM.DAT)とマシン構成を設定します。設定はブラウザに保存され、次回起動時から反映されます。
       </p>
 
-      <h3 class="rom-modal-section-title">BIOS 設定</h3>
+      <h3 id="settings-bios-title" class="rom-modal-section-title">BIOS 設定</h3>
       <div class="field-row">
         <label for="bios-ipl">IPLROM.DAT</label>
         <input id="bios-ipl" type="file" accept=".dat" />
@@ -121,10 +146,10 @@
       </div>
 
       <h3 class="rom-modal-section-title">
-        マシン構成 <small class="rom-modal-section-note">(既定: X68000 XVI 相当 = 16MHz / 2MB)</small>
+        <span id="settings-machine-title">マシン構成</span> <small id="settings-machine-note" class="rom-modal-section-note">(既定: X68000 XVI 相当 = 16MHz / 2MB)</small>
       </h3>
       <div class="field-row">
-        <label for="cfg-cpuspeed">CPU速度</label>
+        <label id="settings-cpuspeed-label" for="cfg-cpuspeed">CPU速度</label>
         <select id="cfg-cpuspeed">
           <option value="10Mhz">10Mhz (初代〜SUPER)</option>
           <option value="16Mhz">16Mhz (XVI)</option>
@@ -135,7 +160,7 @@
         </select>
       </div>
       <div class="field-row">
-        <label for="cfg-ramsize">RAM</label>
+        <label id="settings-ramsize-label" for="cfg-ramsize">RAM</label>
         <select id="cfg-ramsize">
           <option value="1MB">1MB</option>
           <option value="2MB">2MB</option>
@@ -162,8 +187,8 @@
   <div id="library-backdrop" class="rom-modal-backdrop hidden">
     <div class="rom-modal" role="dialog" aria-modal="true" aria-labelledby="library-title">
       <h2 id="library-title" class="rom-modal-title">ディスクライブラリ</h2>
-      <p class="rom-modal-description">
-        これまでに挿入したディスクイメージはブラウザに保存され、ここから挿入するドライブ(FDD0 / FDD1 / HDD)を選んで再挿入できます。
+      <p id="library-description" class="rom-modal-description">
+        これまでに挿入したディスクイメージはブラウザに保存され、ここから挿入するドライブ(FDD1 / FDD2 / HDD)を選んで再挿入できます。
       </p>
       <div id="library-list" class="library-list"></div>
       <div class="rom-modal-footer">
@@ -171,6 +196,9 @@
       </div>
     </div>
   </div>
+
+  <!-- スロットボタン(ライブラリ挿入/ブランク作成)用のポップアップメニュー。WebNP2 の library-menu を踏襲。 -->
+  <div id="slot-popup-menu" class="library-menu hidden" role="menu"></div>
 
   <script src="/core/px68k_libretro.js"></script>
   <script type="module" src="/src/main.ts"></script>

@@ -13,6 +13,7 @@ import {
 } from './disk-store';
 import { codeToRetrok } from './keyboard';
 import { LibretroHost } from './libretro-host';
+import { getLang, setLang, t } from './strings';
 
 const canvas = document.getElementById('screen') as HTMLCanvasElement;
 const bootOverlay = document.getElementById('boot-overlay') as HTMLDivElement;
@@ -21,6 +22,7 @@ const btnBootSystem = document.getElementById('btn-boot-system') as HTMLButtonEl
 const btnReset = document.getElementById('btn-reset') as HTMLButtonElement;
 const btnSettings = document.getElementById('btn-settings') as HTMLButtonElement;
 const btnDiskLibrary = document.getElementById('btn-disk-library') as HTMLButtonElement;
+const btnLang = document.getElementById('btn-lang') as HTMLButtonElement;
 const settingsBackdrop = document.getElementById('settings-backdrop') as HTMLDivElement;
 const settingsCloseBtn = document.getElementById('settings-close') as HTMLButtonElement;
 const biosIplInput = document.getElementById('bios-ipl') as HTMLInputElement;
@@ -30,31 +32,47 @@ const biosCgStatus = document.getElementById('bios-cg-status') as HTMLSpanElemen
 const libraryBackdrop = document.getElementById('library-backdrop') as HTMLDivElement;
 const libraryList = document.getElementById('library-list') as HTMLDivElement;
 const libraryCloseBtn = document.getElementById('library-close') as HTMLButtonElement;
+const slotPopupMenu = document.getElementById('slot-popup-menu') as HTMLDivElement;
 const statFps = document.getElementById('stat-fps') as HTMLElement;
 const statRes = document.getElementById('stat-res') as HTMLElement;
 const cfgCpuSpeed = document.getElementById('cfg-cpuspeed') as HTMLSelectElement;
 const cfgRamSize = document.getElementById('cfg-ramsize') as HTMLSelectElement;
 
-// WebNP2 のドライブ行に合わせた FDD0 / FDD1 / HDD の3スロット構成。
-// 各スロットは「アクセスランプ + ドライブ名 + ファイル名 + 挿入/取り出しボタン」を持つ。
+// WebNP2 のドライブ行に合わせた FDD1 / FDD2 / HDD の3スロット構成(表示ラベルのみ1始まり。
+// コア内部のドライブindexは 0/1 のまま、要素IDも従来通り fdd0/fdd1 を使う)。
 type SlotId = 'fdd0' | 'fdd1' | 'hdd';
 const SLOT_IDS: SlotId[] = ['fdd0', 'fdd1', 'hdd'];
 
+/** スロットの表示用ドライブ名(FDD1/FDD2/HDD)。 */
+function slotDisplayName(slot: SlotId): string {
+  if (slot === 'fdd0') return t('fdSlotLabel', { drive: 1 });
+  if (slot === 'fdd1') return t('fdSlotLabel', { drive: 2 });
+  return t('hddSlotLabel');
+}
+
 interface SlotElements {
   lamp: HTMLElement;
+  label: HTMLElement;
   name: HTMLElement;
   insertBtn: HTMLButtonElement;
   input: HTMLInputElement;
+  libraryBtn: HTMLButtonElement | null;
+  blankBtn: HTMLButtonElement | null;
   ejectBtn: HTMLButtonElement;
+  downloadBtn: HTMLButtonElement;
 }
 
 function slotEls(id: SlotId): SlotElements {
   return {
     lamp: document.getElementById(`lamp-${id}`) as HTMLElement,
+    label: document.getElementById(`label-${id}`) as HTMLElement,
     name: document.getElementById(`name-${id}`) as HTMLElement,
     insertBtn: document.getElementById(`btn-insert-${id}`) as HTMLButtonElement,
     input: document.getElementById(`input-${id}`) as HTMLInputElement,
+    libraryBtn: document.getElementById(`btn-library-${id}`) as HTMLButtonElement | null,
+    blankBtn: document.getElementById(`btn-blank-${id}`) as HTMLButtonElement | null,
     ejectBtn: document.getElementById(`btn-eject-${id}`) as HTMLButtonElement,
+    downloadBtn: document.getElementById(`btn-download-${id}`) as HTMLButtonElement,
   };
 }
 
@@ -71,6 +89,9 @@ interface PendingDisk {
 
 // 各ドライブへの挿入予定(起動前)/実際に挿入中(起動後)のディスク。
 const slots: Record<SlotId, PendingDisk | null> = { fdd0: null, fdd1: null, hdd: null };
+// 実行中コアの FS 上のパス。ダウンロード時にゲスト側の書き込みを反映した最新バイト列を
+// mod.FS.readFile() で読み直すために使う(コアは /game 配下のファイルを直接書き換えるため)。
+const mountedPaths: Record<SlotId, string | null> = { fdd0: null, fdd1: null, hdd: null };
 
 let biosIplBytes: Uint8Array | null = null;
 let biosCgBytes: Uint8Array | null = null;
@@ -93,6 +114,15 @@ let { cpuSpeed, ramSize } = loadMachineConfig();
 cfgCpuSpeed.value = cpuSpeed;
 cfgRamSize.value = ramSize;
 
+cfgCpuSpeed.addEventListener('change', () => {
+  cpuSpeed = cfgCpuSpeed.value;
+  localStorage.setItem(CPU_SPEED_KEY, cpuSpeed);
+});
+cfgRamSize.addEventListener('change', () => {
+  ramSize = cfgRamSize.value;
+  localStorage.setItem(RAM_SIZE_KEY, ramSize);
+});
+
 let audio: AudioEngine | null = null;
 let host: LibretroHost | null = null;
 let running = false;
@@ -108,16 +138,19 @@ const BUNDLED_DISK_SOURCE_KEY = 'bundled:human302';
 
 function setBiosStatus(el: HTMLSpanElement, state: 'user' | 'bundled' | 'none'): void {
   if (state === 'user') {
-    el.textContent = '設定済み';
+    el.textContent = t('biosStatusUser');
     el.className = 'status-ok';
   } else if (state === 'bundled') {
-    el.textContent = '同梱ROM使用中(差し替え可)';
+    el.textContent = t('biosStatusBundled');
     el.className = 'status-bundled';
   } else {
-    el.textContent = '未設定';
+    el.textContent = t('biosStatusNone');
     el.className = 'status-ng';
   }
 }
+
+let biosIplState: 'user' | 'bundled' | 'none' = 'none';
+let biosCgState: 'user' | 'bundled' | 'none' = 'none';
 
 async function fileToBytes(file: File): Promise<Uint8Array> {
   const buf = await file.arrayBuffer();
@@ -147,36 +180,39 @@ async function restoreBios(): Promise<void> {
 
   if (ipl) {
     biosIplBytes = ipl;
-    setBiosStatus(biosIplStatus, 'user');
+    biosIplState = 'user';
   } else {
     const bundled = await fetchBytes(BUNDLED_IPL_URL);
     if (bundled) {
       biosIplBytes = bundled;
-      setBiosStatus(biosIplStatus, 'bundled');
+      biosIplState = 'bundled';
     } else {
-      setBiosStatus(biosIplStatus, 'none');
+      biosIplState = 'none';
     }
   }
 
   if (cg) {
     biosCgBytes = cg;
-    setBiosStatus(biosCgStatus, 'user');
+    biosCgState = 'user';
   } else {
     const bundled = await fetchBytes(BUNDLED_CG_URL);
     if (bundled) {
       biosCgBytes = bundled;
-      setBiosStatus(biosCgStatus, 'bundled');
+      biosCgState = 'bundled';
     } else {
-      setBiosStatus(biosCgStatus, 'none');
+      biosCgState = 'none';
     }
   }
+  setBiosStatus(biosIplStatus, biosIplState);
+  setBiosStatus(biosCgStatus, biosCgState);
 }
 
-/** スロット1件分の表示(ドライブ行のファイル名 + 取り出しボタン活性)を更新する。 */
+/** スロット1件分の表示(ドライブ行のファイル名 + 取り出し/ダウンロードボタン活性)を更新する。 */
 function updateSlotDisplay(slot: SlotId, label: string | null): void {
   const els = slotElements[slot];
-  els.name.textContent = label ?? '未挿入';
+  els.name.textContent = label ?? t('fdEmpty');
   els.ejectBtn.disabled = label === null;
+  els.downloadBtn.disabled = label === null;
 }
 
 /** ディスクをドライブへセットする(slots更新 + 表示更新)。起動中なら実機同様コアを再起動して反映する。 */
@@ -198,6 +234,7 @@ async function insertDiskBytes(
 
 function ejectSlot(slot: SlotId): void {
   slots[slot] = null;
+  mountedPaths[slot] = null;
   updateSlotDisplay(slot, null);
   if (host && running) void restartCore();
 }
@@ -207,7 +244,8 @@ biosIplInput.addEventListener('change', async () => {
   if (!file) return;
   biosIplBytes = await fileToBytes(file);
   await saveBiosFile('ipl', biosIplBytes);
-  setBiosStatus(biosIplStatus, 'user');
+  biosIplState = 'user';
+  setBiosStatus(biosIplStatus, biosIplState);
 });
 
 biosCgInput.addEventListener('change', async () => {
@@ -215,7 +253,8 @@ biosCgInput.addEventListener('change', async () => {
   if (!file) return;
   biosCgBytes = await fileToBytes(file);
   await saveBiosFile('cg', biosCgBytes);
-  setBiosStatus(biosCgStatus, 'user');
+  biosCgState = 'user';
+  setBiosStatus(biosCgStatus, biosCgState);
 });
 
 /**
@@ -235,7 +274,7 @@ async function insertFromLibrary(sourceKey: string, slot: SlotId): Promise<void>
   if (sourceKey === BUNDLED_DISK_SOURCE_KEY) {
     const bytes = await fetchBytes(BUNDLED_DISK_URL);
     if (!bytes) return;
-    await insertDiskBytes(slot, BUNDLED_DISK_NAME, bytes, `${BUNDLED_DISK_NAME} (同梱)`);
+    await insertDiskBytes(slot, BUNDLED_DISK_NAME, bytes, t('bundledDiskDisplayName'));
     return;
   }
   const stored = await getDisk(sourceKey);
@@ -258,7 +297,9 @@ interface LibraryRowEntry {
   bundled: boolean;
 }
 
-const SLOT_INSERT_LABEL: Record<SlotId, string> = { fdd0: 'FDD0へ', fdd1: 'FDD1へ', hdd: 'HDDへ' };
+function slotInsertLabel(slot: SlotId): string {
+  return t('libraryInsertTo', { drive: slotDisplayName(slot) });
+}
 
 /** ディスクライブラリ1件分の行(バッジ/名前/サイズ/操作ボタン)を組み立てる。 */
 function buildLibraryRow(entry: LibraryRowEntry): HTMLElement {
@@ -268,7 +309,7 @@ function buildLibraryRow(entry: LibraryRowEntry): HTMLElement {
   const kind = classifyDiskKind(entry.name);
   const badge = document.createElement('span');
   badge.className = `library-item-badge ${entry.bundled ? 'bundled' : kind === 'hdd' ? 'hdd' : ''}`.trim();
-  badge.textContent = entry.bundled ? '同梱' : kind === 'hdd' ? 'HDD' : 'FD';
+  badge.textContent = entry.bundled ? t('libraryBadgeBundled') : kind === 'hdd' ? t('libraryBadgeHdd') : t('libraryBadgeFd');
   row.append(badge);
 
   const nameEl = document.createElement('span');
@@ -282,20 +323,20 @@ function buildLibraryRow(entry: LibraryRowEntry): HTMLElement {
   metaEl.className = 'library-item-meta';
   metaEl.textContent =
     entry.size === null || entry.savedAt === null
-      ? '常時利用可能'
+      ? t('libraryMetaAlwaysAvailable')
       : `${formatLibrarySize(entry.size)} / ${new Date(entry.savedAt).toLocaleString()}`;
   row.append(metaEl);
 
   const actions = document.createElement('div');
   actions.className = 'library-item-actions';
 
-  // 挿入先ドライブを選べるようにする: HDDイメージはHDDへのみ、FDイメージはFDD0/FDD1へ挿入可能。
+  // 挿入先ドライブを選べるようにする: HDDイメージはHDDへのみ、FDイメージはFDD1/FDD2へ挿入可能。
   const insertTargets: SlotId[] = kind === 'hdd' ? ['hdd'] : ['fdd0', 'fdd1'];
   for (const target of insertTargets) {
     const insertBtn = document.createElement('button');
     insertBtn.type = 'button';
     insertBtn.className = 'library-action-btn';
-    insertBtn.textContent = SLOT_INSERT_LABEL[target];
+    insertBtn.textContent = slotInsertLabel(target);
     insertBtn.addEventListener('click', () => {
       void (async () => {
         await insertFromLibrary(entry.sourceKey, target);
@@ -308,15 +349,15 @@ function buildLibraryRow(entry: LibraryRowEntry): HTMLElement {
   if (entry.bundled) {
     const note = document.createElement('span');
     note.className = 'library-item-note';
-    note.textContent = '同梱ディスク(削除不可)';
+    note.textContent = t('libraryBundledNote');
     actions.append(note);
   } else {
     const renameBtn = document.createElement('button');
     renameBtn.type = 'button';
     renameBtn.className = 'library-action-btn';
-    renameBtn.textContent = '名前変更';
+    renameBtn.textContent = t('libraryActionRename');
     renameBtn.addEventListener('click', () => {
-      const next = prompt(`表示名を入力してください(元のファイル名: ${entry.name})`, entry.displayName);
+      const next = prompt(t('libraryRenamePrompt', { name: entry.name }), entry.displayName);
       if (next === null) return;
       void (async () => {
         await renameDisk(entry.sourceKey, next);
@@ -328,9 +369,9 @@ function buildLibraryRow(entry: LibraryRowEntry): HTMLElement {
     const deleteBtn = document.createElement('button');
     deleteBtn.type = 'button';
     deleteBtn.className = 'library-action-btn danger';
-    deleteBtn.textContent = '削除';
+    deleteBtn.textContent = t('libraryActionDelete');
     deleteBtn.addEventListener('click', () => {
-      if (!confirm(`保存済みデータ「${entry.displayName}」を削除します。よろしいですか？`)) return;
+      if (!confirm(t('libraryDeleteConfirm', { name: entry.displayName }))) return;
       void (async () => {
         await deleteDisk(entry.sourceKey);
         await refreshLibraryList();
@@ -352,7 +393,7 @@ async function refreshLibraryList(): Promise<void> {
     buildLibraryRow({
       sourceKey: BUNDLED_DISK_SOURCE_KEY,
       name: BUNDLED_DISK_NAME,
-      displayName: `${BUNDLED_DISK_NAME} (同梱)`,
+      displayName: t('bundledDiskDisplayName'),
       size: null,
       savedAt: null,
       bundled: true,
@@ -389,6 +430,189 @@ window.addEventListener('keydown', (e) => {
   if (e.key === 'Escape' && !libraryBackdrop.classList.contains('hidden')) closeLibraryModal();
 });
 
+// --- スロットボタンのポップアップメニュー(WebNP2 の fdLibraryMenu を踏襲) ---
+// 「ライブラリから挿入」「ブランク作成」の2種類でこの単一メニュー要素を使い回す。
+
+function closeSlotPopupMenu(): void {
+  slotPopupMenu.classList.add('hidden');
+  slotPopupMenu.textContent = '';
+}
+
+function menuRow(label: string, extra?: string, cls = ''): HTMLElement {
+  const children: Array<Node | string> = [];
+  const labelEl = document.createElement('span');
+  labelEl.className = 'library-menu-label';
+  labelEl.textContent = label;
+  children.push(labelEl);
+  if (extra) {
+    const extraEl = document.createElement('span');
+    extraEl.className = 'library-menu-extra';
+    extraEl.textContent = extra;
+    children.push(extraEl);
+  }
+  const row = document.createElement('div');
+  row.className = `library-menu-item ${cls}`.trim();
+  row.setAttribute('role', 'menuitem');
+  row.tabIndex = 0;
+  row.append(...children);
+  return row;
+}
+
+function onActivate(node: HTMLElement, handler: () => void): void {
+  node.addEventListener('click', handler);
+  node.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter' || e.key === ' ') {
+      e.preventDefault();
+      handler();
+    }
+  });
+}
+
+/** ボタン直上にポップアップメニューを表示する(スロット行はカード下端にあるため下方向は画面外に出やすい)。 */
+function positionSlotPopupMenu(anchorEl: HTMLElement): void {
+  slotPopupMenu.style.left = '0px';
+  slotPopupMenu.style.top = '0px';
+  slotPopupMenu.classList.remove('hidden');
+  const rect = anchorEl.getBoundingClientRect();
+  const menuRect = slotPopupMenu.getBoundingClientRect();
+  const left = Math.max(4, Math.min(rect.left, window.innerWidth - menuRect.width - 4));
+  const top = Math.max(4, rect.top - menuRect.height - 4);
+  slotPopupMenu.style.left = `${Math.round(left)}px`;
+  slotPopupMenu.style.top = `${Math.round(top)}px`;
+}
+
+/** 「ライブラリから挿入」ポップアップ: 対象スロットの種別(FD/HDD)に合うライブラリ内容だけを一覧表示する。 */
+async function openSlotLibraryMenu(slot: SlotId, anchorEl: HTMLButtonElement): Promise<void> {
+  const stored = await listDisks();
+  slotPopupMenu.textContent = '';
+  const title = document.createElement('div');
+  title.className = 'library-menu-title';
+  title.textContent = t('slotInsertFromLibraryTitle', { drive: slotDisplayName(slot) });
+  slotPopupMenu.append(title);
+
+  let shown = 0;
+  if (slot !== 'hdd') {
+    const row = menuRow(t('bundledDiskDisplayName'));
+    onActivate(row, () => {
+      closeSlotPopupMenu();
+      void (async () => {
+        await insertFromLibrary(BUNDLED_DISK_SOURCE_KEY, slot);
+      })();
+    });
+    slotPopupMenu.append(row);
+    shown++;
+  }
+  for (const item of stored) {
+    const kind = classifyDiskKind(item.name);
+    const wantKind = slot === 'hdd' ? 'hdd' : 'fd';
+    if (kind !== wantKind) continue;
+    const row = menuRow(item.displayName ?? item.name);
+    onActivate(row, () => {
+      closeSlotPopupMenu();
+      void insertFromLibrary(item.sourceKey, slot);
+    });
+    slotPopupMenu.append(row);
+    shown++;
+  }
+  if (shown === 0) {
+    const empty = document.createElement('div');
+    empty.className = 'library-menu-empty';
+    empty.textContent = t('libraryMenuEmpty');
+    slotPopupMenu.append(empty);
+  }
+  positionSlotPopupMenu(anchorEl);
+}
+
+// X68000 標準フォーマット(2HD 1232KB=XDF標準 / 2HD 1440KB / 2DD 640KB / 2DD 720KB)。
+// 中身はゼロ埋め(Human68kのFORMAT.Xで初期化する前提)。
+const BLANK_FORMATS: Array<{ id: string; labelKey: 'blankFormat2hd1232' | 'blankFormat2hd1440' | 'blankFormat2dd640' | 'blankFormat2dd720'; size: number }> = [
+  { id: '2hd1232', labelKey: 'blankFormat2hd1232', size: 1261568 },
+  { id: '2hd1440', labelKey: 'blankFormat2hd1440', size: 1474560 },
+  { id: '2dd640', labelKey: 'blankFormat2dd640', size: 655360 },
+  { id: '2dd720', labelKey: 'blankFormat2dd720', size: 737280 },
+];
+
+/** 既存のライブラリ登録名と重複しないブランクディスク名を作る(WebNP2の createBlankFd の命名規則を踏襲)。 */
+function uniqueBlankName(baseName: string, existingNames: Set<string>): string {
+  let name = `${baseName}.xdf`;
+  for (let i = 2; existingNames.has(name); i++) {
+    name = `${baseName}${i}.xdf`;
+  }
+  return name;
+}
+
+/** 未フォーマットのブランクディスク(ゼロ埋め)を生成し、指定スロットへ挿入してライブラリにも登録する。 */
+async function handleCreateBlank(slot: SlotId, formatId: string, sizeBytes: number): Promise<void> {
+  const stored = await listDisks();
+  const existingNames = new Set(stored.map((d) => d.name));
+  const name = uniqueBlankName(`blank_${formatId}`, existingNames);
+  const data = new Uint8Array(sizeBytes); // ゼロ埋め
+  const sourceKey = fileKeyFor(name, data.length);
+  await saveDisk({ sourceKey, name, bytes: data, savedAt: Date.now() });
+  await insertDiskBytes(slot, name, data);
+  if (!libraryBackdrop.classList.contains('hidden')) void refreshLibraryList();
+}
+
+/** 「ブランク作成」ポップアップ: X68000標準フォーマットから選ばせる。 */
+function openSlotBlankMenu(slot: SlotId, anchorEl: HTMLButtonElement): void {
+  slotPopupMenu.textContent = '';
+  const title = document.createElement('div');
+  title.className = 'library-menu-title';
+  title.textContent = t('slotCreateBlankTitle', { drive: slotDisplayName(slot) });
+  slotPopupMenu.append(title);
+
+  for (const fmt of BLANK_FORMATS) {
+    const row = menuRow(t(fmt.labelKey));
+    onActivate(row, () => {
+      closeSlotPopupMenu();
+      void handleCreateBlank(slot, fmt.id, fmt.size);
+    });
+    slotPopupMenu.append(row);
+  }
+  positionSlotPopupMenu(anchorEl);
+}
+
+slotPopupMenu.addEventListener('click', (e) => e.stopPropagation());
+document.addEventListener('click', () => {
+  if (slotPopupMenu.classList.contains('hidden')) return;
+  closeSlotPopupMenu();
+});
+document.addEventListener('keydown', (e) => {
+  if (e.key === 'Escape') closeSlotPopupMenu();
+});
+
+/** 現在ドライブに入っているイメージをファイルとしてダウンロードする(WebNP2の slotDownload 相当)。 */
+async function handleDownloadDisk(slot: SlotId): Promise<void> {
+  const pending = slots[slot];
+  if (!pending) {
+    alert(t('alertDownloadNoImage'));
+    return;
+  }
+  // 起動中でFSへ書き込み済みなら、ゲスト側の書き込みを反映した最新バイト列を
+  // mod.FS.readFile() で読み直す(コアは/game配下のファイルを直接書き換えるため)。
+  const path = mountedPaths[slot];
+  let bytes: Uint8Array = pending.data;
+  if (host && running && path) {
+    try {
+      bytes = host.readFile(path);
+    } catch (err) {
+      console.error('FS からのディスク読み出しに失敗しました。挿入時点のバイト列を使用します。', err);
+    }
+  }
+  const blob = new Blob([bytes.slice()], { type: 'application/octet-stream' });
+  const url = URL.createObjectURL(blob);
+  try {
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = pending.name;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+  } finally {
+    setTimeout(() => URL.revokeObjectURL(url), 10_000);
+  }
+}
+
 /** ファイル名を FS 上のパスに使っても安全な形へ簡易サニタイズする。 */
 function sanitizeFileName(name: string): string {
   return name.replace(/[\\/]/g, '_');
@@ -418,11 +642,16 @@ async function bootCore(): Promise<void> {
   const fdd1Path = slots.fdd1
     ? host.writeDiskImage(`fdd1_${sanitizeFileName(slots.fdd1.name)}`, slots.fdd1.data)
     : '';
+  mountedPaths.fdd0 = slots.fdd0 ? fdd0Path : null;
+  mountedPaths.fdd1 = slots.fdd1 ? fdd1Path : null;
 
   if (slots.hdd) {
     const hddPath = host.writeDiskImage(`hdd_${sanitizeFileName(slots.hdd.name)}`, slots.hdd.data);
+    mountedPaths.hdd = hddPath;
     const iniText = `[WinX68k]\r\nHDD0=${hddPath}\r\n`;
     host.writeFile('/system/keropi/config', new TextEncoder().encode(iniText));
+  } else {
+    mountedPaths.hdd = null;
   }
 
   // px68k-libretro は "px68k <fd0> <fd1>" 形式の.cmdファイルでFDD0/FDD1を同時指定できる
@@ -433,6 +662,7 @@ async function bootCore(): Promise<void> {
 
   for (const slot of SLOT_IDS) {
     slotElements[slot].ejectBtn.disabled = slots[slot] === null;
+    slotElements[slot].downloadBtn.disabled = slots[slot] === null;
   }
 
   const info = host.fetchAvInfo();
@@ -454,7 +684,7 @@ async function restartCore(): Promise<void> {
   await bootCore();
 }
 
-// ドライブ行の挿入ボタン・D&D配線(WebNP2 の FDスロット行と同じ流儀)。
+// ドライブ行の挿入ボタン・ライブラリ/ブランクボタン・D&D配線(WebNP2 の FDスロット行と同じ流儀)。
 for (const slot of SLOT_IDS) {
   const els = slotElements[slot];
   els.insertBtn.addEventListener('click', () => els.input.click());
@@ -463,7 +693,24 @@ for (const slot of SLOT_IDS) {
     els.input.value = '';
     if (file) void handleDiskFile(slot, file);
   });
+  els.libraryBtn?.addEventListener('click', (e) => {
+    e.stopPropagation();
+    if (!slotPopupMenu.classList.contains('hidden')) {
+      closeSlotPopupMenu();
+      return;
+    }
+    void openSlotLibraryMenu(slot, els.libraryBtn!);
+  });
+  els.blankBtn?.addEventListener('click', (e) => {
+    e.stopPropagation();
+    if (!slotPopupMenu.classList.contains('hidden')) {
+      closeSlotPopupMenu();
+      return;
+    }
+    openSlotBlankMenu(slot, els.blankBtn!);
+  });
   els.ejectBtn.addEventListener('click', () => ejectSlot(slot));
+  els.downloadBtn.addEventListener('click', () => void handleDownloadDisk(slot));
 
   const slotRow = document.getElementById(`slot-${slot}`) as HTMLDivElement;
   let depth = 0;
@@ -504,6 +751,76 @@ settingsBackdrop.addEventListener('click', (e) => {
 });
 window.addEventListener('keydown', (e) => {
   if (e.key === 'Escape' && !settingsBackdrop.classList.contains('hidden')) closeSettingsDialog();
+});
+
+// --- 言語切り替え(日本語/英語)。WebNP2 の langToggle 方式を踏襲。 ---
+function applyDocumentStrings(): void {
+  document.title = t('title');
+  document.getElementById('doc-title')!.textContent = t('title');
+  document.getElementById('header-tagline')!.textContent = t('headerTagline');
+  document.getElementById('overlay-note-1')!.textContent = t('overlayNote1');
+  document.getElementById('overlay-note-2')!.textContent = t('overlayNote2');
+  btnBootPlain.textContent = t('overlayBootPlain');
+  btnBootSystem.textContent = t('overlayBootSystem');
+
+  btnReset.title = t('toolbarReset');
+  btnReset.setAttribute('aria-label', t('toolbarReset'));
+  btnSettings.title = t('toolbarSettings');
+  btnSettings.setAttribute('aria-label', t('toolbarSettings'));
+  btnDiskLibrary.title = t('toolbarDiskLibrary');
+  btnDiskLibrary.setAttribute('aria-label', t('toolbarDiskLibrary'));
+  btnLang.textContent = t('langToggle');
+
+  for (const slot of SLOT_IDS) {
+    const els = slotElements[slot];
+    const drive = slotDisplayName(slot);
+    els.label.textContent = drive;
+    els.lamp.setAttribute('aria-label', t('diskLampLabel', { drive }));
+    els.insertBtn.title = t('slotInsert');
+    els.insertBtn.setAttribute('aria-label', `${drive} ${t('slotInsert')}`);
+    if (els.libraryBtn) {
+      els.libraryBtn.title = t('slotInsertFromLibrary');
+      els.libraryBtn.setAttribute('aria-label', `${drive} ${t('slotInsertFromLibrary')}`);
+    }
+    if (els.blankBtn) {
+      els.blankBtn.title = t('slotCreateBlank');
+      els.blankBtn.setAttribute('aria-label', `${drive} ${t('slotCreateBlank')}`);
+    }
+    els.ejectBtn.title = t('slotEject');
+    els.ejectBtn.setAttribute('aria-label', `${drive} ${t('slotEject')}`);
+    els.downloadBtn.title = t('slotDownload');
+    els.downloadBtn.setAttribute('aria-label', `${drive} ${t('slotDownload')}`);
+    if (slots[slot] === null) els.name.textContent = t('fdEmpty');
+  }
+
+  document.getElementById('stat-fps-label')!.textContent = t('statFpsLabel');
+  document.getElementById('stat-res-label')!.textContent = t('statResLabel');
+
+  document.getElementById('footer-copyright')!.textContent = t('footerCopyright');
+  document.getElementById('footer-github')!.textContent = t('footerGithubLabel');
+  document.getElementById('footer-poweredby-prefix')!.textContent = t('footerPoweredByPrefix');
+  document.getElementById('footer-poweredby-suffix')!.textContent = t('footerPoweredBySuffix');
+
+  document.getElementById('settings-title')!.textContent = t('settingsTitle');
+  document.getElementById('settings-description')!.textContent = t('settingsDescription');
+  document.getElementById('settings-bios-title')!.textContent = t('settingsBiosSectionTitle');
+  document.getElementById('settings-machine-title')!.textContent = t('settingsMachineSectionTitle');
+  document.getElementById('settings-machine-note')!.textContent = t('settingsMachineSectionNote');
+  document.getElementById('settings-cpuspeed-label')!.textContent = t('settingsCpuSpeedLabel');
+  document.getElementById('settings-ramsize-label')!.textContent = t('settingsRamSizeLabel');
+  settingsCloseBtn.textContent = t('settingsClose');
+  setBiosStatus(biosIplStatus, biosIplState);
+  setBiosStatus(biosCgStatus, biosCgState);
+
+  document.getElementById('library-title')!.textContent = t('libraryDialogTitle');
+  document.getElementById('library-description')!.textContent = t('libraryDialogDescription');
+  libraryCloseBtn.textContent = t('libraryDialogClose');
+  if (!libraryBackdrop.classList.contains('hidden')) void refreshLibraryList();
+}
+
+btnLang.addEventListener('click', () => {
+  setLang(getLang() === 'ja' ? 'en' : 'ja');
+  applyDocumentStrings();
 });
 
 // キーボード入力: canvas にフォーカスがある間だけ捕捉する
@@ -614,7 +931,7 @@ async function startFromOverlay(withSystemDisk: boolean): Promise<void> {
   bootStarted = true;
 
   if (!biosIplBytes || !biosCgBytes) {
-    alert('BIOS ファイル (IPLROM.DAT / CGROM.DAT) を設定してください。');
+    alert(t('alertBiosMissing'));
     bootStarted = false;
     return;
   }
@@ -623,7 +940,7 @@ async function startFromOverlay(withSystemDisk: boolean): Promise<void> {
     const bytes = await fetchBytes(BUNDLED_DISK_URL);
     if (bytes) {
       slots.fdd0 = { name: BUNDLED_DISK_NAME, data: bytes };
-      updateSlotDisplay('fdd0', `${BUNDLED_DISK_NAME} (同梱)`);
+      updateSlotDisplay('fdd0', t('bundledDiskDisplayName'));
     }
   }
 
@@ -643,7 +960,7 @@ async function startFromOverlay(withSystemDisk: boolean): Promise<void> {
     canvas.focus();
   } catch (err) {
     console.error(err);
-    alert(`起動に失敗しました: ${(err as Error).message ?? err}`);
+    alert(t('alertBootFailed', { message: (err as Error).message ?? String(err) }));
     bootOverlay.classList.remove('hidden');
     bootStarted = false;
   }
@@ -659,6 +976,8 @@ bootOverlay.addEventListener('click', (e) => {
 btnReset.addEventListener('click', () => {
   host?.reset();
 });
+
+applyDocumentStrings();
 
 void (async () => {
   await restoreBios();

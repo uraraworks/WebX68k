@@ -352,6 +352,15 @@ export class LibretroHost {
     return path;
   }
 
+  /**
+   * FS 上の指定パスのファイルを読み出す(ダウンロード用)。
+   * コアはディスクイメージを /game 配下のファイルへ直接書き換えるため、
+   * ゲスト側で書き込んだ内容を含む最新バイト列を取得できる。
+   */
+  readFile(path: string): Uint8Array {
+    return this.mod.FS.readFile(path);
+  }
+
   /** ディスク未指定でコンテンツ無し起動 */
   loadGameNone(): boolean {
     return this.mod._retro_load_game(0) !== 0;
