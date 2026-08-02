@@ -808,6 +808,10 @@ function applyDocumentStrings(): void {
     els.downloadBtn.title = t('slotDownload');
     els.downloadBtn.setAttribute('aria-label', `${drive} ${t('slotDownload')}`);
     if (slots[slot] === null) els.name.textContent = t('fdEmpty');
+    // 同梱ディスクの表示名は言語依存(「(同梱)」/「(bundled)」)なので貼り直す
+    else if (slots[slot]!.sourceKey === BUNDLED_DISK_SOURCE_KEY) {
+      els.name.textContent = t('bundledDiskDisplayName');
+    }
   }
 
 
