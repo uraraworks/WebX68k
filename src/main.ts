@@ -26,9 +26,23 @@ let audio: AudioEngine | null = null;
 let host: LibretroHost | null = null;
 let running = false;
 
-function setBiosStatus(el: HTMLSpanElement, ok: boolean): void {
-  el.textContent = ok ? '設定済み' : '未設定';
-  el.className = ok ? 'status-ok' : 'status-ng';
+// 同梱ROM/ディスク(public/system/)のパス。ユーザーが独自ファイルを設定した場合はそちらを優先する。
+const BUNDLED_IPL_URL = '/system/iplrom.dat';
+const BUNDLED_CG_URL = '/system/cgrom.dat';
+const BUNDLED_DISK_URL = '/system/human302.xdf';
+const BUNDLED_DISK_NAME = 'human302.xdf';
+
+function setBiosStatus(el: HTMLSpanElement, state: 'user' | 'bundled' | 'none'): void {
+  if (state === 'user') {
+    el.textContent = '設定済み';
+    el.className = 'status-ok';
+  } else if (state === 'bundled') {
+    el.textContent = '同梱ROM使用中(差し替え可)';
+    el.className = 'status-bundled';
+  } else {
+    el.textContent = '未設定';
+    el.className = 'status-ng';
+  }
 }
 
 async function fileToBytes(file: File): Promise<Uint8Array> {
@@ -36,16 +50,64 @@ async function fileToBytes(file: File): Promise<Uint8Array> {
   return new Uint8Array(buf);
 }
 
-async function restoreBiosFromIndexedDb(): Promise<void> {
+async function fetchBytes(url: string): Promise<Uint8Array | null> {
+  try {
+    const res = await fetch(url);
+    if (!res.ok) {
+      console.error(`同梱ファイルの取得に失敗しました: ${url} (HTTP ${res.status})`);
+      return null;
+    }
+    return new Uint8Array(await res.arrayBuffer());
+  } catch (err) {
+    console.error(`同梱ファイルの取得に失敗しました: ${url}`, err);
+    return null;
+  }
+}
+
+/**
+ * BIOS(IPLROM/CGROM)を用意する。優先順位: ユーザー設定(IndexedDB) > 同梱ROM(public/system/)。
+ * 同梱ROMはあくまでデフォルトなので IndexedDB には保存しない。
+ */
+async function restoreBios(): Promise<void> {
   const [ipl, cg] = await Promise.all([loadBiosFile('ipl'), loadBiosFile('cg')]);
+
   if (ipl) {
     biosIplBytes = ipl;
-    setBiosStatus(biosIplStatus, true);
+    setBiosStatus(biosIplStatus, 'user');
+  } else {
+    const bundled = await fetchBytes(BUNDLED_IPL_URL);
+    if (bundled) {
+      biosIplBytes = bundled;
+      setBiosStatus(biosIplStatus, 'bundled');
+    } else {
+      setBiosStatus(biosIplStatus, 'none');
+    }
   }
+
   if (cg) {
     biosCgBytes = cg;
-    setBiosStatus(biosCgStatus, true);
+    setBiosStatus(biosCgStatus, 'user');
+  } else {
+    const bundled = await fetchBytes(BUNDLED_CG_URL);
+    if (bundled) {
+      biosCgBytes = bundled;
+      setBiosStatus(biosCgStatus, 'bundled');
+    } else {
+      setBiosStatus(biosCgStatus, 'none');
+    }
   }
+}
+
+/**
+ * ディスクが未挿入なら同梱のHuman68kシステムディスクをデフォルトとして挿入した状態にする。
+ * ユーザーが別のディスクをドロップ/選択したらそちらが優先される(pendingDiskが上書きされるため)。
+ */
+async function restoreDefaultDisk(): Promise<void> {
+  if (pendingDisk) return;
+  const bytes = await fetchBytes(BUNDLED_DISK_URL);
+  if (!bytes) return;
+  pendingDisk = { name: BUNDLED_DISK_NAME, data: bytes };
+  statDisk.textContent = `${BUNDLED_DISK_NAME} (同梱)`;
 }
 
 biosIplInput.addEventListener('change', async () => {
@@ -53,7 +115,7 @@ biosIplInput.addEventListener('change', async () => {
   if (!file) return;
   biosIplBytes = await fileToBytes(file);
   await saveBiosFile('ipl', biosIplBytes);
-  setBiosStatus(biosIplStatus, true);
+  setBiosStatus(biosIplStatus, 'user');
 });
 
 biosCgInput.addEventListener('change', async () => {
@@ -61,7 +123,7 @@ biosCgInput.addEventListener('change', async () => {
   if (!file) return;
   biosCgBytes = await fileToBytes(file);
   await saveBiosFile('cg', biosCgBytes);
-  setBiosStatus(biosCgStatus, true);
+  setBiosStatus(biosCgStatus, 'user');
 });
 
 async function handleDiskFile(file: File): Promise<void> {
@@ -242,4 +304,7 @@ btnEject.addEventListener('click', () => {
   if (host && running) void restartCore();
 });
 
-void restoreBiosFromIndexedDb();
+void (async () => {
+  await restoreBios();
+  await restoreDefaultDisk();
+})();

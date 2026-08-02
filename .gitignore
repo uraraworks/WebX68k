@@ -3,3 +3,4 @@ dist/
 public/bios/
 *.log
 .DS_Store
+tools/gen-cgrom/fonts/

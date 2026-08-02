@@ -27,6 +27,7 @@
   --footer-disabled-text: #6c6c6c;
   --header-tagline-text: #a8a8a8;
   --status-ok: #2e7d32;
+  --status-bundled: #b8860b;
 }
 
 * {
@@ -217,6 +218,10 @@ main {
 
 .status-ng {
   color: var(--danger);
+}
+
+.status-bundled {
+  color: var(--status-bundled);
 }
 
 #dropzone {
