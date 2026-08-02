@@ -29,8 +29,9 @@ let pendingDisk: { name: string; data: Uint8Array } | null = null;
 // libretro_core_options.h の表記(大文字小文字含む)と完全一致させる必要がある。
 const CPU_SPEED_KEY = 'webx68k-cpuspeed';
 const RAM_SIZE_KEY = 'webx68k-ramsize';
+// 既定は X68000 XVI 準拠 (CPU 16MHz / RAM 2MB)
 const DEFAULT_CPU_SPEED = '16Mhz';
-const DEFAULT_RAM_SIZE = '4MB';
+const DEFAULT_RAM_SIZE = '2MB';
 
 function loadMachineConfig(): { cpuSpeed: string; ramSize: string } {
   const cpuSpeed = localStorage.getItem(CPU_SPEED_KEY) || DEFAULT_CPU_SPEED;

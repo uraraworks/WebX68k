@@ -4,14 +4,14 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover" />
   <!-- X68000 縦置きツインタワー筐体の抽象シルエットアイコン(自作) -->
-  <link rel="icon" type="image/svg+xml" href="./x68icon.svg" />
+  <link rel="icon" type="image/png" href="./x68icon.png" />
   <title>WebX68k - X68000 Emulator</title>
 </head>
 <body>
   <div id="app">
     <header class="app-header">
       <div class="app-title-row">
-        <img class="app-icon" src="./x68icon.svg" alt="" width="28" height="28" />
+        <img class="app-icon" src="./x68icon.png" alt="" width="28" height="28" />
         <h1>WebX68k</h1>
       </div>
       <p class="app-tagline">The online X68000 emulator powered by px68k-libretro</p>
@@ -53,12 +53,12 @@
           <span id="bios-cg-status" class="status-ng">未設定</span>
         </div>
 
-        <h2 style="margin-top:16px;">マシン構成</h2>
+        <h2 style="margin-top:16px;">マシン構成 <small style="font-weight:normal;color:#888;">(既定: X68000 XVI 相当 = 16MHz / 2MB)</small></h2>
         <div class="field-row">
           <label>CPU速度</label>
           <select id="cfg-cpuspeed">
-            <option value="10Mhz">10Mhz</option>
-            <option value="16Mhz">16Mhz</option>
+            <option value="10Mhz">10Mhz (初代〜SUPER)</option>
+            <option value="16Mhz">16Mhz (XVI)</option>
             <option value="25Mhz">25Mhz</option>
             <option value="33Mhz (OC)">33Mhz (OC)</option>
             <option value="66Mhz (OC)">66Mhz (OC)</option>
