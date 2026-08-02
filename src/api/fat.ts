@@ -2,11 +2,9 @@
 // 移植元: WebNP2 (../PC98/WebNP2/src/api/fat.ts)。PC-98 の FD (2HD/2DD) ベタイメージ向けに
 // 書かれたものだが、bytesPerSector はブートセクタの BPB から動的に読み取る実装のため
 // X68000 の2HD(1024バイト/セクタ)もそのまま解釈できる。実際に human302.xdf(2HD/1024B
-// セクタ)で読み書きを検証済み。X68000向けの変更点は createFormattedFd() のジオメトリのみ
-// (PC-98の2HD 1.2MB用パラメータ → X68000の2HD 1232KB用パラメータに変更)。
-// HDD(.hdf)は Human68k 独自のパーティションテーブル形式(シグネチャ"X68K")を持ち、
-// パーティション先頭のブートセクタも標準のMS-DOS BPBレイアウトと異なる(ブランチ命令が
-// 2バイト、OEM名が16バイト等)ため、本モジュールでは非対応(READMEに詳細記載)。
+// セクタ)で読み書きを検証済み。createFormattedFd() はX68000の2HD 1232KBジオメトリを使う。
+// HDD(.hdf)は Human68k 独自のパーティションテーブルとBEのBPB/FAT16を解析し、最初の
+// Human68k形式パーティションを開く。ディレクトリエントリの数値フィールドはFDと同じLE。
 // FAT12/16・セクタサイズ等を自動判別し、8.3形式ファイルの列挙・読み書き・削除を行う。
 // LFN(VFAT)エントリは列挙時にスキップする(非対応)。
 
@@ -35,6 +33,7 @@ interface FatVolumeInternal {
   dataStartByte: number;
   totalClusters: number;
   bytesPerCluster: number;
+  fat16BigEndian: boolean;
 }
 
 /** 内部用の不透明ハンドル。openFat() の戻り値をそのまま他の関数へ渡すこと。 */
@@ -56,6 +55,12 @@ function readU16(buf: Uint8Array, off: number): number {
 function readU32(buf: Uint8Array, off: number): number {
   return (buf[off] | (buf[off + 1] << 8) | (buf[off + 2] << 16) | (buf[off + 3] << 24)) >>> 0;
 }
+function readU16BE(buf: Uint8Array, off: number): number {
+  return (buf[off] << 8) | buf[off + 1];
+}
+function readU32BE(buf: Uint8Array, off: number): number {
+  return ((buf[off] << 24) | (buf[off + 1] << 16) | (buf[off + 2] << 8) | buf[off + 3]) >>> 0;
+}
 function writeU16(buf: Uint8Array, off: number, val: number): void {
   buf[off] = val & 0xff;
   buf[off + 1] = (val >> 8) & 0xff;
@@ -65,6 +70,10 @@ function writeU32(buf: Uint8Array, off: number, val: number): void {
   buf[off + 1] = (val >>> 8) & 0xff;
   buf[off + 2] = (val >>> 16) & 0xff;
   buf[off + 3] = (val >>> 24) & 0xff;
+}
+function writeU16BE(buf: Uint8Array, off: number, val: number): void {
+  buf[off] = (val >> 8) & 0xff;
+  buf[off + 1] = val & 0xff;
 }
 
 // --- ブートセクタ(BPB)解析 -------------------------------------------
@@ -80,14 +89,15 @@ export function openFat(image: Uint8Array, offset = 0): FatVolume {
   const b = image;
   const o = offset;
 
-  const bytesPerSector = readU16(b, o + 11);
-  const sectorsPerCluster = b[o + 13];
-  const reservedSectors = readU16(b, o + 14);
-  const numFats = b[o + 16];
-  const rootEntries = readU16(b, o + 17);
-  const totalSectors16 = readU16(b, o + 19);
-  const sectorsPerFat = readU16(b, o + 22);
-  const totalSectors32 = readU32(b, o + 32);
+  const human68k = isHuman68kBootSector(b, o);
+  const bytesPerSector = human68k ? readU16BE(b, o + 0x12) : readU16(b, o + 11);
+  const sectorsPerCluster = b[o + (human68k ? 0x14 : 13)];
+  const reservedSectors = human68k ? readU16BE(b, o + 0x16) : readU16(b, o + 14);
+  const numFats = b[o + (human68k ? 0x15 : 16)];
+  const rootEntries = human68k ? readU16BE(b, o + 0x18) : readU16(b, o + 17);
+  const totalSectors16 = human68k ? readU16BE(b, o + 0x1a) : readU16(b, o + 19);
+  const sectorsPerFat = human68k ? b[o + 0x1d] : readU16(b, o + 22);
+  const totalSectors32 = human68k ? 0 : readU32(b, o + 32);
   const totalSectors = totalSectors16 !== 0 ? totalSectors16 : totalSectors32;
 
   if (!VALID_SECTOR_SIZES.includes(bytesPerSector)) {
@@ -114,6 +124,11 @@ export function openFat(image: Uint8Array, offset = 0): FatVolume {
   const totalClusters = Math.floor(dataSectors / sectorsPerCluster);
   const fatType: 'FAT12' | 'FAT16' = totalClusters < 4085 ? 'FAT12' : 'FAT16';
 
+  const volumeEnd = o + totalSectors * bytesPerSector;
+  if (dataSectors < 0 || volumeEnd > image.length) {
+    throw new Error(`openFat: BPB volume exceeds image (${volumeEnd} > ${image.length})`);
+  }
+
   return {
     image,
     imageOffset: offset,
@@ -131,7 +146,18 @@ export function openFat(image: Uint8Array, offset = 0): FatVolume {
     dataStartByte: o + dataStartSector * bytesPerSector,
     totalClusters,
     bytesPerCluster: sectorsPerCluster * bytesPerSector,
+    fat16BigEndian: human68k,
   };
+}
+
+/** Human68k HDDのブートセクタ(2バイト分岐命令 + 印字可能な16バイトOEM名)か判定する。 */
+function isHuman68kBootSector(image: Uint8Array, offset: number): boolean {
+  if (offset < 0 || offset + 0x1e > image.length || image[offset] !== 0x60) return false;
+  for (let i = 0; i < 16; i++) {
+    const c = image[offset + 2 + i];
+    if (c < 0x20 || c > 0x7e) return false;
+  }
+  return true;
 }
 
 // --- FAT テーブル読み書き ------------------------------------------------
@@ -150,7 +176,7 @@ function readFatEntry(vol: FatVolume, cluster: number): number {
     return (lo >> 4) | (hi << 4);
   }
   const off = base + cluster * 2;
-  return readU16(vol.image, off);
+  return vol.fat16BigEndian ? readU16BE(vol.image, off) : readU16(vol.image, off);
 }
 
 /** FATエントリを更新する。仕様どおり全FATコピーに同じ内容を書く。 */
@@ -168,7 +194,8 @@ function writeFatEntry(vol: FatVolume, cluster: number, value: number): void {
       }
     } else {
       const off = base + cluster * 2;
-      writeU16(vol.image, off, value & 0xffff);
+      if (vol.fat16BigEndian) writeU16BE(vol.image, off, value & 0xffff);
+      else writeU16(vol.image, off, value & 0xffff);
     }
   }
 }
@@ -253,6 +280,10 @@ function rawTo83Display(rawName: Uint8Array, rawExt: Uint8Array): string {
     ext += String.fromCharCode(rawExt[i]);
   }
   return ext.length > 0 ? `${base}.${ext}` : base;
+}
+
+function namesEqual(a: string, b: string): boolean {
+  return a.toUpperCase() === b.toUpperCase();
 }
 
 /** パスを '\\'/'/' 両対応で分割し、空要素を除いたセグメント配列を返す。 */
@@ -359,7 +390,7 @@ function resolveDirCluster(vol: FatVolume, segments: string[]): number | null {
   for (let i = 0; i < segments.length; i++) {
     const target = to83Raw(segments[i]).display;
     const entries = listDirEntries(vol, dirCluster);
-    const found = entries.find((e) => e.name === target);
+    const found = entries.find((e) => namesEqual(e.name, target));
     if (!found) throw new Error(`directory not found: ${segments.slice(0, i + 1).join('/')}`);
     if (!(found.attr & ATTR_DIRECTORY)) {
       throw new Error(`not a directory: ${segments.slice(0, i + 1).join('/')}`);
@@ -377,12 +408,61 @@ function resolveParentDir(vol: FatVolume, segments: string[]): number | null {
 // --- FDIヘッダ対応 ---------------------------------------------------------
 
 const FDI_DEFAULT_HEADER_SIZE = 4096;
+const HUMAN68K_PARTITION_TABLE_OFFSET = 0x400;
+const HUMAN68K_PARTITION_ENTRY_OFFSET = 0x410;
+const HUMAN68K_PARTITION_ENTRY_SIZE = 16;
+const HUMAN68K_BLOCK_SIZE = 256;
+
+interface Human68kPartition {
+  name: string;
+  offset: number;
+  size: number;
+}
+
+/** X68Kパーティションテーブルを走査し、範囲内にあるエントリを順番どおり返す。 */
+function parseHuman68kPartitions(image: Uint8Array): Human68kPartition[] {
+  const table = HUMAN68K_PARTITION_TABLE_OFFSET;
+  if (
+    image.length < HUMAN68K_PARTITION_ENTRY_OFFSET + HUMAN68K_PARTITION_ENTRY_SIZE ||
+    image[table] !== 0x58 ||
+    image[table + 1] !== 0x36 ||
+    image[table + 2] !== 0x38 ||
+    image[table + 3] !== 0x4b
+  ) {
+    return [];
+  }
+
+  const totalBytes = readU32BE(image, table + 4) * HUMAN68K_BLOCK_SIZE;
+  if (totalBytes === 0 || totalBytes > image.length) {
+    throw new Error('openDiskImage: invalid Human68k partition table size');
+  }
+
+  const partitions: Human68kPartition[] = [];
+  for (
+    let entry = HUMAN68K_PARTITION_ENTRY_OFFSET;
+    entry + HUMAN68K_PARTITION_ENTRY_SIZE <= image.length;
+    entry += HUMAN68K_PARTITION_ENTRY_SIZE
+  ) {
+    if (image[entry] === 0) break;
+    let name = '';
+    for (let i = 0; i < 8 && image[entry + i] !== 0; i++) name += String.fromCharCode(image[entry + i]);
+    const startBlock = ((image[entry + 9] << 16) | (image[entry + 10] << 8) | image[entry + 11]) >>> 0;
+    const blockCount = readU32BE(image, entry + 12);
+    const offset = startBlock * HUMAN68K_BLOCK_SIZE;
+    const size = blockCount * HUMAN68K_BLOCK_SIZE;
+    if (startBlock !== 0 && blockCount !== 0 && offset + size <= image.length) {
+      partitions.push({ name: name.trimEnd(), offset, size });
+    }
+  }
+  return partitions;
+}
 
 /**
  * 拡張子に応じてディスクイメージを開く。
  * - .fdi: FDIヘッダ(offset+8=ヘッダサイズLE32, offset+12=FDDサイズLE32)を読み取り、
  *   妥当ならそのヘッダサイズをoffsetとしてopenFatを呼ぶ。不正なら既定4096固定にフォールバックする。
  * - .d88: 編集非対応としてErrorを投げる。
+ * - X68Kパーティションテーブル: 最初のHuman68kブートセクタを持つパーティションを開く。
  * - それ以外(.xdf/.hdm/.dup/.fdd等): ベタイメージとしてoffset=0でopenFatを呼ぶ。
  */
 export function openDiskImage(image: Uint8Array, fileName: string): FatVolume {
@@ -405,6 +485,16 @@ export function openDiskImage(image: Uint8Array, fileName: string): FatVolume {
       }
     }
     return openFat(image, headerSize);
+  }
+  const partitions = parseHuman68kPartitions(image);
+  if (partitions.length > 0) {
+    const partition = partitions.find((candidate) => isHuman68kBootSector(image, candidate.offset));
+    if (!partition) throw new Error('Human68k形式のパーティションが見つかりません');
+    const volume = openFat(image, partition.offset);
+    if (volume.totalSectors * volume.bytesPerSector > partition.size) {
+      throw new Error(`Human68kパーティション「${partition.name}」のBPBサイズが範囲を超えています`);
+    }
+    return volume;
   }
   return openFat(image, 0);
 }
@@ -488,7 +578,7 @@ function findFileEntry(vol: FatVolume, path: string): { dirCluster: number | nul
   const dirCluster = resolveParentDir(vol, segments);
   const filename = to83Raw(segments[segments.length - 1]).display;
   const entries = listDirEntries(vol, dirCluster);
-  const found = entries.find((e) => e.name === filename);
+  const found = entries.find((e) => namesEqual(e.name, filename));
   if (!found) throw new Error(`file not found: ${path}`);
   return { dirCluster, entry: found };
 }
@@ -535,7 +625,7 @@ export function fatWriteFile(vol: FatVolume, path: string, data: Uint8Array): vo
       vol.image.subarray(slots[i].offset, slots[i].offset + 8),
       vol.image.subarray(slots[i].offset + 8, slots[i].offset + 11),
     );
-    if (name === display) {
+    if (namesEqual(name, display)) {
       targetSlotIndex = i;
       existingCluster = readU16(vol.image, slots[i].offset + 26);
       break;
@@ -584,11 +674,7 @@ export function fatWriteFile(vol: FatVolume, path: string, data: Uint8Array): vo
   vol.image.set(rawName, off);
   vol.image.set(rawExt, off + 8);
   vol.image[off + 11] = 0x20; // archive attribute
-  vol.image[off + 12] = 0;
-  writeU16(vol.image, off + 14, 0); // creation time (未使用)
-  writeU16(vol.image, off + 16, 0); // creation date (未使用)
-  writeU16(vol.image, off + 18, 0); // last access date (未使用)
-  writeU16(vol.image, off + 20, 0); // FAT32 high word (未使用)
+  vol.image.fill(0, off + 12, off + 22); // Human68k拡張名/MS-DOS予約フィールドは未使用
   encodeDosDateTime(vol.image, off + 24, off + 22, new Date());
   writeU16(vol.image, off + 26, clusters.length > 0 ? clusters[0] : 0);
   writeU32(vol.image, off + 28, data.length);
@@ -608,11 +694,7 @@ function writeRawDirEntry(
   vol.image.set(rawName, offset);
   vol.image.set(rawExt, offset + 8);
   vol.image[offset + 11] = attr;
-  vol.image[offset + 12] = 0;
-  writeU16(vol.image, offset + 14, 0); // creation time (未使用)
-  writeU16(vol.image, offset + 16, 0); // creation date (未使用)
-  writeU16(vol.image, offset + 18, 0); // last access date (未使用)
-  writeU16(vol.image, offset + 20, 0); // FAT32 high word (未使用)
+  vol.image.fill(0, offset + 12, offset + 22); // Human68k拡張名/MS-DOS予約フィールドは未使用
   encodeDosDateTime(vol.image, offset + 24, offset + 22, when);
   writeU16(vol.image, offset + 26, cluster);
   writeU32(vol.image, offset + 28, size);
@@ -638,7 +720,7 @@ export function fatMakeDir(vol: FatVolume, path: string): void {
   const { display, rawName, rawExt } = to83Raw(segments[segments.length - 1]);
 
   const existingEntries = listDirEntries(vol, parentDirCluster);
-  if (existingEntries.some((e) => e.name === display)) {
+  if (existingEntries.some((e) => namesEqual(e.name, display))) {
     throw new Error(`fatMakeDir: already exists: ${path}`);
   }
 

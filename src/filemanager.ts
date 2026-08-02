@@ -6,7 +6,7 @@
 //
 // WebNP2版との差分: FmTarget は表示ラベルを呼び出し側(main.ts)で組み立て済みの
 // 文字列として受け取る(drive番号からの組み立てをUI側で持たない)。これはWebX68kが
-// FDD1/FDD2/HDDの3スロット構成で、かつHDDは編集非対応(理由をラベルに含めたい)ため。
+// FDD1/FDD2/HDDの3スロット構成の表示名を一元管理するため。
 
 import { t } from './strings.ts';
 import type { FatEntry } from './api/fat.ts';
@@ -21,7 +21,7 @@ export interface FmTarget {
   label: string;
   /** ライブラリ側のエントリが、いずれかの実行中スロットにマウント中かどうか。 */
   mounted: boolean;
-  /** FAT12/16として読み書きできるか(D88/HDD等の非対応イメージはfalse)。 */
+  /** FAT12/16として読み書きできるか(D88等の非対応イメージはfalse)。 */
   editable: boolean;
 }
 

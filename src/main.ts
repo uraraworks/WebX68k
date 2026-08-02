@@ -1049,10 +1049,7 @@ async function fmListTargets(): Promise<FmTarget[]> {
     let note = '';
     if (!pending) {
       note = t('fmUnmountedLabel');
-    } else if (slot === 'hdd') {
-      // Human68kのHDDパーティション/ブートセクタ形式は標準のMS-DOS BPBと異なり本実装では未対応。詳細はREADME参照。
-      note = t('fmHddUnsupportedNote');
-    } else if (!isFmEditableFdName(pending.name)) {
+    } else if (slot !== 'hdd' && !isFmEditableFdName(pending.name)) {
       note = t('fmNotEditableNote');
     } else {
       editable = true;
@@ -1065,8 +1062,8 @@ async function fmListTargets(): Promise<FmTarget[]> {
   for (const item of stored) {
     const kind = classifyDiskKind(item.name);
     if (kind === null) continue;
-    const editable = kind === 'fd' && isFmEditableFdName(item.name);
-    const note = editable ? '' : kind === 'hdd' ? t('fmHddUnsupportedNote') : t('fmNotEditableNote');
+    const editable = kind === 'hdd' || (kind === 'fd' && isFmEditableFdName(item.name));
+    const note = editable ? '' : t('fmNotEditableNote');
     const mountedSlot = SLOT_IDS.find((s) => slots[s]?.sourceKey === item.sourceKey);
     const displayName = item.displayName ?? item.name;
     const label = `${displayName}${mountedSlot ? ` [${t('fmMountedBadge')}]` : ''}${note ? ` (${note})` : ''}`;

@@ -85,7 +85,6 @@ interface Dict {
   fmUnmountedLabel(): string;
   fmMountedBadge(): string;
   fmNotEditableNote(): string;
-  fmHddUnsupportedNote(): string;
   fmPathRoot(): string;
   fmUpDir(): string;
   fmDirMarker(): string;
@@ -186,7 +185,6 @@ const STRINGS: Record<Lang, Dict> = {
     fmUnmountedLabel: () => '未挿入',
     fmMountedBadge: () => 'マウント中',
     fmNotEditableNote: () => '編集非対応',
-    fmHddUnsupportedNote: () => 'HDD非対応',
     fmPathRoot: () => '/(ルート)',
     fmUpDir: () => '上の階層へ',
     fmDirMarker: () => 'DIR',
@@ -285,7 +283,6 @@ const STRINGS: Record<Lang, Dict> = {
     fmUnmountedLabel: () => 'empty',
     fmMountedBadge: () => 'mounted',
     fmNotEditableNote: () => 'not editable',
-    fmHddUnsupportedNote: () => 'HDD unsupported',
     fmPathRoot: () => '/ (root)',
     fmUpDir: () => 'Up',
     fmDirMarker: () => 'DIR',
