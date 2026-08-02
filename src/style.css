@@ -689,23 +689,7 @@ footer.app-footer a {
   color: var(--page-footer-text);
 }
 
-footer#statusbar {
-  flex: 0 0 auto;
-  width: 100%;
-  max-width: 640px;
-  border-top: 1px solid var(--border);
-  padding: 6px 4px 0;
-  display: flex;
-  gap: 24px;
-  justify-content: center;
-  font-size: 12px;
-  color: var(--text-dim);
-}
 
-footer#statusbar span b {
-  color: var(--text);
-  font-weight: 600;
-}
 
 /* スマホ幅 */
 @media (max-width: 640px) {
@@ -713,5 +697,4 @@ footer#statusbar span b {
   header.app-header { padding: 6px 10px; }
   header.app-header .app-tagline { display: none; }
   .console-footer { padding: 8px 6px; }
-  footer#statusbar { flex-wrap: wrap; gap: 8px 16px; }
-}
+  }

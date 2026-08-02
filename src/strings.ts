@@ -45,8 +45,6 @@ interface Dict {
   alertBiosMissing(): string;
   alertBootFailed(args: { message: string }): string;
   alertDownloadNoImage(): string;
-  statFpsLabel(): string;
-  statResLabel(): string;
   settingsTitle(): string;
   settingsDescription(): string;
   settingsBiosSectionTitle(): string;
@@ -109,8 +107,6 @@ const STRINGS: Record<Lang, Dict> = {
     alertBiosMissing: () => 'BIOS ファイル (IPLROM.DAT / CGROM.DAT) を設定してください。',
     alertBootFailed: ({ message }) => `起動に失敗しました: ${message}`,
     alertDownloadNoImage: () => 'このドライブにはディスクが挿入されていません。',
-    statFpsLabel: () => 'FPS:',
-    statResLabel: () => '解像度:',
     settingsTitle: () => '設定',
     settingsDescription: () =>
       'BIOS ファイル(IPLROM.DAT / CGROM.DAT)とマシン構成を設定します。設定はブラウザに保存され、次回起動時から反映されます。',
@@ -173,8 +169,6 @@ const STRINGS: Record<Lang, Dict> = {
     alertBiosMissing: () => 'Please set the BIOS files (IPLROM.DAT / CGROM.DAT).',
     alertBootFailed: ({ message }) => `Failed to start: ${message}`,
     alertDownloadNoImage: () => 'No disk is inserted in this drive.',
-    statFpsLabel: () => 'FPS:',
-    statResLabel: () => 'Resolution:',
     settingsTitle: () => 'Settings',
     settingsDescription: () =>
       'Configure the BIOS files (IPLROM.DAT / CGROM.DAT) and machine settings. Settings are saved in your browser and applied from the next start.',

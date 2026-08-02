@@ -33,8 +33,6 @@ const libraryBackdrop = document.getElementById('library-backdrop') as HTMLDivEl
 const libraryList = document.getElementById('library-list') as HTMLDivElement;
 const libraryCloseBtn = document.getElementById('library-close') as HTMLButtonElement;
 const slotPopupMenu = document.getElementById('slot-popup-menu') as HTMLDivElement;
-const statFps = document.getElementById('stat-fps') as HTMLElement;
-const statRes = document.getElementById('stat-res') as HTMLElement;
 const cfgCpuSpeed = document.getElementById('cfg-cpuspeed') as HTMLSelectElement;
 const cfgRamSize = document.getElementById('cfg-ramsize') as HTMLSelectElement;
 
@@ -665,8 +663,7 @@ async function bootCore(): Promise<void> {
     slotElements[slot].downloadBtn.disabled = slots[slot] === null;
   }
 
-  const info = host.fetchAvInfo();
-  statRes.textContent = `${info.baseWidth}x${info.baseHeight}`;
+  host.fetchAvInfo();
 
   running = true;
   lastFrameTime = 0;
@@ -793,8 +790,6 @@ function applyDocumentStrings(): void {
     if (slots[slot] === null) els.name.textContent = t('fdEmpty');
   }
 
-  document.getElementById('stat-fps-label')!.textContent = t('statFpsLabel');
-  document.getElementById('stat-res-label')!.textContent = t('statResLabel');
 
   document.getElementById('footer-copyright')!.textContent = t('footerCopyright');
   document.getElementById('footer-github')!.textContent = t('footerGithubLabel');
@@ -841,8 +836,6 @@ canvas.addEventListener('click', () => canvas.focus());
 
 let lastFrameTime = 0;
 let accumulator = 0;
-let frameCounter = 0;
-let fpsWindowStart = 0;
 let rafId = 0;
 let timerId: ReturnType<typeof setTimeout> | undefined;
 
@@ -894,10 +887,7 @@ function pollDiskAccess(now: number): void {
 function loop(t: number): void {
   if (!running || !host) return;
 
-  if (lastFrameTime === 0) {
-    lastFrameTime = t;
-    fpsWindowStart = t;
-  }
+  if (lastFrameTime === 0) lastFrameTime = t;
   const dt = (t - lastFrameTime) / 1000;
   lastFrameTime = t;
 
@@ -910,17 +900,10 @@ function loop(t: number): void {
     host.runFrame();
     accumulator -= frameInterval;
     ran++;
-    frameCounter++;
   }
   if (ran > 0) pollDiskAccess(t);
   // 破綻(タブ非アクティブ復帰等)したら蓄積をリセット
   if (accumulator > frameInterval * 4) accumulator = 0;
-
-  if (t - fpsWindowStart >= 1000) {
-    statFps.textContent = String(frameCounter);
-    frameCounter = 0;
-    fpsWindowStart = t;
-  }
 
   scheduleNext();
 }
