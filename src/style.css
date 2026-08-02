@@ -311,6 +311,65 @@ main {
   display: none;
 }
 
+/* 起動前オーバーレイ(WebNP2の overlay / overlay-choices / start-btn 系を踏襲)。 */
+.overlay {
+  position: absolute;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.82);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 14px;
+  cursor: pointer;
+  z-index: 10;
+  text-align: center;
+  padding: 16px;
+  line-height: 1.7; /* .stage の line-height:0 (canvas隙間対策) を打ち消す */
+}
+
+.overlay.hidden {
+  display: none;
+}
+
+.overlay-choices {
+  display: flex;
+  flex-direction: row;
+  flex-wrap: wrap;
+  gap: 12px;
+  justify-content: center;
+}
+
+/* オーバーレイは黒いエミュ画面の上に重なるため、常に白系の文字色で固定する */
+.overlay .start-btn {
+  padding: 12px 28px;
+  font-size: 15px;
+  border-radius: 6px;
+  border: 1px solid var(--accent);
+  background: var(--accent-dim);
+  color: #ffffff;
+  cursor: pointer;
+}
+
+.overlay .start-btn:hover {
+  background: var(--accent);
+}
+
+.overlay .start-btn-system {
+  border-color: #6ab04c;
+  background: #3d6b2e;
+}
+
+.overlay .start-btn-system:hover {
+  background: #4f8a3c;
+}
+
+.overlay .overlay-note {
+  font-size: 12px;
+  color: #d0d0d0;
+  max-width: 480px;
+}
+
 /* 設定ダイアログ(BIOS登録+マシン構成)。WebNP2 の ROM登録ダイアログ(rom-modal系)と同じ見た目・開閉の仕組み。 */
 .rom-modal-backdrop {
   position: fixed;

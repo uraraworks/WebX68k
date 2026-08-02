@@ -13,7 +13,9 @@ Vite + TypeScript（フレームワーク無し）の最小構成です。
 - `src/audio.ts` … AudioWorklet によるストリーミング音声出力
 - `src/keyboard.ts` … `KeyboardEvent.code` → `RETROK_*` のマッピング
 - `src/bios-store.ts` … BIOS ファイルを IndexedDB に永続化するヘルパー
-- `src/main.ts` … UI 配線・メインループ
+- `src/disk-store.ts` … ディスクイメージ(FD/HDD)を IndexedDB に永続化する「ディスクライブラリ」ヘルパー
+- `src/core-shim.c` … アクセスランプ取得等、libretro API に無い可変長引数/グローバル参照のための C シム
+- `src/main.ts` … UI 配線・メインループ（FDD0/FDD1/HDD の3スロット、アクセスランプ、起動前オーバーレイ等）
 
 ## コアのビルド手順
 
@@ -30,7 +32,60 @@ bash scripts/build-core.sh
 ```
 
 成功すると `public/core/px68k_libretro.js` と `public/core/px68k_libretro.wasm` が生成されます。
-`px68k-libretro` 側のリポジトリは一切変更しません。
+`px68k-libretro` 側は WebX68k 用の fork（`emscripten` ブランチ）で、アクセスランプ対応のため
+`x68k/fdd.c` / `x68k/sasi.c` / `libretro.c` に最小限のパッチを当てています（後述）。
+
+## FDD0 / FDD1 / HDD 同時搭載の仕組み
+
+px68k-libretro の `retro_load_game` は `.cmd` ファイルを渡すとコマンドライン展開する
+（`libretro.c` の `pmain()`）。素の仕組みでは
+
+- `px68k <fd0path> <fd1path>` → `Config.FDDImage[0]` / `[1]` を設定(FDD0+FDD1)
+- `px68k -h <hdfpath>` → `Config.HDImage[0]` を設定。ただしこの形式は `argc==3` 限定で、
+  HDD と FDD を cmd ファイル経由で同時指定することはできない
+
+という制約がある。WebX68k はこれを回避するため、`px68k_save_hdd_path` という
+（ドキュメント化されていない）libretro コアオプションを利用している。これを `enabled` にすると
+`LoadConfig()`（`libretro/prop.c`）が起動時に `<system>/keropi/config` という INI ファイルから
+`[WinX68k]` セクションの `HDD0=...` を読み込み、`Config.HDImage[0]` にセットする。この読み込みは
+cmd ファイルによる FDD0/FDD1 設定と競合しないため、
+
+- `.cmd` ファイル（`/game/boot.cmd`、内容は `px68k "<fdd0path>" "<fdd1path>"`）で FDD0/FDD1 を指定
+- `/system/keropi/config` に `[WinX68k]\r\nHDD0=<hddpath>\r\n` を書き込んで HDD0 を指定
+
+を両方行うことで、**FDD0 / FDD1 / HDD の3台を排他無しで同時搭載**できている
+（`src/main.ts` の `bootCore()` 参照）。空きスロットは cmd ファイル側で空文字列を渡している
+（`FDD_SetFD` は空パスだと安全にドライブ未挿入のままになる）。
+
+## アクセスランプの実装
+
+ドライブ行のランプは「ディスク挿入中」ではなく実機同様の**アクセスランプ**（既定は消灯、
+実際に読み書きしたフレームだけ点灯）。px68k-libretro fork 側に以下の最小パッチを追加している。
+
+- `x68k/fdd.c` / `x68k/fdd.h`: 既存の `FDD_IsReading`（読み込みフレームで1、`retro_run()` の
+  毎フレーム先頭で0クリア）に加えて `FDD_AccessDrive`（直近アクセスしたドライブ番号）を追加。
+  `FDD_Read()` に加え `FDD_Write()` でもこの2つをセットするようにし、書き込みアクセスでも
+  ランプが点灯するようにした。ドライブ別（FDD0/FDD1）に点灯できる。
+- `x68k/sasi.c` / `x68k/sasi.h`: HDD(SASI) 側には同種のフラグが無かったため `SASI_IsAccessing`
+  を新設し、`SASI_Read()`/`SASI_Write()` のデータ転送タイミングでセット。`libretro.c` の
+  `retro_run()` 冒頭（`FDD_IsReading = 0;` の直後）で毎フレームクリアしている。HDD は本UIでは
+  1台のみ扱うためドライブ番号までは持たせていない。
+- `src/core-shim.c`: 上記グローバルを `get_fdd_is_reading()` / `get_fdd_access_drive()` /
+  `get_sasi_is_accessing()` として getter でラップし、`build-core.sh` の
+  `EXPORTED_FUNCTIONS` に追加。`src/libretro-host.ts` の `readDiskAccess()` が
+  `retro_run()` 直後にこれらを読み出し、`src/main.ts` 側で「直近アクセスから約120ms は
+  点灯を保持する」残光処理をしてランプ表示に反映している。
+
+## 起動前の初期画面
+
+WebNP2 に合わせ、起動前は canvas 上に「そのまま起動」/「システムディスクで起動」の2択
+オーバーレイを表示する（`index.html` の `#boot-overlay`、`src/main.ts` の `startFromOverlay()`）。
+
+- 「そのまま起動」… ディスク未挿入で IPL 起動（`loadGameNone` 相当、IPL ROM のメニューが出る）
+- 「システムディスクで起動」… 同梱の `human302.xdf` を FDD0 へ挿入した状態で起動
+
+音声再生の制約上クリック操作が必須なため、オーバーレイの空白部分をクリックしても
+「そのまま起動」と同じ扱いになる。
 
 ## フロントエンドのビルド
 
@@ -50,7 +105,7 @@ npm run dev     # 開発サーバー
 
 ## 未検証・既知の注意点
 
-- 実ブラウザでの動作確認は未実施です。まずは `npm run dev` でローカル起動し、BIOS を設定した上で
-  動作確認してください。
 - ジョイパッド入力は未実装です（`RETRO_DEVICE_JOYPAD` は常に 0 を返します）。
 - ディスクの多面差し替え（`SET_DISK_CONTROL_INTERFACE`）はコア側からの要求を無視しており未対応です。
+- HDD は `Config.HDImage[0]`（1台分）のみ UI から扱えます。px68k-libretro 自体は16台まで
+  保持できますが、WebX68k の HDD スロットは1行のみです。

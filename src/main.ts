@@ -15,34 +15,65 @@ import { codeToRetrok } from './keyboard';
 import { LibretroHost } from './libretro-host';
 
 const canvas = document.getElementById('screen') as HTMLCanvasElement;
-const btnStart = document.getElementById('btn-start') as HTMLButtonElement;
+const bootOverlay = document.getElementById('boot-overlay') as HTMLDivElement;
+const btnBootPlain = document.getElementById('btn-boot-plain') as HTMLButtonElement;
+const btnBootSystem = document.getElementById('btn-boot-system') as HTMLButtonElement;
 const btnReset = document.getElementById('btn-reset') as HTMLButtonElement;
 const btnSettings = document.getElementById('btn-settings') as HTMLButtonElement;
+const btnDiskLibrary = document.getElementById('btn-disk-library') as HTMLButtonElement;
 const settingsBackdrop = document.getElementById('settings-backdrop') as HTMLDivElement;
 const settingsCloseBtn = document.getElementById('settings-close') as HTMLButtonElement;
 const biosIplInput = document.getElementById('bios-ipl') as HTMLInputElement;
 const biosCgInput = document.getElementById('bios-cg') as HTMLInputElement;
 const biosIplStatus = document.getElementById('bios-ipl-status') as HTMLSpanElement;
 const biosCgStatus = document.getElementById('bios-cg-status') as HTMLSpanElement;
-const diskSlot = document.getElementById('disk-slot') as HTMLDivElement;
-const diskInput = document.getElementById('disk-input') as HTMLInputElement;
-const btnDiskInsert = document.getElementById('btn-disk-insert') as HTMLButtonElement;
-const btnDiskEject = document.getElementById('btn-disk-eject') as HTMLButtonElement;
-const btnDiskLibrary = document.getElementById('btn-disk-library') as HTMLButtonElement;
-const diskName = document.getElementById('disk-name') as HTMLSpanElement;
 const libraryBackdrop = document.getElementById('library-backdrop') as HTMLDivElement;
 const libraryList = document.getElementById('library-list') as HTMLDivElement;
 const libraryCloseBtn = document.getElementById('library-close') as HTMLButtonElement;
 const statFps = document.getElementById('stat-fps') as HTMLElement;
 const statRes = document.getElementById('stat-res') as HTMLElement;
-const statDisk = document.getElementById('stat-disk') as HTMLElement;
-const diskLamp = document.getElementById('disk-lamp') as HTMLElement;
 const cfgCpuSpeed = document.getElementById('cfg-cpuspeed') as HTMLSelectElement;
 const cfgRamSize = document.getElementById('cfg-ramsize') as HTMLSelectElement;
 
+// WebNP2 のドライブ行に合わせた FDD0 / FDD1 / HDD の3スロット構成。
+// 各スロットは「アクセスランプ + ドライブ名 + ファイル名 + 挿入/取り出しボタン」を持つ。
+type SlotId = 'fdd0' | 'fdd1' | 'hdd';
+const SLOT_IDS: SlotId[] = ['fdd0', 'fdd1', 'hdd'];
+
+interface SlotElements {
+  lamp: HTMLElement;
+  name: HTMLElement;
+  insertBtn: HTMLButtonElement;
+  input: HTMLInputElement;
+  ejectBtn: HTMLButtonElement;
+}
+
+function slotEls(id: SlotId): SlotElements {
+  return {
+    lamp: document.getElementById(`lamp-${id}`) as HTMLElement,
+    name: document.getElementById(`name-${id}`) as HTMLElement,
+    insertBtn: document.getElementById(`btn-insert-${id}`) as HTMLButtonElement,
+    input: document.getElementById(`input-${id}`) as HTMLInputElement,
+    ejectBtn: document.getElementById(`btn-eject-${id}`) as HTMLButtonElement,
+  };
+}
+
+const slotElements: Record<SlotId, SlotElements> = {
+  fdd0: slotEls('fdd0'),
+  fdd1: slotEls('fdd1'),
+  hdd: slotEls('hdd'),
+};
+
+interface PendingDisk {
+  name: string;
+  data: Uint8Array;
+}
+
+// 各ドライブへの挿入予定(起動前)/実際に挿入中(起動後)のディスク。
+const slots: Record<SlotId, PendingDisk | null> = { fdd0: null, fdd1: null, hdd: null };
+
 let biosIplBytes: Uint8Array | null = null;
 let biosCgBytes: Uint8Array | null = null;
-let pendingDisk: { name: string; data: Uint8Array } | null = null;
 
 // マシン構成(px68k-libretro のコアオプション px68k_cpuspeed / px68k_ramsize)。
 // libretro_core_options.h の表記(大文字小文字含む)と完全一致させる必要がある。
@@ -65,6 +96,7 @@ cfgRamSize.value = ramSize;
 let audio: AudioEngine | null = null;
 let host: LibretroHost | null = null;
 let running = false;
+let bootStarted = false;
 
 // 同梱ROM/ディスク(public/system/)のパス。ユーザーが独自ファイルを設定した場合はそちらを優先する。
 const BUNDLED_IPL_URL = '/system/iplrom.dat';
@@ -140,37 +172,34 @@ async function restoreBios(): Promise<void> {
   }
 }
 
-/**
- * ディスクが未挿入なら同梱のHuman68kシステムディスクをデフォルトとして挿入した状態にする。
- * ユーザーが別のディスクをドロップ/選択したらそちらが優先される(pendingDiskが上書きされるため)。
- */
-async function restoreDefaultDisk(): Promise<void> {
-  if (pendingDisk) return;
-  const bytes = await fetchBytes(BUNDLED_DISK_URL);
-  if (!bytes) return;
-  pendingDisk = { name: BUNDLED_DISK_NAME, data: bytes };
-  setDiskDisplay(`${BUNDLED_DISK_NAME} (同梱)`);
+/** スロット1件分の表示(ドライブ行のファイル名 + 取り出しボタン活性)を更新する。 */
+function updateSlotDisplay(slot: SlotId, label: string | null): void {
+  const els = slotElements[slot];
+  els.name.textContent = label ?? '未挿入';
+  els.ejectBtn.disabled = label === null;
 }
 
-/** ディスクをドライブへセットする(pendingDisk更新 + 表示更新)。起動中なら実機同様コアを再起動して反映する。 */
-async function insertDiskBytes(name: string, data: Uint8Array, displayLabel?: string): Promise<void> {
-  pendingDisk = { name, data };
-  setDiskDisplay(displayLabel ?? name);
+/** ディスクをドライブへセットする(slots更新 + 表示更新)。起動中なら実機同様コアを再起動して反映する。 */
+async function insertDiskBytes(
+  slot: SlotId,
+  name: string,
+  data: Uint8Array,
+  displayLabel?: string,
+): Promise<void> {
+  slots[slot] = { name, data };
+  updateSlotDisplay(slot, displayLabel ?? name);
 
   if (host && running) {
-    // HDD イメージは実機同様ホットマウント不可(初回起動時のみ反映)のため、
-    // 起動中の挿入はコアごと再起動して確実にブートし直す
+    // FDD/HDD いずれもコアは実行中のホットマウントに対応していないため、
+    // 起動中の挿入はコアごと再起動して確実にブートし直す。
     await restartCore();
   }
 }
 
-/** ディスク表示(スロット行のドライブ名 + ステータスバー + アクセスランプ + 取り出しボタン)をまとめて更新する。 */
-function setDiskDisplay(name: string | null): void {
-  const label = name ?? '未挿入';
-  diskName.textContent = label;
-  statDisk.textContent = label;
-  diskLamp.classList.toggle('active', name !== null);
-  btnDiskEject.disabled = name === null;
+function ejectSlot(slot: SlotId): void {
+  slots[slot] = null;
+  updateSlotDisplay(slot, null);
+  if (host && running) void restartCore();
 }
 
 biosIplInput.addEventListener('change', async () => {
@@ -190,28 +219,28 @@ biosCgInput.addEventListener('change', async () => {
 });
 
 /**
- * D&D/ファイル選択で受け取ったディスクをドライブへセットする。
+ * D&D/ファイル選択で受け取ったディスクを指定ドライブへセットする。
  * WebNP2 のディスクライブラリと同じ流儀で、挿入と同時にディスクライブラリ(IndexedDB)へも自動登録する。
  */
-async function handleDiskFile(file: File): Promise<void> {
+async function handleDiskFile(slot: SlotId, file: File): Promise<void> {
   const data = await fileToBytes(file);
   const sourceKey = fileKeyFor(file.name, file.size);
   await saveDisk({ sourceKey, name: file.name, bytes: data, savedAt: Date.now() });
-  await insertDiskBytes(file.name, data);
+  await insertDiskBytes(slot, file.name, data);
   if (!libraryBackdrop.classList.contains('hidden')) void refreshLibraryList();
 }
 
-/** ディスクライブラリの1件(または同梱ディスク)を現在のドライブへ挿入する。 */
-async function insertFromLibrary(sourceKey: string): Promise<void> {
+/** ディスクライブラリの1件(または同梱ディスク)を指定ドライブへ挿入する。 */
+async function insertFromLibrary(sourceKey: string, slot: SlotId): Promise<void> {
   if (sourceKey === BUNDLED_DISK_SOURCE_KEY) {
     const bytes = await fetchBytes(BUNDLED_DISK_URL);
     if (!bytes) return;
-    await insertDiskBytes(BUNDLED_DISK_NAME, bytes, `${BUNDLED_DISK_NAME} (同梱)`);
+    await insertDiskBytes(slot, BUNDLED_DISK_NAME, bytes, `${BUNDLED_DISK_NAME} (同梱)`);
     return;
   }
   const stored = await getDisk(sourceKey);
   if (!stored) return;
-  await insertDiskBytes(stored.name, stored.bytes, stored.displayName ?? stored.name);
+  await insertDiskBytes(slot, stored.name, stored.bytes, stored.displayName ?? stored.name);
 }
 
 function formatLibrarySize(n: number): string {
@@ -228,6 +257,8 @@ interface LibraryRowEntry {
   savedAt: number | null;
   bundled: boolean;
 }
+
+const SLOT_INSERT_LABEL: Record<SlotId, string> = { fdd0: 'FDD0へ', fdd1: 'FDD1へ', hdd: 'HDDへ' };
 
 /** ディスクライブラリ1件分の行(バッジ/名前/サイズ/操作ボタン)を組み立てる。 */
 function buildLibraryRow(entry: LibraryRowEntry): HTMLElement {
@@ -258,17 +289,21 @@ function buildLibraryRow(entry: LibraryRowEntry): HTMLElement {
   const actions = document.createElement('div');
   actions.className = 'library-item-actions';
 
-  const insertBtn = document.createElement('button');
-  insertBtn.type = 'button';
-  insertBtn.className = 'library-action-btn';
-  insertBtn.textContent = '挿入';
-  insertBtn.addEventListener('click', () => {
-    void (async () => {
-      await insertFromLibrary(entry.sourceKey);
-      closeLibraryModal();
-    })();
-  });
-  actions.append(insertBtn);
+  // 挿入先ドライブを選べるようにする: HDDイメージはHDDへのみ、FDイメージはFDD0/FDD1へ挿入可能。
+  const insertTargets: SlotId[] = kind === 'hdd' ? ['hdd'] : ['fdd0', 'fdd1'];
+  for (const target of insertTargets) {
+    const insertBtn = document.createElement('button');
+    insertBtn.type = 'button';
+    insertBtn.className = 'library-action-btn';
+    insertBtn.textContent = SLOT_INSERT_LABEL[target];
+    insertBtn.addEventListener('click', () => {
+      void (async () => {
+        await insertFromLibrary(entry.sourceKey, target);
+        closeLibraryModal();
+      })();
+    });
+    actions.append(insertBtn);
+  }
 
   if (entry.bundled) {
     const note = document.createElement('span');
@@ -354,19 +389,50 @@ window.addEventListener('keydown', (e) => {
   if (e.key === 'Escape' && !libraryBackdrop.classList.contains('hidden')) closeLibraryModal();
 });
 
-/** コアを初期化して起動する(pendingDisk があればそのディスクから) */
+/** ファイル名を FS 上のパスに使っても安全な形へ簡易サニタイズする。 */
+function sanitizeFileName(name: string): string {
+  return name.replace(/[\\/]/g, '_');
+}
+
+/**
+ * コアを初期化して起動する(slots にセットされたディスクから)。
+ *
+ * FDD0/FDD1 は px68k-libretro の cmd ファイル展開(`px68k <fd0> <fd1>`)で同時指定できる。
+ * HDD は cmd ファイル経由の `-h` 形式だと argc==3 限定で FDD と排他になってしまうため使わず、
+ * 代わりに px68k_save_hdd_path コアオプションを有効にして起動前に /system/keropi/config へ
+ * `[WinX68k]\nHDD0=...` を書き込む(LoadConfig() が拾う)ことで、FDD0/FDD1/HDD の3台を
+ * 同時搭載できるようにしている。
+ */
 async function bootCore(): Promise<void> {
   host = new LibretroHost(canvas, (samples) => audio!.push(samples));
   host.setCoreOption('px68k_cpuspeed', cpuSpeed);
   host.setCoreOption('px68k_ramsize', ramSize);
+  // HDD0 の永続化(config読込)を有効化。これでLoadConfig()が /system/keropi/config の
+  // HDD0= を読み、cmdファイル(FDD0/FDD1指定)と共存できる。
+  host.setCoreOption('px68k_save_hdd_path', 'enabled');
   await host.init(biosIplBytes!, biosCgBytes!);
 
-  if (pendingDisk) {
-    const path = host.writeDiskImage(pendingDisk.name, pendingDisk.data);
-    host.loadGame(path);
-    btnDiskEject.disabled = false;
-  } else {
-    host.loadGameNone();
+  const fdd0Path = slots.fdd0
+    ? host.writeDiskImage(`fdd0_${sanitizeFileName(slots.fdd0.name)}`, slots.fdd0.data)
+    : '';
+  const fdd1Path = slots.fdd1
+    ? host.writeDiskImage(`fdd1_${sanitizeFileName(slots.fdd1.name)}`, slots.fdd1.data)
+    : '';
+
+  if (slots.hdd) {
+    const hddPath = host.writeDiskImage(`hdd_${sanitizeFileName(slots.hdd.name)}`, slots.hdd.data);
+    const iniText = `[WinX68k]\r\nHDD0=${hddPath}\r\n`;
+    host.writeFile('/system/keropi/config', new TextEncoder().encode(iniText));
+  }
+
+  // px68k-libretro は "px68k <fd0> <fd1>" 形式の.cmdファイルでFDD0/FDD1を同時指定できる
+  // (libretro.c pmain(): argc==3で FDDImage[0]/[1] を両方設定)。空スロットは空文字列で渡す。
+  const cmdText = `px68k "${fdd0Path}" "${fdd1Path}"\n`;
+  host.writeFile('/game/boot.cmd', new TextEncoder().encode(cmdText));
+  host.loadGame('/game/boot.cmd');
+
+  for (const slot of SLOT_IDS) {
+    slotElements[slot].ejectBtn.disabled = slots[slot] === null;
   }
 
   const info = host.fetchAvInfo();
@@ -375,6 +441,7 @@ async function bootCore(): Promise<void> {
   running = true;
   lastFrameTime = 0;
   accumulator = 0;
+  resetAccessLamps();
   scheduleNext();
 }
 
@@ -387,33 +454,35 @@ async function restartCore(): Promise<void> {
   await bootCore();
 }
 
-// ディスク挿入: WebNP2 の FDスロット行と同じ流儀(アイコンボタンでファイル選択 + スロット行へのD&D)。
-btnDiskInsert.addEventListener('click', () => diskInput.click());
-diskInput.addEventListener('change', () => {
-  const file = diskInput.files?.[0];
-  diskInput.value = '';
-  if (file) void handleDiskFile(file);
-});
+// ドライブ行の挿入ボタン・D&D配線(WebNP2 の FDスロット行と同じ流儀)。
+for (const slot of SLOT_IDS) {
+  const els = slotElements[slot];
+  els.insertBtn.addEventListener('click', () => els.input.click());
+  els.input.addEventListener('change', () => {
+    const file = els.input.files?.[0];
+    els.input.value = '';
+    if (file) void handleDiskFile(slot, file);
+  });
+  els.ejectBtn.addEventListener('click', () => ejectSlot(slot));
 
-// スロット行へのD&D(WebNP2 wireSlotDrop と同じ、dragenter/dragleaveの深さカウントで枠のちらつきを防ぐ)。
-{
+  const slotRow = document.getElementById(`slot-${slot}`) as HTMLDivElement;
   let depth = 0;
-  diskSlot.addEventListener('dragover', (e) => e.preventDefault());
-  diskSlot.addEventListener('dragenter', (e) => {
+  slotRow.addEventListener('dragover', (e) => e.preventDefault());
+  slotRow.addEventListener('dragenter', (e) => {
     e.preventDefault();
     depth++;
-    diskSlot.classList.add('dropzone-active');
+    slotRow.classList.add('dropzone-active');
   });
-  diskSlot.addEventListener('dragleave', () => {
+  slotRow.addEventListener('dragleave', () => {
     depth = Math.max(0, depth - 1);
-    if (depth === 0) diskSlot.classList.remove('dropzone-active');
+    if (depth === 0) slotRow.classList.remove('dropzone-active');
   });
-  diskSlot.addEventListener('drop', (e) => {
+  slotRow.addEventListener('drop', (e) => {
     e.preventDefault();
     depth = 0;
-    diskSlot.classList.remove('dropzone-active');
+    slotRow.classList.remove('dropzone-active');
     const file = e.dataTransfer?.files?.[0];
-    if (file) void handleDiskFile(file);
+    if (file) void handleDiskFile(slot, file);
   });
 }
 
@@ -479,6 +548,32 @@ function scheduleNext(): void {
   timerId = setTimeout(() => enterLoop(), 32);
 }
 
+// アクセスランプ: コアが実際にディスクを読み書きしたフレームだけ点灯させる。
+// 単純にそのフレームだけだと視認しづらいため、直近アクセスから ACCESS_GLOW_MS の間は
+// 点灯を保持する(残光)。既定(アクセスなし)は枠だけの消灯状態。
+const ACCESS_GLOW_MS = 120;
+let lastAccessAt: Record<SlotId, number> = { fdd0: -Infinity, fdd1: -Infinity, hdd: -Infinity };
+
+function resetAccessLamps(): void {
+  lastAccessAt = { fdd0: -Infinity, fdd1: -Infinity, hdd: -Infinity };
+  for (const slot of SLOT_IDS) slotElements[slot].lamp.classList.remove('active');
+}
+
+function pollDiskAccess(now: number): void {
+  if (!host) return;
+  const { fddReading, fddDrive, hddAccessing } = host.readDiskAccess();
+  if (fddReading) {
+    if (fddDrive === 0) lastAccessAt.fdd0 = now;
+    else if (fddDrive === 1) lastAccessAt.fdd1 = now;
+  }
+  if (hddAccessing) lastAccessAt.hdd = now;
+
+  for (const slot of SLOT_IDS) {
+    const lit = now - lastAccessAt[slot] < ACCESS_GLOW_MS;
+    slotElements[slot].lamp.classList.toggle('active', lit);
+  }
+}
+
 function loop(t: number): void {
   if (!running || !host) return;
 
@@ -500,6 +595,7 @@ function loop(t: number): void {
     ran++;
     frameCounter++;
   }
+  if (ran > 0) pollDiskAccess(t);
   // 破綻(タブ非アクティブ復帰等)したら蓄積をリセット
   if (accumulator > frameInterval * 4) accumulator = 0;
 
@@ -512,14 +608,26 @@ function loop(t: number): void {
   scheduleNext();
 }
 
-btnStart.addEventListener('click', async () => {
+/** 起動前オーバーレイのボタン(「そのまま起動」/「システムディスクで起動」)から呼ばれる起動処理。 */
+async function startFromOverlay(withSystemDisk: boolean): Promise<void> {
+  if (bootStarted) return;
+  bootStarted = true;
+
   if (!biosIplBytes || !biosCgBytes) {
     alert('BIOS ファイル (IPLROM.DAT / CGROM.DAT) を設定してください。');
+    bootStarted = false;
     return;
   }
 
-  btnStart.disabled = true;
-  btnStart.title = '起動中...';
+  if (withSystemDisk && !slots.fdd0) {
+    const bytes = await fetchBytes(BUNDLED_DISK_URL);
+    if (bytes) {
+      slots.fdd0 = { name: BUNDLED_DISK_NAME, data: bytes };
+      updateSlotDisplay('fdd0', `${BUNDLED_DISK_NAME} (同梱)`);
+    }
+  }
+
+  bootOverlay.classList.add('hidden');
 
   try {
     audio = new AudioEngine();
@@ -531,40 +639,27 @@ btnStart.addEventListener('click', async () => {
 
     await bootCore();
 
-    btnStart.title = '起動中';
     btnReset.disabled = false;
     canvas.focus();
   } catch (err) {
     console.error(err);
     alert(`起動に失敗しました: ${(err as Error).message ?? err}`);
-    btnStart.disabled = false;
-    btnStart.title = '起動';
+    bootOverlay.classList.remove('hidden');
+    bootStarted = false;
   }
+}
+
+btnBootPlain.addEventListener('click', () => void startFromOverlay(false));
+btnBootSystem.addEventListener('click', () => void startFromOverlay(true));
+// オーバーレイの空白部分(ボタン以外)をクリックしても「そのまま起動」と同じ扱いにする(WebNP2準拠)。
+bootOverlay.addEventListener('click', (e) => {
+  if (e.target === bootOverlay) void startFromOverlay(false);
 });
 
 btnReset.addEventListener('click', () => {
   host?.reset();
 });
 
-btnDiskEject.addEventListener('click', () => {
-  pendingDisk = null;
-  setDiskDisplay(null);
-  if (host && running) void restartCore();
-});
-
-cfgCpuSpeed.addEventListener('change', () => {
-  cpuSpeed = cfgCpuSpeed.value;
-  localStorage.setItem(CPU_SPEED_KEY, cpuSpeed);
-  if (host && running) void restartCore();
-});
-
-cfgRamSize.addEventListener('change', () => {
-  ramSize = cfgRamSize.value;
-  localStorage.setItem(RAM_SIZE_KEY, ramSize);
-  if (host && running) void restartCore();
-});
-
 void (async () => {
   await restoreBios();
-  await restoreDefaultDisk();
 })();

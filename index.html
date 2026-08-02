@@ -22,32 +22,64 @@
       <div class="console-card">
         <div class="stage">
           <canvas id="screen" width="768" height="512"></canvas>
+          <!-- 起動前オーバーレイ。WebNP2 の「そのまま起動」/「システムディスクで起動」2択を踏襲。 -->
+          <div id="boot-overlay" class="overlay">
+            <div class="overlay-choices">
+              <button id="btn-boot-plain" type="button" class="start-btn">そのまま起動</button>
+              <button id="btn-boot-system" type="button" class="start-btn start-btn-system">システムディスクで起動</button>
+            </div>
+            <div class="overlay-note">
+              <span>音声再生の制限上、クリック操作で起動します。</span><br />
+              <span>ディスクはツールバーのライブラリ、または下のドライブ行から追加できます。</span>
+            </div>
+          </div>
         </div>
         <div class="console-footer">
           <div class="toolbar">
-            <button id="btn-start" type="button" class="icon-btn primary" title="起動" aria-label="起動">
-              <svg class="btn-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3v7 M6.2 6.2a7 7 0 1 0 11.6 0"/></svg>
-            </button>
             <button id="btn-reset" type="button" class="icon-btn" title="リセット" aria-label="リセット" disabled>
               <svg class="btn-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M3 12a9 9 0 1 0 3-6.7M3 4v5h5"/></svg>
             </button>
             <button id="btn-settings" type="button" class="icon-btn" title="設定(BIOS / マシン構成)" aria-label="設定">
               <svg class="btn-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M7 7h10v10H7z M9 9h6v6H9z M7 4v3 M12 4v3 M17 4v3 M7 17v3 M12 17v3 M17 17v3 M4 7h3 M4 12h3 M4 17h3 M17 7h3 M17 12h3 M17 17h3"/></svg>
             </button>
+            <button id="btn-disk-library" type="button" class="icon-btn" title="ディスクライブラリ" aria-label="ディスクライブラリ">
+              <svg class="btn-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 16h13l3-3V6a1 1 0 0 0-1-1H4a1 1 0 0 0-1 1v9a1 1 0 0 0 1 1z M4 20h13a3 3 0 0 0 3-3 M8 9h6v4H8z"/></svg>
+            </button>
           </div>
           <div class="fd-slots">
-            <div id="disk-slot" class="fd-slot">
-              <span id="disk-lamp" class="fd-lamp" role="img" aria-label="ディスクアクセスランプ"></span>
-              <span class="fd-label">FD</span>
-              <span id="disk-name" class="fd-name">未挿入</span>
-              <button id="btn-disk-insert" type="button" class="icon-btn" title="ディスク挿入" aria-label="ディスク挿入">
+            <div id="slot-fdd0" class="fd-slot">
+              <span id="lamp-fdd0" class="fd-lamp" role="img" aria-label="FDD0 アクセスランプ"></span>
+              <span class="fd-label">FDD0</span>
+              <span id="name-fdd0" class="fd-name">未挿入</span>
+              <button id="btn-insert-fdd0" type="button" class="icon-btn" title="ディスク挿入" aria-label="FDD0にディスク挿入">
                 <svg class="btn-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 19l6-8H6l6 8z M6 5h12"/></svg>
               </button>
-              <input id="disk-input" type="file" class="fd-file-input" accept=".xdf,.dim,.d88,.hdm,.img,.hdf,.2hd,.dup" />
-              <button id="btn-disk-library" type="button" class="icon-btn" title="ディスクライブラリ" aria-label="ディスクライブラリ">
-                <svg class="btn-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 16h13l3-3V6a1 1 0 0 0-1-1H4a1 1 0 0 0-1 1v9a1 1 0 0 0 1 1z M4 20h13a3 3 0 0 0 3-3 M8 9h6v4H8z"/></svg>
+              <input id="input-fdd0" type="file" class="fd-file-input" accept=".xdf,.dim,.d88,.hdm,.img,.2hd" />
+              <button id="btn-eject-fdd0" type="button" class="icon-btn" title="ディスク取り出し" aria-label="FDD0からディスク取り出し" disabled>
+                <svg class="btn-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5l6 8H6l6-8z M6 19h12"/></svg>
               </button>
-              <button id="btn-disk-eject" type="button" class="icon-btn" title="ディスク取り出し" aria-label="ディスク取り出し" disabled>
+            </div>
+            <div id="slot-fdd1" class="fd-slot">
+              <span id="lamp-fdd1" class="fd-lamp" role="img" aria-label="FDD1 アクセスランプ"></span>
+              <span class="fd-label">FDD1</span>
+              <span id="name-fdd1" class="fd-name">未挿入</span>
+              <button id="btn-insert-fdd1" type="button" class="icon-btn" title="ディスク挿入" aria-label="FDD1にディスク挿入">
+                <svg class="btn-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 19l6-8H6l6 8z M6 5h12"/></svg>
+              </button>
+              <input id="input-fdd1" type="file" class="fd-file-input" accept=".xdf,.dim,.d88,.hdm,.img,.2hd" />
+              <button id="btn-eject-fdd1" type="button" class="icon-btn" title="ディスク取り出し" aria-label="FDD1からディスク取り出し" disabled>
+                <svg class="btn-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5l6 8H6l6-8z M6 19h12"/></svg>
+              </button>
+            </div>
+            <div id="slot-hdd" class="fd-slot">
+              <span id="lamp-hdd" class="fd-lamp" role="img" aria-label="HDD アクセスランプ"></span>
+              <span class="fd-label">HDD</span>
+              <span id="name-hdd" class="fd-name">未挿入</span>
+              <button id="btn-insert-hdd" type="button" class="icon-btn" title="ディスク挿入" aria-label="HDDにディスク挿入">
+                <svg class="btn-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 19l6-8H6l6 8z M6 5h12"/></svg>
+              </button>
+              <input id="input-hdd" type="file" class="fd-file-input" accept=".hdf,.dup" />
+              <button id="btn-eject-hdd" type="button" class="icon-btn" title="ディスク取り出し" aria-label="HDDからディスク取り出し" disabled>
                 <svg class="btn-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5l6 8H6l6-8z M6 19h12"/></svg>
               </button>
             </div>
@@ -58,7 +90,6 @@
       <footer id="statusbar">
         <span>FPS: <b id="stat-fps">-</b></span>
         <span>解像度: <b id="stat-res">-</b></span>
-        <span>ディスク: <b id="stat-disk">未挿入</b></span>
       </footer>
     </main>
 
@@ -132,7 +163,7 @@
     <div class="rom-modal" role="dialog" aria-modal="true" aria-labelledby="library-title">
       <h2 id="library-title" class="rom-modal-title">ディスクライブラリ</h2>
       <p class="rom-modal-description">
-        これまでに挿入したディスクイメージはブラウザに保存され、ここから再挿入できます。
+        これまでに挿入したディスクイメージはブラウザに保存され、ここから挿入するドライブ(FDD0 / FDD1 / HDD)を選んで再挿入できます。
       </p>
       <div id="library-list" class="library-list"></div>
       <div class="rom-modal-footer">

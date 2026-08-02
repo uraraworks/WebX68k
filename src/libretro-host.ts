@@ -64,6 +64,11 @@ export interface PX68KModule {
   _retro_load_game(gameInfoPtr: number): number;
   _retro_unload_game(): void;
   _get_retro_log_shim(): number;
+  // アクセスランプ用(px68k-libretro fork の x68k/fdd.c / x68k/sasi.c を core-shim.c 経由で公開)。
+  // retro_run() の毎フレーム先頭で0クリアされるため、そのフレームでアクセスがあったかを示す。
+  _get_fdd_is_reading(): number;
+  _get_fdd_access_drive(): number;
+  _get_sasi_is_accessing(): number;
 }
 
 declare global {
@@ -330,15 +335,20 @@ export class LibretroHost {
     return frames;
   }
 
-  /** ディスクイメージのバイト列を FS の /game 配下へ書き込み、パスを返す */
-  writeDiskImage(filename: string, data: Uint8Array): string {
-    const path = `/game/${filename}`;
+  /** 任意のバイト列を FS の指定パスへ書き込む(既存ファイルがあれば上書き) */
+  writeFile(path: string, data: Uint8Array): void {
     try {
       this.mod.FS.unlink(path);
     } catch {
       // 存在しなければ無視
     }
     this.mod.FS.writeFile(path, data);
+  }
+
+  /** ディスクイメージのバイト列を FS の /game 配下へ書き込み、パスを返す */
+  writeDiskImage(filename: string, data: Uint8Array): string {
+    const path = `/game/${filename}`;
+    this.writeFile(path, data);
     return path;
   }
 
@@ -389,6 +399,20 @@ export class LibretroHost {
 
   runFrame(): void {
     this.mod._retro_run();
+  }
+
+  /**
+   * 直近の runFrame() でディスクアクセスがあったかを取得する(アクセスランプ用)。
+   * fdd.c 側は FDD_IsReading/FDD_AccessDrive を retro_run() の毎フレーム先頭で0クリアするため、
+   * runFrame() 呼び出し直後に読まないと取りこぼす。
+   */
+  readDiskAccess(): { fddReading: boolean; fddDrive: number; hddAccessing: boolean } {
+    const mod = this.mod;
+    return {
+      fddReading: mod._get_fdd_is_reading() !== 0,
+      fddDrive: mod._get_fdd_access_drive(),
+      hddAccessing: mod._get_sasi_is_accessing() !== 0,
+    };
   }
 
   /** コールバック用関数テーブルエントリを解放する */
