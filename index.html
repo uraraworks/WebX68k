@@ -45,6 +45,9 @@
             <button id="btn-disk-library" type="button" class="icon-btn" title="ディスクライブラリ" aria-label="ディスクライブラリ">
               <svg class="btn-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 16h13l3-3V6a1 1 0 0 0-1-1H4a1 1 0 0 0-1 1v9a1 1 0 0 0 1 1z M4 20h13a3 3 0 0 0 3-3 M8 9h6v4H8z"/></svg>
             </button>
+            <button id="btn-file-manager" type="button" class="icon-btn" title="ファイル転送" aria-label="ファイル転送">
+              <svg class="btn-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M3 8h13 M12 4l4 4-4 4 M21 16H8 M12 20l-4-4 4-4"/></svg>
+            </button>
             <button id="btn-lang" type="button" class="lang-toggle">EN</button>
           </div>
           <div class="fd-slots">
@@ -195,6 +198,9 @@
 
   <!-- スロットボタン(ライブラリ挿入/ブランク作成)用のポップアップメニュー。WebNP2 の library-menu を踏襲。 -->
   <div id="slot-popup-menu" class="library-menu hidden" role="menu"></div>
+
+  <!-- ファイルマネージャ(FTPクライアント風2ペイン)ダイアログのマウント先。中身はfilemanager.tsが動的に構築する。 -->
+  <div id="file-manager-root"></div>
 
   <script src="/core/px68k_libretro.js"></script>
   <script type="module" src="/src/main.ts"></script>

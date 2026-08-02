@@ -698,3 +698,316 @@ footer.app-footer a {
   header.app-header .app-tagline { display: none; }
   .console-footer { padding: 8px 6px; }
   }
+
+/* ファイルマネージャ(FTPクライアント風2ペイン)。移植元: WebNP2 src/ui/styles.css。rom-modal系の見た目を踏襲しつつ幅広に。 */
+.fm-modal-backdrop {
+  z-index: 110; /* ROM/ライブラリダイアログより手前 */
+}
+
+.fm-modal {
+  max-width: 880px;
+  width: 100%;
+}
+
+.fm-title {
+  margin: 0;
+  font-size: 16px;
+}
+
+.fm-note {
+  margin: 0;
+  font-size: 12px;
+  color: var(--text-dim);
+  line-height: 1.6;
+}
+
+.fm-body {
+  display: flex;
+  align-items: stretch;
+  gap: 10px;
+  flex-wrap: nowrap;
+}
+
+.fm-pane {
+  flex: 1 1 300px;
+  min-width: 260px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 8px;
+  min-height: 0;
+}
+
+.fm-pane.dropzone-active {
+  outline: 2px dashed var(--accent);
+}
+
+.fm-pane-title {
+  margin: 0;
+  font-size: 13px;
+}
+
+.fm-pane-actions {
+  display: flex;
+  align-items: center;
+}
+
+.fm-select-btn {
+  padding: 6px 14px;
+  font-size: 12px;
+  border-radius: 5px;
+  border: 1px solid var(--accent);
+  background: var(--accent);
+  color: #ffffff;
+  cursor: pointer;
+}
+
+.fm-select-btn:hover:not(:disabled) {
+  background: var(--accent-dim);
+}
+
+.fm-select-btn:disabled {
+  opacity: 0.6;
+  cursor: default;
+}
+
+.fm-file-input {
+  display: none;
+}
+
+.fm-drop-hint {
+  margin: 0;
+  font-size: 11px;
+  color: var(--text-dim);
+}
+
+.fm-staged-list,
+.fm-disk-list {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  border-top: 1px solid var(--border);
+  border-bottom: 1px solid var(--border);
+  padding: 6px 0;
+  max-height: 280px;
+  min-height: 120px;
+  overflow-y: auto;
+}
+
+.fm-list-empty {
+  font-size: 12px;
+  color: var(--text-dim);
+  padding: 4px 2px;
+}
+
+.fm-staged-group-title {
+  font-size: 11px;
+  color: var(--text-dim);
+  font-weight: bold;
+  margin-top: 4px;
+  padding: 2px;
+  border-bottom: 1px dashed var(--border);
+}
+
+.fm-staged-item,
+.fm-disk-item {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  padding: 2px;
+  border-radius: 4px;
+}
+
+.fm-disk-item:not(.dir) {
+  cursor: default;
+}
+
+.fm-disk-item.dir {
+  cursor: pointer;
+}
+
+.fm-disk-item.dir:hover {
+  background: var(--bg);
+}
+
+.fm-item-name {
+  flex: 1 1 auto;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  min-width: 0;
+}
+
+.fm-item-size {
+  flex: 0 0 auto;
+  color: var(--text-dim);
+  min-width: 56px;
+  text-align: right;
+}
+
+.fm-item-mtime {
+  flex: 0 0 auto;
+  color: var(--text-dim);
+  font-size: 11px;
+  min-width: 110px;
+  text-align: right;
+}
+
+.fm-remove-btn {
+  flex: 0 0 auto;
+  padding: 0 6px;
+  font-size: 13px;
+  line-height: 1.6;
+  border-radius: 4px;
+  border: 1px solid var(--danger);
+  background: transparent;
+  color: var(--danger);
+  cursor: pointer;
+}
+
+.fm-remove-btn:hover {
+  background: var(--danger);
+  color: #ffffff;
+}
+
+.fm-staged-error {
+  font-size: 11px;
+  color: var(--danger);
+  padding: 2px;
+}
+
+.fm-transfer-controls {
+  flex: 0 0 auto;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+}
+
+.fm-transfer-btn {
+  width: 40px;
+  height: 40px;
+  border-radius: 50%;
+  border: 1px solid var(--accent);
+  background: var(--bg);
+  color: var(--accent);
+  font-size: 18px;
+  cursor: pointer;
+}
+
+.fm-transfer-btn:hover:not(:disabled) {
+  background: var(--accent);
+  color: #ffffff;
+}
+
+.fm-transfer-btn:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+.fm-target-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.fm-target-select {
+  flex: 1 1 auto;
+  min-width: 0;
+  padding: 5px 6px;
+  font-size: 12px;
+  border-radius: 5px;
+  border: 1px solid var(--border);
+  background: var(--bg);
+  color: var(--text);
+}
+
+.fm-path-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.fm-path-label {
+  font-size: 11px;
+  color: var(--text-dim);
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.fm-space-track {
+  height: 6px;
+  border-radius: 3px;
+  background: var(--border);
+  overflow: hidden;
+}
+
+.fm-space-fill {
+  height: 100%;
+  background: var(--accent);
+  width: 0%;
+}
+
+.fm-space-label {
+  font-size: 11px;
+  color: var(--text-dim);
+}
+
+.fm-disk-actions {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+.fm-action-btn {
+  padding: 4px 10px;
+  font-size: 11px;
+  border-radius: 4px;
+  border: 1px solid var(--accent);
+  background: transparent;
+  color: var(--accent);
+  cursor: pointer;
+}
+
+.fm-action-btn:hover:not(:disabled) {
+  background: var(--accent);
+  color: #ffffff;
+}
+
+.fm-action-btn:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+.fm-action-btn.danger {
+  border-color: var(--danger);
+  color: var(--danger);
+}
+
+.fm-action-btn.danger:hover:not(:disabled) {
+  background: var(--danger);
+  color: #ffffff;
+}
+
+.fm-status {
+  font-size: 12px;
+  color: var(--text-dim);
+  min-height: 1.4em;
+}
+
+.fm-status.error {
+  color: var(--danger);
+}
+
+@media (max-width: 700px) {
+  .fm-body { flex-direction: column; }
+  .fm-transfer-controls { flex-direction: row; }
+  .fm-transfer-btn { transform: rotate(90deg); }
+}

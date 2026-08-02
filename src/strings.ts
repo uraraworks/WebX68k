@@ -20,6 +20,7 @@ interface Dict {
   toolbarReset(): string;
   toolbarSettings(): string;
   toolbarDiskLibrary(): string;
+  toolbarFileManager(): string;
   /** ツールバーの言語トグルボタンに表示するラベル(＝切替先の言語名)。 */
   langToggle(): string;
   fdSlotLabel(args: { drive: number }): string;
@@ -70,6 +71,42 @@ interface Dict {
   libraryRenamePrompt(args: { name: string }): string;
   libraryDeleteConfirm(args: { name: string }): string;
   bundledDiskDisplayName(): string;
+
+  // --- ファイルマネージャ(FTPクライアント風2ペイン) ---
+  fmDialogTitle(): string;
+  fmDialogNote(): string;
+  fmHostPaneTitle(): string;
+  fmDiskPaneTitle(): string;
+  fmSelectFilesBtn(): string;
+  fmDropHint(): string;
+  fmStagedEmpty(): string;
+  fmArchiveError(args: { name: string; message: string }): string;
+  fmRemoveBtn(): string;
+  fmUnmountedLabel(): string;
+  fmMountedBadge(): string;
+  fmNotEditableNote(): string;
+  fmHddUnsupportedNote(): string;
+  fmPathRoot(): string;
+  fmUpDir(): string;
+  fmDirMarker(): string;
+  fmDeleteSelectedBtn(): string;
+  fmMakeDirBtn(): string;
+  fmMakeDirPrompt(): string;
+  fmMakeDirInvalidName(args: { name: string }): string;
+  fmCreateTransferFdBtn(): string;
+  fmTransferFdCreated(args: { name: string }): string;
+  fmFreeSpaceLabel(args: { free: string; total: string }): string;
+  fmSelectEditableTarget(): string;
+  fmEmptyDir(): string;
+  fmRenameConfirm(args: { list: string }): string;
+  fmOverwriteConfirm(args: { names: string }): string;
+  fmInsufficientSpace(args: { needed: string; free: string }): string;
+  fmTransferring(args: { current: number; total: number }): string;
+  fmTransferDone(args: { succeeded: number; failed: number }): string;
+  fmTransferFailedDetail(args: { names: string }): string;
+  fmDeleteConfirm(args: { names: string }): string;
+  fmCloseBtn(): string;
+  fmListLoadFailed(args: { message: string }): string;
 }
 
 const STRINGS: Record<Lang, Dict> = {
@@ -87,6 +124,7 @@ const STRINGS: Record<Lang, Dict> = {
     toolbarReset: () => 'リセット',
     toolbarSettings: () => '設定(BIOS / マシン構成)',
     toolbarDiskLibrary: () => 'ディスクライブラリ',
+    toolbarFileManager: () => 'ファイル転送',
     langToggle: () => 'EN',
     fdSlotLabel: ({ drive }) => `FDD${drive}`,
     hddSlotLabel: () => 'HDD',
@@ -134,6 +172,42 @@ const STRINGS: Record<Lang, Dict> = {
     libraryRenamePrompt: ({ name }) => `表示名を入力してください(元のファイル名: ${name})`,
     libraryDeleteConfirm: ({ name }) => `保存済みデータ「${name}」を削除します。よろしいですか？`,
     bundledDiskDisplayName: () => 'human302.xdf (同梱)',
+
+    fmDialogTitle: () => 'ファイル転送',
+    fmDialogNote: () =>
+      'ホストPCとFDD1/FDD2/HDD・ライブラリ内のディスクイメージとの間でファイルをやり取りします。ファイル名は自動的に8.3形式へ変換されます。実行中スロットへ書き込むとエミュレータが再起動します。',
+    fmHostPaneTitle: () => 'ホスト(このPC)',
+    fmDiskPaneTitle: () => 'ディスクイメージ',
+    fmSelectFilesBtn: () => 'ファイルを選択',
+    fmDropHint: () => 'ここにファイル/ZIP/LZHをドロップしても追加できます',
+    fmStagedEmpty: () => '転送するファイルがありません',
+    fmArchiveError: ({ name, message }) => `${name}: 展開に失敗しました(${message})`,
+    fmRemoveBtn: () => '取り消す',
+    fmUnmountedLabel: () => '未挿入',
+    fmMountedBadge: () => 'マウント中',
+    fmNotEditableNote: () => '編集非対応',
+    fmHddUnsupportedNote: () => 'HDD非対応',
+    fmPathRoot: () => '/(ルート)',
+    fmUpDir: () => '上の階層へ',
+    fmDirMarker: () => 'DIR',
+    fmDeleteSelectedBtn: () => '選択を削除',
+    fmMakeDirBtn: () => 'フォルダ作成',
+    fmMakeDirPrompt: () => '新しいフォルダ名を8.3形式で入力してください',
+    fmMakeDirInvalidName: ({ name }) => `フォルダ名は8.3形式にしてください(2バイト文字/長い名前は不可): ${name}`,
+    fmCreateTransferFdBtn: () => '転送用FD新規作成',
+    fmTransferFdCreated: ({ name }) => `転送用FD「${name}」をライブラリに作成しました。`,
+    fmFreeSpaceLabel: ({ free, total }) => `空き ${free} / 全体 ${total}`,
+    fmSelectEditableTarget: () => '編集可能なディスクイメージを選択してください',
+    fmEmptyDir: () => '(空のフォルダです)',
+    fmRenameConfirm: ({ list }) => `以下の名前で転送します(8.3形式に自動変換):\n${list}\n\nよろしいですか？`,
+    fmOverwriteConfirm: ({ names }) => `既存のファイルを上書きします: ${names}\nよろしいですか？`,
+    fmInsufficientSpace: ({ needed, free }) => `空き容量が不足しています(必要 ${needed} / 空き ${free})`,
+    fmTransferring: ({ current, total }) => `転送中... (${current}/${total})`,
+    fmTransferDone: ({ succeeded }) => `${succeeded}件のファイルを転送しました。`,
+    fmTransferFailedDetail: ({ names }) => `一部のファイルの転送に失敗しました: ${names}`,
+    fmDeleteConfirm: ({ names }) => `以下のファイルを削除します: ${names}\nよろしいですか？`,
+    fmCloseBtn: () => '閉じる',
+    fmListLoadFailed: ({ message }) => `読み込みに失敗しました: ${message}`,
   },
   en: {
     title: () => 'WebX68k - X68000 Emulator',
@@ -149,6 +223,7 @@ const STRINGS: Record<Lang, Dict> = {
     toolbarReset: () => 'Reset',
     toolbarSettings: () => 'Settings (BIOS / Machine Config)',
     toolbarDiskLibrary: () => 'Disk Library',
+    toolbarFileManager: () => 'File Transfer',
     langToggle: () => '日本語',
     fdSlotLabel: ({ drive }) => `FDD${drive}`,
     hddSlotLabel: () => 'HDD',
@@ -196,6 +271,42 @@ const STRINGS: Record<Lang, Dict> = {
     libraryRenamePrompt: ({ name }) => `Enter a display name (original file name: ${name})`,
     libraryDeleteConfirm: ({ name }) => `This will delete the saved data "${name}". Continue?`,
     bundledDiskDisplayName: () => 'human302.xdf (bundled)',
+
+    fmDialogTitle: () => 'File Transfer',
+    fmDialogNote: () =>
+      'Transfer files between this PC and disk images in FDD1/FDD2/HDD or the library. File names are automatically converted to 8.3 format. Writing to a running slot restarts the emulator.',
+    fmHostPaneTitle: () => 'Host (this PC)',
+    fmDiskPaneTitle: () => 'Disk Image',
+    fmSelectFilesBtn: () => 'Select Files',
+    fmDropHint: () => 'You can also drop files/ZIP/LZH here',
+    fmStagedEmpty: () => 'No files staged for transfer',
+    fmArchiveError: ({ name, message }) => `${name}: failed to extract (${message})`,
+    fmRemoveBtn: () => 'Remove',
+    fmUnmountedLabel: () => 'empty',
+    fmMountedBadge: () => 'mounted',
+    fmNotEditableNote: () => 'not editable',
+    fmHddUnsupportedNote: () => 'HDD unsupported',
+    fmPathRoot: () => '/ (root)',
+    fmUpDir: () => 'Up',
+    fmDirMarker: () => 'DIR',
+    fmDeleteSelectedBtn: () => 'Delete Selected',
+    fmMakeDirBtn: () => 'New Folder',
+    fmMakeDirPrompt: () => 'Enter a new folder name in 8.3 format',
+    fmMakeDirInvalidName: ({ name }) => `Folder name must be 8.3 format (no double-byte/long names): ${name}`,
+    fmCreateTransferFdBtn: () => 'New Transfer FD',
+    fmTransferFdCreated: ({ name }) => `Created transfer FD "${name}" in the library.`,
+    fmFreeSpaceLabel: ({ free, total }) => `Free ${free} / Total ${total}`,
+    fmSelectEditableTarget: () => 'Please select an editable disk image',
+    fmEmptyDir: () => '(empty folder)',
+    fmRenameConfirm: ({ list }) => `Transferring with these names (auto-converted to 8.3):\n${list}\n\nProceed?`,
+    fmOverwriteConfirm: ({ names }) => `This will overwrite existing files: ${names}\nProceed?`,
+    fmInsufficientSpace: ({ needed, free }) => `Not enough free space (needed ${needed} / free ${free})`,
+    fmTransferring: ({ current, total }) => `Transferring... (${current}/${total})`,
+    fmTransferDone: ({ succeeded }) => `Transferred ${succeeded} file(s).`,
+    fmTransferFailedDetail: ({ names }) => `Some files failed to transfer: ${names}`,
+    fmDeleteConfirm: ({ names }) => `This will delete these files: ${names}\nProceed?`,
+    fmCloseBtn: () => 'Close',
+    fmListLoadFailed: ({ message }) => `Failed to load: ${message}`,
   },
 };
 

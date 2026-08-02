@@ -1,5 +1,16 @@
 import './style.css';
 import { AudioEngine } from './audio';
+import {
+  createFormattedFd,
+  fatDeleteFile,
+  fatFreeSpace,
+  fatList,
+  fatMakeDir,
+  fatReadFile,
+  fatWriteFile,
+  openDiskImage,
+  type FatEntry,
+} from './api/fat';
 import { loadBiosFile, saveBiosFile } from './bios-store';
 import {
   classifyDiskKind,
@@ -11,6 +22,7 @@ import {
   saveDisk,
   type StoredDisk,
 } from './disk-store';
+import { buildFileManagerDialog, type FmTarget } from './filemanager';
 import { codeToRetrok } from './keyboard';
 import { LibretroHost } from './libretro-host';
 import { getLang, setLang, t } from './strings';
@@ -22,6 +34,8 @@ const btnBootSystem = document.getElementById('btn-boot-system') as HTMLButtonEl
 const btnReset = document.getElementById('btn-reset') as HTMLButtonElement;
 const btnSettings = document.getElementById('btn-settings') as HTMLButtonElement;
 const btnDiskLibrary = document.getElementById('btn-disk-library') as HTMLButtonElement;
+const btnFileManager = document.getElementById('btn-file-manager') as HTMLButtonElement;
+const fileManagerRoot = document.getElementById('file-manager-root') as HTMLDivElement;
 const btnLang = document.getElementById('btn-lang') as HTMLButtonElement;
 const settingsBackdrop = document.getElementById('settings-backdrop') as HTMLDivElement;
 const settingsCloseBtn = document.getElementById('settings-close') as HTMLButtonElement;
@@ -83,6 +97,9 @@ const slotElements: Record<SlotId, SlotElements> = {
 interface PendingDisk {
   name: string;
   data: Uint8Array;
+  /** ディスクライブラリ(IndexedDB)上のsourceKey。ファイルマネージャでライブラリ側との対応(マウント中バッジ)を
+   *  取るために使う。ファイルマネージャ経由の書き込み等では変更しない。 */
+  sourceKey?: string;
 }
 
 // 各ドライブへの挿入予定(起動前)/実際に挿入中(起動後)のディスク。
@@ -219,8 +236,9 @@ async function insertDiskBytes(
   name: string,
   data: Uint8Array,
   displayLabel?: string,
+  sourceKey?: string,
 ): Promise<void> {
-  slots[slot] = { name, data };
+  slots[slot] = { name, data, sourceKey };
   updateSlotDisplay(slot, displayLabel ?? name);
 
   if (host && running) {
@@ -263,7 +281,7 @@ async function handleDiskFile(slot: SlotId, file: File): Promise<void> {
   const data = await fileToBytes(file);
   const sourceKey = fileKeyFor(file.name, file.size);
   await saveDisk({ sourceKey, name: file.name, bytes: data, savedAt: Date.now() });
-  await insertDiskBytes(slot, file.name, data);
+  await insertDiskBytes(slot, file.name, data, undefined, sourceKey);
   if (!libraryBackdrop.classList.contains('hidden')) void refreshLibraryList();
 }
 
@@ -272,12 +290,12 @@ async function insertFromLibrary(sourceKey: string, slot: SlotId): Promise<void>
   if (sourceKey === BUNDLED_DISK_SOURCE_KEY) {
     const bytes = await fetchBytes(BUNDLED_DISK_URL);
     if (!bytes) return;
-    await insertDiskBytes(slot, BUNDLED_DISK_NAME, bytes, t('bundledDiskDisplayName'));
+    await insertDiskBytes(slot, BUNDLED_DISK_NAME, bytes, t('bundledDiskDisplayName'), sourceKey);
     return;
   }
   const stored = await getDisk(sourceKey);
   if (!stored) return;
-  await insertDiskBytes(slot, stored.name, stored.bytes, stored.displayName ?? stored.name);
+  await insertDiskBytes(slot, stored.name, stored.bytes, stored.displayName ?? stored.name, sourceKey);
 }
 
 function formatLibrarySize(n: number): string {
@@ -547,7 +565,7 @@ async function handleCreateBlank(slot: SlotId, formatId: string, sizeBytes: numb
   const data = new Uint8Array(sizeBytes); // ゼロ埋め
   const sourceKey = fileKeyFor(name, data.length);
   await saveDisk({ sourceKey, name, bytes: data, savedAt: Date.now() });
-  await insertDiskBytes(slot, name, data);
+  await insertDiskBytes(slot, name, data, undefined, sourceKey);
   if (!libraryBackdrop.classList.contains('hidden')) void refreshLibraryList();
 }
 
@@ -766,6 +784,8 @@ function applyDocumentStrings(): void {
   btnSettings.setAttribute('aria-label', t('toolbarSettings'));
   btnDiskLibrary.title = t('toolbarDiskLibrary');
   btnDiskLibrary.setAttribute('aria-label', t('toolbarDiskLibrary'));
+  btnFileManager.title = t('toolbarFileManager');
+  btnFileManager.setAttribute('aria-label', t('toolbarFileManager'));
   btnLang.textContent = t('langToggle');
 
   for (const slot of SLOT_IDS) {
@@ -811,6 +831,8 @@ function applyDocumentStrings(): void {
   document.getElementById('library-description')!.textContent = t('libraryDialogDescription');
   libraryCloseBtn.textContent = t('libraryDialogClose');
   if (!libraryBackdrop.classList.contains('hidden')) void refreshLibraryList();
+
+  fileManagerDialog.applyStrings();
 }
 
 btnLang.addEventListener('click', () => {
@@ -922,7 +944,7 @@ async function startFromOverlay(withSystemDisk: boolean): Promise<void> {
   if (withSystemDisk && !slots.fdd0) {
     const bytes = await fetchBytes(BUNDLED_DISK_URL);
     if (bytes) {
-      slots.fdd0 = { name: BUNDLED_DISK_NAME, data: bytes };
+      slots.fdd0 = { name: BUNDLED_DISK_NAME, data: bytes, sourceKey: BUNDLED_DISK_SOURCE_KEY };
       updateSlotDisplay('fdd0', t('bundledDiskDisplayName'));
     }
   }
@@ -959,6 +981,158 @@ bootOverlay.addEventListener('click', (e) => {
 btnReset.addEventListener('click', () => {
   host?.reset();
 });
+
+// --- ファイルマネージャ(FTPクライアント風2ペイン) ---
+// FAT12/16として読み書き可能なFD拡張子。D88(セクタ形式が異なり非対応)はここに含めない。
+const FM_EDITABLE_FD_EXTENSIONS = ['.xdf', '.dim', '.hdm', '.img', '.2hd'];
+
+function isFmEditableFdName(name: string): boolean {
+  const lower = name.toLowerCase();
+  return FM_EDITABLE_FD_EXTENSIONS.some((ext) => lower.endsWith(ext));
+}
+
+/** FAT操作対象のイメージバイト列とFatVolume、変更を書き戻すためのpersist()をまとめたハンドル。 */
+interface FmVolumeHandle {
+  vol: ReturnType<typeof openDiskImage>;
+  persist: () => Promise<void>;
+}
+
+/**
+ * スロットのディスクイメージをFATボリュームとして開く。
+ * 実行中かつ実際にコアへマウント済みなら、ゲスト側の書き込みを反映した最新バイト列を
+ * FS(host.readFile)から読み直す(コアは/game配下のファイルを直接書き換えるため)。
+ * persist() は書き換え結果を slots[] へ書き戻し、実行中ならコアを再起動して反映する
+ * (px68k-libretroはFDD/HDDのホットマウント差し替えに対応していないため、既存の
+ *  ディスク差し替え時と同じ「コア再起動」で安全側に倒す)。
+ */
+function openSlotVolume(slot: SlotId): FmVolumeHandle {
+  const pending = slots[slot];
+  if (!pending) throw new Error('ディスクが挿入されていません');
+  const path = mountedPaths[slot];
+  const image = host && running && path ? host.readFile(path) : pending.data;
+  const vol = openDiskImage(image, pending.name);
+  return {
+    vol,
+    persist: async () => {
+      slots[slot] = { name: pending.name, data: image, sourceKey: pending.sourceKey };
+      if (host && running) await restartCore();
+    },
+  };
+}
+
+/** ライブラリ(IndexedDB)上のディスクイメージをFATボリュームとして開く。書き戻しはIndexedDBへ保存する。 */
+async function openLibraryVolume(sourceKey: string): Promise<FmVolumeHandle> {
+  const stored = await getDisk(sourceKey);
+  if (!stored) throw new Error('ライブラリにイメージが見つかりません');
+  const image = stored.bytes.slice();
+  const vol = openDiskImage(image, stored.name);
+  return {
+    vol,
+    persist: async () => {
+      await saveDisk({ sourceKey, name: stored.name, bytes: image, savedAt: Date.now() });
+      if (!libraryBackdrop.classList.contains('hidden')) void refreshLibraryList();
+    },
+  };
+}
+
+/** ファイルマネージャのターゲット一覧: FDD1/FDD2/HDD(実行中スロット) + ライブラリ内イメージ。 */
+async function fmListTargets(): Promise<FmTarget[]> {
+  const targets: FmTarget[] = [];
+  for (const slot of SLOT_IDS) {
+    const pending = slots[slot];
+    const drive = slotDisplayName(slot);
+    let editable = false;
+    let note = '';
+    if (!pending) {
+      note = t('fmUnmountedLabel');
+    } else if (slot === 'hdd') {
+      // Human68kのHDDパーティション/ブートセクタ形式は標準のMS-DOS BPBと異なり本実装では未対応。詳細はREADME参照。
+      note = t('fmHddUnsupportedNote');
+    } else if (!isFmEditableFdName(pending.name)) {
+      note = t('fmNotEditableNote');
+    } else {
+      editable = true;
+    }
+    const label = pending ? `${drive}: ${pending.name}${note ? ` (${note})` : ''}` : `${drive} (${note})`;
+    targets.push({ kind: 'slot', ref: slot, label, mounted: !!pending, editable });
+  }
+
+  const stored = await listDisks();
+  for (const item of stored) {
+    const kind = classifyDiskKind(item.name);
+    if (kind === null) continue;
+    const editable = kind === 'fd' && isFmEditableFdName(item.name);
+    const note = editable ? '' : kind === 'hdd' ? t('fmHddUnsupportedNote') : t('fmNotEditableNote');
+    const mountedSlot = SLOT_IDS.find((s) => slots[s]?.sourceKey === item.sourceKey);
+    const displayName = item.displayName ?? item.name;
+    const label = `${displayName}${mountedSlot ? ` [${t('fmMountedBadge')}]` : ''}${note ? ` (${note})` : ''}`;
+    targets.push({ kind: 'library', ref: item.sourceKey, label, mounted: !!mountedSlot, editable });
+  }
+  return targets;
+}
+
+async function fmOpenVolume(target: FmTarget): Promise<FmVolumeHandle> {
+  if (target.kind === 'slot') return openSlotVolume(target.ref as SlotId);
+  return openLibraryVolume(target.ref);
+}
+
+async function fmListDir(target: FmTarget, path: string): Promise<{ entries: FatEntry[]; free: number; total: number }> {
+  const { vol } = await fmOpenVolume(target);
+  const entries = fatList(vol, path);
+  const { free, total } = fatFreeSpace(vol);
+  return { entries, free, total };
+}
+
+async function fmReadFile(target: FmTarget, path: string): Promise<Uint8Array> {
+  const { vol } = await fmOpenVolume(target);
+  return fatReadFile(vol, path);
+}
+
+async function fmWriteFile(target: FmTarget, path: string, data: Uint8Array): Promise<void> {
+  const h = await fmOpenVolume(target);
+  fatWriteFile(h.vol, path, data);
+  await h.persist();
+}
+
+async function fmDeleteFile(target: FmTarget, path: string): Promise<void> {
+  const h = await fmOpenVolume(target);
+  fatDeleteFile(h.vol, path);
+  await h.persist();
+}
+
+async function fmMakeDir(target: FmTarget, path: string): Promise<void> {
+  const h = await fmOpenVolume(target);
+  fatMakeDir(h.vol, path);
+  await h.persist();
+}
+
+/** FAT12フォーマット済みの転送用FDを新規生成し、既存ライブラリ名と重複しないよう連番を振ってライブラリへ保存する。 */
+async function fmCreateTransferFd(desiredName: string): Promise<{ sourceKey: string; name: string }> {
+  const stored = await listDisks();
+  const existing = new Set(stored.map((d) => d.name.toLowerCase()));
+  const dot = desiredName.lastIndexOf('.');
+  const base = dot > 0 ? desiredName.slice(0, dot) : desiredName;
+  const ext = dot > 0 ? desiredName.slice(dot) : '';
+  let name = desiredName;
+  for (let i = 2; existing.has(name.toLowerCase()); i++) {
+    name = `${base}${i}${ext}`;
+  }
+  const bytes = createFormattedFd();
+  const sourceKey = fileKeyFor(name, bytes.length);
+  await saveDisk({ sourceKey, name, bytes, savedAt: Date.now() });
+  return { sourceKey, name };
+}
+
+const fileManagerDialog = buildFileManagerDialog(fileManagerRoot, {
+  listTargets: fmListTargets,
+  listDir: fmListDir,
+  readFile: fmReadFile,
+  writeFile: fmWriteFile,
+  deleteFile: fmDeleteFile,
+  makeDir: fmMakeDir,
+  createTransferFd: fmCreateTransferFd,
+});
+btnFileManager.addEventListener('click', () => fileManagerDialog.open());
 
 applyDocumentStrings();
 
