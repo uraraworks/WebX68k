@@ -1,0 +1,279 @@
+:root {
+  color-scheme: light;
+  --bg: #fafafa;
+  --bg-panel: #ffffff;
+  --border: #d5d5d5;
+  --text: #1a1a1a;
+  --text-dim: #666666;
+  --accent: #4a90d9;
+  --accent-dim: #2c5a86;
+  --danger: #d32f2f;
+
+  /* WebNP2 と揃えたコンソール配色(ヘッダー黒 + 画面 + フッターグレー) */
+  --header-bg: #0c0c0c;
+  --header-text: #f2f2f2;
+  --footer-bg-top: #3a3a3a;
+  --footer-bg-bottom: #2b2b2b;
+  --footer-border: rgba(0, 0, 0, 0.4);
+  --footer-text: #e6e6e6;
+  --footer-text-dim: #a8a8a8;
+  --page-footer-bg: #ececec;
+  --page-footer-text: #6b6b6b;
+  --page-footer-border: rgba(0, 0, 0, 0.12);
+  --footer-btn-bg: #4a4a4a;
+  --footer-btn-bg-hover: #5c5c5c;
+  --footer-btn-border: #202020;
+  --footer-disabled-bg: #333333;
+  --footer-disabled-text: #6c6c6c;
+  --header-tagline-text: #a8a8a8;
+  --status-ok: #2e7d32;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html {
+  height: 100%;
+}
+
+body {
+  margin: 0;
+  padding: 0;
+  background: var(--bg);
+  color: var(--text);
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Hiragino Sans', 'Yu Gothic', sans-serif;
+  min-height: 100%;
+  display: flex;
+  flex-direction: column;
+}
+
+#app {
+  display: flex;
+  flex-direction: column;
+  min-height: 100%;
+  flex: 1 1 auto;
+}
+
+/* ページ最上部の全幅黒バー */
+header.app-header {
+  flex: 0 0 auto;
+  text-align: center;
+  background: var(--header-bg);
+  padding: 10px 16px;
+  box-shadow:
+    inset 0 -1px 0 rgba(255, 255, 255, 0.06),
+    0 2px 6px rgba(0, 0, 0, 0.4);
+}
+
+header.app-header h1 {
+  font-size: 15px;
+  font-weight: 600;
+  margin: 0;
+  color: var(--header-text);
+  letter-spacing: 0.03em;
+}
+
+header.app-header .app-tagline {
+  font-size: 11px;
+  margin: 2px 0 0;
+  color: var(--header-tagline-text);
+}
+
+main {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  flex: 1 1 auto;
+  padding: 16px;
+  gap: 12px;
+}
+
+/* 実行画面(キャンバス) + グレーのコンソールバー(操作ボタン行) */
+.console-card {
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  background: var(--header-bg);
+  box-shadow:
+    0 18px 40px rgba(0, 0, 0, 0.35),
+    0 4px 14px rgba(0, 0, 0, 0.25);
+}
+
+.stage {
+  position: relative;
+  background: #000;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  line-height: 0;
+  box-shadow:
+    inset 0 0 0 1px rgba(0, 0, 0, 0.6),
+    0 2px 10px rgba(0, 0, 0, 0.5);
+}
+
+#screen {
+  display: block;
+  image-rendering: pixelated;
+  image-rendering: -moz-crisp-edges;
+  background: #000;
+  max-width: 90vw;
+  max-height: 60vh;
+  width: 768px;
+  height: 512px;
+}
+
+.console-footer {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 10px 12px;
+  background: linear-gradient(var(--footer-bg-top), var(--footer-bg-bottom));
+  border-top: 1px solid var(--footer-border);
+}
+
+.toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+  justify-content: center;
+  width: 100%;
+}
+
+.toolbar button {
+  background: var(--footer-btn-bg);
+  color: var(--footer-text);
+  border: 1px solid var(--footer-btn-border);
+  border-radius: 5px;
+  padding: 6px 12px;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.toolbar button:hover:not(:disabled) {
+  background: var(--footer-btn-bg-hover);
+}
+
+.toolbar button:disabled {
+  background: var(--footer-disabled-bg);
+  color: var(--footer-disabled-text);
+  border-color: var(--footer-border);
+  opacity: 1;
+  cursor: not-allowed;
+}
+
+.toolbar button.primary {
+  border-color: var(--accent);
+  background: var(--accent-dim);
+  color: #ffffff;
+}
+
+.toolbar button.primary:hover:not(:disabled) {
+  background: var(--accent);
+}
+
+/* BIOS設定・ディスク登録パネル(rom-modal系の見た目を踏襲した白カード) */
+#panel {
+  width: 100%;
+  max-width: 640px;
+  background: var(--bg-panel);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 14px 18px;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.06);
+}
+
+#panel h2 {
+  font-size: 13px;
+  margin: 0 0 10px;
+  color: var(--text-dim);
+  font-weight: 600;
+}
+
+.field-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 8px;
+  font-size: 13px;
+}
+
+.field-row label {
+  width: 110px;
+  color: var(--text-dim);
+  flex-shrink: 0;
+}
+
+.field-row input[type='file'] {
+  flex: 1;
+  font-size: 12px;
+  color: var(--text-dim);
+}
+
+.status-ok {
+  color: var(--status-ok);
+}
+
+.status-ng {
+  color: var(--danger);
+}
+
+#dropzone {
+  border: 2px dashed var(--border);
+  border-radius: 6px;
+  padding: 14px;
+  text-align: center;
+  font-size: 12px;
+  color: var(--text-dim);
+  transition: border-color 0.15s, color 0.15s;
+  cursor: pointer;
+}
+
+#dropzone.dragover {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+/* ページ最下部の全幅グレー帯 */
+footer.app-footer {
+  flex: 0 0 auto;
+  width: 100%;
+  font-size: 11px;
+  color: var(--page-footer-text);
+  text-align: center;
+  padding: 8px 16px;
+  background: var(--page-footer-bg);
+  border-top: 1px solid var(--page-footer-border);
+}
+
+footer.app-footer a {
+  color: var(--page-footer-text);
+}
+
+footer#statusbar {
+  flex: 0 0 auto;
+  width: 100%;
+  max-width: 640px;
+  border-top: 1px solid var(--border);
+  padding: 6px 4px 0;
+  display: flex;
+  gap: 24px;
+  justify-content: center;
+  font-size: 12px;
+  color: var(--text-dim);
+}
+
+footer#statusbar span b {
+  color: var(--text);
+  font-weight: 600;
+}
+
+/* スマホ幅 */
+@media (max-width: 640px) {
+  main { padding: 8px 4px; gap: 8px; }
+  header.app-header { padding: 6px 10px; }
+  header.app-header .app-tagline { display: none; }
+  .console-footer { padding: 8px 6px; }
+  footer#statusbar { flex-wrap: wrap; gap: 8px 16px; }
+}

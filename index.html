@@ -2,176 +2,28 @@
 <html lang="ja">
 <head>
   <meta charset="UTF-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>WebX68k</title>
-  <style>
-    :root {
-      color-scheme: dark;
-      --bg: #14161a;
-      --panel: #1d2026;
-      --panel-border: #2c3038;
-      --accent: #4da3ff;
-      --accent-dim: #2a5c8c;
-      --text: #e6e8eb;
-      --text-dim: #9aa2ad;
-      --danger: #ff6161;
-    }
-    * { box-sizing: border-box; }
-    html, body {
-      margin: 0;
-      padding: 0;
-      background: var(--bg);
-      color: var(--text);
-      font-family: "Hiragino Kaku Gothic ProN", "Yu Gothic", "Segoe UI", sans-serif;
-      height: 100%;
-    }
-    #app {
-      display: flex;
-      flex-direction: column;
-      min-height: 100vh;
-    }
-    header {
-      padding: 12px 20px;
-      border-bottom: 1px solid var(--panel-border);
-      display: flex;
-      align-items: baseline;
-      gap: 12px;
-    }
-    header h1 {
-      font-size: 18px;
-      margin: 0;
-      letter-spacing: 0.03em;
-    }
-    header .subtitle {
-      font-size: 12px;
-      color: var(--text-dim);
-    }
-    main {
-      flex: 1;
-      display: flex;
-      flex-direction: column;
-      align-items: center;
-      justify-content: center;
-      padding: 20px;
-      gap: 16px;
-    }
-    #screen-wrap {
-      background: #000;
-      border: 1px solid var(--panel-border);
-      border-radius: 4px;
-      display: inline-block;
-      line-height: 0;
-    }
-    #screen {
-      display: block;
-      image-rendering: pixelated;
-      max-width: 90vw;
-      max-height: 60vh;
-      width: 768px;
-      height: 512px;
-    }
-    #controls {
-      display: flex;
-      gap: 10px;
-      flex-wrap: wrap;
-      justify-content: center;
-    }
-    button {
-      background: var(--panel);
-      color: var(--text);
-      border: 1px solid var(--panel-border);
-      border-radius: 4px;
-      padding: 8px 16px;
-      font-size: 13px;
-      cursor: pointer;
-    }
-    button:hover:not(:disabled) {
-      border-color: var(--accent);
-      color: var(--accent);
-    }
-    button:disabled {
-      opacity: 0.4;
-      cursor: not-allowed;
-    }
-    button.primary {
-      background: var(--accent-dim);
-      border-color: var(--accent);
-    }
-    #panel {
-      width: min(768px, 92vw);
-      background: var(--panel);
-      border: 1px solid var(--panel-border);
-      border-radius: 6px;
-      padding: 14px 18px;
-    }
-    #panel h2 {
-      font-size: 13px;
-      margin: 0 0 10px;
-      color: var(--text-dim);
-      font-weight: 600;
-    }
-    .field-row {
-      display: flex;
-      align-items: center;
-      gap: 10px;
-      margin-bottom: 8px;
-      font-size: 13px;
-    }
-    .field-row label {
-      width: 110px;
-      color: var(--text-dim);
-      flex-shrink: 0;
-    }
-    .field-row input[type="file"] {
-      flex: 1;
-      font-size: 12px;
-      color: var(--text-dim);
-    }
-    .status-ok { color: #5fd97a; }
-    .status-ng { color: var(--danger); }
-    #dropzone {
-      border: 2px dashed var(--panel-border);
-      border-radius: 6px;
-      padding: 14px;
-      text-align: center;
-      font-size: 12px;
-      color: var(--text-dim);
-      transition: border-color 0.15s, color 0.15s;
-    }
-    #dropzone.dragover {
-      border-color: var(--accent);
-      color: var(--accent);
-    }
-    footer#statusbar {
-      border-top: 1px solid var(--panel-border);
-      padding: 6px 20px;
-      display: flex;
-      gap: 24px;
-      font-size: 12px;
-      color: var(--text-dim);
-    }
-    footer#statusbar span b {
-      color: var(--text);
-      font-weight: 600;
-    }
-  </style>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover" />
+  <title>WebX68k - X68000 Emulator</title>
 </head>
 <body>
   <div id="app">
-    <header>
+    <header class="app-header">
       <h1>WebX68k</h1>
-      <span class="subtitle">ブラウザで動く X68000 エミュレータ（px68k-libretro 移植）</span>
+      <p class="app-tagline">The online X68000 emulator powered by px68k-libretro</p>
     </header>
 
     <main>
-      <div id="screen-wrap">
-        <canvas id="screen" width="768" height="512"></canvas>
-      </div>
-
-      <div id="controls">
-        <button id="btn-start" class="primary">起動</button>
-        <button id="btn-reset" disabled>リセット</button>
-        <button id="btn-eject" disabled>ディスク取り出し</button>
+      <div class="console-card">
+        <div class="stage">
+          <canvas id="screen" width="768" height="512"></canvas>
+        </div>
+        <div class="console-footer">
+          <div class="toolbar">
+            <button id="btn-start" class="primary">起動</button>
+            <button id="btn-reset" disabled>リセット</button>
+            <button id="btn-eject" disabled>ディスク取り出し</button>
+          </div>
+        </div>
       </div>
 
       <section id="panel">
@@ -194,12 +46,18 @@
           <input id="disk-input" type="file" accept=".xdf,.dim,.d88,.hdm,.img" style="display:none;" />
         </div>
       </section>
+
+      <footer id="statusbar">
+        <span>FPS: <b id="stat-fps">-</b></span>
+        <span>解像度: <b id="stat-res">-</b></span>
+        <span>ディスク: <b id="stat-disk">未挿入</b></span>
+      </footer>
     </main>
 
-    <footer id="statusbar">
-      <span>FPS: <b id="stat-fps">-</b></span>
-      <span>解像度: <b id="stat-res">-</b></span>
-      <span>ディスク: <b id="stat-disk">未挿入</b></span>
+    <footer class="app-footer">
+      <a href="https://www.urara-works.jp/" target="_blank" rel="noopener">© URARA-works</a> /
+      <a href="https://github.com/uraraworks/WebX68k" target="_blank" rel="noopener">GitHubで見る</a><br />
+      Powered by <a href="https://github.com/uraraworks/px68k-libretro" target="_blank" rel="noopener">px68k</a> (GPLv2)
     </footer>
   </div>
 

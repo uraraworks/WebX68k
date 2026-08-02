@@ -1,3 +1,4 @@
+import './style.css';
 import { AudioEngine } from './audio';
 import { loadBiosFile, saveBiosFile } from './bios-store';
 import { codeToRetrok } from './keyboard';
