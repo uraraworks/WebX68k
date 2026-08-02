@@ -1,0 +1,5 @@
+node_modules/
+dist/
+public/bios/
+*.log
+.DS_Store

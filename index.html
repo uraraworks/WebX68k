@@ -1,0 +1,209 @@
+<!doctype html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>WebX68k</title>
+  <style>
+    :root {
+      color-scheme: dark;
+      --bg: #14161a;
+      --panel: #1d2026;
+      --panel-border: #2c3038;
+      --accent: #4da3ff;
+      --accent-dim: #2a5c8c;
+      --text: #e6e8eb;
+      --text-dim: #9aa2ad;
+      --danger: #ff6161;
+    }
+    * { box-sizing: border-box; }
+    html, body {
+      margin: 0;
+      padding: 0;
+      background: var(--bg);
+      color: var(--text);
+      font-family: "Hiragino Kaku Gothic ProN", "Yu Gothic", "Segoe UI", sans-serif;
+      height: 100%;
+    }
+    #app {
+      display: flex;
+      flex-direction: column;
+      min-height: 100vh;
+    }
+    header {
+      padding: 12px 20px;
+      border-bottom: 1px solid var(--panel-border);
+      display: flex;
+      align-items: baseline;
+      gap: 12px;
+    }
+    header h1 {
+      font-size: 18px;
+      margin: 0;
+      letter-spacing: 0.03em;
+    }
+    header .subtitle {
+      font-size: 12px;
+      color: var(--text-dim);
+    }
+    main {
+      flex: 1;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      padding: 20px;
+      gap: 16px;
+    }
+    #screen-wrap {
+      background: #000;
+      border: 1px solid var(--panel-border);
+      border-radius: 4px;
+      display: inline-block;
+      line-height: 0;
+    }
+    #screen {
+      display: block;
+      image-rendering: pixelated;
+      max-width: 90vw;
+      max-height: 60vh;
+      width: 768px;
+      height: 512px;
+    }
+    #controls {
+      display: flex;
+      gap: 10px;
+      flex-wrap: wrap;
+      justify-content: center;
+    }
+    button {
+      background: var(--panel);
+      color: var(--text);
+      border: 1px solid var(--panel-border);
+      border-radius: 4px;
+      padding: 8px 16px;
+      font-size: 13px;
+      cursor: pointer;
+    }
+    button:hover:not(:disabled) {
+      border-color: var(--accent);
+      color: var(--accent);
+    }
+    button:disabled {
+      opacity: 0.4;
+      cursor: not-allowed;
+    }
+    button.primary {
+      background: var(--accent-dim);
+      border-color: var(--accent);
+    }
+    #panel {
+      width: min(768px, 92vw);
+      background: var(--panel);
+      border: 1px solid var(--panel-border);
+      border-radius: 6px;
+      padding: 14px 18px;
+    }
+    #panel h2 {
+      font-size: 13px;
+      margin: 0 0 10px;
+      color: var(--text-dim);
+      font-weight: 600;
+    }
+    .field-row {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      margin-bottom: 8px;
+      font-size: 13px;
+    }
+    .field-row label {
+      width: 110px;
+      color: var(--text-dim);
+      flex-shrink: 0;
+    }
+    .field-row input[type="file"] {
+      flex: 1;
+      font-size: 12px;
+      color: var(--text-dim);
+    }
+    .status-ok { color: #5fd97a; }
+    .status-ng { color: var(--danger); }
+    #dropzone {
+      border: 2px dashed var(--panel-border);
+      border-radius: 6px;
+      padding: 14px;
+      text-align: center;
+      font-size: 12px;
+      color: var(--text-dim);
+      transition: border-color 0.15s, color 0.15s;
+    }
+    #dropzone.dragover {
+      border-color: var(--accent);
+      color: var(--accent);
+    }
+    footer#statusbar {
+      border-top: 1px solid var(--panel-border);
+      padding: 6px 20px;
+      display: flex;
+      gap: 24px;
+      font-size: 12px;
+      color: var(--text-dim);
+    }
+    footer#statusbar span b {
+      color: var(--text);
+      font-weight: 600;
+    }
+  </style>
+</head>
+<body>
+  <div id="app">
+    <header>
+      <h1>WebX68k</h1>
+      <span class="subtitle">ブラウザで動く X68000 エミュレータ（px68k-libretro 移植）</span>
+    </header>
+
+    <main>
+      <div id="screen-wrap">
+        <canvas id="screen" width="768" height="512"></canvas>
+      </div>
+
+      <div id="controls">
+        <button id="btn-start" class="primary">起動</button>
+        <button id="btn-reset" disabled>リセット</button>
+        <button id="btn-eject" disabled>ディスク取り出し</button>
+      </div>
+
+      <section id="panel">
+        <h2>BIOS 設定</h2>
+        <div class="field-row">
+          <label>IPLROM.DAT</label>
+          <input id="bios-ipl" type="file" accept=".dat" />
+          <span id="bios-ipl-status" class="status-ng">未設定</span>
+        </div>
+        <div class="field-row">
+          <label>CGROM.DAT</label>
+          <input id="bios-cg" type="file" accept=".dat" />
+          <span id="bios-cg-status" class="status-ng">未設定</span>
+        </div>
+
+        <h2 style="margin-top:16px;">ディスクイメージ</h2>
+        <div id="dropzone">
+          ここに .xdf / .dim / .d88 / .hdm / .img ファイルをドラッグ＆ドロップ<br />
+          （またはクリックして選択）
+          <input id="disk-input" type="file" accept=".xdf,.dim,.d88,.hdm,.img" style="display:none;" />
+        </div>
+      </section>
+    </main>
+
+    <footer id="statusbar">
+      <span>FPS: <b id="stat-fps">-</b></span>
+      <span>解像度: <b id="stat-res">-</b></span>
+      <span>ディスク: <b id="stat-disk">未挿入</b></span>
+    </footer>
+  </div>
+
+  <script src="/core/px68k_libretro.js"></script>
+  <script type="module" src="/src/main.ts"></script>
+</body>
+</html>
