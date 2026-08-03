@@ -11,6 +11,28 @@
 
 import { decodeSjis } from './sjis';
 
+/**
+ * 利用者向けのディスク操作エラー。UIで言語別のメッセージへ差し替えられるよう
+ * コードを持たせる(message自体は開発時/ブリッジ経由での確認用のフォールバック)。
+ * 内部整合性の異常(不正なBPB等)は従来どおり素のErrorのままにしてある。
+ */
+export type DiskErrorCode =
+  | 'd88NotEditable'
+  | 'hddInvalidHeader'
+  | 'hddNoFatPartition'
+  | 'invalidShortName';
+
+export class DiskError extends Error {
+  constructor(
+    readonly code: DiskErrorCode,
+    message: string,
+    readonly params: Record<string, string | number> = {},
+  ) {
+    super(message);
+    this.name = 'DiskError';
+  }
+}
+
 export interface FatEntry {
   name: string;
   size: number;
@@ -77,6 +99,12 @@ function writeU32(buf: Uint8Array, off: number, val: number): void {
 function writeU16BE(buf: Uint8Array, off: number, val: number): void {
   buf[off] = (val >> 8) & 0xff;
   buf[off + 1] = val & 0xff;
+}
+function writeU32BE(buf: Uint8Array, off: number, val: number): void {
+  buf[off] = (val >>> 24) & 0xff;
+  buf[off + 1] = (val >>> 16) & 0xff;
+  buf[off + 2] = (val >>> 8) & 0xff;
+  buf[off + 3] = val & 0xff;
 }
 
 // --- ブートセクタ(BPB)解析 -------------------------------------------
@@ -261,7 +289,7 @@ function to83Raw(name: string): { rawName: Uint8Array; rawExt: Uint8Array; displ
   const base = dot >= 0 ? upper.slice(0, dot) : upper;
   const ext = dot >= 0 ? upper.slice(dot + 1) : '';
   if (base.length === 0 || base.length > 8 || ext.length > 3) {
-    throw new Error(`invalid 8.3 filename: ${name}`);
+    throw new DiskError('invalidShortName', `invalid 8.3 filename: ${name}`, { name });
   }
   const rawName = new Uint8Array(8).fill(0x20);
   const rawExt = new Uint8Array(3).fill(0x20);
@@ -452,22 +480,30 @@ interface Human68kPartition {
   size: number;
 }
 
+/** オフセット0x400にHuman68kのX68Kパーティションテーブルシグネチャがあるか(HDDの内容ベース判定に使う)。 */
+export function hasHuman68kPartitionSignature(image: Uint8Array): boolean {
+  const table = HUMAN68K_PARTITION_TABLE_OFFSET;
+  return (
+    image.length >= table + 4 &&
+    image[table] === 0x58 &&
+    image[table + 1] === 0x36 &&
+    image[table + 2] === 0x38 &&
+    image[table + 3] === 0x4b
+  );
+}
+
 /** X68Kパーティションテーブルを走査し、範囲内にあるエントリを順番どおり返す。 */
 function parseHuman68kPartitions(image: Uint8Array): Human68kPartition[] {
   const table = HUMAN68K_PARTITION_TABLE_OFFSET;
-  if (
-    image.length < HUMAN68K_PARTITION_ENTRY_OFFSET + HUMAN68K_PARTITION_ENTRY_SIZE ||
-    image[table] !== 0x58 ||
-    image[table + 1] !== 0x36 ||
-    image[table + 2] !== 0x38 ||
-    image[table + 3] !== 0x4b
-  ) {
+  if (image.length < HUMAN68K_PARTITION_ENTRY_OFFSET + HUMAN68K_PARTITION_ENTRY_SIZE || !hasHuman68kPartitionSignature(image)) {
     return [];
   }
 
   const totalBytes = readU32BE(image, table + 4) * HUMAN68K_BLOCK_SIZE;
   if (totalBytes === 0 || totalBytes > image.length) {
-    throw new Error('openDiskImage: invalid Human68k partition table size');
+    throw new DiskError('hddInvalidHeader', 'X68Kパーティションテーブルのサイズが不正です', {
+      format: 'X68K',
+    });
   }
 
   const partitions: Human68kPartition[] = [];
@@ -501,7 +537,7 @@ function parseHuman68kPartitions(image: Uint8Array): Human68kPartition[] {
 export function openDiskImage(image: Uint8Array, fileName: string): FatVolume {
   const lower = fileName.toLowerCase();
   if (lower.endsWith('.d88')) {
-    throw new Error('D88形式は編集非対応です');
+    throw new DiskError('d88NotEditable', 'D88形式は編集非対応です');
   }
   if (lower.endsWith('.fdi')) {
     let headerSize = FDI_DEFAULT_HEADER_SIZE;
@@ -522,10 +558,16 @@ export function openDiskImage(image: Uint8Array, fileName: string): FatVolume {
   const partitions = parseHuman68kPartitions(image);
   if (partitions.length > 0) {
     const partition = partitions.find((candidate) => isHuman68kBootSector(image, candidate.offset));
-    if (!partition) throw new Error('Human68k形式のパーティションが見つかりません');
+    if (!partition) {
+      throw new DiskError('hddNoFatPartition', 'Human68k形式のパーティションが見つかりません');
+    }
     const volume = openFat(image, partition.offset);
     if (volume.totalSectors * volume.bytesPerSector > partition.size) {
-      throw new Error(`Human68kパーティション「${partition.name}」のBPBサイズが範囲を超えています`);
+      throw new DiskError(
+        'hddInvalidHeader',
+        `Human68kパーティション「${partition.name}」のBPBサイズが範囲を超えています`,
+        { name: partition.name },
+      );
     }
     return volume;
   }
@@ -584,6 +626,125 @@ export function createFormattedFd(): Uint8Array {
     image[base] = media;
     image[base + 1] = 0xff;
     image[base + 2] = 0xff;
+  }
+
+  return image;
+}
+
+// --- Human68k HDD向けFAT16フォーマット済みブランクイメージ生成 --------------
+
+/**
+ * px68k-libretro の SASI 実装(x68k/sasi.c)はヘッダ無しのベタイメージを
+ * 256バイト固定ブロックの通しLBAで読み書きし、シリンダ/ヘッド等のジオメトリは
+ * 一切参照しない(SASI_Sectorは21bit値をそのまま`<<8`してseekするだけ)。
+ * そのため実機的なCHS制約は無く、上限は 2^21 blocks × 256B ≒ 512MB。
+ * ここでは実用的な容量として40MB(WebNP2のcreateFormattedHdd()が選んだ
+ * SASI標準40MBと同じ考え方)を採用する。
+ */
+const HDD_BLOCK_SIZE = HUMAN68K_BLOCK_SIZE; // 256B。パーティションテーブルのオフセット単位と同じ。
+/** パーティション本体開始位置。テーブル領域(0x400〜)の後ろに余裕を持たせて8ブロック目からにする。 */
+const HDD_PARTITION_START_BLOCK = 8;
+// パーティション名は必ず 'Human68k' にすること。Human68k はこの名前のパーティションを
+// 探してドライブレターを割り当てるため、別名だとゲストから一切見えない
+// (実機吸い出しイメージの 0x410 も "Human68k" になっている)。
+const HDD_PARTITION_NAME = 'Human68k';
+
+/** パーティション内BPB(Human68k形式・BE)のジオメトリ。 */
+const HDD_BYTES_PER_SECTOR = 1024;
+/**
+ * **1 固定にすること**。Human68k は HDD パーティションを 1セクタ=1クラスタ前提で扱い、
+ * BPB の sectorsPerCluster を尊重せずに自前で sectorsPerFat を算出する。8 等にすると
+ * Human68k が計算するルートディレクトリ位置(reserved + numFats × sectorsPerFat)が
+ * こちらの書き込み位置とズレ、「お互いのファイルが見えない」状態になる
+ * (実測: spc=8 だと Human68k は spf=81 として root を 0x29400 に置き、こちらは
+ * spf=10 で 0x5C00 に置いていた)。実機フォーマット済みイメージも spc=1 / spf=80。
+ */
+const HDD_SECTORS_PER_CLUSTER = 1;
+const HDD_RESERVED_SECTORS = 1;
+const HDD_NUM_FATS = 2;
+const HDD_ROOT_ENTRIES = 512;
+const HDD_TOTAL_SECTORS = 40960; // 1024B/sector × 40960 = 40MB。BE16のtotalSectors16に収まる(<65536)。
+const HDD_MEDIA_BYTE = 0xf8; // 固定ディスク
+const HDD_PARTITION_BYTES = HDD_TOTAL_SECTORS * HDD_BYTES_PER_SECTOR;
+
+/**
+ * sectorsPerFat を求める。
+ *
+ * **Human68k と同じ式にすること**。Human68k は BPB の sectorsPerFat をそのまま信じず、
+ * 「総セクタ数ぶんのクラスタを表現できるFAT16サイズ」= ceil((totalSectors + 2) × 2 / bytesPerSector)
+ * として自前で算出し、ルートディレクトリ位置(reserved + numFats × sectorsPerFat)を決める。
+ * データクラスタ数から最小値を求める一般的なFAT実装の式だと1セクタ小さくなり、
+ * ルート位置が numFats × 1 セクタぶんズレて「お互いのファイルが見えない」状態になる
+ * (実測: こちらが spf=80 で root を 0x28C00 に、Human68k は spf=81 で 0x29400 に置いていた)。
+ * 実機フォーマット済みイメージ(総セクタ40510)もこの式どおり spf=80 になっている。
+ *
+ * Human68k BPBの sectorsPerFat は1バイトのため255以下に収まっている必要がある。
+ */
+function computeHdd16SectorsPerFat(): number {
+  return Math.ceil(((HDD_TOTAL_SECTORS + 2) * 2) / HDD_BYTES_PER_SECTOR);
+}
+
+/**
+ * Human68k形式(パーティションテーブル + FAT16)でフォーマット済みのブランクHDDイメージを
+ * 新規生成する。IPLの実体は持たないためHDD単体では起動できず、FDからHuman68kを
+ * 起動したうえでデータドライブとして使う想定でよい。
+ *
+ * 既存の読み取り実装(parseHuman68kPartitions/openFat)が使う定数・オフセット・
+ * エンディアンをそのまま流用し、その「逆」(生成)を行う:
+ * - オフセット0x400から"X68K"シグネチャ + パーティションテーブル(256Bブロック単位)
+ * - パーティション先頭にHuman68k形式BPB(オフセット0x12からBE)
+ * - FAT16本体(BE)
+ * - ルートディレクトリは全ゼロ(=空)のまま
+ */
+export function createFormattedHdd(): Uint8Array {
+  const sectorsPerFat = computeHdd16SectorsPerFat();
+  const partitionStartByte = HDD_PARTITION_START_BLOCK * HDD_BLOCK_SIZE;
+  const totalBytes = partitionStartByte + HDD_PARTITION_BYTES;
+  const image = new Uint8Array(totalBytes);
+
+  // パーティションテーブルヘッダ("X68K"シグネチャ + ディスク全体のブロック数)。
+  const table = HUMAN68K_PARTITION_TABLE_OFFSET;
+  image[table] = 0x58; // 'X'
+  image[table + 1] = 0x36; // '6'
+  image[table + 2] = 0x38; // '8'
+  image[table + 3] = 0x4b; // 'K'
+  writeU32BE(image, table + 4, totalBytes / HDD_BLOCK_SIZE);
+
+  // パーティションエントリ(1個のみ、ディスク全体を1パーティションとして使う)。
+  const entry = HUMAN68K_PARTITION_ENTRY_OFFSET;
+  for (let i = 0; i < 8; i++) {
+    image[entry + i] = i < HDD_PARTITION_NAME.length ? HDD_PARTITION_NAME.charCodeAt(i) : 0;
+  }
+  const startBlock = partitionStartByte / HDD_BLOCK_SIZE;
+  const blockCount = HDD_PARTITION_BYTES / HDD_BLOCK_SIZE;
+  image[entry + 9] = (startBlock >> 16) & 0xff;
+  image[entry + 10] = (startBlock >> 8) & 0xff;
+  image[entry + 11] = startBlock & 0xff;
+  writeU32BE(image, entry + 12, blockCount);
+
+  // パーティション先頭のブートセクタ(Human68k形式BPB)。
+  const p = partitionStartByte;
+  image[p] = 0x60; // isHuman68kBootSector()が判定に使う分岐命令
+  image[p + 1] = 0x00;
+  const oem = 'Human68k HDD    '.slice(0, 16);
+  for (let i = 0; i < 16; i++) image[p + 2 + i] = oem.charCodeAt(i);
+  writeU16BE(image, p + 0x12, HDD_BYTES_PER_SECTOR);
+  image[p + 0x14] = HDD_SECTORS_PER_CLUSTER;
+  image[p + 0x15] = HDD_NUM_FATS;
+  writeU16BE(image, p + 0x16, HDD_RESERVED_SECTORS);
+  writeU16BE(image, p + 0x18, HDD_ROOT_ENTRIES);
+  writeU16BE(image, p + 0x1a, HDD_TOTAL_SECTORS);
+  image[p + 0x1c] = HDD_MEDIA_BYTE; // 実機フォーマット済みイメージと同じ 0xF8。書き忘れると 0x00 になる
+  image[p + 0x1d] = sectorsPerFat;
+  image[p + 510] = 0x55;
+  image[p + 511] = 0xaa;
+
+  // FAT先頭の予約エントリ(メディアバイト + EOC)。Human68kはFAT16もBEで格納する。
+  const fatStartByte = p + HDD_RESERVED_SECTORS * HDD_BYTES_PER_SECTOR;
+  for (let f = 0; f < HDD_NUM_FATS; f++) {
+    const base = fatStartByte + f * sectorsPerFat * HDD_BYTES_PER_SECTOR;
+    writeU16BE(image, base, 0xff00 | HDD_MEDIA_BYTE);
+    writeU16BE(image, base + 2, 0xffff);
   }
 
   return image;
