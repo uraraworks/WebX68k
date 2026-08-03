@@ -17,6 +17,8 @@ Vite + TypeScript（フレームワーク無し）の最小構成です。
 - `src/disk-store.ts` … ディスクイメージ(FD/HDD)を IndexedDB に永続化する「ディスクライブラリ」ヘルパー
 - `src/core-shim.c` … アクセスランプ取得等、libretro API に無い可変長引数/グローバル参照のための C シム
 - `src/state-store.ts` … ステートセーブを IndexedDB に永続化するヘルパー(gzip 圧縮)
+- `src/bridge.ts` … MCP サーバーと繋ぐ WebSocket ブリッジ(`?bridge=1` で有効)
+- `mcp/` … MCP サーバー(stdio) + WebSocket ブリッジ。詳細は [mcp/README.md](mcp/README.md)
 - `src/main.ts` … UI 配線・メインループ（FDD0/FDD1/HDD の3スロット、アクセスランプ、起動前オーバーレイ等）
 
 ## コアのビルド手順
@@ -230,6 +232,17 @@ X68000 は画面モード(15kHz/31kHz)を切り替えるたびにフレームレ
    (ドリフト補正)。一度膨らんだ遅延を目標値 80ms 付近へ戻す復元力になる
 3. `src/audio.ts` の AudioWorklet 側で滞留量の上限(250ms)を設け、超過分は古い側から捨てる
    最終防波堤。滞留量は tick メッセージでメインスレッドへ返している
+
+## MCP 対応(AI からの遠隔操作)
+
+`?bridge=1` を付けて開くと、ページが `ws://127.0.0.1:3099` へ接続しに行き、MCP サーバー
+(`mcp/server.mjs`)経由で画面取得・キー入力・マウス操作・ディスク操作ができる。
+構成もプロトコルも姉妹アプリ WebNP2 に準拠している。セットアップと提供ツールの一覧は
+[mcp/README.md](mcp/README.md) を参照。
+
+X68000 固有の制約として、**画面をテキストとして読む手段が無い**(コンソールがグラフィック描画
+のため、WebNP2 の `screen_text` に相当するものが作れない)。画面確認は `screenshot`、処理待ちは
+`wait_screen_change` で行う。マウスも相対移動のみで、絶対座標指定のツールは用意していない。
 
 ## 起動前の初期画面
 

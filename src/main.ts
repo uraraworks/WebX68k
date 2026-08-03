@@ -23,7 +23,8 @@ import {
   type StoredDisk,
 } from './disk-store';
 import { buildFileManagerDialog, type FmTarget } from './filemanager';
-import { codeToRetrok } from './keyboard';
+import { Bridge, resolveBridgeUrl, type BridgeHost } from './bridge';
+import { RETROK, charToKey, codeToRetrok } from './keyboard';
 import { LibretroHost } from './libretro-host';
 import {
   getState,
@@ -1570,3 +1571,87 @@ applyDocumentStrings();
 void (async () => {
   await restoreBios();
 })();
+
+// --- MCP ブリッジ(?bridge=1 で有効) ---------------------------------------
+// エミュレータ本体はブラウザ内、MCP サーバーはユーザーのマシン上。ページ側から
+// ws://127.0.0.1:<port> へ繋ぎに行く(詳細は mcp/README.md)。
+
+/** ブリッジのスロット名(fdd0/fdd1/hdd)を検証する。 */
+function toSlotId(value: string): SlotId {
+  if (value === 'fdd0' || value === 'fdd1' || value === 'hdd') return value;
+  throw new Error(`unknown slot: ${value} (fdd0/fdd1/hdd)`);
+}
+
+const bridgeHost: BridgeHost = {
+  screenshot: () => canvas.toDataURL('image/png'),
+  screenHash: () => {
+    // 全画素を舐めると重いので間引いてハッシュする(画面変化の検出用途)
+    const ctx = canvas.getContext('2d');
+    if (!ctx) return 0;
+    const d = ctx.getImageData(0, 0, canvas.width, canvas.height).data;
+    let h = 0;
+    for (let i = 0; i < d.length; i += 997) h = (h * 31 + d[i]) | 0;
+    return h;
+  },
+  reset: () => host?.reset(),
+  setKey: (retrok, down) => host?.setKey(retrok, down),
+  typeText: async (text) => {
+    if (!host) throw new Error('not booted');
+    const skipped: string[] = [];
+    let typed = 0;
+    for (const ch of text) {
+      const key = charToKey(ch);
+      if (!key) {
+        skipped.push(ch);
+        continue;
+      }
+      if (key.shift) host.setKey(RETROK.LSHIFT, true);
+      host.setKey(key.code, true);
+      await new Promise((r) => setTimeout(r, 90));
+      host.setKey(key.code, false);
+      if (key.shift) host.setKey(RETROK.LSHIFT, false);
+      await new Promise((r) => setTimeout(r, 60));
+      typed++;
+    }
+    return { typed, skipped };
+  },
+  mouseMove: (dx, dy) => host?.addMouseDelta(dx, dy),
+  mouseButton: (button, down) => host?.setMouseButton(button, down),
+  saveState: () => handleSaveState(),
+  loadState: () => handleLoadState(),
+  listDisks: () =>
+    SLOT_IDS.map((slot) => ({ slot, name: slots[slot]?.name ?? null })),
+  insertDisk: async (slot, name, bytes) => {
+    await insertDiskBytes(toSlotId(slot), name, bytes);
+  },
+  ejectDisk: (slot) => ejectSlot(toSlotId(slot)),
+  diskListFiles: async (slot, path) => {
+    const { entries } = await fmListDir({ kind: 'slot', ref: toSlotId(slot), label: slot, mounted: true, editable: true }, path);
+    return entries.map((e) => ({ name: e.name, size: e.size, isDir: e.isDir, mtime: e.mtime }));
+  },
+  diskReadFile: (slot, path) =>
+    fmReadFile({ kind: 'slot', ref: toSlotId(slot), label: slot, mounted: true, editable: true }, path),
+  diskWriteFile: (slot, path, bytes) =>
+    fmWriteFile({ kind: 'slot', ref: toSlotId(slot), label: slot, mounted: true, editable: true }, path, bytes),
+  readMemory: (addr, length) => {
+    if (!host) throw new Error('not booted');
+    const out: number[] = [];
+    for (let i = 0; i < length; i++) out.push(host.peekByte(addr + i));
+    return out;
+  },
+  status: () => ({
+    running,
+    fps: host?.avInfo?.fps ?? null,
+    screen: { width: canvas.width, height: canvas.height },
+    slots: SLOT_IDS.map((slot) => ({ slot, name: slots[slot]?.name ?? null })),
+    mouseCaptured: isMouseCaptured(),
+  }),
+};
+
+const bridgeUrl = resolveBridgeUrl(location.search);
+if (bridgeUrl) {
+  const bridge = new Bridge(bridgeHost);
+  bridge.connect(bridgeUrl);
+  (window as unknown as Record<string, unknown>).__webx68kBridge = bridge;
+  console.info(`[WebX68k] MCP ブリッジへ接続します: ${bridgeUrl}`);
+}

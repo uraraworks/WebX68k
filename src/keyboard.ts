@@ -224,3 +224,69 @@ export const CODE_TO_RETROK: Record<string, number> = {
 export function codeToRetrok(code: string): number {
   return CODE_TO_RETROK[code] ?? RETROK.UNKNOWN;
 }
+
+// --- ASCII 文字 → X68000(JIS配列)のキー入力 -------------------------------
+// MCP ブリッジの type_text 用。px68k の KeyTable(libretro.c)は「物理キー」の RETROK しか
+// 持たないため、'!' のような記号は SHIFT + 元キーに分解して送る必要がある。
+// 配列は X68000 の JIS 準拠(数字段の右端が ^ と ¥、'@' は P の右、':' は ; の右)。
+
+/** SHIFT 無しで打てる文字 */
+const PLAIN_KEYS: Record<string, number> = {
+  ' ': RETROK.SPACE,
+  '\n': RETROK.RETURN,
+  '\r': RETROK.RETURN,
+  '\t': RETROK.TAB,
+  '-': RETROK.MINUS,
+  '^': RETROK.EQUALS,
+  '\\': RETROK.BACKSLASH,
+  '@': RETROK.BACKQUOTE,
+  '[': RETROK.LEFTBRACKET,
+  ']': RETROK.RIGHTBRACKET,
+  ';': RETROK.SEMICOLON,
+  ':': RETROK.QUOTE,
+  ',': RETROK.COMMA,
+  '.': RETROK.PERIOD,
+  '/': RETROK.SLASH,
+};
+
+/** SHIFT を伴う文字 → 元キー */
+const SHIFTED_KEYS: Record<string, number> = {
+  '!': RETROK[1],
+  '"': RETROK[2],
+  '#': RETROK[3],
+  $: RETROK[4],
+  '%': RETROK[5],
+  '&': RETROK[6],
+  "'": RETROK[7],
+  '(': RETROK[8],
+  ')': RETROK[9],
+  '=': RETROK.MINUS,
+  '~': RETROK.EQUALS,
+  '|': RETROK.BACKSLASH,
+  '`': RETROK.BACKQUOTE,
+  '{': RETROK.LEFTBRACKET,
+  '}': RETROK.RIGHTBRACKET,
+  '+': RETROK.SEMICOLON,
+  '*': RETROK.QUOTE,
+  '<': RETROK.COMMA,
+  '>': RETROK.PERIOD,
+  '?': RETROK.SLASH,
+};
+
+export interface TypedKey {
+  code: number;
+  shift: boolean;
+}
+
+/**
+ * ASCII 文字を1つ、押すべきキーへ変換する。対応していない文字は null。
+ * 全角文字は非対応(X68000 側の FEP を経由しないと入力できないため)。
+ */
+export function charToKey(ch: string): TypedKey | null {
+  if (ch >= 'a' && ch <= 'z') return { code: ch.charCodeAt(0), shift: false };
+  if (ch >= 'A' && ch <= 'Z') return { code: ch.toLowerCase().charCodeAt(0), shift: true };
+  if (ch >= '0' && ch <= '9') return { code: ch.charCodeAt(0), shift: false };
+  if (ch in PLAIN_KEYS) return { code: PLAIN_KEYS[ch], shift: false };
+  if (ch in SHIFTED_KEYS) return { code: SHIFTED_KEYS[ch], shift: true };
+  return null;
+}

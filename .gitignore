@@ -6,3 +6,4 @@ _local/
 *.log
 .DS_Store
 tools/gen-cgrom/fonts/
+mcp/node_modules/

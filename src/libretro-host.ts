@@ -201,6 +201,11 @@ export class LibretroHost {
    *   $ACE/$AD0 = カーソル座標, $A9A..$AA0 = 可動範囲, $AA2 = 表示スイッチ
    * 座標は符号付きワードとして解釈する。
    */
+  /** ゲストメモリを1バイト読む(MCP ブリッジの read_memory 用) */
+  peekByte(addr: number): number {
+    return this.mod._webx68k_peek8(addr);
+  }
+
   /** ゲストメモリを1ワード(ビッグエンディアン)読む(デバッグ・IOCSワーク参照用) */
   peekWord(addr: number): number {
     return this.mod._webx68k_peek16(addr);
