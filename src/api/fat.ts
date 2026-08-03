@@ -292,22 +292,27 @@ function decodeEntryName(rawName: Uint8Array, rawNameExt: Uint8Array | null): st
   return decodeSjis(bytes.subarray(0, end));
 }
 
-/** 予約領域(12〜21)を Human68k のファイル名拡張として扱ってよいか。 */
-function usableNameExt(rawNameExt: Uint8Array): boolean {
-  for (const b of rawNameExt) {
-    if (b < 0x20) return false;
-  }
-  // すべて空白なら拡張なし
-  return rawNameExt.some((b) => b !== 0x20);
+/**
+ * 予約領域(12〜21)から Human68k のファイル名拡張部分を取り出す。使えなければ null。
+ *
+ * 余りのパディングは NUL のことも空白のこともあるので、**先頭から最初の NUL までを名前**とし、
+ * 残りはパディングとして捨てる。全バイトが 0x20 以上であることを条件にすると、
+ * 実機ディスクでよくある NUL 埋め(例: `8f 91 00 00 ...`)を取りこぼす。
+ *
+ * 標準的な FAT では 12バイト目は VFAT の NT フラグ(0x00/0x08/0x10/0x18)で必ず 0x20 未満なので、
+ * ここが 0x20 以上であることを「Human68k の名前拡張である」判定に使える。
+ */
+function nameExtBytes(rawNameExt: Uint8Array): Uint8Array | null {
+  if (rawNameExt.length === 0 || rawNameExt[0] < 0x20) return null;
+  let end = 0;
+  while (end < rawNameExt.length && rawNameExt[end] !== 0x00) end++;
+  return end > 0 ? rawNameExt.subarray(0, end) : null;
 }
 
 /** 32バイトのディレクトリエントリ先頭オフセットから表示名を組み立てる。 */
 function entryDisplayName(image: Uint8Array, off: number): string {
   const rawNameExt = image.subarray(off + 12, off + 22);
-  const base = decodeEntryName(
-    image.subarray(off, off + 8),
-    usableNameExt(rawNameExt) ? rawNameExt : null,
-  );
+  const base = decodeEntryName(image.subarray(off, off + 8), nameExtBytes(rawNameExt));
   const ext = decodeEntryName(image.subarray(off + 8, off + 11), null);
   return ext.length > 0 ? `${base}.${ext}` : base;
 }
