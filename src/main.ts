@@ -963,19 +963,57 @@ const mouseSensitivity = Number(localStorage.getItem(MOUSE_SENSITIVITY_KEY)) || 
 /** 右ダブルクリック判定の猶予(ms)。WebNP2 と同じ。 */
 const RIGHT_DOUBLE_CLICK_MS = 500;
 /**
- * 追従モード(キャプチャせずホストカーソルへ追従させる)は**未完成のため既定で無効**。
+ * 追従モード(キャプチャせずホストカーソルへゲストカーソルを追従させる)。
  *
- * IOCS ワークからゲストカーソルの実座標を読む閉ループまでは動いたが
- * (`LibretroHost.readGuestCursor()`)、送った移動量に対してカーソルが大きく動きすぎて
- * 画面端から端へ発振する。IOCS 側の移動量倍率(_MS_SETADJ 相当)が効いていると見られ、
- * 比例ゲインを 0.35 まで絞っても収束しなかった。倍率の特定が済むまで無効にしておく。
- * 有効時のマウス操作は右ダブルクリック(またはツールバー)でのキャプチャで行う。
+ * X68000 のマウスは相対量しか送れないが、IOCS はワークエリアにカーソルの実座標と可動範囲を
+ * 持っている($ACE/$AD0 と $A9A..$AA0)。そこを毎フレーム読んで差分を送る閉ループにしている。
  */
-const ENABLE_MOUSE_TRACKING = false;
-/** 閉ループ追従の比例ゲイン。IOCS 側の移動量倍率が不明なので、発振しない程度に絞る。 */
-const MOUSE_TRACK_GAIN = 0.35;
+const ENABLE_MOUSE_TRACKING = true;
+/**
+ * IOCS のマウス加速テーブル(実測値)。[送信量, 実際に動くドット数]。
+ *
+ * IOCS は移動量に加速をかけるため、誤差をそのまま送ると**最大7.5倍に増幅されて行き過ぎ**、
+ * 画面端から端へ発振する。3以下は加速がかからず 1:1 で、16 を境に急に倍率が上がる。
+ * 逆引きして「予測移動量が誤差を超えない範囲で最大の送信量」を選べば必ず不足側に倒れるので、
+ * 行き過ぎが原理的に起きない。残りは次フレーム以降の閉ループが詰め、最後は 1:1 の領域に
+ * 入るのでぴたりと止まる。
+ *
+ * 加速の効き方は IOCS の設定で変わり得るが、この表は「行き過ぎないための上限見積もり」
+ * としてしか使わないので、多少ずれても収束する。
+ */
+const MOUSE_ACCEL_TABLE: Array<[send: number, move: number]> = [
+  [1, 1],
+  [2, 2],
+  [3, 3],
+  [4, 5],
+  [5, 6],
+  [6, 7],
+  [7, 8],
+  [8, 10],
+  [10, 12],
+  [12, 15],
+  [14, 17],
+  [16, 40],
+  [20, 50],
+  [24, 90],
+  [32, 160],
+  [48, 360],
+];
+/** カーソルが実際に動いたのを確認できるまで待つ最大フレーム数 */
+const MOUSE_TRACK_ACK_FRAMES = 12;
 /** IOCS ワークが読めないソフト向けフォールバックで、画面外まで押し切るための余白(ドット) */
 const MOUSE_HOMING_MARGIN = 64;
+
+/** 目標移動量(絶対値)に対して、行き過ぎない範囲で最大の送信量を返す。 */
+function sendAmountFor(distance: number): number {
+  const abs = Math.abs(distance);
+  let send = 0;
+  for (const [candidate, move] of MOUSE_ACCEL_TABLE) {
+    if (move <= abs) send = candidate;
+    else break;
+  }
+  return distance < 0 ? -send : send;
+}
 
 /** ホスト側カーソルの canvas 内相対位置(0..1)。実際の目標座標はゲストの可動範囲から毎フレーム決める。 */
 let desiredRatioX = 0;
@@ -983,9 +1021,12 @@ let desiredRatioY = 0;
 let hasDesiredRatio = false;
 /** 追従が空回りしている(送っているのにカーソルが動かない)ことを検出するためのカウンタ */
 let trackStallFrames = 0;
-let trackLastCursorX = -1;
-let trackLastCursorY = -1;
 let trackDisabled = false;
+/** 送信後、カーソルが実際に動くのを待っている間の状態 */
+let trackAckPending = false;
+let trackAckFrames = 0;
+let trackSentAtX = -1;
+let trackSentAtY = -1;
 
 function isMouseCaptured(): boolean {
   return document.pointerLockElement === canvas;
@@ -1009,40 +1050,54 @@ function stepMouseTracking(): void {
   // マウスを使っていないソフトではワークエリアが初期化されていない。その場合は何もしない。
   if (!cur) return;
 
+  // 送った直後は、ゲストがまだ反映していない可能性がある。実際に動いたのを確認する前に
+  // 次を送ると、同じ誤差に対して二重に送ることになって行き過ぎる。
+  if (trackAckPending) {
+    if (cur.x !== trackSentAtX || cur.y !== trackSentAtY) {
+      trackAckPending = false;
+      trackStallFrames = 0;
+    } else if (++trackAckFrames > MOUSE_TRACK_ACK_FRAMES) {
+      // 動かないまま待ち続けても仕方ないので、いったん待ちを解いて空回り判定に回す
+      trackAckPending = false;
+      trackStallFrames += MOUSE_TRACK_ACK_FRAMES;
+    } else {
+      return;
+    }
+  }
+
+  if (host.hasPendingMouseDelta()) return;
+
   const targetX = Math.round(cur.minX + desiredRatioX * (cur.maxX - cur.minX));
   const targetY = Math.round(cur.minY + desiredRatioY * (cur.maxY - cur.minY));
   const dx = targetX - cur.x;
   const dy = targetY - cur.y;
   if (dx === 0 && dy === 0) {
     trackStallFrames = 0;
-    trackLastCursorX = cur.x;
-    trackLastCursorY = cur.y;
     return;
   }
 
-  // 安全弁: 目標に届いていないのにカーソルがまったく動かない場合(IOCS ワークを使わず
-  // 自前でカーソルを管理するソフト等)、差分を送り続けると際限なくデルタを撃ち込むことになる。
-  // 送信待ちの間もカウントするため、pending の判定より前に置くこと。
-  if (cur.x === trackLastCursorX && cur.y === trackLastCursorY) {
-    if (++trackStallFrames > 90) {
-      trackDisabled = true;
-      host.clearMouseState();
-      showToast(t('mouseTrackUnavailable'));
-      return;
-    }
-  } else {
-    trackStallFrames = 0;
-    trackLastCursorX = cur.x;
-    trackLastCursorY = cur.y;
+  // 安全弁: 目標に届いていないのにカーソルがまったく動かない(IOCS ワークを使わず
+  // 自前でカーソルを管理するソフト等)場合、送り続けても無駄なので追従を止める。
+  if (trackStallFrames > 90) {
+    trackDisabled = true;
+    host.clearMouseState();
+    showToast(t('mouseTrackUnavailable'));
+    return;
   }
 
-  if (host.hasPendingMouseDelta()) return;
-  // IOCS はマウス移動量に倍率を掛けてカーソルを動かす(_MS_SETADJ)。倍率が不明なまま
-  // 誤差をそのまま送ると行き過ぎて発振するため、誤差の一部だけを送る比例制御にする。
-  // 端数で止まらないよう、最低1ドットは動かす。
-  const stepX = Math.trunc(dx * MOUSE_TRACK_GAIN) || Math.sign(dx);
-  const stepY = Math.trunc(dy * MOUSE_TRACK_GAIN) || Math.sign(dy);
-  host.addMouseDelta(stepX, stepY);
+  const sendX = sendAmountFor(dx);
+  const sendY = sendAmountFor(dy);
+  // 加速の下限(1ドット)未満しか誤差が無い軸は動かさない
+  if (sendX === 0 && sendY === 0) {
+    trackStallFrames = 0;
+    return;
+  }
+
+  host.addMouseDelta(sendX, sendY);
+  trackSentAtX = cur.x;
+  trackSentAtY = cur.y;
+  trackAckPending = true;
+  trackAckFrames = 0;
 }
 
 /**
@@ -1055,6 +1110,7 @@ function resyncGuestMouse(): void {
   // 止めていた追従を再開させる
   trackDisabled = false;
   trackStallFrames = 0;
+  trackAckPending = false;
   if (host.readGuestCursor()) return; // 閉ループが効いているので押し付け不要
   const w = host.avInfo?.baseWidth || canvas.width;
   const h = host.avInfo?.baseHeight || canvas.height;
@@ -1146,8 +1202,8 @@ function updateMouseControls(): void {
   btnMouseCapture.title = captured ? t('toolbarMouseRelease') : t('toolbarMouseCapture');
   btnMouseCapture.setAttribute('aria-pressed', captured ? 'true' : 'false');
   // 再同期は追従モード専用(キャプチャ中は基準という概念が無い)
-  btnMouseResync.disabled = !ENABLE_MOUSE_TRACKING || !running || captured;
-  btnMouseResync.title = ENABLE_MOUSE_TRACKING ? t('toolbarMouseResync') : t('toolbarMouseResyncDisabled');
+  btnMouseResync.disabled = !running || captured;
+  btnMouseResync.title = t('toolbarMouseResync');
 }
 
 btnMouseCapture.addEventListener('click', () => setMouseCaptured(!isMouseCaptured()));
