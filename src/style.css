@@ -127,6 +127,17 @@ main {
     0 2px 10px rgba(0, 0, 0, 0.5);
 }
 
+/*
+ * canvas はキーボード入力を受けるため tabIndex を付けてフォーカスさせている。
+ * そのままだとブラウザ標準のフォーカスリング(Safari では青+白の二重枠)が画面の縁に
+ * 重なって出てしまうため消す。クリックでフォーカスした後にキーを打つと :focus-visible が
+ * 立つブラウザがあるので、:focus-visible も併せて消す必要がある。
+ */
+#screen:focus,
+#screen:focus-visible {
+  outline: none;
+}
+
 #screen {
   display: block;
   image-rendering: pixelated;
