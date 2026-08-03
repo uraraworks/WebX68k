@@ -8,7 +8,7 @@
 // 文字列として受け取る(drive番号からの組み立てをUI側で持たない)。これはWebX68kが
 // FDD1/FDD2/HDDの3スロット構成の表示名を一元管理するため。
 
-import { t } from './strings.ts';
+import { describeError, t } from './strings.ts';
 import type { FatEntry } from './api/fat.ts';
 import { isArchive, extractArchive } from './api/archive.ts';
 
@@ -455,7 +455,7 @@ export function buildFileManagerDialog(container: HTMLElement, callbacks: FileMa
     } catch (err) {
       currentEntries = [];
       renderDiskList();
-      setStatus(t('fmListLoadFailed', { message: err instanceof Error ? err.message : String(err) }), true);
+      setStatus(t('fmListLoadFailed', { message: describeError(err) }), true);
     }
   }
 
@@ -473,7 +473,7 @@ export function buildFileManagerDialog(container: HTMLElement, callbacks: FileMa
         await callbacks.makeDir(target, joinPath(currentPath, name));
         await refreshDiskList();
       } catch (err) {
-        setStatus(t('fmListLoadFailed', { message: err instanceof Error ? err.message : String(err) }), true);
+        setStatus(t('fmListLoadFailed', { message: describeError(err) }), true);
       }
     })();
   });
@@ -490,7 +490,7 @@ export function buildFileManagerDialog(container: HTMLElement, callbacks: FileMa
         try {
           await callbacks.deleteFile(target, joinPath(currentPath, name));
         } catch (err) {
-          setStatus(t('fmListLoadFailed', { message: err instanceof Error ? err.message : String(err) }), true);
+          setStatus(t('fmListLoadFailed', { message: describeError(err) }), true);
         }
       }
       setBusy(false);
@@ -506,7 +506,7 @@ export function buildFileManagerDialog(container: HTMLElement, callbacks: FileMa
         await refreshTargets(sourceKey);
         setStatus(t('fmTransferFdCreated', { name }));
       } catch (err) {
-        setStatus(t('fmListLoadFailed', { message: err instanceof Error ? err.message : String(err) }), true);
+        setStatus(t('fmListLoadFailed', { message: describeError(err) }), true);
       }
       setBusy(false);
     })();
@@ -555,7 +555,7 @@ export function buildFileManagerDialog(container: HTMLElement, callbacks: FileMa
         succeeded++;
         selectedStaged.delete(items[i].id);
       } catch (err) {
-        failedNames.push(`${proposed[i]} (${err instanceof Error ? err.message : String(err)})`);
+        failedNames.push(`${proposed[i]} (${describeError(err)})`);
       }
     }
     setBusy(false);
@@ -591,7 +591,7 @@ export function buildFileManagerDialog(container: HTMLElement, callbacks: FileMa
         // 連続ダウンロードのポップアップブロック軽減のため少し間隔を空ける。
         await new Promise<void>((resolve) => setTimeout(resolve, 150));
       } catch (err) {
-        failedNames.push(`${fileEntries[i].name} (${err instanceof Error ? err.message : String(err)})`);
+        failedNames.push(`${fileEntries[i].name} (${describeError(err)})`);
       }
     }
     setBusy(false);

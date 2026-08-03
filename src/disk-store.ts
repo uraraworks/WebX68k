@@ -1,6 +1,8 @@
 // ディスクイメージ(FD/HDD)を IndexedDB に永続化するための「ディスクライブラリ」ヘルパー。
 // WebNP2 (../PC98/WebNP2/src/storage/db.ts + src/api/library.ts) のディスクライブラリに準拠する。
 
+import { hasHuman68kPartitionSignature } from './api/fat';
+
 export interface StoredDisk {
   sourceKey: string;
   /** 元のファイル名(拡張子含む)。イメージ種別の判定に使うため、リネームしても変わらない。 */
@@ -9,10 +11,19 @@ export interface StoredDisk {
   savedAt: number;
   /** ライブラリ一覧での表示名。未設定なら name をそのまま表示する。 */
   displayName?: string;
+  /** 同一アーカイブ(ZIP/LZH)から展開した複数ディスクをまとめるグループID。単体イメージでは未設定。 */
+  group?: string;
+  /** グループの表示名。同一グループの全レコードが同じ値を持つ(リネーム時は全件更新)。 */
+  groupName?: string;
+  /** グループ内の並び順(アーカイブ内の出現順)。 */
+  groupIndex?: number;
 }
 
 const DB_NAME = 'webx68k-disks';
 const STORE_NAME = 'disks';
+// group/groupName/groupIndex はオブジェクトストアの値へ足したプレーンな追加フィールドであり、
+// keyPathやインデックスなど openDb() が解釈するスキーマ自体は変わっていないため、
+// DB_VERSION は上げていない(既存レコードはそのまま group 未設定の単体ディスクとして扱われる)。
 const DB_VERSION = 1;
 
 function openDb(): Promise<IDBDatabase> {
@@ -41,7 +52,7 @@ export async function getDisk(sourceKey: string): Promise<StoredDisk | undefined
   return result;
 }
 
-async function putDisk(disk: StoredDisk): Promise<void> {
+export async function putDisk(disk: StoredDisk): Promise<void> {
   const db = await openDb();
   await new Promise<void>((resolve, reject) => {
     const tx = db.transaction(STORE_NAME, 'readwrite');
@@ -53,12 +64,25 @@ async function putDisk(disk: StoredDisk): Promise<void> {
 }
 
 /**
- * ディスクイメージをライブラリへ登録(更新)する。表示名(リネーム結果)は既存レコードのものを常に優先する。
- * D&D/ファイル選択のたびに呼ばれるため、同じファイルを再登録してもユーザーが付けた表示名が消えないようにする。
+ * ディスクイメージをライブラリへ登録(更新)する。表示名/グループ情報(WebNP2の putPreservingMeta 相当)は
+ * 既存レコードに何か1つでも設定済みならそれを常に優先する。D&D/ファイル選択・アーカイブの再取り込みの
+ * たびに呼ばれるため、同じファイルを再登録してもユーザーが付けた表示名やグループ分けが消えないようにする。
  */
 export async function saveDisk(disk: Omit<StoredDisk, 'displayName'>): Promise<void> {
   const existing = await getDisk(disk.sourceKey);
-  await putDisk({ ...disk, displayName: existing?.displayName });
+  const hasMeta =
+    !!existing &&
+    (existing.displayName !== undefined ||
+      existing.group !== undefined ||
+      existing.groupName !== undefined ||
+      existing.groupIndex !== undefined);
+  await putDisk({
+    ...disk,
+    displayName: hasMeta ? existing!.displayName : undefined,
+    group: hasMeta ? existing!.group : disk.group,
+    groupName: hasMeta ? existing!.groupName : disk.groupName,
+    groupIndex: hasMeta ? existing!.groupIndex : disk.groupIndex,
+  });
 }
 
 /** ライブラリ内の全ディスクイメージを保存時刻の降順で返す。 */
@@ -94,6 +118,26 @@ export async function renameDisk(sourceKey: string, displayName: string): Promis
   await putDisk({ ...existing, displayName: trimmed === '' ? undefined : trimmed });
 }
 
+/** グループ(アーカイブ由来フォルダ)の表示名を変更する。所属する全レコードの groupName を更新する。 */
+export async function renameDiskGroup(groupId: string, groupName: string): Promise<void> {
+  const trimmed = groupName.trim();
+  if (trimmed === '') return;
+  const stored = await listDisks();
+  for (const item of stored) {
+    if (item.group !== groupId) continue;
+    await putDisk({ ...item, groupName: trimmed });
+  }
+}
+
+/** グループを丸ごと削除する(所属する全ディスクイメージを削除)。 */
+export async function deleteDiskGroup(groupId: string): Promise<void> {
+  const stored = await listDisks();
+  for (const item of stored) {
+    if (item.group !== groupId) continue;
+    await deleteDisk(item.sourceKey);
+  }
+}
+
 /** D&D/ファイル選択で受け取った File から一意な sourceKey を作る(WebNP2の fileKeyFor に準拠)。 */
 export function fileKeyFor(name: string, size: number): string {
   return `file:${name}:${size}`;
@@ -116,4 +160,110 @@ export function classifyDiskKind(name: string): 'hdd' | 'fd' | null {
   if (HDD_EXTENSIONS.some((ext) => lower.endsWith(ext))) return 'hdd';
   if (FD_EXTENSIONS.some((ext) => lower.endsWith(ext))) return 'fd';
   return null;
+}
+
+// --- アーカイブ展開エントリ専用: 拡張子なし/未知拡張子への内容ベースのフォールバック判定 ---
+//
+// X68000用ディスクイメージはLZH配布で中身のファイル名に拡張子が無いことが珍しくないため、
+// 「アーカイブから取り出したエントリに限り」サイズ/シグネチャで種別を推定する。
+// 単体ファイル(D&D/ファイル選択)には絶対に使わないこと(無関係ファイルの誤採用を防ぐため)。
+
+/** X68000の既知フロッピーイメージサイズ(バイト)。src/main.ts の BLANK_FORMATS と定数を共有する。 */
+export const FD_SIZE_2HD_1232 = 1261568; // 2HD 1232KB (XDF標準)
+export const FD_SIZE_2HD_1440 = 1474560; // 2HD 1440KB
+export const FD_SIZE_2DD_640 = 655360; // 2DD 640KB
+export const FD_SIZE_2DD_720 = 737280; // 2DD 720KB
+const RAW_FD_SIZES: readonly number[] = [FD_SIZE_2HD_1232, FD_SIZE_2HD_1440, FD_SIZE_2DD_640, FD_SIZE_2DD_720];
+
+export const KNOWN_FD_SIZES: readonly number[] = RAW_FD_SIZES;
+
+/**
+ * ".dim" 形式(X68000のディスクダンプで広く使われる形式)のヘッダサイズ。
+ * px68k-libretro の x68k/disk_dim.c (DIM_HEADER 構造体、DIM_SetFD の
+ * `file_lread(fp, DIMImg[drv], sizeof(DIM_HEADER))`) に準拠。
+ */
+const DIM_HEADER_SIZE = 256;
+
+/**
+ * px68k の disk_dim.c にある有効な DIM タイプと、その1トラックあたりのバイト数(SctLength[])。
+ * DIM_2HD=0(1024B/sct*8sct) / DIM_2HS=1(1024B/sct*9sct) / DIM_2HC=2(512B/sct*15sct) /
+ * DIM_2HDE=3(1024B/sct*9sct) / DIM_2HQ=9(512B/sct*18sct)。3〜8のtype(4〜8)はpx68k側で
+ * SctLength[]が0になっており無効(DIM_SetFDの `if (!len) goto dim_set_error`)。
+ */
+const DIM_TRACK_LENGTH: Readonly<Record<number, number>> = {
+  0: 1024 * 8, // DIM_2HD
+  1: 1024 * 9, // DIM_2HS
+  2: 512 * 15, // DIM_2HC
+  3: 1024 * 9, // DIM_2HDE
+  9: 512 * 18, // DIM_2HQ
+};
+
+/**
+ * 拡張子なし/未知拡張子のバイト列が px68k の DIM 実装と整合する DIM イメージかどうかを判定する。
+ * 「生サイズ+256」という緩い判定はDIM_HEADERの内容を無視しており誤検出するため
+ * (bran3r_entry0.lzh はPC-98由来でDIFC HEADER署名も無く、type=1(2HS)なのに
+ * (サイズ-256)が2HSのトラック長9216で割り切れない)、
+ * 1. 先頭バイト(type)が有効なDIMタイプであること
+ * 2. (バイト長-256) がそのtypeのトラック長で割り切れる(トラック数が整数になる)こと
+ * の両方を満たす場合だけ DIM と認める。
+ */
+function isValidDimImage(bytes: Uint8Array): boolean {
+  if (bytes.length <= DIM_HEADER_SIZE) return false;
+  const type = bytes[0];
+  const trackLength = DIM_TRACK_LENGTH[type];
+  if (!trackLength) return false;
+  const dataLength = bytes.length - DIM_HEADER_SIZE;
+  return dataLength > 0 && dataLength % trackLength === 0;
+}
+
+/**
+ * アーカイブ内エントリ向けの内容ベースの種別判定。
+ * 1. 拡張子で分かるなら classifyDiskKind と同じ結果を返す(挙動を変えない)
+ * 2. オフセット0x400に"X68K"シグネチャがあれば 'hdd'(src/api/fat.ts の Human68k パーティション判定と同一ロジック)
+ * 3. バイト長がX68000の既知の生フロッピーイメージサイズ(XDF)と完全一致すれば 'fd'
+ * 4. px68kのDIM実装と整合するDIMヘッダ付きイメージなら 'fd'(拡張子補完は呼び出し側で .dim を出し分ける)
+ * 5. どれにも当たらなければ null(従来どおり除外)
+ */
+export function classifyDiskBytes(name: string, bytes: Uint8Array): 'hdd' | 'fd' | null {
+  const byExt = classifyDiskKind(name);
+  if (byExt) return byExt;
+  if (hasHuman68kPartitionSignature(bytes)) return 'hdd';
+  if (KNOWN_FD_SIZES.includes(bytes.length)) return 'fd';
+  if (isValidDimImage(bytes)) return 'fd';
+  return null;
+}
+
+/**
+ * 内容ベース判定でバイト列が実際に取った経路(生イメージ/DIM/HDD等)を表す種別。
+ * ensureDiskExtension() が拡張子を出し分けるための入力。
+ */
+export type DiskContentKind = 'hdd' | 'rawFd' | 'dimFd';
+
+/** バイト列がどの内容ベース判定経路に当たったかを返す。拡張子で判定できる場合は null。 */
+export function detectDiskContentKind(name: string, bytes: Uint8Array): DiskContentKind | null {
+  if (classifyDiskKind(name)) return null;
+  if (hasHuman68kPartitionSignature(bytes)) return 'hdd';
+  if (KNOWN_FD_SIZES.includes(bytes.length)) return 'rawFd';
+  if (isValidDimImage(bytes)) return 'dimFd';
+  return null;
+}
+
+/**
+ * 拡張子なし(または未知の拡張子)を内容ベースで判定した場合に、保存名へ判定結果が分かる拡張子を補う。
+ * classifyDiskKind(name) が既に判定できる名前ならそのまま返す(拡張子を重ねない)。
+ * ライブラリ表示のバッジ判定(buildLibraryRow の classifyDiskKind(entry.name))が壊れないようにするため。
+ *
+ * px68k (px68k-libretro/x68k/fdd.c の GetDiskType()) はディスク形式を拡張子だけで判定し、
+ * ".d88"/".88d" 以外・".dim" 以外はすべて XDF(生イメージ)として扱う。そのため
+ * DIM(先頭256バイトのヘッダ付き)を ".xdf" として保存するとヘッダをディスクデータとして
+ * 読んでしまい壊れるので、DIMと判定した場合は必ず ".dim" を補う(".xdf" にしない)。
+ */
+export function ensureDiskExtension(
+  name: string,
+  kind: 'hdd' | 'fd',
+  contentKind?: DiskContentKind | null,
+): string {
+  if (classifyDiskKind(name)) return name;
+  if (kind === 'hdd') return `${name}.hdf`;
+  return `${name}${contentKind === 'dimFd' ? '.dim' : '.xdf'}`;
 }

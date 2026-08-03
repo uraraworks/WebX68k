@@ -286,10 +286,26 @@ main {
 }
 
 .library-menu-label {
+  display: flex;
   flex: 1 1 auto;
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* ディスク名を表示する行では head/tail の2spanに分けて中間省略する(.library-item-name と同じ狙い)。 */
+.library-menu-label-head {
+  /* 伸ばさない理由は .library-item-name-head と同じ(短い名前で中央に隙間が空くのを防ぐ)。 */
+  flex: 0 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.library-menu-label-tail {
+  flex: 0 0 auto;
   white-space: nowrap;
 }
 
@@ -335,6 +351,19 @@ main {
   border-radius: 5px;
 }
 
+/* 画面(stage)へのD&D時の強調枠。.fd-slot.dropzone-active と同じ見た目に揃える。 */
+.stage.dropzone-active {
+  outline: 2px dashed var(--accent);
+  outline-offset: -4px;
+}
+
+/* ディスクライブラリのダイアログへのD&D時の強調枠。同上。 */
+.rom-modal.dropzone-active {
+  outline: 2px dashed var(--accent);
+  outline-offset: -4px;
+  border-radius: 8px;
+}
+
 /* ドライブアクセスランプ。WebNP2の実機LED風表示を踏襲(消灯時も枠だけ残す)。 */
 .fd-lamp {
   flex: 0 0 auto;
@@ -370,6 +399,12 @@ main {
   text-overflow: ellipsis;
   white-space: nowrap;
   min-width: 0;
+}
+
+/* 起動前に「セット」しただけ(コア未マウント)のHDD名。マウント済みと区別する。 */
+.fd-name.pending {
+  font-style: italic;
+  opacity: 0.85;
 }
 
 .fd-slot .icon-btn {
@@ -664,13 +699,31 @@ main {
   color: var(--status-bundled);
 }
 
+/*
+ * 名前を head(先頭, ellipsis省略対象)/ tail(末尾, 固定長でそのまま表示)の2spanに分けて並べる(中間省略)。
+ * X68000のディスクイメージは「共通の長いタイトル + 末尾に (Disk n of m)」という命名が多く、
+ * 通常の末尾ellipsisだと同一アーカイブ内の複数枚が同じ表示になってしまうため。
+ */
 .library-item-name {
+  display: flex;
   flex: 1 1 160px;
+  min-width: 0;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+
+.library-item-name-head {
+  /* 伸ばさない(0 1 auto)こと。1 1 auto にすると head が余白まで広がって tail を右端へ押し、
+     省略が不要な短い名前で「sample_    game.xdf」のように中央に隙間が空いて見える。 */
+  flex: 0 1 auto;
+  min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
-  min-width: 0;
+}
+
+.library-item-name-tail {
+  flex: 0 0 auto;
+  white-space: nowrap;
 }
 
 .library-item-meta {
@@ -714,6 +767,75 @@ main {
   font-size: 11px;
   color: var(--text-dim);
   font-style: italic;
+}
+
+/* フォルダ行 + 展開時の中身をまとめるラッパー(library-list の flex gap を子の縦積みにも効かせる)。 */
+.library-group {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+/* URLパラメータ/D&D等で複数枚入りアーカイブを取り込んだ直後、「これです」と分かるように強調する枠(控えめに)。 */
+.library-group.focused {
+  border: 1px solid var(--accent);
+  border-radius: 4px;
+  /*
+   * accent-dim(濃紺)は他所で常に color:#fff とセットで使う塗り。ここは中の
+   * サイズ/日時など淡色テキスト(--text-dim)をそのまま使うため、代わりに accent の薄い
+   * 色調(#e8f1fb, --text-dim比コントラスト比約5.0)を使い、既定の文字色のまま読めるようにする。
+   */
+  background: #e8f1fb;
+  padding: 4px 6px;
+  margin: -4px -6px;
+}
+
+/* アーカイブ由来の複数ディスクをまとめるフォルダ行(クリックで開閉。WebNP2の library-list-group を踏襲)。 */
+.library-list-group {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 12px;
+  padding: 5px 0;
+  cursor: pointer;
+  user-select: none;
+}
+
+.library-list-group:hover .library-group-name {
+  color: var(--accent);
+}
+
+.library-group-twisty {
+  flex: 0 0 auto;
+  width: 12px;
+  font-size: 10px;
+  color: var(--text-dim);
+}
+
+.library-group-name {
+  flex: 1 1 160px;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-weight: bold;
+}
+
+/* フォルダ配下のディスク行は一段下げて親子関係を見せる */
+.library-list-item.in-group {
+  padding-left: 20px;
+  border-left: 2px solid var(--border);
+  margin-left: 5px;
+}
+
+/* スロットの「ライブラリから挿入」メニューでフォルダ行はサブメニューへ潜ることを三角で示す */
+.library-menu-item.group .library-menu-label::after {
+  content: ' ▸';
+  color: inherit;
+}
+
+.library-menu-item.back {
+  color: var(--text-dim);
 }
 
 /* ページ最下部の全幅グレー帯 */
@@ -870,6 +992,11 @@ footer.app-footer a {
 
 .fm-disk-item.dir {
   cursor: pointer;
+  /* ダブルクリックで下の階層へ入る行。既定のままだとフォルダ名が選択状態になり、
+     ブラウザの翻訳ポップアップ等が出てしまうので選択させない。
+     ファイル行はファイル名をコピーできるよう選択可能のままにしてある。 */
+  -webkit-user-select: none;
+  user-select: none;
 }
 
 .fm-disk-item.dir:hover {

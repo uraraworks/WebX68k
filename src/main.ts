@@ -2,6 +2,7 @@ import './style.css';
 import { AudioEngine } from './audio';
 import {
   createFormattedFd,
+  createFormattedHdd,
   fatDeleteFile,
   fatFreeSpace,
   fatList,
@@ -13,15 +14,32 @@ import {
 } from './api/fat';
 import { loadBiosFile, saveBiosFile } from './bios-store';
 import {
+  classifyDiskBytes,
   classifyDiskKind,
   deleteDisk,
+  deleteDiskGroup,
+  detectDiskContentKind,
+  ensureDiskExtension,
+  FD_SIZE_2DD_640,
+  FD_SIZE_2DD_720,
+  FD_SIZE_2HD_1232,
+  FD_SIZE_2HD_1440,
   fileKeyFor,
   getDisk,
   listDisks,
   renameDisk,
+  renameDiskGroup,
   saveDisk,
   type StoredDisk,
 } from './disk-store';
+import { extractArchive, isArchive, resolveArchiveFileName } from './api/archive';
+import {
+  buildLibraryNodes,
+  splitDisplayName,
+  type LibraryEntry,
+  type LibraryGroup,
+  type LibraryNode,
+} from './api/library';
 import { buildFileManagerDialog, type FmTarget } from './filemanager';
 import { Bridge, resolveBridgeUrl, type BridgeHost } from './bridge';
 import { RETROK, charToKey, codeToRetrok } from './keyboard';
@@ -31,7 +49,7 @@ import {
   saveState as putState,
   type StateDiskConfig,
 } from './state-store';
-import { getLang, setLang, t } from './strings';
+import { describeError, getLang, setLang, t } from './strings';
 
 const canvas = document.getElementById('screen') as HTMLCanvasElement;
 const bootOverlay = document.getElementById('boot-overlay') as HTMLDivElement;
@@ -57,6 +75,7 @@ const biosIplStatus = document.getElementById('bios-ipl-status') as HTMLSpanElem
 const biosCgStatus = document.getElementById('bios-cg-status') as HTMLSpanElement;
 const libraryBackdrop = document.getElementById('library-backdrop') as HTMLDivElement;
 const libraryList = document.getElementById('library-list') as HTMLDivElement;
+const libraryDescriptionEl = document.getElementById('library-description') as HTMLParagraphElement;
 const libraryCloseBtn = document.getElementById('library-close') as HTMLButtonElement;
 const slotPopupMenu = document.getElementById('slot-popup-menu') as HTMLDivElement;
 const cfgCpuSpeed = document.getElementById('cfg-cpuspeed') as HTMLSelectElement;
@@ -165,6 +184,16 @@ const BUNDLED_DISK_NAME = 'human302.xdf';
 // 同梱ディスクはIndexedDBには保存せず、ディスクライブラリの先頭に固定表示する(削除不可)。
 const BUNDLED_DISK_SOURCE_KEY = 'bundled:human302';
 
+// --- URLパラメータ(WebNP2 に準拠。fd1/fd2/hdd でディスクURL指定、run=1で自動起動)。---
+// system=1: 同梱システムディスク(human302.xdf)をFDD1として使う(WebNP2の freedos=1 相当)。
+// fd1 が同時指定されていれば fd1 を優先する。
+const urlParams = new URLSearchParams(location.search);
+const urlFd1 = urlParams.get('fd1') ?? undefined;
+const urlFd2 = urlParams.get('fd2') ?? undefined;
+const urlHdd = urlParams.get('hdd') ?? undefined;
+const urlRun = urlParams.get('run') === '1';
+const urlSystem = urlParams.get('system') === '1';
+
 function setBiosStatus(el: HTMLSpanElement, state: 'user' | 'bundled' | 'none'): void {
   if (state === 'user') {
     el.textContent = t('biosStatusUser');
@@ -198,6 +227,163 @@ async function fetchBytes(url: string): Promise<Uint8Array | null> {
     console.error(`同梱ファイルの取得に失敗しました: ${url}`, err);
     return null;
   }
+}
+
+/**
+ * 進捗コールバック付きでURLからバイト列を取得する(WebNP2 の fetchWithProgress に準拠)。
+ * fetch自体が失敗した場合(典型的にはCORS未対応オリジン)とHTTPステータスが失敗の場合とで
+ * メッセージを分け、CORSが原因である可能性を利用者に伝える。
+ */
+async function fetchBytesWithProgress(
+  url: string,
+  onProgress: (loaded: number, total: number | null) => void,
+): Promise<Uint8Array> {
+  let response: Response;
+  try {
+    response = await fetch(url);
+  } catch {
+    throw new Error(t('urlFetchFailedNetwork', { url }));
+  }
+  if (!response.ok) {
+    throw new Error(t('urlFetchFailedHttp', { url, status: response.status }));
+  }
+  const totalHeader = response.headers.get('content-length');
+  const total = totalHeader ? Number(totalHeader) : null;
+
+  if (!response.body) {
+    const buf = await response.arrayBuffer();
+    onProgress(buf.byteLength, total);
+    return new Uint8Array(buf);
+  }
+
+  const reader = response.body.getReader();
+  const chunks: Uint8Array[] = [];
+  let loaded = 0;
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    if (value) {
+      chunks.push(value);
+      loaded += value.byteLength;
+      onProgress(loaded, total);
+    }
+  }
+  const result = new Uint8Array(loaded);
+  let offset = 0;
+  for (const chunk of chunks) {
+    result.set(chunk, offset);
+    offset += chunk.byteLength;
+  }
+  return result;
+}
+
+/** URLの末尾ファイル名を、クエリ/フラグメントを除いた部分から取り出す(配布URLの拡張子判定に使う)。 */
+function urlFileNameGuess(url: string, label: string): string {
+  const path = url.split('#')[0].split('?')[0];
+  const base = path.split('/').pop();
+  return decodeURIComponent(base || `${label}.img`);
+}
+
+/** URLパラメータのスロット(fd1/fd2/hdd)に対応する、アーカイブ内で受け入れるディスク種別。 */
+function requiredKindForSlot(slot: SlotId): 'hdd' | 'fd' {
+  return slot === 'hdd' ? 'hdd' : 'fd';
+}
+
+/** URLパラメータ経由のディスク解決結果。1枚ならそのままスロットへ、複数枚ならライブラリを開いて選ばせる。 */
+type UrlSlotOutcome =
+  | { kind: 'single'; name: string; bytes: Uint8Array; sourceKey: string }
+  | { kind: 'group'; groupId: string }
+  | { kind: 'error' };
+
+/**
+ * URLパラメータ由来のディスクイメージを用意する(WebNP2 の resolveImage に準拠)。
+ * 取得結果がZIP/LZHアーカイブの場合は展開し、D&D/ファイル選択と同じ枚数分岐
+ * (1枚ならそのままスロットへ、複数枚ならライブラリへ登録して選ばせる)を適用する。
+ * アーカイブの展開・ライブラリ登録は同じURLの再訪時は再ダウンロードせず復帰する
+ * (グループIDに `arcurl:<url>` を使い、展開済みのレコードがライブラリにあればそれを使う)。
+ * 取得やスロットとの不一致で処理できない場合はここでトースト/アラートを出したうえで
+ * { kind: 'error' } を返す(呼び出し側は他スロットの処理を継続できる)。
+ */
+async function resolveUrlSlotContent(url: string, label: string, slot: SlotId): Promise<UrlSlotOutcome> {
+  const groupId = `arcurl:${url}`;
+  const requiredKind = requiredKindForSlot(slot);
+
+  // 展開済みのアーカイブ由来グループ(前回このURLを展開済み)があれば再ダウンロードせず復帰する。
+  const stored = await listDisks();
+  const resumedDisks = stored
+    .filter((d) => d.sourceKey.startsWith(`${groupId}/`))
+    .map((d): RegisteredDisk => ({ name: d.name, sourceKey: d.sourceKey, data: d.bytes, kind: classifyDiskKind(d.name) ?? 'fd' }));
+  if (resumedDisks.length > 0) {
+    showToast(t('urlArchiveResumed', { label, count: resumedDisks.length }));
+    return finishArchiveDisks(resumedDisks, label, requiredKind, groupId);
+  }
+
+  // 非アーカイブの単体ディスクとして既に保存済みなら(従来どおり sourceKey===url)、そちらを使う。
+  const plainStored = await getDisk(url);
+  if (plainStored) {
+    showToast(t('urlDiskResumed', { label, name: plainStored.name }));
+    return { kind: 'single', name: plainStored.name, bytes: plainStored.bytes, sourceKey: url };
+  }
+
+  const name = urlFileNameGuess(url, label);
+  showToast(t('urlFetching', { label, name }), null);
+  let bytes: Uint8Array;
+  try {
+    bytes = await fetchBytesWithProgress(url, (loaded, total) => {
+      showToast(
+        t('urlFetchingProgress', {
+          label,
+          name,
+          loaded: formatLibrarySize(loaded),
+          total: total !== null ? formatLibrarySize(total) : null,
+        }),
+        null,
+      );
+    });
+  } catch (err) {
+    console.error(`URLパラメータのディスク取得に失敗しました (${label}): ${url}`, err);
+    showToast(t('urlLoadFailedToast', { label, message: describeError(err) }), 8000);
+    return { kind: 'error' };
+  }
+
+  // 拡張子で判定できない配布URL(拡張子無し)向けに、バイト列のシグネチャでもアーカイブかどうかを見る。
+  const archiveName = resolveArchiveFileName(name, bytes);
+  if (archiveName) {
+    const disks = await registerArchiveBytesToLibrary(archiveName, bytes, groupId, name);
+    return finishArchiveDisks(disks, label, requiredKind, groupId);
+  }
+
+  await saveDisk({ sourceKey: url, name, bytes, savedAt: Date.now() });
+  return { kind: 'single', name, bytes, sourceKey: url };
+}
+
+/**
+ * 展開済みのアーカイブ内容(disks)を、枚数とスロットの種別一致に応じて振り分ける。
+ * - 0枚: ディスクイメージが見つからなかった旨のエラー
+ * - スロットに合う種別が1つも無い: 不一致のエラー(例: hdd指定なのにFDしか無い)
+ * - 1枚(かつ種別一致): そのままスロットへ
+ * - 2枚以上: グループとして登録済みなので、呼び出し側でライブラリを開いて選ばせる
+ */
+function finishArchiveDisks(
+  disks: RegisteredDisk[],
+  label: string,
+  requiredKind: 'hdd' | 'fd',
+  groupId: string,
+): UrlSlotOutcome {
+  if (disks.length === 0) {
+    showToast(t('urlArchiveNoDiskImage', { label }), 8000);
+    return { kind: 'error' };
+  }
+  const matching = disks.some((d) => d.kind === requiredKind);
+  if (!matching) {
+    showToast(t('urlArchiveKindMismatch', { label, kind: requiredKind }), 8000);
+    return { kind: 'error' };
+  }
+  if (disks.length === 1) {
+    const only = disks[0];
+    return { kind: 'single', name: only.name, bytes: only.data, sourceKey: only.sourceKey };
+  }
+  return { kind: 'group', groupId };
 }
 
 /**
@@ -246,6 +432,16 @@ function isSlotLocked(slot: SlotId): boolean {
   return slot === 'hdd' && host !== null && running;
 }
 
+/** いずれかのスロットにディスクがセット済みか。起動オーバーレイのボタン文言の出し分けに使う。 */
+function hasAnySlotSet(): boolean {
+  return SLOT_IDS.some((slot) => slots[slot] !== null);
+}
+
+/** 起動前オーバーレイの1つ目のボタン文言を、セット状態に合わせて更新する。 */
+function updateOverlayBootLabel(): void {
+  btnBootPlain.textContent = hasAnySlotSet() ? t('overlayBootPlainPending') : t('overlayBootPlain');
+}
+
 /** ドライブ行のボタン活性・ツールチップを現在の状態に合わせて更新する。 */
 function updateSlotControls(): void {
   for (const slot of SLOT_IDS) {
@@ -263,9 +459,14 @@ function updateSlotControls(): void {
     const lockedHint = t('slotLockedWhileRunning');
     els.insertBtn.title = locked ? lockedHint : t('slotInsert');
     if (els.libraryBtn) els.libraryBtn.title = locked ? lockedHint : t('slotInsertFromLibrary');
-    if (els.blankBtn) els.blankBtn.title = locked ? lockedHint : t('slotCreateBlank');
+    if (els.blankBtn) {
+      els.blankBtn.title = locked ? lockedHint : slot === 'hdd' ? t('hddCreateBlank') : t('slotCreateBlank');
+    }
     els.ejectBtn.title = locked ? lockedHint : t('slotEject');
   }
+  // 起動前にセットしただけ(コア未マウント)のHDDは、マウント済みと区別できるよう控えめに印を付ける。
+  slotElements.hdd.name.classList.toggle('pending', slots.hdd !== null && !running);
+  updateOverlayBootLabel();
 }
 
 /** スロット1件分の表示(ドライブ行のファイル名 + 各ボタン活性)を更新する。 */
@@ -370,11 +571,187 @@ biosCgInput.addEventListener('change', async () => {
  * WebNP2 のディスクライブラリと同じ流儀で、挿入と同時にディスクライブラリ(IndexedDB)へも自動登録する。
  */
 async function handleDiskFile(slot: SlotId, file: File): Promise<void> {
+  const { sourceKey, data } = await saveDiskFileToLibrary(file);
+  await insertDiskBytes(slot, file.name, data, undefined, sourceKey);
+  if (!libraryBackdrop.classList.contains('hidden')) void refreshLibraryList();
+}
+
+/**
+ * ディスク単体ファイル(アーカイブでない1枚)をそのままディスクライブラリ(IndexedDB)へ保存する。
+ * スロットへの挿入は呼び出し側の責務(挿入せずライブラリ登録だけしたい呼び出し元と共用するため分離)。
+ */
+async function saveDiskFileToLibrary(file: File): Promise<{ sourceKey: string; data: Uint8Array }> {
   const data = await fileToBytes(file);
   const sourceKey = fileKeyFor(file.name, file.size);
   await saveDisk({ sourceKey, name: file.name, bytes: data, savedAt: Date.now() });
-  await insertDiskBytes(slot, file.name, data, undefined, sourceKey);
-  if (!libraryBackdrop.classList.contains('hidden')) void refreshLibraryList();
+  return { sourceKey, data };
+}
+
+// --- アーカイブ(ZIP/LZH)の展開とライブラリ登録 ---
+// WebNP2 のディスクライブラリ(圧縮ファイル展開登録)を移植。ロジックはそちら準拠、UIはこのファイル内で完結させる。
+
+/** ライブラリへ登録した(起動/挿入にそのまま流用する)ディスクイメージ1件。 */
+interface RegisteredDisk {
+  name: string;
+  sourceKey: string;
+  data: Uint8Array;
+  kind: 'hdd' | 'fd';
+}
+
+/** アーカイブ内パスからファイル名部分のみを取り出す(グループ内表示とイメージ種別判定に使う)。 */
+function baseNameOf(path: string): string {
+  const i = path.lastIndexOf('/');
+  return i >= 0 ? path.slice(i + 1) : path;
+}
+
+/**
+ * ZIP/LZH のバイト列を展開し、中に含まれるディスクイメージだけを取り出す(readme等の非対応拡張子は無視する)。
+ * `groupId` は同一アーカイブから展開した複数ディスクをまとめるID兼sourceKeyの接頭辞
+ * (D&D/ファイル選択なら `arc:name:size`、URLパラメータなら `arcurl:url` を渡す)。
+ */
+async function expandArchiveBytesToDisks(
+  archiveName: string,
+  archiveBytes: Uint8Array,
+  groupId: string,
+): Promise<RegisteredDisk[]> {
+  const entries = await extractArchive(archiveName, archiveBytes);
+  const disks: RegisteredDisk[] = [];
+  for (const entry of entries) {
+    const rawName = baseNameOf(entry.name);
+    // アーカイブ内エントリに限り、拡張子で判定できない場合はサイズ/シグネチャによる内容ベース判定へフォールバックする
+    // (X68000のディスクはLZH配布で拡張子なしのファイル名が珍しくないため)。単体ファイルの取り込みでは使わない。
+    const kind = classifyDiskBytes(rawName, entry.data);
+    if (!kind) continue;
+    // 内容ベースで判定した場合は、後からライブラリのバッジ判定(classifyDiskKind)が壊れないよう拡張子を補う。
+    // DIMヘッダ付きと判定したイメージは px68k がヘッダの有無を".dim"拡張子で見分けるため ".xdf" にしない。
+    const contentKind = detectDiskContentKind(rawName, entry.data);
+    const name = ensureDiskExtension(rawName, kind, contentKind);
+    // アーカイブ間で同名同サイズのディスクが衝突しないよう、キーにアーカイブ内パスを含める。
+    disks.push({ name, sourceKey: `${groupId}/${entry.name}`, data: entry.data, kind });
+  }
+  return disks;
+}
+
+/**
+ * アーカイブ(ZIP/LZH)のバイト列を展開し、中のディスクイメージをすべてライブラリ(IndexedDB)へ保存する。
+ * 2枚以上を含む場合は `groupId`/`groupDisplayName` でグループ(フォルダ)としてまとめる。
+ * 戻り値は保存したイメージ本体(直後に起動/挿入へそのままバイト列を流用するため)。
+ */
+async function registerArchiveBytesToLibrary(
+  archiveName: string,
+  archiveBytes: Uint8Array,
+  groupId: string,
+  groupDisplayName: string,
+): Promise<RegisteredDisk[]> {
+  let disks: RegisteredDisk[];
+  try {
+    disks = await expandArchiveBytesToDisks(archiveName, archiveBytes, groupId);
+  } catch (err) {
+    alert(t('statusArchiveFailed', { name: archiveName, message: err instanceof Error ? err.message : String(err) }));
+    return [];
+  }
+  const grouped = disks.length > 1;
+  for (let i = 0; i < disks.length; i++) {
+    const disk = disks[i];
+    // 同じアーカイブを再取り込みしたときに、以前付けた表示名/グループ情報を消さない(saveDiskが優先する)。
+    await saveDisk({
+      sourceKey: disk.sourceKey,
+      name: disk.name,
+      bytes: disk.data,
+      savedAt: Date.now(),
+      group: grouped ? groupId : undefined,
+      groupName: grouped ? groupDisplayName : undefined,
+      groupIndex: grouped ? i : undefined,
+    });
+  }
+  return disks;
+}
+
+/**
+ * アーカイブ(ZIP/LZH、File)を展開し、中のディスクイメージをすべてライブラリ(IndexedDB)へ保存する
+ * (D&D/ファイル選択用の薄いラッパ。groupIdはファイル名+サイズ由来)。
+ */
+async function registerArchiveToLibrary(file: File): Promise<RegisteredDisk[]> {
+  const archiveBytes = await fileToBytes(file);
+  return registerArchiveBytesToLibrary(file.name, archiveBytes, `arc:${file.name}:${file.size}`, file.name);
+}
+
+/**
+ * D&D/ファイル選択で受け取ったファイルをスロットへ反映する。ZIP/LZHの場合は中のディスクイメージだけを
+ * 取り出してライブラリへ登録し、1枚ならそのままスロットへ挿入、複数枚ならライブラリを開いて
+ * どれを使うか選ばせる(実行中の取り込みも同様に受け付ける。挿入自体は insertDiskBytes が
+ * 起動前/起動中どちらも扱えるため、WebNP2のような起動前後の分岐は不要)。
+ *
+ * `slot` はドライブ行D&D/ファイル選択のように投入先が既に決まっている場合はそのスロットIDを、
+ * 画面(stage)へのD&Dのように「イメージの種別(hdd/fd)を見てから投入先を決めたい」場合は
+ * `(kind) => SlotId` の関数を渡す。関数を渡した場合、非アーカイブは拡張子から、アーカイブは
+ * 展開後1枚だけ残った実際のイメージの種別(`RegisteredDisk.kind`)から解決する。
+ */
+async function handleDroppedOrPickedFile(
+  slot: SlotId | ((kind: 'hdd' | 'fd') => SlotId),
+  file: File,
+): Promise<void> {
+  const resolveSlot = (kind: 'hdd' | 'fd'): SlotId => (typeof slot === 'function' ? slot(kind) : slot);
+
+  if (!isArchive(file.name)) {
+    await handleDiskFile(resolveSlot(classifyDiskKind(file.name) ?? 'fd'), file);
+    return;
+  }
+  const groupId = `arc:${file.name}:${file.size}`;
+  const registered = await registerArchiveToLibrary(file);
+  if (registered.length === 0) {
+    alert(t('dropNoDiskImage'));
+    return;
+  }
+  if (registered.length === 1) {
+    const only = registered[0];
+    await insertDiskBytes(resolveSlot(only.kind), only.name, only.data, undefined, only.sourceKey);
+    if (!libraryBackdrop.classList.contains('hidden')) void refreshLibraryList();
+    return;
+  }
+  showToast(t('statusLibraryAdded', { count: registered.length }));
+  openLibraryModal(groupId);
+}
+
+/**
+ * ディスクライブラリのダイアログへD&Dされたファイルを扱う。スロットには入れず、ライブラリへの
+ * 登録だけを行う(ライブラリを開いている=どこに入れるかはこれから選ぶ、という文脈のため)。
+ * 複数枚アーカイブの場合は openLibraryModal と同じ「グループを展開・強調」の仕組みをそのまま使う。
+ */
+async function handleDroppedFileForLibrary(file: File): Promise<void> {
+  if (!isArchive(file.name)) {
+    await saveDiskFileToLibrary(file);
+    showToast(t('statusLibraryAdded', { count: 1 }));
+    void refreshLibraryList();
+    return;
+  }
+  const groupId = `arc:${file.name}:${file.size}`;
+  const registered = await registerArchiveToLibrary(file);
+  if (registered.length === 0) {
+    alert(t('dropNoDiskImage'));
+    return;
+  }
+  showToast(t('statusLibraryAdded', { count: registered.length }));
+  if (registered.length > 1) {
+    openLibraryModal(groupId); // グループを展開・強調表示(refreshLibraryListも内部で呼ばれる)
+  } else {
+    void refreshLibraryList();
+  }
+}
+
+/**
+ * 画面(stage)へのD&Dで、ディスクの種別(hdd/fd)から投入先スロットを決める。
+ * - HDDイメージ: 常にHDDスロットへ(起動中でロック済みの場合は insertDiskBytes 内の
+ *   isSlotLocked チェックが既存のロック時メッセージを出す)。
+ * - FDイメージ: FDD1が空ならFDD1へ。FDD1が埋まっていてFDD2が空なら、2ドライブ運用の
+ *   利便性を優先してFDD2へ入れる(WebNP2には無い挙動だがドライブ行が2本あるWebX68k独自の配慮)。
+ *   両方埋まっている/両方空の場合はFDD1をデフォルトの投入先とする
+ *   (ドライブ行へ直接ドロップしたときと同じ「常に決め打ちのスロットへ入る」既定動作に合わせる)。
+ */
+function resolveStageDropSlot(kind: 'hdd' | 'fd'): SlotId {
+  if (kind === 'hdd') return 'hdd';
+  if (slots.fdd0 !== null && slots.fdd1 === null) return 'fdd1';
+  return 'fdd0';
 }
 
 /** ディスクライブラリの1件(または同梱ディスク)を指定ドライブへ挿入する。 */
@@ -409,10 +786,46 @@ function slotInsertLabel(slot: SlotId): string {
   return t('libraryInsertTo', { drive: slotDisplayName(slot) });
 }
 
-/** ディスクライブラリ1件分の行(バッジ/名前/サイズ/操作ボタン)を組み立てる。 */
-function buildLibraryRow(entry: LibraryRowEntry): HTMLElement {
+/** 展開状態のグループID。ライブラリダイアログの再描画をまたいで開閉を保つ。 */
+const expandedLibraryGroups = new Set<string>();
+
+/**
+ * URLパラメータ/D&D等で複数枚入りアーカイブを取り込んだ直後にライブラリを開いたとき、
+ * 「これです」と分かるように展開・強調・スクロールするグループID。手動でライブラリを開いたとき(ツールバーの
+ * ボタン等)は null のままで従来どおりの見た目になる。
+ */
+let highlightedLibraryGroupId: string | null = null;
+
+/** ホバー用のtitle文字列。リネーム済みなら表示名と元ファイル名を併記し、未リネームなら表示名のみ。 */
+function libraryNameTitle(displayName: string, name: string): string {
+  return displayName !== name ? `${displayName} (${name})` : displayName;
+}
+
+/**
+ * 表示名を先頭側(head)/末尾側(tail)の2要素に分けてcontainerへ追加する(中間省略)。
+ * X68000のディスクイメージは「共通の長いタイトル + 末尾に (Disk n of m)」という命名が多く、
+ * 通常のCSS末尾ellipsisだと同一アーカイブ内の複数枚がすべて同じ表示になってしまう。
+ * head側はCSSでellipsis省略、tail側は固定文字数をそのまま表示することで、
+ * 作品名(先頭)と何枚目か(末尾)を両方視認できるようにする。
+ */
+function appendSplitName(container: HTMLElement, name: string, headClass: string, tailClass: string): void {
+  const { head, tail } = splitDisplayName(name);
+  const headEl = document.createElement('span');
+  headEl.className = headClass;
+  headEl.textContent = head;
+  container.append(headEl);
+  if (tail) {
+    const tailEl = document.createElement('span');
+    tailEl.className = tailClass;
+    tailEl.textContent = tail;
+    container.append(tailEl);
+  }
+}
+
+/** ライブラリ1件分の行(バッジ/名前/サイズ/操作ボタン)を組み立てる。inGroup ならフォルダ配下として一段下げる。 */
+function buildLibraryRow(entry: LibraryRowEntry, inGroup = false): HTMLElement {
   const row = document.createElement('div');
-  row.className = 'library-list-item';
+  row.className = `library-list-item${inGroup ? ' in-group' : ''}`;
 
   const kind = classifyDiskKind(entry.name);
   const badge = document.createElement('span');
@@ -422,9 +835,9 @@ function buildLibraryRow(entry: LibraryRowEntry): HTMLElement {
 
   const nameEl = document.createElement('span');
   nameEl.className = 'library-item-name';
-  nameEl.textContent = entry.displayName;
-  // リネーム済みなら元のファイル名をツールチップで確認できるようにする。
-  if (entry.displayName !== entry.name) nameEl.title = entry.name;
+  appendSplitName(nameEl, entry.displayName, 'library-item-name-head', 'library-item-name-tail');
+  // 常に完全な名前をツールチップで確認できるようにする(リネーム済みなら元のファイル名も併記)。
+  nameEl.title = libraryNameTitle(entry.displayName, entry.name);
   row.append(nameEl);
 
   const metaEl = document.createElement('span');
@@ -492,7 +905,100 @@ function buildLibraryRow(entry: LibraryRowEntry): HTMLElement {
   return row;
 }
 
-/** ディスクライブラリ一覧を再描画する。先頭に同梱ディスク(固定・削除不可)、続けて保存時刻降順のユーザー登録分。 */
+/** LibraryEntry(api/library.ts のツリー要素)を buildLibraryRow が期待する行データへ変換する。 */
+function entryToRow(entry: LibraryEntry): LibraryRowEntry {
+  return {
+    sourceKey: entry.sourceKey,
+    name: entry.name,
+    displayName: entry.displayName,
+    size: entry.size,
+    savedAt: entry.savedAt,
+    bundled: false,
+  };
+}
+
+/** アーカイブ由来グループのフォルダ行(クリックで開閉)と、展開時はその中身の行をまとめて組み立てる。 */
+function buildLibraryGroupRow(group: LibraryGroup): HTMLElement {
+  const expanded = expandedLibraryGroups.has(group.id);
+
+  const twisty = document.createElement('span');
+  twisty.className = 'library-group-twisty';
+  twisty.textContent = expanded ? '▼' : '▶';
+
+  const nameEl = document.createElement('span');
+  nameEl.className = 'library-group-name';
+  nameEl.textContent = group.name;
+  nameEl.title = group.name;
+
+  const countEl = document.createElement('span');
+  countEl.className = 'library-item-meta';
+  countEl.textContent = t('libraryGroupCount', { count: group.entries.length });
+
+  const actions = document.createElement('div');
+  actions.className = 'library-item-actions';
+
+  const renameBtn = document.createElement('button');
+  renameBtn.type = 'button';
+  renameBtn.className = 'library-action-btn';
+  renameBtn.textContent = t('libraryActionRename');
+  renameBtn.addEventListener('click', (e) => {
+    e.stopPropagation();
+    const next = prompt(t('libraryRenameGroupPrompt'), group.name);
+    if (next === null) return;
+    void (async () => {
+      await renameDiskGroup(group.id, next);
+      await refreshLibraryList();
+    })();
+  });
+  actions.append(renameBtn);
+
+  const deleteBtn = document.createElement('button');
+  deleteBtn.type = 'button';
+  deleteBtn.className = 'library-action-btn danger';
+  deleteBtn.textContent = t('libraryActionDelete');
+  deleteBtn.addEventListener('click', (e) => {
+    e.stopPropagation();
+    if (!confirm(t('libraryDeleteGroupConfirm', { name: group.name, count: group.entries.length }))) return;
+    void (async () => {
+      await deleteDiskGroup(group.id);
+      await refreshLibraryList();
+    })();
+  });
+  actions.append(deleteBtn);
+
+  const header = document.createElement('div');
+  header.className = 'library-list-group';
+  header.setAttribute('role', 'button');
+  header.tabIndex = 0;
+  header.setAttribute('aria-expanded', String(expanded));
+  header.append(twisty, nameEl, countEl, actions);
+  const toggle = (): void => {
+    if (expandedLibraryGroups.has(group.id)) expandedLibraryGroups.delete(group.id);
+    else expandedLibraryGroups.add(group.id);
+    void refreshLibraryList();
+  };
+  header.addEventListener('click', toggle);
+  header.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter' || e.key === ' ') {
+      e.preventDefault();
+      toggle();
+    }
+  });
+
+  const wrap = document.createElement('div');
+  wrap.className = `library-group${group.id === highlightedLibraryGroupId ? ' focused' : ''}`;
+  wrap.dataset.groupId = group.id;
+  wrap.append(header);
+  if (expanded) {
+    for (const entry of group.entries) wrap.append(buildLibraryRow(entryToRow(entry), true));
+  }
+  return wrap;
+}
+
+/**
+ * ディスクライブラリ一覧を再描画する。先頭に同梱ディスク(固定・削除不可)、続けてグループ(フォルダ)/
+ * 単体ディスクが混在したツリー(トップレベルは保存時刻降順、フォルダ内はアーカイブ内の出現順)。
+ */
 async function refreshLibraryList(): Promise<void> {
   const stored: StoredDisk[] = await listDisks();
   libraryList.textContent = '';
@@ -508,22 +1014,30 @@ async function refreshLibraryList(): Promise<void> {
     }),
   );
 
-  for (const item of stored) {
-    libraryList.append(
-      buildLibraryRow({
-        sourceKey: item.sourceKey,
-        name: item.name,
-        displayName: item.displayName ?? item.name,
-        size: item.bytes.byteLength,
-        savedAt: item.savedAt,
-        bundled: false,
-      }),
+  const nodes = buildLibraryNodes(stored, classifyDiskKind);
+  for (const node of nodes) {
+    libraryList.append(node.kind === 'group' ? buildLibraryGroupRow(node.group) : buildLibraryRow(entryToRow(node.entry)));
+  }
+
+  // 注目グループがあれば、一覧が長い場合に備えて画面内へスクロールする(展開/強調自体はbuildLibraryGroupRow側で反映済み)。
+  if (highlightedLibraryGroupId) {
+    const target = libraryList.querySelector<HTMLElement>(
+      `.library-group[data-group-id="${CSS.escape(highlightedLibraryGroupId)}"]`,
     );
+    target?.scrollIntoView({ block: 'nearest' });
   }
 }
 
-function openLibraryModal(): void {
+/**
+ * ディスクライブラリダイアログを開く。`focusGroupId` を渡すと(URLパラメータ/D&D等の
+ * 複数枚アーカイブ取り込み直後の呼び出し)、そのグループを展開・強調・スクロール表示し、
+ * 案内文を差し替える。手動でのオープン(ツールバーのボタン等)は引数なしで呼ばれ、従来どおりの見た目になる。
+ */
+function openLibraryModal(focusGroupId?: string): void {
   libraryBackdrop.classList.remove('hidden');
+  highlightedLibraryGroupId = focusGroupId ?? null;
+  if (focusGroupId) expandedLibraryGroups.add(focusGroupId);
+  libraryDescriptionEl.textContent = focusGroupId ? t('libraryGroupFocusHint') : t('libraryDialogDescription');
   void refreshLibraryList();
 }
 function closeLibraryModal(): void {
@@ -540,17 +1054,32 @@ window.addEventListener('keydown', (e) => {
 
 // --- スロットボタンのポップアップメニュー(WebNP2 の fdLibraryMenu を踏襲) ---
 // 「ライブラリから挿入」「ブランク作成」の2種類でこの単一メニュー要素を使い回す。
+// 「ライブラリから挿入」はフォルダ(アーカイブ由来グループ)行をクリックすると、
+// ライブラリダイアログを開かずにこのメニューのまま中身(サブメニュー)へ切り替わる。
 
 function closeSlotPopupMenu(): void {
   slotPopupMenu.classList.add('hidden');
   slotPopupMenu.textContent = '';
 }
 
-function menuRow(label: string, extra?: string, cls = ''): HTMLElement {
+/**
+ * @param options.splitName ディスク名(displayName)を表示する行のとき true。head/tail に分割し中間省略する。
+ * @param options.title 行全体につけるツールチップ(完全な名前を常に見られるようにする)。
+ */
+function menuRow(
+  label: string,
+  extra?: string,
+  cls = '',
+  options?: { splitName?: boolean; title?: string },
+): HTMLElement {
   const children: Array<Node | string> = [];
   const labelEl = document.createElement('span');
   labelEl.className = 'library-menu-label';
-  labelEl.textContent = label;
+  if (options?.splitName) {
+    appendSplitName(labelEl, label, 'library-menu-label-head', 'library-menu-label-tail');
+  } else {
+    labelEl.textContent = label;
+  }
   children.push(labelEl);
   if (extra) {
     const extraEl = document.createElement('span');
@@ -562,6 +1091,7 @@ function menuRow(label: string, extra?: string, cls = ''): HTMLElement {
   row.className = `library-menu-item ${cls}`.trim();
   row.setAttribute('role', 'menuitem');
   row.tabIndex = 0;
+  if (options?.title) row.title = options.title;
   row.append(...children);
   return row;
 }
@@ -589,9 +1119,41 @@ function positionSlotPopupMenu(anchorEl: HTMLElement): void {
   slotPopupMenu.style.top = `${Math.round(top)}px`;
 }
 
-/** 「ライブラリから挿入」ポップアップ: 対象スロットの種別(FD/HDD)に合うライブラリ内容だけを一覧表示する。 */
-async function openSlotLibraryMenu(slot: SlotId, anchorEl: HTMLButtonElement): Promise<void> {
-  const stored = await listDisks();
+/** グループ内のディスク一覧(サブメニュー)を描画する。対象スロットの種別(FD/HDD)に合うものだけ表示する。 */
+function renderSlotLibrarySubmenu(
+  slot: SlotId,
+  anchorEl: HTMLButtonElement,
+  group: LibraryGroup,
+  nodes: LibraryNode[],
+): void {
+  const wantKind = slot === 'hdd' ? 'hdd' : 'fd';
+  slotPopupMenu.textContent = '';
+  const back = menuRow(t('libraryMenuBack'), undefined, 'back');
+  onActivate(back, () => renderSlotLibraryMenu(slot, anchorEl, nodes));
+  slotPopupMenu.append(back);
+  const title = document.createElement('div');
+  title.className = 'library-menu-title';
+  title.textContent = group.name;
+  slotPopupMenu.append(title);
+
+  for (const entry of group.entries) {
+    if (entry.kind !== wantKind) continue;
+    const row = menuRow(entry.displayName, undefined, '', {
+      splitName: true,
+      title: libraryNameTitle(entry.displayName, entry.name),
+    });
+    onActivate(row, () => {
+      closeSlotPopupMenu();
+      void insertFromLibrary(entry.sourceKey, slot);
+    });
+    slotPopupMenu.append(row);
+  }
+  positionSlotPopupMenu(anchorEl);
+}
+
+/** メニューの第1階層(同梱ディスク + 単体ディスク + グループのフォルダ行)を描画する。 */
+function renderSlotLibraryMenu(slot: SlotId, anchorEl: HTMLButtonElement, nodes: LibraryNode[]): void {
+  const wantKind = slot === 'hdd' ? 'hdd' : 'fd';
   slotPopupMenu.textContent = '';
   const title = document.createElement('div');
   title.className = 'library-menu-title';
@@ -603,24 +1165,36 @@ async function openSlotLibraryMenu(slot: SlotId, anchorEl: HTMLButtonElement): P
     const row = menuRow(t('bundledDiskDisplayName'));
     onActivate(row, () => {
       closeSlotPopupMenu();
-      void (async () => {
-        await insertFromLibrary(BUNDLED_DISK_SOURCE_KEY, slot);
-      })();
+      void insertFromLibrary(BUNDLED_DISK_SOURCE_KEY, slot);
     });
     slotPopupMenu.append(row);
     shown++;
   }
-  for (const item of stored) {
-    const kind = classifyDiskKind(item.name);
-    const wantKind = slot === 'hdd' ? 'hdd' : 'fd';
-    if (kind !== wantKind) continue;
-    const row = menuRow(item.displayName ?? item.name);
-    onActivate(row, () => {
-      closeSlotPopupMenu();
-      void insertFromLibrary(item.sourceKey, slot);
-    });
-    slotPopupMenu.append(row);
-    shown++;
+
+  for (const node of nodes) {
+    if (node.kind === 'group') {
+      // 対象スロットの種別(FD/HDD)を1枚も含まないグループは挿入先が無いので出さない。
+      const count = node.group.entries.filter((e) => e.kind === wantKind).length;
+      if (count === 0) continue;
+      const row = menuRow(node.group.name, t('libraryGroupCount', { count }), 'group', {
+        title: node.group.name,
+      });
+      onActivate(row, () => renderSlotLibrarySubmenu(slot, anchorEl, node.group, nodes));
+      slotPopupMenu.append(row);
+      shown++;
+    } else {
+      if (node.entry.kind !== wantKind) continue;
+      const row = menuRow(node.entry.displayName, undefined, '', {
+        splitName: true,
+        title: libraryNameTitle(node.entry.displayName, node.entry.name),
+      });
+      onActivate(row, () => {
+        closeSlotPopupMenu();
+        void insertFromLibrary(node.entry.sourceKey, slot);
+      });
+      slotPopupMenu.append(row);
+      shown++;
+    }
   }
   if (shown === 0) {
     const empty = document.createElement('div');
@@ -631,20 +1205,27 @@ async function openSlotLibraryMenu(slot: SlotId, anchorEl: HTMLButtonElement): P
   positionSlotPopupMenu(anchorEl);
 }
 
+/** 「ライブラリから挿入」ポップアップ: 対象スロットの種別(FD/HDD)に合うライブラリ内容だけを一覧表示する。 */
+async function openSlotLibraryMenu(slot: SlotId, anchorEl: HTMLButtonElement): Promise<void> {
+  const stored = await listDisks();
+  const nodes = buildLibraryNodes(stored, classifyDiskKind);
+  renderSlotLibraryMenu(slot, anchorEl, nodes);
+}
+
 // X68000 標準フォーマット(2HD 1232KB=XDF標準 / 2HD 1440KB / 2DD 640KB / 2DD 720KB)。
 // 中身はゼロ埋め(Human68kのFORMAT.Xで初期化する前提)。
 const BLANK_FORMATS: Array<{ id: string; labelKey: 'blankFormat2hd1232' | 'blankFormat2hd1440' | 'blankFormat2dd640' | 'blankFormat2dd720'; size: number }> = [
-  { id: '2hd1232', labelKey: 'blankFormat2hd1232', size: 1261568 },
-  { id: '2hd1440', labelKey: 'blankFormat2hd1440', size: 1474560 },
-  { id: '2dd640', labelKey: 'blankFormat2dd640', size: 655360 },
-  { id: '2dd720', labelKey: 'blankFormat2dd720', size: 737280 },
+  { id: '2hd1232', labelKey: 'blankFormat2hd1232', size: FD_SIZE_2HD_1232 },
+  { id: '2hd1440', labelKey: 'blankFormat2hd1440', size: FD_SIZE_2HD_1440 },
+  { id: '2dd640', labelKey: 'blankFormat2dd640', size: FD_SIZE_2DD_640 },
+  { id: '2dd720', labelKey: 'blankFormat2dd720', size: FD_SIZE_2DD_720 },
 ];
 
 /** 既存のライブラリ登録名と重複しないブランクディスク名を作る(WebNP2の createBlankFd の命名規則を踏襲)。 */
-function uniqueBlankName(baseName: string, existingNames: Set<string>): string {
-  let name = `${baseName}.xdf`;
+function uniqueBlankName(baseName: string, existingNames: Set<string>, ext = '.xdf'): string {
+  let name = `${baseName}${ext}`;
   for (let i = 2; existingNames.has(name); i++) {
-    name = `${baseName}${i}.xdf`;
+    name = `${baseName}${i}${ext}`;
   }
   return name;
 }
@@ -659,6 +1240,25 @@ async function handleCreateBlank(slot: SlotId, formatId: string, sizeBytes: numb
   await saveDisk({ sourceKey, name, bytes: data, savedAt: Date.now() });
   await insertDiskBytes(slot, name, data, undefined, sourceKey);
   if (!libraryBackdrop.classList.contains('hidden')) void refreshLibraryList();
+}
+
+/**
+ * FAT16フォーマット済みのブランクHDD(40MB)を生成し、HDDスロットへセットしてライブラリにも登録する。
+ * FDと違いフォーマットは単一(createFormattedHdd()固定)なのでメニューは出さず即作成する(起動前のみ)。
+ * IPLの実体を持たないためHDD単体では起動できず、FDDからHuman68kを起動してデータドライブとして
+ * 使う想定(WebNP2のcreateFormattedHdd()と同じ案内をトーストで出す)。
+ */
+async function handleCreateBlankHdd(): Promise<void> {
+  if (isSlotLocked('hdd')) return;
+  const stored = await listDisks();
+  const existingNames = new Set(stored.map((d) => d.name));
+  const name = uniqueBlankName('blank_hdd', existingNames, '.hdf');
+  const data = createFormattedHdd();
+  const sourceKey = fileKeyFor(name, data.length);
+  await saveDisk({ sourceKey, name, bytes: data, savedAt: Date.now() });
+  await insertDiskBytes('hdd', name, data, undefined, sourceKey);
+  if (!libraryBackdrop.classList.contains('hidden')) void refreshLibraryList();
+  showToast(t('statusHddBlankCreated', { name }));
 }
 
 /** 「ブランク作成」ポップアップ: X68000標準フォーマットから選ばせる。 */
@@ -798,7 +1398,7 @@ for (const slot of SLOT_IDS) {
   els.input.addEventListener('change', () => {
     const file = els.input.files?.[0];
     els.input.value = '';
-    if (file) void handleDiskFile(slot, file);
+    if (file) void handleDroppedOrPickedFile(slot, file);
   });
   els.libraryBtn?.addEventListener('click', (e) => {
     e.stopPropagation();
@@ -814,7 +1414,9 @@ for (const slot of SLOT_IDS) {
       closeSlotPopupMenu();
       return;
     }
-    openSlotBlankMenu(slot, els.blankBtn!);
+    // HDDはフォーマットが単一(FAT16固定)なのでメニューを出さず即作成する。FDは従来通り選択メニュー。
+    if (slot === 'hdd') void handleCreateBlankHdd();
+    else openSlotBlankMenu(slot, els.blankBtn!);
   });
   els.ejectBtn.addEventListener('click', () => ejectSlot(slot));
   els.downloadBtn.addEventListener('click', () => void handleDownloadDisk(slot));
@@ -836,7 +1438,56 @@ for (const slot of SLOT_IDS) {
     depth = 0;
     slotRow.classList.remove('dropzone-active');
     const file = e.dataTransfer?.files?.[0];
-    if (file) void handleDiskFile(slot, file);
+    if (file) void handleDroppedOrPickedFile(slot, file);
+  });
+}
+
+// 画面(stage、canvasを含む領域)へのD&D配線。WebNP2 の stage D&D(dragenterカウンタ方式)を移植し、
+// 投入先の決定だけ resolveStageDropSlot 経由で WebX68k のスロット構成(FDD1/FDD2/HDD)に合わせる。
+// 起動前・起動中どちらでも受け付ける(insertDiskBytes/hotSwapFdd が両方を扱えるため)。
+{
+  const stageEl = document.querySelector('.stage') as HTMLDivElement;
+  let stageDropDepth = 0;
+  stageEl.addEventListener('dragover', (e) => e.preventDefault());
+  stageEl.addEventListener('dragenter', (e) => {
+    e.preventDefault();
+    stageDropDepth++;
+    stageEl.classList.add('dropzone-active');
+  });
+  stageEl.addEventListener('dragleave', () => {
+    stageDropDepth = Math.max(0, stageDropDepth - 1);
+    if (stageDropDepth === 0) stageEl.classList.remove('dropzone-active');
+  });
+  stageEl.addEventListener('drop', (e) => {
+    e.preventDefault();
+    stageDropDepth = 0;
+    stageEl.classList.remove('dropzone-active');
+    const file = e.dataTransfer?.files?.[0];
+    if (file) void handleDroppedOrPickedFile(resolveStageDropSlot, file);
+  });
+}
+
+// ディスクライブラリのダイアログへのD&D配線。開いているライブラリへ放り込んで登録するだけの用途
+// (スロットには入れない)。バックドロップ全体ではなくダイアログ本体(.rom-modal)だけを受け口にする。
+{
+  const libraryDialogEl = libraryBackdrop.querySelector('.rom-modal') as HTMLDivElement;
+  let libraryDropDepth = 0;
+  libraryDialogEl.addEventListener('dragover', (e) => e.preventDefault());
+  libraryDialogEl.addEventListener('dragenter', (e) => {
+    e.preventDefault();
+    libraryDropDepth++;
+    libraryDialogEl.classList.add('dropzone-active');
+  });
+  libraryDialogEl.addEventListener('dragleave', () => {
+    libraryDropDepth = Math.max(0, libraryDropDepth - 1);
+    if (libraryDropDepth === 0) libraryDialogEl.classList.remove('dropzone-active');
+  });
+  libraryDialogEl.addEventListener('drop', (e) => {
+    e.preventDefault();
+    libraryDropDepth = 0;
+    libraryDialogEl.classList.remove('dropzone-active');
+    const file = e.dataTransfer?.files?.[0];
+    if (file) void handleDroppedFileForLibrary(file);
   });
 }
 
@@ -867,7 +1518,7 @@ function applyDocumentStrings(): void {
   document.getElementById('header-tagline')!.textContent = t('headerTagline');
   document.getElementById('overlay-note-1')!.textContent = t('overlayNote1');
   document.getElementById('overlay-note-2')!.textContent = t('overlayNote2');
-  btnBootPlain.textContent = t('overlayBootPlain');
+  updateOverlayBootLabel();
   btnBootSystem.textContent = t('overlayBootSystem');
 
   btnReset.title = t('toolbarReset');
@@ -897,7 +1548,7 @@ function applyDocumentStrings(): void {
     // title(ツールチップ)はロック状態で文言が変わるため updateSlotControls() 側で貼る
     els.insertBtn.setAttribute('aria-label', `${drive} ${t('slotInsert')}`);
     els.libraryBtn?.setAttribute('aria-label', `${drive} ${t('slotInsertFromLibrary')}`);
-    els.blankBtn?.setAttribute('aria-label', `${drive} ${t('slotCreateBlank')}`);
+    els.blankBtn?.setAttribute('aria-label', `${drive} ${slot === 'hdd' ? t('hddCreateBlank') : t('slotCreateBlank')}`);
     els.ejectBtn.setAttribute('aria-label', `${drive} ${t('slotEject')}`);
     els.downloadBtn.title = t('slotDownload');
     els.downloadBtn.setAttribute('aria-label', `${drive} ${t('slotDownload')}`);
@@ -931,7 +1582,7 @@ function applyDocumentStrings(): void {
   setBiosStatus(biosCgStatus, biosCgState);
 
   document.getElementById('library-title')!.textContent = t('libraryDialogTitle');
-  document.getElementById('library-description')!.textContent = t('libraryDialogDescription');
+  libraryDescriptionEl.textContent = highlightedLibraryGroupId ? t('libraryGroupFocusHint') : t('libraryDialogDescription');
   libraryCloseBtn.textContent = t('libraryDialogClose');
   if (!libraryBackdrop.classList.contains('hidden')) void refreshLibraryList();
 
@@ -1328,6 +1979,33 @@ function loop(t: number): void {
   scheduleNext();
 }
 
+/**
+ * run=1 自動起動時はブラウザの自動再生制限によりAudioContextがsuspendedのまま無音になる
+ * (ページ読み込みだけではユーザー操作とみなされないため)。起動直後にこの状態を検知したら
+ * 「音が出ていない」ことが分かる表示を出し、最初のクリック/キー入力で audio.resume() を呼んで
+ * 再開を試みる。実際に再開できた(state === 'running')ことを確認してから表示を消す。
+ * 通常のボタン起動(ユーザー操作起点)では既に running のことが多く、その場合は何もしない。
+ */
+function maybeShowAudioMutedBanner(): void {
+  const ctx = audio?.context;
+  if (!ctx || ctx.state !== 'suspended') return;
+
+  showToast(t('audioMutedBanner'), null);
+
+  const onStateChange = () => {
+    if (ctx.state !== 'running') return;
+    ctx.removeEventListener('statechange', onStateChange);
+    document.removeEventListener('click', tryResume);
+    document.removeEventListener('keydown', tryResume);
+    hideToast();
+  };
+  const tryResume = () => audio?.resume();
+
+  ctx.addEventListener('statechange', onStateChange);
+  document.addEventListener('click', tryResume);
+  document.addEventListener('keydown', tryResume);
+}
+
 /** 起動前オーバーレイのボタン(「そのまま起動」/「システムディスクで起動」)から呼ばれる起動処理。 */
 async function startFromOverlay(withSystemDisk: boolean): Promise<void> {
   if (bootStarted) return;
@@ -1364,9 +2042,10 @@ async function startFromOverlay(withSystemDisk: boolean): Promise<void> {
     btnLoadState.disabled = false;
     updateMouseControls();
     canvas.focus();
+    maybeShowAudioMutedBanner();
   } catch (err) {
     console.error(err);
-    alert(t('alertBootFailed', { message: (err as Error).message ?? String(err) }));
+    alert(t('alertBootFailed', { message: describeError(err) }));
     bootOverlay.classList.remove('hidden');
     bootStarted = false;
   }
@@ -1387,12 +2066,30 @@ btnReset.addEventListener('click', () => {
 const STATE_SLOT = 'quick';
 let toastTimer: ReturnType<typeof setTimeout> | undefined;
 
-/** 画面下部に一時通知を出す(数秒で自動的に消える)。 */
-function showToast(message: string): void {
+/**
+ * 画面下部に一時通知を出す(既定は2.5秒で自動的に消える)。
+ * durationMs に null を渡すと自動で消えない(ダウンロード進捗・音声ミュート表示など、
+ * 明示的に消すまで出しっぱなしにしたい用途向け)。
+ */
+function showToast(message: string, durationMs: number | null = 2500): void {
   toastEl.textContent = message;
   toastEl.classList.remove('hidden');
-  if (toastTimer !== undefined) clearTimeout(toastTimer);
-  toastTimer = setTimeout(() => toastEl.classList.add('hidden'), 2500);
+  if (toastTimer !== undefined) {
+    clearTimeout(toastTimer);
+    toastTimer = undefined;
+  }
+  if (durationMs !== null) {
+    toastTimer = setTimeout(() => toastEl.classList.add('hidden'), durationMs);
+  }
+}
+
+/** showToast の持続表示を即座に消す(次のトーストで上書きされるより前に、明示的に閉じたいとき用)。 */
+function hideToast(): void {
+  toastEl.classList.add('hidden');
+  if (toastTimer !== undefined) {
+    clearTimeout(toastTimer);
+    toastTimer = undefined;
+  }
 }
 
 /**
@@ -1508,6 +2205,12 @@ function openSlotVolume(slot: SlotId): FmVolumeHandle {
     persist: async () => {
       if (isSlotLocked(slot)) throw new Error(t('slotLockedWhileRunning'));
       slots[slot] = { name: pending.name, data: image, sourceKey: pending.sourceKey };
+      // ライブラリ(IndexedDB)由来のイメージなら、そちらにも書き戻す。これが無いと
+      // ページ再読み込みでファイル転送による編集が消えてしまう(同梱ディスクは対象外)。
+      if (pending.sourceKey && pending.sourceKey !== BUNDLED_DISK_SOURCE_KEY) {
+        await saveDisk({ sourceKey: pending.sourceKey, name: pending.name, bytes: image, savedAt: Date.now() });
+        if (!libraryBackdrop.classList.contains('hidden')) void refreshLibraryList();
+      }
       if (host && running) {
         const drive = fddDriveOf(slot);
         if (drive !== null) hotSwapFdd(slot, drive, { name: pending.name, data: image });
@@ -1632,10 +2335,63 @@ const fileManagerDialog = buildFileManagerDialog(fileManagerRoot, {
 btnFileManager.addEventListener('click', () => fileManagerDialog.open());
 btnHelp.addEventListener('click', () => window.open(`./help.html?lang=${getLang()}`, '_blank'));
 
+/**
+ * URLパラメータ(fd1/fd2/hdd/system/run)に応じてディスクを起動前にセットし、
+ * run=1 なら自動起動する(WebNP2 の同名パラメータ方式に準拠)。
+ * 1つのディスクの取得に失敗しても他スロットの読み込み・起動は継続する(要件3)。
+ * いずれのパラメータも無ければ何もしない(要件7: 既存のオーバーレイ2択のまま)。
+ */
+async function applyUrlParams(): Promise<void> {
+  // system=1: fd1 の明示指定が無いときだけ、同梱システムディスクをFDD1として使う
+  // (WebNP2 の freedos=1 相当。fd1 が指定されていればそちらを優先する)。
+  const wantsBundledSystem = urlSystem && !urlFd1;
+  if (!urlFd1 && !urlFd2 && !urlHdd && !wantsBundledSystem && !urlRun) return;
+
+  if (wantsBundledSystem) {
+    const bytes = await fetchBytes(BUNDLED_DISK_URL);
+    if (bytes) {
+      await insertDiskBytes('fdd0', BUNDLED_DISK_NAME, bytes, t('bundledDiskDisplayName'), BUNDLED_DISK_SOURCE_KEY);
+    } else {
+      showToast(t('urlSystemFetchFailed'), 8000);
+    }
+  }
+
+  const jobs: Array<{ slot: SlotId; url: string | undefined; label: string }> = [
+    { slot: 'fdd0', url: urlFd1, label: t('fdSlotLabel', { drive: 1 }) },
+    { slot: 'fdd1', url: urlFd2, label: t('fdSlotLabel', { drive: 2 }) },
+    { slot: 'hdd', url: urlHdd, label: t('hddSlotLabel') },
+  ];
+
+  // アーカイブが複数枚のディスクを含んでいた場合は自動起動できない(要件3)ため、
+  // その旨のトーストを出したうえでライブラリを開き、run=1 の自動起動は抑止する。
+  // 複数のジョブが同時に複数枚アーカイブになることは稀だが、その場合は最初に見つかったグループへ注目させる。
+  let unresolvedGroupId: string | undefined;
+  for (const job of jobs) {
+    if (!job.url) continue;
+    const outcome = await resolveUrlSlotContent(job.url, job.label, job.slot);
+    if (outcome.kind === 'error') continue; // 失敗/不一致でも他のスロットの読み込みは続行する
+    if (outcome.kind === 'group') {
+      unresolvedGroupId ??= outcome.groupId;
+      continue;
+    }
+    await insertDiskBytes(job.slot, outcome.name, outcome.bytes, undefined, outcome.sourceKey);
+  }
+
+  if (unresolvedGroupId) {
+    showToast(t('urlArchiveNeedsSelection'), 8000);
+    openLibraryModal(unresolvedGroupId);
+    return; // 複数枚のときは run=1 でも自動起動しない(要件3)
+  }
+
+  // run=1: オーバーレイの2択を待たずそのまま自動起動する(ディスク未指定でも run=1 だけで起動する)。
+  if (urlRun) await startFromOverlay(false);
+}
+
 applyDocumentStrings();
 
 void (async () => {
   await restoreBios();
+  await applyUrlParams();
 })();
 
 // --- MCP ブリッジ(?bridge=1 で有効) ---------------------------------------
