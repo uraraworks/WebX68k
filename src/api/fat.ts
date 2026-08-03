@@ -7,6 +7,9 @@
 // Human68k形式パーティションを開く。ディレクトリエントリの数値フィールドはFDと同じLE。
 // FAT12/16・セクタサイズ等を自動判別し、8.3形式ファイルの列挙・読み書き・削除を行う。
 // LFN(VFAT)エントリは列挙時にスキップする(非対応)。
+// ファイル名は Shift_JIS で、Human68k は MS-DOS の予約領域(12〜21)を名前の続きに使う。
+
+import { decodeSjis } from './sjis';
 
 export interface FatEntry {
   name: string;
@@ -268,17 +271,44 @@ function to83Raw(name: string): { rawName: Uint8Array; rawExt: Uint8Array; displ
   return { rawName, rawExt, display };
 }
 
-function rawTo83Display(rawName: Uint8Array, rawExt: Uint8Array): string {
-  let base = '';
-  for (let i = 0; i < 8; i++) {
-    if (rawName[i] === 0x20) break;
-    base += String.fromCharCode(rawName[i]);
+/**
+ * ディレクトリエントリの名前を文字列へ復元する。
+ *
+ * Human68k のファイル名は Shift_JIS で、しかも **MS-DOS が予約している 12〜21 バイト目を
+ * 名前の続きとして使う**(8+10 バイト + 拡張子3バイト)。1バイトずつ char に変換すると
+ * 日本語名が化けるうえ、8バイトで切れてしまう。
+ *
+ * 予約領域は VFAT では作成日時等が入るため、名前の続きとして扱うのは
+ * 全バイトが 0x20 以上(印字可能/SJIS)のときだけにして、標準的な FAT イメージを壊さないようにする。
+ */
+function decodeEntryName(rawName: Uint8Array, rawNameExt: Uint8Array | null): string {
+  const bytes = new Uint8Array(rawName.length + (rawNameExt ? rawNameExt.length : 0));
+  bytes.set(rawName, 0);
+  if (rawNameExt) bytes.set(rawNameExt, rawName.length);
+  // 末尾のパディング(空白/NUL)を落としてから SJIS として解釈する。
+  // 8バイト目と9バイト目にまたがる SJIS 文字があるため、連結してからデコードすること。
+  let end = bytes.length;
+  while (end > 0 && (bytes[end - 1] === 0x20 || bytes[end - 1] === 0x00)) end--;
+  return decodeSjis(bytes.subarray(0, end));
+}
+
+/** 予約領域(12〜21)を Human68k のファイル名拡張として扱ってよいか。 */
+function usableNameExt(rawNameExt: Uint8Array): boolean {
+  for (const b of rawNameExt) {
+    if (b < 0x20) return false;
   }
-  let ext = '';
-  for (let i = 0; i < 3; i++) {
-    if (rawExt[i] === 0x20) break;
-    ext += String.fromCharCode(rawExt[i]);
-  }
+  // すべて空白なら拡張なし
+  return rawNameExt.some((b) => b !== 0x20);
+}
+
+/** 32バイトのディレクトリエントリ先頭オフセットから表示名を組み立てる。 */
+function entryDisplayName(image: Uint8Array, off: number): string {
+  const rawNameExt = image.subarray(off + 12, off + 22);
+  const base = decodeEntryName(
+    image.subarray(off, off + 8),
+    usableNameExt(rawNameExt) ? rawNameExt : null,
+  );
+  const ext = decodeEntryName(image.subarray(off + 8, off + 11), null);
   return ext.length > 0 ? `${base}.${ext}` : base;
 }
 
@@ -360,9 +390,7 @@ function parseSlot(vol: FatVolume, slot: DirSlot, slotIndex: number): ParsedDirE
   if (attr === ATTR_LFN) return null; // LFNエントリは非対応・スキップ
   if (attr & ATTR_VOLUME_LABEL) return null;
 
-  const rawName = b.subarray(off, off + 8);
-  const rawExt = b.subarray(off + 8, off + 11);
-  const name = rawTo83Display(rawName, rawExt);
+  const name = entryDisplayName(b, off);
   if (name === '.' || name === '..') return null;
 
   const cluster = readU16(b, off + 26);
@@ -621,10 +649,7 @@ export function fatWriteFile(vol: FatVolume, path: string, data: Uint8Array): vo
     if (b0 === DELETED_MARK) continue;
     const attr = vol.image[slots[i].offset + 11];
     if (attr === ATTR_LFN || attr & ATTR_VOLUME_LABEL) continue;
-    const name = rawTo83Display(
-      vol.image.subarray(slots[i].offset, slots[i].offset + 8),
-      vol.image.subarray(slots[i].offset + 8, slots[i].offset + 11),
-    );
+    const name = entryDisplayName(vol.image, slots[i].offset);
     if (namesEqual(name, display)) {
       targetSlotIndex = i;
       existingCluster = readU16(vol.image, slots[i].offset + 26);

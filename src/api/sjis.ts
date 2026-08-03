@@ -46,6 +46,11 @@ const ALIASES: Record<string, string> = {
   '―': '—',
 };
 
+/** Shift_JIS のバイト列を文字列へデコードする(ファイル名など)。 */
+export function decodeSjis(bytes: Uint8Array): string {
+  return new TextDecoder('shift_jis' as string).decode(bytes);
+}
+
 export interface EncodeSjisResult {
   bytes: number[];
   skipped: string[];

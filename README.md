@@ -300,6 +300,19 @@ npm run dev     # 開発サーバー
 - `src/main.ts` の `fmListTargets`/`fmListDir`/`fmReadFile`/`fmWriteFile`/`fmDeleteFile`/
   `fmMakeDir`/`fmCreateTransferFd` … WebNP2の `np2.diskXxx`/`libraryXxx` 相当のコールバック実装。
 
+### ファイル名の文字コード
+
+Human68k のファイル名は **Shift_JIS** で、しかも **MS-DOS が予約しているディレクトリエントリの
+12〜21 バイト目を「名前の続き」として使う**(8 + 10 バイト + 拡張子3バイト)。1バイトずつ
+`String.fromCharCode()` で拾うと日本語名が化けるうえ、8バイトで切れてしまう
+(`簡易説明書.DOC` が `È Õ à ¾.DOC` になる)。
+
+`fat.ts` の `entryDisplayName()` で、名前フィールドと予約領域を**連結してから** SJIS デコードする
+(8バイト目と9バイト目にまたがる SJIS 文字があるため、別々にデコードしてはいけない)。予約領域は
+VFAT では作成日時等が入るので、名前の続きとして扱うのは全バイトが 0x20 以上のときだけにしている。
+
+なお**書き込み側は ASCII の 8.3 形式のみ**で、日本語名での新規作成には未対応。
+
 ### X68000向けに必要だった変更点
 
 - **セクタサイズ**: WebNP2の `fat.ts` はブートセクタのBPBから `bytesPerSector` を動的に読み取る
