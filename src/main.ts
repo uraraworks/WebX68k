@@ -1093,11 +1093,13 @@ document.addEventListener('pointerlockchange', () => {
 let lastRightClickAt = 0;
 canvas.addEventListener('contextmenu', (e) => {
   e.preventDefault();
-  if (!running) return;
+  // キャプチャ中の右クリックはゲストの操作なので、解除には使わない(解除は Esc とツールバー)。
+  // ここでトグルにすると、ゲスト側で右ダブルクリックを使う操作が勝手にキャプチャを外してしまう。
+  if (!running || isMouseCaptured()) return;
   const now = performance.now();
   if (now - lastRightClickAt < RIGHT_DOUBLE_CLICK_MS) {
     lastRightClickAt = 0;
-    setMouseCaptured(!isMouseCaptured());
+    setMouseCaptured(true);
     return;
   }
   lastRightClickAt = now;
@@ -1119,8 +1121,11 @@ canvas.addEventListener('mousemove', (e) => {
   hasDesiredRatio = true;
 });
 
+// ボタンはキャプチャ中だけゲストへ渡す。
+// 非キャプチャ時にも渡すと、キャプチャ開始の右ダブルクリックがそのままゲストに届いてしまい、
+// X68000 側のソフトキーボード(ASK68K)が開くなど、意図しない反応を起こす。
 canvas.addEventListener('mousedown', (e) => {
-  if (!host || !running) return;
+  if (!host || !isMouseCaptured()) return;
   if (e.button === 0) host.setMouseButton('left', true);
   else if (e.button === 2) host.setMouseButton('right', true);
   e.preventDefault();
