@@ -16,6 +16,7 @@ Vite + TypeScript（フレームワーク無し）の最小構成です。
 - `src/bios-store.ts` … BIOS ファイルを IndexedDB に永続化するヘルパー
 - `src/disk-store.ts` … ディスクイメージ(FD/HDD)を IndexedDB に永続化する「ディスクライブラリ」ヘルパー
 - `src/core-shim.c` … アクセスランプ取得等、libretro API に無い可変長引数/グローバル参照のための C シム
+- `src/state-store.ts` … ステートセーブを IndexedDB に永続化するヘルパー(gzip 圧縮)
 - `src/main.ts` … UI 配線・メインループ（FDD0/FDD1/HDD の3スロット、アクセスランプ、起動前オーバーレイ等）
 
 ## コアのビルド手順
@@ -97,6 +98,33 @@ FDD0/FDD1 の挿入・取り出しは**コアを再起動せず**に行う。px6
 起動中の HDD は読み出し専用(`editable: false`、`persist()` は拒否)になる。ダウンロードは中身を
 読むだけなので起動中でも可能。HDD を入れ替えたいときはコアをリセット(起動前の状態)してから操作する。
 
+## ステートセーブ / ロード
+
+ツールバーの2ボタン（保存/復元）で、実行中の状態をまるごと保存・復元できる（WebNP2 と同じ
+UI 構成。スロットはクイックセーブの1枠のみ）。
+
+- px68k-libretro は libretro のシリアライズ API（`retro_serialize_size` / `retro_serialize` /
+  `retro_unserialize`）を実装済みで、RAM/SRAM/68000/GVRAM/TVRAM/CRTC/パレット/BG/DMAC/MFP/
+  IRQH/SCC/FDC/FDD/SASI/RTC/PIA/IOC と音源(OPM/ADPCM/MIDI)まで保存される
+- 保存先は IndexedDB（`webx68k-states`）。`src/state-store.ts` 参照
+- **ステートは gzip 圧縮して保存する**。px68k は RAM 領域を構成に依らず 12MB 固定で
+  シリアライズするため生サイズが約15MBあるが、大半がゼロ埋めなので実測 15.5MB → 約276KB
+  （圧縮 約60ms）まで縮む。`CompressionStream` が無い環境では非圧縮で保存し、読み出しは
+  レコードのフラグで判別する
+
+### ディスク構成の照合
+
+**ステートにディスクイメージの中身もマウントパスも含まれない**（`FDD_StateAction` はドライブの
+メタ情報だけ、SASI 側もバッファとフェーズのみ）。つまり復元は「いま挿さっているディスク」の上に
+行われるため、セーブ時と違うディスクだとゲストが暴走する。
+
+これを防ぐため、ステートと一緒に**セーブ時のドライブ構成（各スロットのファイル名）**を記録し、
+ロード時に現在の構成と照合する。食い違う場合は保存時/現在の構成を並べて確認ダイアログを出し、
+ユーザーが承諾したときだけ復元する（`main.ts` の `currentDiskConfig()` / `sameDiskConfig()`）。
+
+ロード直後は音声キューに旧状態の音が残るため `AudioEngine.flush()` で破棄し、フレーム供給の
+蓄積（`accumulator`）もリセットしている。
+
 ## 音声遅延(サンプルレート・ドリフト)対策
 
 X68000 は画面モード(15kHz/31kHz)を切り替えるたびにフレームレートが変わり、px68k-libretro は
@@ -112,6 +140,8 @@ X68000 は画面モード(15kHz/31kHz)を切り替えるたびにフレームレ
    (ドリフト補正)。一度膨らんだ遅延を目標値 80ms 付近へ戻す復元力になる
 3. `src/audio.ts` の AudioWorklet 側で滞留量の上限(250ms)を設け、超過分は古い側から捨てる
    最終防波堤。滞留量は tick メッセージでメインスレッドへ返している
+
+## 起動前の初期画面
 
 WebNP2 に合わせ、起動前は canvas 上に「そのまま起動」/「システムディスクで起動」の2択
 オーバーレイを表示する（`index.html` の `#boot-overlay`、`src/main.ts` の `startFromOverlay()`）。

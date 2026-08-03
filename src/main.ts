@@ -25,6 +25,11 @@ import {
 import { buildFileManagerDialog, type FmTarget } from './filemanager';
 import { codeToRetrok } from './keyboard';
 import { LibretroHost } from './libretro-host';
+import {
+  getState,
+  saveState as putState,
+  type StateDiskConfig,
+} from './state-store';
 import { getLang, setLang, t } from './strings';
 
 const canvas = document.getElementById('screen') as HTMLCanvasElement;
@@ -32,6 +37,9 @@ const bootOverlay = document.getElementById('boot-overlay') as HTMLDivElement;
 const btnBootPlain = document.getElementById('btn-boot-plain') as HTMLButtonElement;
 const btnBootSystem = document.getElementById('btn-boot-system') as HTMLButtonElement;
 const btnReset = document.getElementById('btn-reset') as HTMLButtonElement;
+const btnSaveState = document.getElementById('btn-save-state') as HTMLButtonElement;
+const btnLoadState = document.getElementById('btn-load-state') as HTMLButtonElement;
+const toastEl = document.getElementById('toast') as HTMLDivElement;
 const btnSettings = document.getElementById('btn-settings') as HTMLButtonElement;
 const btnDiskLibrary = document.getElementById('btn-disk-library') as HTMLButtonElement;
 const btnFileManager = document.getElementById('btn-file-manager') as HTMLButtonElement;
@@ -855,6 +863,10 @@ function applyDocumentStrings(): void {
 
   btnReset.title = t('toolbarReset');
   btnReset.setAttribute('aria-label', t('toolbarReset'));
+  btnSaveState.title = t('toolbarSaveState');
+  btnSaveState.setAttribute('aria-label', t('toolbarSaveState'));
+  btnLoadState.title = t('toolbarLoadState');
+  btnLoadState.setAttribute('aria-label', t('toolbarLoadState'));
   btnSettings.title = t('toolbarSettings');
   btnSettings.setAttribute('aria-label', t('toolbarSettings'));
   btnDiskLibrary.title = t('toolbarDiskLibrary');
@@ -1058,6 +1070,8 @@ async function startFromOverlay(withSystemDisk: boolean): Promise<void> {
     await bootCore();
 
     btnReset.disabled = false;
+    btnSaveState.disabled = false;
+    btnLoadState.disabled = false;
     canvas.focus();
   } catch (err) {
     console.error(err);
@@ -1077,6 +1091,97 @@ bootOverlay.addEventListener('click', (e) => {
 btnReset.addEventListener('click', () => {
   host?.reset();
 });
+
+// --- ステートセーブ / ロード(WebNP2 のツールバー2ボタンに準拠。スロットはクイック1枠のみ) ---
+const STATE_SLOT = 'quick';
+let toastTimer: ReturnType<typeof setTimeout> | undefined;
+
+/** 画面下部に一時通知を出す(数秒で自動的に消える)。 */
+function showToast(message: string): void {
+  toastEl.textContent = message;
+  toastEl.classList.remove('hidden');
+  if (toastTimer !== undefined) clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => toastEl.classList.add('hidden'), 2500);
+}
+
+/**
+ * 現在のドライブ構成。ステートには**ディスクの中身もマウントパスも含まれない**ため
+ * (px68k の FDD_StateAction はドライブのメタ情報しか保存しない)、これを別途記録しておき
+ * ロード時に照合して、違うディスクの上へ復元して暴走するのを防ぐ。
+ */
+function currentDiskConfig(): StateDiskConfig {
+  return {
+    fdd0: slots.fdd0?.name ?? null,
+    fdd1: slots.fdd1?.name ?? null,
+    hdd: slots.hdd?.name ?? null,
+  };
+}
+
+function describeDiskConfig(cfg: StateDiskConfig): string {
+  return SLOT_IDS.map((slot) => `${slotDisplayName(slot)}: ${cfg[slot] ?? t('fdEmpty')}`).join(' / ');
+}
+
+function sameDiskConfig(a: StateDiskConfig, b: StateDiskConfig): boolean {
+  return SLOT_IDS.every((slot) => a[slot] === b[slot]);
+}
+
+async function handleSaveState(): Promise<void> {
+  if (!host || !running) return;
+  const bytes = host.serialize();
+  if (!bytes) {
+    showToast(t('stateSaveFailed'));
+    return;
+  }
+  try {
+    await putState({ slot: STATE_SLOT, bytes, savedAt: Date.now(), disks: currentDiskConfig() });
+  } catch (err) {
+    console.error('ステートの保存に失敗しました。', err);
+    showToast(t('stateSaveFailed'));
+    return;
+  }
+  showToast(t('stateSaved'));
+}
+
+async function handleLoadState(): Promise<void> {
+  if (!host || !running) return;
+  let stored;
+  try {
+    stored = await getState(STATE_SLOT);
+  } catch (err) {
+    console.error('ステートの読み出しに失敗しました。', err);
+    showToast(t('stateLoadFailed'));
+    return;
+  }
+  if (!stored) {
+    showToast(t('stateNotFound'));
+    return;
+  }
+
+  const current = currentDiskConfig();
+  if (!sameDiskConfig(stored.disks, current)) {
+    const proceed = confirm(
+      t('stateDiskMismatch', {
+        saved: describeDiskConfig(stored.disks),
+        current: describeDiskConfig(current),
+      }),
+    );
+    if (!proceed) return;
+  }
+
+  if (!host.unserialize(new Uint8Array(stored.bytes))) {
+    showToast(t('stateLoadFailed'));
+    return;
+  }
+  // 復元直後は旧状態の音がキューに残っているので捨て、フレーム供給の蓄積もリセットする
+  audio?.flush();
+  lastFrameTime = 0;
+  accumulator = 0;
+  resetAccessLamps();
+  showToast(t('stateLoaded'));
+}
+
+btnSaveState.addEventListener('click', () => void handleSaveState());
+btnLoadState.addEventListener('click', () => void handleLoadState());
 
 // --- ファイルマネージャ(FTPクライアント風2ペイン) ---
 // FAT12/16として読み書き可能なFD拡張子。D88(セクタ形式が異なり非対応)はここに含めない。

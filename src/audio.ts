@@ -19,6 +19,13 @@ class WebX68kAudioProcessor extends AudioWorkletProcessor {
     this._readOffset = 0;
     this.port.onmessage = (e) => {
       const chunk = e.data;
+      // ステートロード直後など、溜まっている旧状態の音を捨てるための指示
+      if (chunk && chunk.t === 'flush') {
+        this._queue = [];
+        this._queuedSamples = 0;
+        this._readOffset = 0;
+        return;
+      }
       if (chunk && chunk.length) {
         this._queue.push(chunk);
         this._queuedSamples += chunk.length / 2;
@@ -139,6 +146,12 @@ export class AudioEngine {
     // 転送用にコピー(postMessage は Transferable を使うと元配列が空になるため複製して渡す)
     const copy = new Float32Array(samples);
     this.node.port.postMessage(copy, [copy.buffer]);
+  }
+
+  /** 再生待ちのキューを破棄する(ステートロード直後に旧状態の音が残るのを防ぐ) */
+  flush(): void {
+    this.queuedSec = 0;
+    this.node?.port.postMessage({ t: 'flush' });
   }
 
   suspend(): void {

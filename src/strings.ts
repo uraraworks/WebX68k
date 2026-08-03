@@ -19,6 +19,14 @@ interface Dict {
   overlayNote2(): string;
   toolbarReset(): string;
   toolbarSettings(): string;
+  toolbarSaveState(): string;
+  toolbarLoadState(): string;
+  stateSaved(): string;
+  stateLoaded(): string;
+  stateSaveFailed(): string;
+  stateLoadFailed(): string;
+  stateNotFound(): string;
+  stateDiskMismatch(args: { saved: string; current: string }): string;
   toolbarDiskLibrary(): string;
   toolbarFileManager(): string;
   /** ツールバーの言語トグルボタンに表示するラベル(＝切替先の言語名)。 */
@@ -124,6 +132,15 @@ const STRINGS: Record<Lang, Dict> = {
     overlayNote2: () => 'ディスクはツールバーのライブラリ、または下のドライブ行から追加できます。',
     toolbarReset: () => 'リセット',
     toolbarSettings: () => '設定(BIOS / マシン構成)',
+    toolbarSaveState: () => 'ステート保存',
+    toolbarLoadState: () => 'ステート復元',
+    stateSaved: () => 'ステートを保存しました。',
+    stateLoaded: () => 'ステートを復元しました。',
+    stateSaveFailed: () => 'ステートの保存に失敗しました。',
+    stateLoadFailed: () => 'ステートの復元に失敗しました。',
+    stateNotFound: () => '保存されたステートがありません。',
+    stateDiskMismatch: ({ saved, current }) =>
+      `保存時とディスク構成が異なります。\n保存時: ${saved}\n現在: ${current}\nこのまま復元すると誤動作する可能性があります。続けますか?`,
     toolbarDiskLibrary: () => 'ディスクライブラリ',
     toolbarFileManager: () => 'ファイル転送',
     langToggle: () => 'EN',
@@ -224,6 +241,15 @@ const STRINGS: Record<Lang, Dict> = {
     overlayNote2: () => 'You can add disks from the toolbar library, or from the drive rows below.',
     toolbarReset: () => 'Reset',
     toolbarSettings: () => 'Settings (BIOS / Machine Config)',
+    toolbarSaveState: () => 'Save State',
+    toolbarLoadState: () => 'Load State',
+    stateSaved: () => 'State saved.',
+    stateLoaded: () => 'State loaded.',
+    stateSaveFailed: () => 'Failed to save the state.',
+    stateLoadFailed: () => 'Failed to load the state.',
+    stateNotFound: () => 'No saved state found.',
+    stateDiskMismatch: ({ saved, current }) =>
+      `The mounted disks differ from when the state was saved.\nSaved: ${saved}\nCurrent: ${current}\nLoading anyway may cause the guest to misbehave. Continue?`,
     toolbarDiskLibrary: () => 'Disk Library',
     toolbarFileManager: () => 'File Transfer',
     langToggle: () => '日本語',

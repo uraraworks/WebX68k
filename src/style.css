@@ -387,6 +387,32 @@ main {
 }
 
 /* 起動前オーバーレイ(WebNP2の overlay / overlay-choices / start-btn 系を踏襲)。 */
+/* 画面下部に数秒だけ出る一時通知(ステート保存/復元の結果表示) */
+.toast {
+  position: absolute;
+  left: 50%;
+  bottom: 16px;
+  transform: translateX(-50%);
+  max-width: 90%;
+  padding: 8px 16px;
+  border-radius: 4px;
+  background: rgba(0, 0, 0, 0.82);
+  color: #fff;
+  font-size: 13px;
+  line-height: 1.4;
+  text-align: center;
+  white-space: pre-line;
+  pointer-events: none;
+  z-index: 20;
+  opacity: 1;
+  transition: opacity 0.3s ease;
+}
+
+.toast.hidden {
+  opacity: 0;
+  visibility: hidden;
+}
+
 .overlay {
   position: absolute;
   inset: 0;

@@ -65,6 +65,9 @@ export interface PX68KModule {
   _retro_run(): void;
   _retro_load_game(gameInfoPtr: number): number;
   _retro_unload_game(): void;
+  _retro_serialize_size(): number;
+  _retro_serialize(dataPtr: number, size: number): number;
+  _retro_unserialize(dataPtr: number, size: number): number;
   _get_retro_log_shim(): number;
   // アクセスランプ用(px68k-libretro fork の x68k/fdd.c / x68k/sasi.c を core-shim.c 経由で公開)。
   // retro_run() の毎フレーム先頭で0クリアされるため、そのフレームでアクセスがあったかを示す。
@@ -465,6 +468,38 @@ export class LibretroHost {
 
   reset(): void {
     this.mod._retro_reset();
+  }
+
+  /**
+   * 現在の実行状態をシリアライズして返す(ステートセーブ)。
+   * px68k-libretro 側は RAM/SRAM/CPU/VRAM/CRTC/DMAC/MFP/FDC/FDD/SASI/OPM/ADPCM 等を保存するが、
+   * **ディスクイメージの中身とマウントパスは含まれない**。ロード時は同じディスクが
+   * 挿さっている前提になるため、呼び出し側でスロット構成を別途記録して照合すること。
+   */
+  serialize(): Uint8Array | null {
+    const mod = this.mod;
+    const size = mod._retro_serialize_size();
+    if (size <= 0) return null;
+    const ptr = mod._malloc(size);
+    try {
+      if (mod._retro_serialize(ptr, size) === 0) return null;
+      // HEAPU8 のビューをそのまま返すと後続の malloc/メモリ拡張で無効化されるため複製する
+      return new Uint8Array(mod.HEAPU8.subarray(ptr, ptr + size));
+    } finally {
+      mod._free(ptr);
+    }
+  }
+
+  /** シリアライズ済みの状態を復元する(ステートロード)。成功したら true。 */
+  unserialize(bytes: Uint8Array): boolean {
+    const mod = this.mod;
+    const ptr = mod._malloc(bytes.length);
+    try {
+      mod.HEAPU8.set(bytes, ptr);
+      return mod._retro_unserialize(ptr, bytes.length) !== 0;
+    } finally {
+      mod._free(ptr);
+    }
   }
 
   runFrame(): void {
