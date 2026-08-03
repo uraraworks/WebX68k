@@ -26,6 +26,8 @@ interface Dict {
   toolbarSettings(): string;
   toolbarSaveState(): string;
   toolbarLoadState(): string;
+  toolbarScreenshot(): string;
+  statusScreenshotSaved(): string;
   stateSaved(): string;
   stateLoaded(): string;
   stateSaveFailed(): string;
@@ -39,6 +41,8 @@ interface Dict {
   toolbarMouseCapture(): string;
   toolbarMouseRelease(): string;
   toolbarMouseResync(): string;
+  toolbarFullscreen(): string;
+  toolbarFullscreenExit(): string;
   stateDiskMismatch(args: { saved: string; current: string }): string;
   toolbarDiskLibrary(): string;
   toolbarFileManager(): string;
@@ -202,6 +206,8 @@ const STRINGS: Record<Lang, Dict> = {
     toolbarSettings: () => '設定(BIOS / マシン構成)',
     toolbarSaveState: () => 'ステート保存',
     toolbarLoadState: () => 'ステート復元',
+    toolbarScreenshot: () => 'スクリーンショット',
+    statusScreenshotSaved: () => 'スクリーンショットを保存しました。',
     stateSaved: () => 'ステートを保存しました。',
     stateLoaded: () => 'ステートを復元しました。',
     stateSaveFailed: () => 'ステートの保存に失敗しました。',
@@ -215,6 +221,8 @@ const STRINGS: Record<Lang, Dict> = {
     toolbarMouseCapture: () => 'マウスキャプチャ(右ダブルクリック)',
     toolbarMouseRelease: () => 'マウスキャプチャを解除(Esc)',
     toolbarMouseResync: () => 'マウス再同期',
+    toolbarFullscreen: () => 'フルスクリーン',
+    toolbarFullscreenExit: () => 'フルスクリーンを解除(Esc)',
     stateDiskMismatch: ({ saved, current }) =>
       `保存時とディスク構成が異なります。\n保存時: ${saved}\n現在: ${current}\nこのまま復元すると誤動作する可能性があります。続けますか?`,
     toolbarDiskLibrary: () => 'ディスクライブラリ',
@@ -358,6 +366,8 @@ const STRINGS: Record<Lang, Dict> = {
     toolbarSettings: () => 'Settings (BIOS / Machine Config)',
     toolbarSaveState: () => 'Save State',
     toolbarLoadState: () => 'Load State',
+    toolbarScreenshot: () => 'Screenshot',
+    statusScreenshotSaved: () => 'Screenshot saved.',
     stateSaved: () => 'State saved.',
     stateLoaded: () => 'State loaded.',
     stateSaveFailed: () => 'Failed to save the state.',
@@ -371,6 +381,8 @@ const STRINGS: Record<Lang, Dict> = {
     toolbarMouseCapture: () => 'Capture mouse (right double-click)',
     toolbarMouseRelease: () => 'Release mouse (Esc)',
     toolbarMouseResync: () => 'Re-sync mouse',
+    toolbarFullscreen: () => 'Fullscreen',
+    toolbarFullscreenExit: () => 'Exit fullscreen (Esc)',
     stateDiskMismatch: ({ saved, current }) =>
       `The mounted disks differ from when the state was saved.\nSaved: ${saved}\nCurrent: ${current}\nLoading anyway may cause the guest to misbehave. Continue?`,
     toolbarDiskLibrary: () => 'Disk Library',

@@ -585,6 +585,13 @@
               キャプチャの解除は <strong>Esc</strong> キー(ブラウザ標準の Pointer Lock API の機能)です。
               マウスボタンの入力は、キャプチャ中のみゲストへ渡ります。
             </p>
+            <div class="note-box">
+              <strong>注意:</strong> フルスクリーン表示中にマウスをキャプチャしている場合、
+              <strong>Esc キーを1回押すとキャプチャとフルスクリーンが同時に解除されます</strong>
+              (2段階にはなりません)。これはブラウザ側の挙動でこちらからは制御できず、
+              フルスクリーン中はツールバーも見えないため、キャプチャだけを解除する手段は
+              ありません。没入感を優先した仕様としてご了承ください。
+            </div>
             <p>
               マウスの感度設定は、ブラウザの localStorage キー
               <code>webx68k.mouseSensitivity</code> に保存されます。
@@ -603,6 +610,14 @@
               Release capture with <strong>Esc</strong> (a standard feature of the browser's
               Pointer Lock API). Mouse button input is only passed to the guest while captured.
             </p>
+            <div class="note-box">
+              <strong>Note:</strong> If the mouse is captured while fullscreen is active,
+              <strong>pressing Esc once releases both the capture and fullscreen at the same
+              time</strong> — it does not take two presses. This is a browser-level behavior we
+              can't control, and since the toolbar isn't visible while fullscreen, Esc is the
+              only way to release the capture. This is an intentional trade-off in favor of
+              immersion.
+            </div>
             <p>
               The mouse sensitivity setting is stored under the browser's localStorage key
               <code>webx68k.mouseSensitivity</code>.
@@ -825,6 +840,13 @@
             descEn: 'Restores the running state from a previously saved state.',
           },
           {
+            icon: 'M4 8h3l2-3h6l2 3h3a1 1 0 0 1 1 1v10a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1V9a1 1 0 0 1 1-1z M12 17a3.5 3.5 0 1 0 0-7 3.5 3.5 0 0 0 0 7z',
+            ja: 'スクリーンショット',
+            en: 'Screenshot',
+            descJa: '現在の画面をPNG画像としてダウンロードします。',
+            descEn: 'Downloads the current display as a PNG image.',
+          },
+          {
             icon: 'M12 3a6 6 0 0 1 6 6v6a6 6 0 0 1-12 0V9a6 6 0 0 1 6-6z M12 3v7 M12 7v3',
             ja: 'マウスキャプチャ',
             en: 'Capture Mouse',
@@ -837,6 +859,13 @@
             en: 'Resync Mouse',
             descJa: 'ホストのカーソル位置とゲスト側マウス位置の基準がズレたときに、押すと作り直せます。',
             descEn: 'Re-establishes the reference point when the host cursor and the guest mouse position drift apart.',
+          },
+          {
+            icon: 'M4 9V5a1 1 0 0 1 1-1h4 M15 4h4a1 1 0 0 1 1 1v4 M20 15v4a1 1 0 0 1-1 1h-4 M9 20H5a1 1 0 0 1-1-1v-4',
+            ja: 'フルスクリーン',
+            en: 'Fullscreen',
+            descJa: '画面全体をフルスクリーン表示します(画面モード変更にも追従してアスペクト比を保ちます)。もう一度押すか、Escキーで解除します。マウスキャプチャ中にEscキーを押すと、キャプチャとフルスクリーンが同時に解除されます。',
+            descEn: 'Shows the screen in fullscreen, keeping the aspect ratio even when the screen mode changes. Press again, or press Esc, to exit. While the mouse is captured, pressing Esc releases both the capture and fullscreen at the same time.',
           },
           {
             icon: 'M7 7h10v10H7z M9 9h6v6H9z M7 4v3 M12 4v3 M17 4v3 M7 17v3 M12 17v3 M17 17v3 M4 7h3 M4 12h3 M4 17h3 M17 7h3 M17 12h3 M17 17h3',

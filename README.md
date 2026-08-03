@@ -124,6 +124,14 @@ The save/load toolbar buttons snapshot and restore the full emulator state
 quick-save slot is kept. If the currently inserted disks don't match what
 was mounted at save time, you'll be asked to confirm before restoring.
 
+### Screenshot
+
+The "Screenshot" toolbar button saves the current display as a PNG
+(`webx68k_YYYYMMDD_HHMMSS.png`). The canvas always tracks the core's actual
+video resolution (it's resized in `handleVideoRefresh()` whenever the mode
+changes — 256x256 / 512x512 / 768x512 etc.), so the saved image is exactly
+the resolution currently being displayed, with no letterboxing to crop.
+
 ### Mouse
 
 Click "Capture Mouse" on the toolbar, or **double right-click on the
@@ -131,6 +139,23 @@ canvas**, to lock the pointer and start sending relative mouse movement to
 the guest. Press **Esc** (or the toolbar button again) to release. The
 "Mouse Resync" button re-anchors absolute-position tracking if the guest
 cursor and host cursor ever drift apart.
+
+### Fullscreen
+
+The "Fullscreen" toolbar button makes the screen (the black stage box that
+contains the canvas) fill the display. The X68000 can switch resolution
+while running (256x256 / 512x512 / 768x512, etc.), but fullscreen keeps the
+aspect ratio and letterboxes with black bars — the same "pixel-for-pixel"
+look as the windowed view. Click the button again, or press **Esc**, to
+exit fullscreen.
+
+If mouse capture is also active while fullscreen, pressing **Esc once
+releases both at the same time** — it does not take two presses. This is a
+browser-level behavior we can't override (the release can't be
+`preventDefault`-ed, and re-entering fullscreen right after can't be done
+from script either), and since fullscreen only covers the screen itself
+(the toolbar isn't visible), Esc is the only way to release the mouse while
+fullscreen — an intentional trade-off in favor of immersion.
 
 ### BIOS settings
 

@@ -56,8 +56,11 @@ const bootOverlay = document.getElementById('boot-overlay') as HTMLDivElement;
 const btnBootPlain = document.getElementById('btn-boot-plain') as HTMLButtonElement;
 const btnBootSystem = document.getElementById('btn-boot-system') as HTMLButtonElement;
 const btnReset = document.getElementById('btn-reset') as HTMLButtonElement;
+const btnScreenshot = document.getElementById('btn-screenshot') as HTMLButtonElement;
 const btnMouseCapture = document.getElementById('btn-mouse-capture') as HTMLButtonElement;
 const btnMouseResync = document.getElementById('btn-mouse-resync') as HTMLButtonElement;
+const btnFullscreen = document.getElementById('btn-fullscreen') as HTMLButtonElement;
+const stageEl = document.querySelector('.stage') as HTMLDivElement;
 const btnSaveState = document.getElementById('btn-save-state') as HTMLButtonElement;
 const btnLoadState = document.getElementById('btn-load-state') as HTMLButtonElement;
 const toastEl = document.getElementById('toast') as HTMLDivElement;
@@ -1446,7 +1449,6 @@ for (const slot of SLOT_IDS) {
 // 投入先の決定だけ resolveStageDropSlot 経由で WebX68k のスロット構成(FDD1/FDD2/HDD)に合わせる。
 // 起動前・起動中どちらでも受け付ける(insertDiskBytes/hotSwapFdd が両方を扱えるため)。
 {
-  const stageEl = document.querySelector('.stage') as HTMLDivElement;
   let stageDropDepth = 0;
   stageEl.addEventListener('dragover', (e) => e.preventDefault());
   stageEl.addEventListener('dragenter', (e) => {
@@ -1523,9 +1525,12 @@ function applyDocumentStrings(): void {
 
   btnReset.title = t('toolbarReset');
   btnReset.setAttribute('aria-label', t('toolbarReset'));
+  btnScreenshot.title = t('toolbarScreenshot');
+  btnScreenshot.setAttribute('aria-label', t('toolbarScreenshot'));
   btnMouseCapture.setAttribute('aria-label', t('toolbarMouseCapture'));
   btnMouseResync.setAttribute('aria-label', t('toolbarMouseResync'));
   updateMouseControls();
+  updateFullscreenControl();
   btnSaveState.title = t('toolbarSaveState');
   btnSaveState.setAttribute('aria-label', t('toolbarSaveState'));
   btnLoadState.title = t('toolbarLoadState');
@@ -1873,6 +1878,69 @@ btnMouseResync.addEventListener('click', () => {
   showToast(t('mouseResynced'));
 });
 
+/**
+ * フルスクリーン化の対象は canvas ではなく .stage(黒背景+canvas を中央寄せする箱)。
+ * 理由は style.css 側の .stage:fullscreen 系ルールのコメントを参照。
+ * アスペクト比の維持自体は CSS (:fullscreen 時の #screen の object-fit:contain) に
+ * 任せており、ここでは要素の全画面化/解除のトグルだけを行う。
+ */
+function isStageFullscreen(): boolean {
+  return document.fullscreenElement === stageEl || (document as any).webkitFullscreenElement === stageEl;
+}
+
+function setFullscreen(makeFullscreen: boolean): void {
+  if (makeFullscreen) {
+    if (isStageFullscreen()) return;
+    const req =
+      stageEl.requestFullscreen?.bind(stageEl) ??
+      (stageEl as any).webkitRequestFullscreen?.bind(stageEl);
+    void Promise.resolve(req?.()).catch(() => {
+      // 一部環境(iOS Safari 等)は canvas 以外の任意要素の requestFullscreen に対応していない。
+      // フルスクリーン非対応環境向けの代替UIは用意していないため、ここでは失敗を静かに無視する。
+    });
+  } else if (isStageFullscreen()) {
+    const exit = document.exitFullscreen?.bind(document) ?? (document as any).webkitExitFullscreen?.bind(document);
+    void Promise.resolve(exit?.());
+  }
+}
+
+/** フルスクリーンボタンの見た目(トグル状態)を実際の全画面状態に追従させる。マウスキャプチャボタンと同じ流儀。 */
+function updateFullscreenControl(): void {
+  const fs = isStageFullscreen();
+  btnFullscreen.classList.toggle('active', fs);
+  btnFullscreen.title = fs ? t('toolbarFullscreenExit') : t('toolbarFullscreen');
+  btnFullscreen.setAttribute('aria-label', btnFullscreen.title);
+  btnFullscreen.setAttribute('aria-pressed', fs ? 'true' : 'false');
+}
+
+btnFullscreen.addEventListener('click', () => setFullscreen(!isStageFullscreen()));
+document.addEventListener('fullscreenchange', updateFullscreenControl);
+document.addEventListener('webkitfullscreenchange', updateFullscreenControl);
+
+// Esc の挙動について(実キーボードで確認済み):
+// フルスクリーン + マウスキャプチャ(Pointer Lock)の両方が有効な状態で Esc を1回押すと、
+// **キャプチャとフルスクリーンが同時に解除される**。「1回目でキャプチャだけ解除され、
+// フルスクリーンは維持される」という2段階挙動にはならない。
+//
+// これはブラウザ側の実装によるもので、こちらからは制御できない:
+// - Esc による Pointer Lock 解除もフルスクリーン解除も preventDefault で止められない
+//   (ブラウザプロセス側の生入力ハンドラで処理されるため、ページの keydown より手前)
+// - Esc で抜けた直後にプログラムからフルスクリーンへ復帰させることもできない
+//   (requestFullscreen はユーザー操作を必要とし、Esc 由来の離脱直後は特に拒否される)
+//
+// その結果「マウスを外したいだけなのにフルスクリーンも抜ける」ことになる。フルスクリーンの
+// 対象を .stage(画面のみ)にしている以上、全画面中はツールバーが見えず、キャプチャ解除の
+// 手段が Esc しかないためこれは避けられない。没入感を優先して画面のみを全画面にする方針を
+// 採ったうえで、この挙動は仕様として README / help.html に明記してある。
+// (.console-card ごと全画面にしてツールバーを残せば回避できるが、画面が狭くなるため採らない)
+//
+// 自動検証について: CDP(Input.dispatchKeyEvent)経由の合成 Esc では
+// pointerlockchange/fullscreenchange のどちらも発火しない。Chromium の Esc 解除処理が
+// ブラウザプロセス側にあり、レンダラへ直接注入する合成キーはそのフックを通らないため。
+// 上記の結論は実キーボードでの手動確認によるもの。
+// なお、フルスクリーン化・マウスキャプチャそれぞれの開始/解除(ボタン操作)や、
+// フルスクリーン中の解像度変更追従・アスペクト比維持は Puppeteer + 実ブラウザで検証済み。
+
 let lastFrameTime = 0;
 let accumulator = 0;
 let rafId = 0;
@@ -2040,7 +2108,10 @@ async function startFromOverlay(withSystemDisk: boolean): Promise<void> {
     btnReset.disabled = false;
     btnSaveState.disabled = false;
     btnLoadState.disabled = false;
+    btnScreenshot.disabled = false;
+    btnFullscreen.disabled = false;
     updateMouseControls();
+    updateFullscreenControl();
     canvas.focus();
     maybeShowAudioMutedBanner();
   } catch (err) {
@@ -2060,6 +2131,47 @@ bootOverlay.addEventListener('click', (e) => {
 
 btnReset.addEventListener('click', () => {
   host?.reset();
+});
+
+/**
+ * 実行画面を PNG としてダウンロードさせる(WebNP2 の saveScreenshot() を移植)。
+ *
+ * X68000 は PC-98 と異なり画面モード(256x256 / 512x512 / 768x512 等)によって実解像度が
+ * 変わるが、libretro-host.ts の handleVideoRefresh() は retro_video_refresh のたびに
+ * width/height が前回と変われば canvas.width/height をその実解像度へ直接書き換えている
+ * (黒帯を残したまま固定サイズのバッファへ描画する、という実装にはなっていない)。
+ * つまり canvas は常にコアが今出している実解像度と一致しており、余白の黒帯は生じないため、
+ * PC-98版のように描画領域を切り出す必要はなく canvas 全体をそのまま保存すればよい。
+ */
+function saveScreenshot(): void {
+  const src = canvas;
+  const tmp = document.createElement('canvas');
+  tmp.width = src.width;
+  tmp.height = src.height;
+  const ctx = tmp.getContext('2d');
+  if (!ctx) return;
+  ctx.drawImage(src, 0, 0);
+  tmp.toBlob((blob) => {
+    if (!blob) return;
+    const stamp = new Date()
+      .toISOString()
+      .replace(/[-:]/g, '')
+      .replace('T', '_')
+      .slice(0, 15);
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `webx68k_${stamp}.png`;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 10_000);
+    showToast(t('statusScreenshotSaved'));
+  }, 'image/png');
+}
+
+btnScreenshot.addEventListener('click', () => {
+  saveScreenshot();
 });
 
 // --- ステートセーブ / ロード(WebNP2 のツールバー2ボタンに準拠。スロットはクイック1枠のみ) ---

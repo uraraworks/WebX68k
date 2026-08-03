@@ -145,8 +145,65 @@ main {
   background: #000;
   max-width: 90vw;
   max-height: 60vh;
-  width: 768px;
-  height: 512px;
+  /*
+   * width/height は auto にすること。768px/512px のように固定寸法を入れると、
+   * max-width(90vw) と max-height(60vh) が縦横それぞれ独立に効いて箱の縦横比が崩れ、
+   * canvas は既定の object-fit:fill なので画面が引き伸ばされて表示される
+   * (実測: 属性 768x512=比1.500 が 588x467=比1.257 になっていた)。
+   * canvas は置換要素で固有の縦横比(width/height 属性 = コアが今出している実解像度)を
+   * 持つため、auto にしておけば max-* が効いても比率を保ったまま縮小される。
+   * 併せてマウスの移動量換算(canvas.width / canvas.clientWidth)も縦横で同じ倍率になる。
+   */
+  width: auto;
+  height: auto;
+}
+
+/*
+ * フルスクリーン化の対象は canvas 単体ではなく .stage(canvas を内包する黒背景の箱)にする。
+ * canvas だけを requestFullscreen すると、ブラウザは fullscreen 要素をビューポート全体へ
+ * 引き伸ばして表示するため、width/height 指定があってもアスペクト比が保たれない。
+ * .stage をフルスクリーン化し、中の canvas は下の :fullscreen 用ルールで
+ * object-fit:contain により、canvas の実解像度(width/height 属性=コアが今出している
+ * 実解像度)そのものの比率を保ったまま最大化できる。余白は .stage の黒背景がそのまま
+ * 黒帯になる。
+ *
+ * 実装メモ: 当初は「max-width/max-height:100%; width/height:auto」(containの定番手法)を
+ * 使ったが、実ブラウザで検証したところ auto は要素の“縮小”にしか効かず、フルスクリーンで
+ * ビューポートの方が canvas の実解像度より大きい場合に拡大されない(768x512のまま)ことが
+ * 判明した。canvas は img と同様 CSS 上は置換要素なので object-fit が効き、
+ * width:100%;height:100%;object-fit:contain にすると縮小・拡大どちらの方向でも
+ * アスペクト比を保った最大化ができる。
+ *
+ * X68000 は画面モードによって実行中に解像度が変わり、libretro-host.ts が
+ * canvas.width/height をその都度書き換えるが、要素を作り直すわけではないので
+ * フルスクリーン状態はそのまま維持され、次のフレームから新しい実解像度の比率で
+ * 自動的に追従する(実機のブラウザで解像度変更を跨いで確認済み)。
+ */
+.stage:fullscreen,
+.stage:-webkit-full-screen {
+  width: 100vw;
+  height: 100vh;
+  max-width: none;
+  max-height: none;
+  background: #000;
+}
+
+/*
+ * ウィンドウ表示時は #screen に固定の width/height(768x512)を指定しているだけで、
+ * avInfo.aspectRatio (px68k が返す aspect_ratio) はどこにも使っていない
+ * (grep 済み: main.ts / libretro-host.ts のどこにも表示サイズ計算に使われていない)。
+ * つまりウィンドウ表示は「canvas の画素比そのまま」を前提にしており、
+ * aspect_ratio フィールドを特別扱いしていない。フルスクリーンでもこれに揃えるため、
+ * ここでは aspectRatio を参照せず、object-fit:contain による画素比そのままの
+ * 最大化のみを使う。
+ */
+.stage:fullscreen #screen,
+.stage:-webkit-full-screen #screen {
+  width: 100%;
+  height: 100%;
+  max-width: 100%;
+  max-height: 100%;
+  object-fit: contain;
 }
 
 .console-footer {
