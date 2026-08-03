@@ -47,6 +47,7 @@ const btnSettings = document.getElementById('btn-settings') as HTMLButtonElement
 const btnDiskLibrary = document.getElementById('btn-disk-library') as HTMLButtonElement;
 const btnFileManager = document.getElementById('btn-file-manager') as HTMLButtonElement;
 const fileManagerRoot = document.getElementById('file-manager-root') as HTMLDivElement;
+const btnHelp = document.getElementById('btn-help') as HTMLButtonElement;
 const btnLang = document.getElementById('btn-lang') as HTMLButtonElement;
 const settingsBackdrop = document.getElementById('settings-backdrop') as HTMLDivElement;
 const settingsCloseBtn = document.getElementById('settings-close') as HTMLButtonElement;
@@ -155,9 +156,11 @@ let running = false;
 let bootStarted = false;
 
 // 同梱ROM/ディスク(public/system/)のパス。ユーザーが独自ファイルを設定した場合はそちらを優先する。
-const BUNDLED_IPL_URL = '/system/iplrom.dat';
-const BUNDLED_CG_URL = '/system/cgrom.dat';
-const BUNDLED_DISK_URL = '/system/human302.xdf';
+// GitHub Pages のプロジェクトページ(https://<user>.github.io/WebX68k/)配下でも解決できるよう、
+// ルート絶対パスではなくドキュメント相対で指定すること(絶対パスだと /system/... を見に行き404になる)。
+const BUNDLED_IPL_URL = './system/iplrom.dat';
+const BUNDLED_CG_URL = './system/cgrom.dat';
+const BUNDLED_DISK_URL = './system/human302.xdf';
 const BUNDLED_DISK_NAME = 'human302.xdf';
 // 同梱ディスクはIndexedDBには保存せず、ディスクライブラリの先頭に固定表示する(削除不可)。
 const BUNDLED_DISK_SOURCE_KEY = 'bundled:human302';
@@ -882,6 +885,8 @@ function applyDocumentStrings(): void {
   btnDiskLibrary.setAttribute('aria-label', t('toolbarDiskLibrary'));
   btnFileManager.title = t('toolbarFileManager');
   btnFileManager.setAttribute('aria-label', t('toolbarFileManager'));
+  btnHelp.title = t('toolbarHelp');
+  btnHelp.setAttribute('aria-label', t('toolbarHelp'));
   btnLang.textContent = t('langToggle');
 
   for (const slot of SLOT_IDS) {
@@ -907,6 +912,10 @@ function applyDocumentStrings(): void {
 
   document.getElementById('footer-copyright')!.textContent = t('footerCopyright');
   document.getElementById('footer-github')!.textContent = t('footerGithubLabel');
+  // 紹介ページは単体HTMLなので、現在の言語を ?lang= で引き継いで開く。
+  const footerAbout = document.getElementById('footer-about') as HTMLAnchorElement;
+  footerAbout.textContent = t('footerAboutLabel');
+  footerAbout.href = `./about.html?lang=${getLang()}`;
   document.getElementById('footer-poweredby-prefix')!.textContent = t('footerPoweredByPrefix');
   document.getElementById('footer-poweredby-suffix')!.textContent = t('footerPoweredBySuffix');
 
@@ -1621,6 +1630,7 @@ const fileManagerDialog = buildFileManagerDialog(fileManagerRoot, {
   createTransferFd: fmCreateTransferFd,
 });
 btnFileManager.addEventListener('click', () => fileManagerDialog.open());
+btnHelp.addEventListener('click', () => window.open(`./help.html?lang=${getLang()}`, '_blank'));
 
 applyDocumentStrings();
 

@@ -11,6 +11,8 @@ interface Dict {
   headerTagline(): string;
   footerCopyright(): string;
   footerGithubLabel(): string;
+  /** フッタの紹介ページ(about.html)リンクのラベル。 */
+  footerAboutLabel(): string;
   footerPoweredByPrefix(): string;
   footerPoweredBySuffix(): string;
   overlayBootPlain(): string;
@@ -18,6 +20,7 @@ interface Dict {
   overlayNote1(): string;
   overlayNote2(): string;
   toolbarReset(): string;
+  toolbarHelp(): string;
   toolbarSettings(): string;
   toolbarSaveState(): string;
   toolbarLoadState(): string;
@@ -132,6 +135,7 @@ const STRINGS: Record<Lang, Dict> = {
     headerTagline: () => 'The online X68000 emulator powered by px68k-libretro',
     footerCopyright: () => '© URARA-works',
     footerGithubLabel: () => 'GitHubで見る',
+    footerAboutLabel: () => 'WebX68kについて',
     footerPoweredByPrefix: () => 'Powered by',
     footerPoweredBySuffix: () => '(GPLv2)',
     overlayBootPlain: () => 'そのまま起動',
@@ -139,6 +143,7 @@ const STRINGS: Record<Lang, Dict> = {
     overlayNote1: () => '音声再生の制限上、クリック操作で起動します。',
     overlayNote2: () => 'ディスクはツールバーのライブラリ、または下のドライブ行から追加できます。',
     toolbarReset: () => 'リセット',
+    toolbarHelp: () => 'ヘルプ',
     toolbarSettings: () => '設定(BIOS / マシン構成)',
     toolbarSaveState: () => 'ステート保存',
     toolbarLoadState: () => 'ステート復元',
@@ -249,6 +254,7 @@ const STRINGS: Record<Lang, Dict> = {
     headerTagline: () => 'The online X68000 emulator powered by px68k-libretro',
     footerCopyright: () => '© URARA-works',
     footerGithubLabel: () => 'View on GitHub',
+    footerAboutLabel: () => 'About WebX68k',
     footerPoweredByPrefix: () => 'Powered by',
     footerPoweredBySuffix: () => '(GPLv2)',
     overlayBootPlain: () => 'Start As-Is',
@@ -256,6 +262,7 @@ const STRINGS: Record<Lang, Dict> = {
     overlayNote1: () => 'Audio requires a user gesture, so click to start.',
     overlayNote2: () => 'You can add disks from the toolbar library, or from the drive rows below.',
     toolbarReset: () => 'Reset',
+    toolbarHelp: () => 'Help',
     toolbarSettings: () => 'Settings (BIOS / Machine Config)',
     toolbarSaveState: () => 'Save State',
     toolbarLoadState: () => 'Load State',

@@ -1,0 +1,689 @@
+<!doctype html>
+<html lang="ja">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <link rel="icon" type="image/png" href="./x68icon.png" />
+    <link rel="apple-touch-icon" href="./x68icon.png" />
+    <title>WebX68k とは</title>
+    <style>
+      :root {
+        color-scheme: light;
+        --bg: #fafafa;
+        --bg-panel: #ffffff;
+        --border: #d5d5d5;
+        --text: #1a1a1a;
+        --text-dim: #666666;
+        --accent: #4a90d9;
+        --accent-dim: #2c5a86;
+        --danger: #d32f2f;
+        --header-bg: #0c0c0c;
+        --header-text: #f2f2f2;
+        --header-tagline-text: #a8a8a8;
+        --page-footer-bg: #ececec;
+        --page-footer-text: #6b6b6b;
+        --page-footer-border: rgba(0, 0, 0, 0.12);
+        --footer-btn-bg: #4a4a4a;
+        --footer-btn-border: #202020;
+        --footer-text: #e6e6e6;
+        --code-bg: #f1f1f1;
+      }
+
+      * {
+        box-sizing: border-box;
+      }
+
+      html {
+        height: 100%;
+      }
+
+      body {
+        margin: 0;
+        padding: 0;
+        background: var(--bg);
+        color: var(--text);
+        font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Hiragino Sans', 'Yu Gothic', sans-serif;
+        min-height: 100%;
+        display: flex;
+        flex-direction: column;
+      }
+
+      header.help-header {
+        flex: 0 0 auto;
+        background: var(--header-bg);
+        padding: 10px 16px;
+        box-shadow:
+          inset 0 -1px 0 rgba(255, 255, 255, 0.06),
+          0 2px 6px rgba(0, 0, 0, 0.4);
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 12px;
+      }
+
+      .help-header-title {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+      }
+
+      .help-header-title img {
+        width: 28px;
+        height: 28px;
+        display: block;
+      }
+
+      .help-header-title h1 {
+        font-size: 15px;
+        font-weight: 600;
+        margin: 0;
+        color: var(--header-text);
+        letter-spacing: 0.03em;
+      }
+
+      .lang-toggle-btn {
+        flex: 0 0 auto;
+        padding: 6px 14px;
+        font-size: 12px;
+        border-radius: 5px;
+        border: 1px solid var(--footer-btn-border);
+        background: var(--footer-btn-bg);
+        color: var(--footer-text);
+        cursor: pointer;
+      }
+
+      .lang-toggle-btn:hover {
+        background: #5c5c5c;
+      }
+
+      main {
+        flex: 1 1 auto;
+        display: flex;
+        justify-content: center;
+        padding: 24px 16px 40px;
+      }
+
+      .help-content {
+        width: 100%;
+        max-width: 800px;
+      }
+
+      .help-card {
+        background: var(--bg-panel);
+        border: 1px solid var(--border);
+        border-radius: 8px;
+        box-shadow: 0 4px 14px rgba(0, 0, 0, 0.08);
+        padding: 24px 28px;
+        margin-bottom: 20px;
+      }
+
+      .help-card h2 {
+        font-size: 17px;
+        margin: 0 0 12px;
+        padding-bottom: 8px;
+        border-bottom: 1px solid var(--border);
+      }
+
+      .help-card p {
+        line-height: 1.8;
+        font-size: 14px;
+      }
+
+      .help-card ul,
+      .help-card ol {
+        line-height: 1.8;
+        font-size: 14px;
+        padding-left: 22px;
+      }
+
+      .help-card img {
+        max-width: 100%;
+        border: 1px solid var(--border);
+        border-radius: 6px;
+        display: block;
+        margin: 12px 0;
+      }
+
+      .help-card code {
+        background: var(--code-bg);
+        padding: 1px 5px;
+        border-radius: 3px;
+        font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+        font-size: 13px;
+      }
+
+      .help-card a {
+        color: var(--accent-dim);
+      }
+
+      .note-box {
+        background: #fff7e6;
+        border: 1px solid #e6c46a;
+        border-radius: 6px;
+        padding: 10px 14px;
+        font-size: 13px;
+        line-height: 1.7;
+        margin: 12px 0;
+      }
+
+      footer.help-footer {
+        flex: 0 0 auto;
+        width: 100%;
+        font-size: 11px;
+        color: var(--page-footer-text);
+        text-align: center;
+        padding: 8px 16px;
+        background: var(--page-footer-bg);
+        border-top: 1px solid var(--page-footer-border);
+      }
+
+      footer.help-footer a {
+        color: var(--page-footer-text);
+      }
+
+      .lang-en {
+        display: none;
+      }
+
+      /* このページに直接コンテキストを持たせるため、body[data-lang] で切り替える。 */
+      body[data-lang='en'] .lang-ja {
+        display: none;
+      }
+
+      body[data-lang='en'] .lang-en {
+        display: block;
+      }
+
+      /* ヒーローセクション: キャッチコピー+CTAボタン。 */
+      .hero-card {
+        text-align: center;
+      }
+
+      .hero-card h2 {
+        font-size: 22px;
+        border-bottom: none;
+        padding-bottom: 0;
+        margin: 0 0 10px;
+      }
+
+      .hero-card .hero-lead {
+        font-size: 14px;
+        color: var(--text-dim);
+        margin: 0 0 20px;
+        line-height: 1.8;
+      }
+
+      .hero-buttons {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 12px;
+        justify-content: center;
+        margin-bottom: 4px;
+      }
+
+      .hero-btn {
+        display: inline-block;
+        padding: 12px 26px;
+        border-radius: 6px;
+        font-size: 15px;
+        font-weight: 600;
+        text-decoration: none;
+        border: 1px solid var(--footer-btn-border);
+      }
+
+      /* .help-card a (詳細度0,1,1) に文字色を上書きされないよう a 込みで指定する */
+      .help-card a.hero-btn-primary {
+        background: var(--accent);
+        color: #ffffff;
+        border-color: var(--accent-dim);
+      }
+
+      .hero-btn-primary:hover {
+        background: var(--accent-dim);
+      }
+
+      /* 特徴セクション: 見出し+本文のカードを縦に並べる。 */
+      .feature-card h2 {
+        font-size: 16px;
+      }
+
+      .feature-badge {
+        display: inline-block;
+        font-size: 11px;
+        font-weight: 700;
+        letter-spacing: 0.04em;
+        color: #ffffff;
+        background: var(--accent-dim);
+        border-radius: 4px;
+        padding: 2px 8px;
+        margin-left: 8px;
+        vertical-align: middle;
+      }
+
+      table.mcp-table {
+        width: 100%;
+        border-collapse: collapse;
+        font-size: 13px;
+        margin: 12px 0;
+      }
+
+      table.mcp-table th,
+      table.mcp-table td {
+        border: 1px solid var(--border);
+        padding: 8px 10px;
+        text-align: left;
+        vertical-align: top;
+        line-height: 1.6;
+      }
+
+      table.mcp-table th {
+        background: var(--code-bg);
+      }
+
+      table.rom-table {
+        width: 100%;
+        border-collapse: collapse;
+        font-size: 13px;
+        margin: 12px 0;
+      }
+
+      table.rom-table th,
+      table.rom-table td {
+        border: 1px solid var(--border);
+        padding: 8px 10px;
+        text-align: left;
+        vertical-align: top;
+        line-height: 1.6;
+      }
+
+      table.rom-table th {
+        background: var(--code-bg);
+      }
+    </style>
+  </head>
+  <body data-lang="ja">
+    <header class="help-header">
+      <div class="help-header-title">
+        <img src="./x68icon.png" alt="" width="28" height="28" />
+        <h1 class="lang-ja">WebX68k とは</h1>
+        <h1 class="lang-en">About WebX68k</h1>
+      </div>
+      <button type="button" class="lang-toggle-btn" id="langToggleBtn"></button>
+    </header>
+
+    <main>
+      <div class="help-content">
+        <!-- ヒーロー -->
+        <section class="help-card hero-card">
+          <div class="lang-ja">
+            <h2>URLを開くだけで動く、ブラウザの中のX68000。</h2>
+            <p class="hero-lead">
+              WebX68k は、X68000 エミュレータ px68k-libretro の wasm ビルドをブラウザで動かす
+              Webプレイヤーです。IPL-ROM と Human68k version 3.02 のシステムディスクを同梱しているため、
+              何も用意しなくてもブラウザで開くだけで Human68k が起動します。
+            </p>
+            <div class="hero-buttons">
+              <a class="hero-btn hero-btn-primary" href="./">今すぐ試す</a>
+            </div>
+          </div>
+          <div class="lang-en">
+            <h2>An X68000 in your browser. Just open the URL.</h2>
+            <p class="hero-lead">
+              WebX68k is a web player that runs a WebAssembly build of the X68000
+              emulator px68k-libretro directly in your browser. It bundles the
+              IPL-ROM and the Human68k version 3.02 system disk, so Human68k boots
+              up with nothing else to prepare — just open the page.
+            </p>
+            <div class="hero-buttons">
+              <a class="hero-btn hero-btn-primary" href="./">Try it now</a>
+            </div>
+          </div>
+        </section>
+
+        <!-- 特徴1: インストール不要 -->
+        <section class="help-card feature-card">
+          <div class="lang-ja">
+            <h2>インストール不要・ブラウザ完結</h2>
+            <p>
+              X68000 エミュレータ
+              <a href="https://github.com/libretro/px68k-libretro" target="_blank" rel="noopener">px68k-libretro</a>
+              の wasm ビルドをそのまま使っているため、アプリのインストールもブラウザプラグインも
+              不要です。対応ブラウザで URL を開けば、その場で X68000 が起動します。読み書きしたディスクの
+              変更内容はブラウザ内(IndexedDB)にのみ保存され、サーバーへ送信されることはありません。
+            </p>
+          </div>
+          <div class="lang-en">
+            <h2>No install — runs entirely in the browser</h2>
+            <p>
+              WebX68k runs a WebAssembly build of the X68000 emulator
+              <a href="https://github.com/libretro/px68k-libretro" target="_blank" rel="noopener">px68k-libretro</a>
+              as-is, so there's no app to install and no browser plugin needed. Open the URL in a
+              supported browser and the X68000 starts right there. Disk changes are stored only inside
+              your browser (IndexedDB) and are never sent to a server.
+            </p>
+          </div>
+        </section>
+
+        <!-- 特徴2: 3ドライブ同時搭載+アクセスランプ -->
+        <section class="help-card feature-card">
+          <div class="lang-ja">
+            <h2>FDD1 / FDD2 / HDD の3ドライブ同時搭載</h2>
+            <p>
+              実機同様に FDD を2台とHDDを1台、同時に搭載できます。各ドライブ行には
+              「ディスク挿入中」ではなく実機同様の<strong>アクセスランプ</strong>を表示し、
+              既定は消灯、実際に読み書きしたフレームだけ点灯します。
+            </p>
+            <p>
+              FDD はコアを再起動せずに挿入・取り出し(ホットマウント)ができ、起動中でも
+              ディスクを差し替えられます。一方 HDD は実機でも活線挿抜する機器ではないため、
+              起動後は挿入も取り出しも禁止しています。HDD を入れ替えたいときはページを
+              再読み込みして起動前の状態に戻してください。
+            </p>
+          </div>
+          <div class="lang-en">
+            <h2>Three drives at once: FDD1 / FDD2 / HDD</h2>
+            <p>
+              Just like real hardware, WebX68k can mount two FDDs and one HDD at the same time. Each
+              drive row shows a real machine-style <strong>access lamp</strong> rather than a
+              "disk inserted" indicator — it stays off by default and lights up only on the frames
+              where the drive is actually read or written.
+            </p>
+            <p>
+              FDDs can be inserted and ejected without restarting the core (hot-swap), so you can
+              switch floppies while the machine is running. The HDD, on the other hand, isn't something
+              you'd hot-swap on real hardware either, so both inserting and ejecting it are disabled
+              once the machine has booted. Reload the page to get back to the pre-boot state if you
+              need to change the HDD.
+            </p>
+          </div>
+        </section>
+
+        <!-- 特徴3: ファイル転送 -->
+        <section class="help-card feature-card">
+          <div class="lang-ja">
+            <h2>ディスクライブラリとファイル転送</h2>
+            <p>
+              これまでに読み込んだ FD/HDD イメージは「ディスクライブラリ」から一覧・起動・削除でき、
+              次回同じイメージを開いたときに続きから再開できます。
+            </p>
+            <p>
+              ツールバーの「ファイル転送」からは、FTPクライアント風の2ペインUIでホスト(ブラウザ)⇔
+              ディスクイメージ間のファイル出し入れができます。Human68k のファイル名は Shift_JIS の
+              長いファイル名に対応しており、日本語ファイル名も正しく表示されます。取り込んだ
+              ZIP/LZH アーカイブはその場で展開できます(書き込みは ASCII の 8.3 形式のみ対応)。
+            </p>
+          </div>
+          <div class="lang-en">
+            <h2>Disk library and file transfer</h2>
+            <p>
+              Every FD/HDD image you've loaded is listed in the Disk Library, where you can boot, or
+              delete it. Opening the same image again resumes right where you left off.
+            </p>
+            <p>
+              The toolbar's "File Transfer" tool gives you an FTP-client-style two-pane UI for moving
+              files between the host (your browser) and a disk image. Human68k's long, Shift_JIS
+              file names are supported and display correctly, including Japanese names. ZIP/LZH
+              archives you bring in can be extracted on the spot (writing back is limited to ASCII
+              8.3-format names).
+            </p>
+          </div>
+        </section>
+
+        <!-- 特徴4: ステートセーブ/ロード -->
+        <section class="help-card feature-card">
+          <div class="lang-ja">
+            <h2>ステートセーブ / ロード</h2>
+            <p>
+              ツールバーの2ボタンで、実行中の状態をまるごとブラウザ内(IndexedDB)へ保存・復元
+              できます。保存データは gzip 圧縮されます。
+            </p>
+            <p>
+              ステートにはディスクイメージの中身は含まれないため、復元は「いま挿さっているディスク」
+              の上に行われます。セーブ時と違うディスク構成のまま復元するとゲストが正しく動かないため、
+              ロード時に保存時のドライブ構成と現在の構成を照合し、食い違う場合は確認ダイアログを
+              表示してから復元する安全策を取っています。
+            </p>
+          </div>
+          <div class="lang-en">
+            <h2>Save state / load state</h2>
+            <p>
+              Two toolbar buttons let you save and restore the entire running state to your browser
+              (IndexedDB). Saved data is gzip-compressed.
+            </p>
+            <p>
+              A saved state doesn't include the contents of disk images, so restoring it applies on
+              top of whatever disks are currently inserted. Restoring with a different disk setup than
+              when you saved could make the guest misbehave, so on load WebX68k compares the drive
+              configuration at save time against the current one and shows a confirmation dialog
+              before restoring if they don't match.
+            </p>
+          </div>
+        </section>
+
+        <!-- 特徴5: マウス対応 -->
+        <section class="help-card feature-card">
+          <div class="lang-ja">
+            <h2>マウス対応</h2>
+            <p>
+              canvas をクリック(または右ダブルクリック)すると Pointer Lock でマウスをキャプチャし、
+              ホストのマウス移動をそのままゲストへ送れます。X68000 のマウスは実機の仕様上、
+              相対移動量しか送れずカーソル位置はゲスト側が管理するため、ブラウザの絶対座標を
+              直接渡すことはできません。そこで WebX68k は IOCS のワークエリアを毎フレーム読んで
+              ゲストカーソルの現在位置を把握し、目標との差分だけを送る閉ループで絶対位置に
+              追従させています。Esc キーまたはツールバーのボタンでキャプチャを解除できます。
+            </p>
+          </div>
+          <div class="lang-en">
+            <h2>Mouse support</h2>
+            <p>
+              Clicking the canvas (or right-double-clicking it) captures the mouse via Pointer Lock, so
+              your host mouse movement is forwarded straight to the guest. Because of how the X68000's
+              mouse hardware works, it can only send relative movement — the guest itself keeps track of
+              cursor position — so the browser's absolute pointer coordinates can't be handed over
+              directly. To work around that, WebX68k reads the IOCS work area every frame to learn the
+              guest cursor's current position and sends only the difference from the target, forming a
+              closed loop that tracks absolute position. Press Esc or use the toolbar button to release
+              the capture.
+            </p>
+          </div>
+        </section>
+
+        <!-- 特徴6: AI操作(MCP) -->
+        <section class="help-card feature-card">
+          <div class="lang-ja">
+            <h2>AIがX68000を直接操作できる<span class="feature-badge">MCP対応</span></h2>
+            <p>
+              ローカルで動かす MCP サーバー(<code>webx68k-mcp</code>)経由で、Claude Code などの
+              AI エージェントから WebX68k を直接操作できます。MCP サーバーはあなたのマシン上で動き、
+              画面内容やディスクイメージが外部サーバーへ送信されることはありません。
+            </p>
+            <p>
+              ブラウザで WebX68k を <code>?bridge=1</code> パラメータ付きで開くと、ページがローカルの
+              MCP サーバーへ接続します。主なツールは以下のとおりです。
+            </p>
+            <table class="mcp-table">
+              <thead><tr><th>ツール名</th><th>概要</th></tr></thead>
+              <tbody>
+                <tr><td><code>status</code></td><td>起動状態・画面サイズ・各ドライブの中身・マウスキャプチャの有無を取得します。</td></tr>
+                <tr><td><code>screenshot</code></td><td>画面のPNGスクリーンショットを取得します。</td></tr>
+                <tr><td><code>type_text</code> / <code>key_sequence</code></td><td>ASCII文字列やキーコードをキーボード入力として送信します。</td></tr>
+                <tr><td><code>mouse_move</code> / <code>mouse_click</code></td><td>マウスの相対移動・クリックを送信します。</td></tr>
+                <tr><td><code>save_state</code> / <code>load_state</code></td><td>実行状態のスナップショット保存/復元を行います。</td></tr>
+                <tr><td><code>list_disks</code> / <code>insert_disk</code> / <code>eject_disk</code></td><td>各ドライブへのディスク挿入/排出を行います。</td></tr>
+              </tbody>
+            </table>
+            <p>
+              X68000 のコンソールはグラフィック描画のため、画面をテキストとして読む手段はありません。
+              画面の確認は <code>screenshot</code> で行います。セットアップ手順の詳細は
+              <a href="https://github.com/uraraworks/WebX68k/tree/master/mcp" target="_blank" rel="noopener">mcp/README.md</a>
+              を参照してください。すべてローカル動作です。
+            </p>
+          </div>
+          <div class="lang-en">
+            <h2>AI agents can operate the X68000 directly<span class="feature-badge">MCP support</span></h2>
+            <p>
+              Through a local MCP server (<code>webx68k-mcp</code>), AI agents such as Claude Code can
+              drive WebX68k directly. The MCP server always runs on your own machine, and screen
+              contents or disk images are never sent to an external server.
+            </p>
+            <p>
+              Open WebX68k with the <code>?bridge=1</code> parameter to have the page connect to your
+              local MCP server. Some of the main tools:
+            </p>
+            <table class="mcp-table">
+              <thead><tr><th>Tool</th><th>Description</th></tr></thead>
+              <tbody>
+                <tr><td><code>status</code></td><td>Gets boot state, screen size, each drive's contents, and mouse capture status.</td></tr>
+                <tr><td><code>screenshot</code></td><td>Captures a PNG screenshot of the screen.</td></tr>
+                <tr><td><code>type_text</code> / <code>key_sequence</code></td><td>Sends ASCII strings or key codes as keyboard input.</td></tr>
+                <tr><td><code>mouse_move</code> / <code>mouse_click</code></td><td>Sends relative mouse movement and clicks.</td></tr>
+                <tr><td><code>save_state</code> / <code>load_state</code></td><td>Saves/restores a snapshot of the running state.</td></tr>
+                <tr><td><code>list_disks</code> / <code>insert_disk</code> / <code>eject_disk</code></td><td>Inserts/ejects a disk from each drive.</td></tr>
+              </tbody>
+            </table>
+            <p>
+              Since the X68000's console is graphics-drawn, there's no way to read the screen as text —
+              use <code>screenshot</code> to check it. See
+              <a href="https://github.com/uraraworks/WebX68k/tree/master/mcp" target="_blank" rel="noopener">mcp/README.md</a>
+              for full setup instructions. Everything runs locally.
+            </p>
+          </div>
+        </section>
+
+        <!-- 特徴7: 本物のROM -->
+        <section class="help-card feature-card">
+          <div class="lang-ja">
+            <h2>本物の ROM も使える</h2>
+            <p>
+              実機から吸い出した本物の IPL-ROM / CGROM(フォントROM)を持っている場合、画面の
+              「BIOS 設定」パネルから読み込めます。読み込んだファイルはブラウザの IndexedDB に
+              保存され、次回以降は自動で読み込まれ、同梱品より優先されます。
+            </p>
+            <table class="rom-table">
+              <thead><tr><th>ファイル</th><th>内容</th></tr></thead>
+              <tbody>
+                <tr><td><code>iplrom.dat</code></td><td>X68000 IPL-ROM v1.0。無償公開されたものを許諾条件下で同梱。</td></tr>
+                <tr><td><code>human302.xdf</code></td><td>Human68k version 3.02 システムディスク。同上。</td></tr>
+                <tr><td><code>cgrom.dat</code></td><td>実機の CGROM は再配布の対象外なので同梱できません。代わりにパブリックドメインの東雲フォントから生成した自作品で、字形は実機と異なります。</td></tr>
+              </tbody>
+            </table>
+          </div>
+          <div class="lang-en">
+            <h2>Bring your own ROM dumps</h2>
+            <p>
+              If you have real IPL-ROM / CGROM (font ROM) dumps from actual hardware, you can load them
+              from the "BIOS Settings" panel. Loaded files are saved to your browser's IndexedDB, are
+              loaded automatically from then on, and take priority over the bundled versions.
+            </p>
+            <table class="rom-table">
+              <thead><tr><th>File</th><th>Contents</th></tr></thead>
+              <tbody>
+                <tr><td><code>iplrom.dat</code></td><td>X68000 IPL-ROM v1.0, bundled under the terms of its free public release.</td></tr>
+                <tr><td><code>human302.xdf</code></td><td>Human68k version 3.02 system disk, bundled under the same terms.</td></tr>
+                <tr><td><code>cgrom.dat</code></td><td>The real CGROM isn't cleared for redistribution, so it can't be bundled. Instead, a custom one generated from the public-domain Shinonome font is included; its glyph shapes differ from the real hardware.</td></tr>
+              </tbody>
+            </table>
+          </div>
+        </section>
+
+        <!-- 特徴8: プライバシーとライセンス -->
+        <section class="help-card feature-card">
+          <div class="lang-ja">
+            <h2>プライバシーとライセンス</h2>
+            <p>
+              本リポジトリは GPLv2 です。同梱の IPL-ROM / Human68k システムディスクは GPLv2 では
+              なく、「許諾条件.txt」の条件(無改変・無償での再頒布)に従います。市販ソフトウェアの
+              ディスクイメージは一切同梱していません。
+            </p>
+            <p>
+              利用者が自分で用意して読み込んだディスクイメージ・ROM は、あなたのブラウザ内
+              (IndexedDB)にのみ保存され、サーバーへ送信されることはありません。それらのイメージの
+              取り扱い・権利関係については利用者自身の責任となります。
+            </p>
+          </div>
+          <div class="lang-en">
+            <h2>Privacy and licensing</h2>
+            <p>
+              This repository is licensed under GPLv2. The bundled IPL-ROM and Human68k system disk are
+              not GPLv2 — they're distributed under the terms of "許諾条件.txt" (redistribution
+              unmodified and free of charge). No commercial software disk images are bundled.
+            </p>
+            <p>
+              Any disk image or ROM you supply and load yourself is stored only inside your own browser
+              (IndexedDB) and is never sent to a server. You're responsible for the rights and handling
+              of any such images you choose to load.
+            </p>
+          </div>
+        </section>
+      </div>
+    </main>
+
+    <footer class="help-footer">
+      <span class="lang-ja">
+        <a href="./index.html">WebX68k プレイヤーに戻る</a> /
+        <a href="./help.html?lang=ja">使い方</a> /
+        <a href="https://github.com/uraraworks/WebX68k" target="_blank" rel="noopener">GitHubで見る</a> /
+        © <a href="https://www.urara-works.jp/" target="_blank" rel="noopener">URARA-works</a>
+      </span>
+      <span class="lang-en">
+        <a href="./index.html">Back to the WebX68k player</a> /
+        <a href="./help.html?lang=en">How to use</a> /
+        <a href="https://github.com/uraraworks/WebX68k" target="_blank" rel="noopener">View on GitHub</a> /
+        © <a href="https://www.urara-works.jp/" target="_blank" rel="noopener">URARA-works</a>
+      </span>
+    </footer>
+
+    <script>
+      (function () {
+        'use strict';
+
+        var STORAGE_KEY = 'webx68k.lang';
+
+        function readStoredLang() {
+          try {
+            var v = localStorage.getItem(STORAGE_KEY);
+            return v === 'ja' || v === 'en' ? v : null;
+          } catch (e) {
+            return null;
+          }
+        }
+
+        // 優先順位: URL ?lang= ＞ localStorage ＞ navigator.language(ja判定) ＞ 既定 'en'。
+        // src/strings.ts の resolveLang() と同じロジック。
+        function resolveLang() {
+          var params = new URLSearchParams(location.search);
+          var fromUrl = params.get('lang');
+          if (fromUrl === 'ja' || fromUrl === 'en') return fromUrl;
+
+          var stored = readStoredLang();
+          if (stored) return stored;
+
+          if (navigator.language && navigator.language.toLowerCase().indexOf('ja') === 0) return 'ja';
+
+          return 'en';
+        }
+
+        function setLang(lang) {
+          try {
+            localStorage.setItem(STORAGE_KEY, lang);
+          } catch (e) {
+            // localStorageが使えない環境ではメモリ上の切替のみ有効。
+          }
+          document.body.setAttribute('data-lang', lang);
+          document.documentElement.setAttribute('lang', lang);
+          document.title = lang === 'ja' ? 'WebX68k とは' : 'About WebX68k';
+          var toggleBtn = document.getElementById('langToggleBtn');
+          if (toggleBtn) toggleBtn.textContent = lang === 'ja' ? 'EN' : '日本語';
+        }
+
+        var currentLang = resolveLang();
+        setLang(currentLang);
+
+        document.getElementById('langToggleBtn').addEventListener('click', function () {
+          currentLang = currentLang === 'ja' ? 'en' : 'ja';
+          setLang(currentLang);
+        });
+      })();
+    </script>
+  </body>
+</html>

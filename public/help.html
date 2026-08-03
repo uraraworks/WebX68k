@@ -1,0 +1,798 @@
+<!doctype html>
+<html lang="ja">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <link rel="icon" type="image/png" href="./x68icon.png" />
+    <link rel="apple-touch-icon" href="./x68icon.png" />
+    <title>WebX68k 使い方</title>
+    <style>
+      :root {
+        color-scheme: light;
+        --bg: #fafafa;
+        --bg-panel: #ffffff;
+        --border: #d5d5d5;
+        --text: #1a1a1a;
+        --text-dim: #666666;
+        --accent: #4a90d9;
+        --accent-dim: #2c5a86;
+        --danger: #d32f2f;
+        --header-bg: #0c0c0c;
+        --header-text: #f2f2f2;
+        --header-tagline-text: #a8a8a8;
+        --page-footer-bg: #ececec;
+        --page-footer-text: #6b6b6b;
+        --page-footer-border: rgba(0, 0, 0, 0.12);
+        --footer-btn-bg: #4a4a4a;
+        --footer-btn-border: #202020;
+        --footer-text: #e6e6e6;
+        --code-bg: #f1f1f1;
+      }
+
+      * {
+        box-sizing: border-box;
+      }
+
+      html {
+        height: 100%;
+      }
+
+      body {
+        margin: 0;
+        padding: 0;
+        background: var(--bg);
+        color: var(--text);
+        font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Hiragino Sans', 'Yu Gothic', sans-serif;
+        min-height: 100%;
+        display: flex;
+        flex-direction: column;
+      }
+
+      header.help-header {
+        flex: 0 0 auto;
+        background: var(--header-bg);
+        padding: 10px 16px;
+        box-shadow:
+          inset 0 -1px 0 rgba(255, 255, 255, 0.06),
+          0 2px 6px rgba(0, 0, 0, 0.4);
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 12px;
+      }
+
+      .help-header-title {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+      }
+
+      .help-header-title img {
+        width: 28px;
+        height: 28px;
+        display: block;
+      }
+
+      .help-header-title h1 {
+        font-size: 15px;
+        font-weight: 600;
+        margin: 0;
+        color: var(--header-text);
+        letter-spacing: 0.03em;
+      }
+
+      .lang-toggle-btn {
+        flex: 0 0 auto;
+        padding: 6px 14px;
+        font-size: 12px;
+        border-radius: 5px;
+        border: 1px solid var(--footer-btn-border);
+        background: var(--footer-btn-bg);
+        color: var(--footer-text);
+        cursor: pointer;
+      }
+
+      .lang-toggle-btn:hover {
+        background: #5c5c5c;
+      }
+
+      main {
+        flex: 1 1 auto;
+        display: flex;
+        justify-content: center;
+        padding: 24px 16px 40px;
+      }
+
+      .help-content {
+        width: 100%;
+        max-width: 800px;
+      }
+
+      .help-card {
+        background: var(--bg-panel);
+        border: 1px solid var(--border);
+        border-radius: 8px;
+        box-shadow: 0 4px 14px rgba(0, 0, 0, 0.08);
+        padding: 24px 28px;
+        margin-bottom: 20px;
+      }
+
+      .help-card h2 {
+        font-size: 17px;
+        margin: 0 0 12px;
+        padding-bottom: 8px;
+        border-bottom: 1px solid var(--border);
+      }
+
+      .help-card p {
+        line-height: 1.8;
+        font-size: 14px;
+      }
+
+      .help-card ul,
+      .help-card ol {
+        line-height: 1.8;
+        font-size: 14px;
+        padding-left: 22px;
+      }
+
+      .help-card img {
+        max-width: 100%;
+        border: 1px solid var(--border);
+        border-radius: 6px;
+        display: block;
+        margin: 12px 0;
+      }
+
+      .help-card code {
+        background: var(--code-bg);
+        padding: 1px 5px;
+        border-radius: 3px;
+        font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+        font-size: 13px;
+      }
+
+      .help-card a {
+        color: var(--accent-dim);
+      }
+
+      table.btn-table {
+        width: 100%;
+        border-collapse: collapse;
+        font-size: 13px;
+        margin: 12px 0;
+      }
+
+      table.btn-table th,
+      table.btn-table td {
+        border: 1px solid var(--border);
+        padding: 8px 10px;
+        text-align: left;
+        vertical-align: top;
+        line-height: 1.6;
+      }
+
+      table.btn-table th {
+        background: var(--code-bg);
+      }
+
+      .btn-icon-cell {
+        text-align: center;
+        width: 44px;
+      }
+
+      .fake-icon-btn {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        width: 32px;
+        height: 32px;
+        border-radius: 5px;
+        background: var(--footer-btn-bg);
+        border: 1px solid var(--footer-btn-border);
+        color: var(--footer-text);
+      }
+
+      .fake-icon-btn svg {
+        width: 20px;
+        height: 20px;
+      }
+
+      .note-box {
+        background: #fff7e6;
+        border: 1px solid #e6c46a;
+        border-radius: 6px;
+        padding: 10px 14px;
+        font-size: 13px;
+        line-height: 1.7;
+        margin: 12px 0;
+      }
+
+      footer.help-footer {
+        flex: 0 0 auto;
+        width: 100%;
+        font-size: 11px;
+        color: var(--page-footer-text);
+        text-align: center;
+        padding: 8px 16px;
+        background: var(--page-footer-bg);
+        border-top: 1px solid var(--page-footer-border);
+      }
+
+      footer.help-footer a {
+        color: var(--page-footer-text);
+      }
+
+      .lang-en {
+        display: none;
+      }
+
+      /* このページに直接コンテキストを持たせるため、body[data-lang] で切り替える。 */
+      body[data-lang='en'] .lang-ja {
+        display: none;
+      }
+
+      body[data-lang='en'] .lang-en {
+        display: block;
+      }
+
+      body[data-lang='en'] table .lang-en {
+        display: table-row;
+      }
+    </style>
+  </head>
+  <body data-lang="ja">
+    <header class="help-header">
+      <div class="help-header-title">
+        <img src="./x68icon.png" alt="" width="28" height="28" />
+        <h1 class="lang-ja">WebX68k 使い方</h1>
+        <h1 class="lang-en">WebX68k Help</h1>
+      </div>
+      <button type="button" class="lang-toggle-btn" id="langToggleBtn"></button>
+    </header>
+
+    <main>
+      <div class="help-content">
+        <!-- 1. はじめに -->
+        <section class="help-card">
+          <div class="lang-ja">
+            <h2>はじめに</h2>
+            <p>
+              WebX68k は、X68000 エミュレータ
+              <a href="https://github.com/captainys/px68k_libretro" target="_blank" rel="noopener">px68k-libretro</a>
+              の wasm ビルドをブラウザ上で動かす Web プレイヤーです。
+            </p>
+            <p>
+              IPLROM/CGROM、および起動用の Human68k システムディスク(<code>human302.xdf</code>)は
+              あらかじめ同梱されているため、追加の準備なしにすぐ起動できます。
+            </p>
+          </div>
+          <div class="lang-en">
+            <h2>Introduction</h2>
+            <p>
+              WebX68k is a web player that runs a WebAssembly build of the X68000 emulator
+              <a href="https://github.com/captainys/px68k_libretro" target="_blank" rel="noopener">px68k-libretro</a>
+              in your browser.
+            </p>
+            <p>
+              The IPLROM/CGROM and a bootable Human68k system disk (<code>human302.xdf</code>)
+              are bundled ahead of time, so you can start right away with no setup.
+            </p>
+          </div>
+        </section>
+
+        <!-- 2. 起動する -->
+        <section class="help-card">
+          <div class="lang-ja">
+            <h2>起動する</h2>
+            <p>
+              ページを開くと起動オーバーレイが表示され、「そのまま起動」(内蔵IPL ROMメニューから起動)
+              と「システムディスクで起動」(同梱の <code>human302.xdf</code> をFDD1へ挿入してから起動)
+              の2択が選べます。
+            </p>
+            <img src="./help/overlay.png" alt="起動オーバーレイ。そのまま起動/システムディスクで起動の選択ボタンが並ぶ" />
+            <p>
+              ブラウザの音声再生制限により、起動にはクリック操作が必須です。
+            </p>
+          </div>
+          <div class="lang-en">
+            <h2>Starting the emulator</h2>
+            <p>
+              A start overlay appears when you open the page, offering two choices:
+              "Start As-Is" (boots from the built-in IPL ROM menu) or "Start with System Disk"
+              (inserts the bundled <code>human302.xdf</code> into FDD1 before starting).
+            </p>
+            <img src="./help/overlay-en.png" alt="Start overlay showing Start As-Is / Start with System Disk choices" />
+            <p>
+              Due to browser autoplay restrictions, a click is required to start.
+            </p>
+          </div>
+        </section>
+
+        <!-- 3. ディスクイメージを読み込む -->
+        <section class="help-card">
+          <div class="lang-ja">
+            <h2>ディスクイメージを読み込む</h2>
+            <p>
+              画面下部のFDD1/FDD2/HDDそれぞれのスロット行へファイルをドラッグ&ドロップするか、
+              「ディスク挿入」ボタンから選択して読み込ませます。ライブラリから挿入したり、
+              ブランクディスクを新規作成したり、挿入中のディスクをダウンロードすることもできます。
+            </p>
+            <img src="./help/overview.png" alt="プレイヤー全体像。上部にツールバー、下部にFDD1/FDD2/HDDのスロット行" />
+            <ul>
+              <li>FDD対応拡張子: <code>.xdf</code> <code>.dim</code> <code>.d88</code> <code>.hdm</code> <code>.img</code> <code>.2hd</code></li>
+              <li>HDD対応拡張子: <code>.hdf</code> <code>.dup</code></li>
+            </ul>
+            <p>
+              ただし、後述のファイルマネージャ(ファイル転送)でFAT編集ができるのは
+              <code>.xdf</code> <code>.dim</code> <code>.hdm</code> <code>.img</code> <code>.2hd</code> のみです。
+              <code>.d88</code> はセクタ形式が異なるため編集非対応です。
+            </p>
+            <div class="note-box">
+              <strong>重要:</strong> FDDは起動中でもホットマウント(エミュレータの再起動なしに差し替え)
+              できますが、HDDは起動中の交換ができません。起動中はHDDのボタンが無効化され、
+              ドラッグ&ドロップも拒否されます。HDDを交換するにはページを再読み込みしてから
+              操作してください。
+            </div>
+          </div>
+          <div class="lang-en">
+            <h2>Loading disk images</h2>
+            <p>
+              Drag & drop a file onto an FDD1/FDD2/HDD slot row at the bottom of the player, or
+              use the "Insert Disk" button to pick one. You can also insert from the library,
+              create a new blank disk, or download the currently inserted disk.
+            </p>
+            <img src="./help/overview-en.png" alt="Player overview with the toolbar on top and FDD1/FDD2/HDD slot rows below" />
+            <ul>
+              <li>FDD extensions: <code>.xdf</code> <code>.dim</code> <code>.d88</code> <code>.hdm</code> <code>.img</code> <code>.2hd</code></li>
+              <li>HDD extensions: <code>.hdf</code> <code>.dup</code></li>
+            </ul>
+            <p>
+              Note that the file manager (File Transfer) described below can only edit the FAT of
+              <code>.xdf</code> <code>.dim</code> <code>.hdm</code> <code>.img</code> <code>.2hd</code> images.
+              <code>.d88</code> uses a different sector format and is not supported for editing.
+            </p>
+            <div class="note-box">
+              <strong>Important:</strong> FDDs can be hot-swapped while the emulator is running (no
+              core restart needed), but the HDD cannot be swapped while running. The HDD buttons
+              are disabled while running, and drag & drop is also rejected. Reload the page first
+              if you need to swap the HDD.
+            </div>
+          </div>
+        </section>
+
+        <!-- 4. ディスクライブラリ -->
+        <section class="help-card">
+          <div class="lang-ja">
+            <h2>ディスクライブラリ</h2>
+            <p>
+              ツールバーの「ディスクライブラリ」ボタンから、これまでに挿入したディスクイメージの
+              一覧を開けます。ブラウザ内に保存されたイメージから、挿入するドライブ
+              (FDD1 / FDD2 / HDD) を選んで再挿入できます。
+            </p>
+            <img src="./help/library.png" alt="ディスクライブラリダイアログ" />
+            <p>
+              各スロット行の「ライブラリから挿入」ボタンからも同様に挿入でき、
+              「ブランク作成」でフォーマット済みの新規イメージを作ってライブラリへ保存できます。
+            </p>
+          </div>
+          <div class="lang-en">
+            <h2>Disk Library</h2>
+            <p>
+              The "Disk Library" toolbar button opens the list of disk images you have inserted
+              so far. Choose a drive (FDD1 / FDD2 / HDD) to re-insert an image saved in your
+              browser.
+            </p>
+            <img src="./help/library-en.png" alt="Disk Library dialog" />
+            <p>
+              Each slot row's "Insert from Library" button works the same way, and "New Blank"
+              creates a freshly formatted image and saves it to the library.
+            </p>
+          </div>
+        </section>
+
+        <!-- 5. ファイル転送 -->
+        <section class="help-card">
+          <div class="lang-ja">
+            <h2>ファイル転送（このブラウザ⇔ディスクイメージ）</h2>
+            <p>
+              ツールバーの「ファイル転送」ボタンから、2ペインのファイルマネージャダイアログを
+              開けます。片方が「ホスト(このPC)」、もう片方が「ディスクイメージ」です。
+              転送するファイルはいったんステージングしてから書き込みます。
+            </p>
+            <img src="./help/filemanager.png" alt="ファイル転送ダイアログ。ホスト側とディスクイメージ側の2ペイン" />
+            <p>
+              ディスクイメージへの書き込みは <strong>ASCII 8.3形式のファイル名のみ</strong>
+              対応しています。2バイト文字(日本語名など)や長いファイル名は書き込めません。
+            </p>
+            <p>
+              一方、既存の日本語ファイル名は<strong>読み取り表示のみ</strong>対応しています。
+              Human68kのSJISファイル名はMS-DOS予約領域と連結して格納されているため、
+              それらを連結してデコードして一覧表示しています。
+            </p>
+            <p>
+              起動中のHDDは読み取り専用として扱われ、書き込み(persist)はできません。
+            </p>
+          </div>
+          <div class="lang-en">
+            <h2>File transfer (browser ⇔ disk image)</h2>
+            <p>
+              The "File Transfer" toolbar button opens a two-pane file manager dialog. One pane is
+              "Host (this PC)" and the other is the disk image. Files to transfer are staged first,
+              then written.
+            </p>
+            <img src="./help/filemanager-en.png" alt="File transfer dialog with a host-side pane and a disk-image-side pane" />
+            <p>
+              Writing to a disk image only supports <strong>ASCII 8.3-format file names</strong>.
+              Double-byte characters (such as Japanese names) or long file names cannot be written.
+            </p>
+            <p>
+              Existing Japanese file names, on the other hand, are supported for
+              <strong>read-only display</strong>. Human68k stores SJIS file names concatenated with
+              an MS-DOS reserved area, so the viewer decodes them by joining the two parts.
+            </p>
+            <p>
+              A running HDD is treated as read-only; writes (persisting) are not possible.
+            </p>
+          </div>
+        </section>
+
+        <!-- 6. ツールバーのボタン一覧 -->
+        <section class="help-card">
+          <div class="lang-ja">
+            <h2>ツールバーのボタン一覧</h2>
+            <img src="./help/overview.png" alt="プレイヤー全体像。ツールバーのアイコンが並ぶ" />
+            <table class="btn-table">
+              <thead>
+                <tr><th></th><th>ボタン</th><th>説明</th></tr>
+              </thead>
+              <tbody id="btnTableJa"></tbody>
+            </table>
+          </div>
+          <div class="lang-en">
+            <h2>Toolbar buttons</h2>
+            <img src="./help/overview-en.png" alt="Player overview with the toolbar icons" />
+            <table class="btn-table">
+              <thead>
+                <tr><th></th><th>Button</th><th>Description</th></tr>
+              </thead>
+              <tbody id="btnTableEn"></tbody>
+            </table>
+          </div>
+        </section>
+
+        <!-- 7. キーボードとマウス -->
+        <section class="help-card">
+          <div class="lang-ja">
+            <h2>キーボードとマウス</h2>
+            <p>
+              マウスをキャプチャすると、以降のマウス操作がゲスト(X68000)へ渡ります。
+              キャプチャは画面上での<strong>右ダブルクリック</strong>、またはツールバーの
+              「マウスキャプチャ」ボタンで開始できます。
+              (右ダブルクリックは <code>contextmenu</code> イベントのタイムスタンプ差分が
+              500ms以内かどうかで疑似判定しています。)
+            </p>
+            <p>
+              キャプチャの解除は <strong>Esc</strong> キー(ブラウザ標準の Pointer Lock API の機能)です。
+              マウスボタンの入力は、キャプチャ中のみゲストへ渡ります。
+            </p>
+            <p>
+              マウスの感度設定は、ブラウザの localStorage キー
+              <code>webx68k.mouseSensitivity</code> に保存されます。
+            </p>
+          </div>
+          <div class="lang-en">
+            <h2>Keyboard and mouse</h2>
+            <p>
+              Once the mouse is captured, subsequent mouse input is passed to the guest (X68000).
+              Capture starts with a <strong>right double-click</strong> on the screen, or via the
+              "Capture Mouse" toolbar button.
+              (Right double-click is detected heuristically by checking whether the timestamp gap
+              between <code>contextmenu</code> events is within 500ms.)
+            </p>
+            <p>
+              Release capture with <strong>Esc</strong> (a standard feature of the browser's
+              Pointer Lock API). Mouse button input is only passed to the guest while captured.
+            </p>
+            <p>
+              The mouse sensitivity setting is stored under the browser's localStorage key
+              <code>webx68k.mouseSensitivity</code>.
+            </p>
+          </div>
+        </section>
+
+        <!-- 8. ステート保存と続きから -->
+        <section class="help-card">
+          <div class="lang-ja">
+            <h2>ステート保存と続きから</h2>
+            <p>
+              ツールバーの「ステート保存」「ステート復元」ボタンで、実行状態をIndexedDBへ
+              gzip圧縮して保存・復元できます。
+            </p>
+            <p>
+              保存時には、そのときのディスク構成(FDD1/FDD2/HDDに何が挿入されていたか)も
+              一緒に記録されます。復元時に現在のディスク構成と異なる場合は確認ダイアログが
+              表示され、キャンセルすれば復元を中止できます。
+            </p>
+          </div>
+          <div class="lang-en">
+            <h2>Saving state and resuming</h2>
+            <p>
+              Use the "Save State" and "Load State" toolbar buttons to save/restore the running
+              state to/from IndexedDB, gzip-compressed.
+            </p>
+            <p>
+              The disk configuration at save time (what was inserted in FDD1/FDD2/HDD) is recorded
+              alongside the state. If it differs from the current configuration at load time, a
+              confirmation dialog appears; canceling it aborts the restore.
+            </p>
+          </div>
+        </section>
+
+        <!-- 9. BIOS / マシン構成の設定 -->
+        <section class="help-card">
+          <div class="lang-ja">
+            <h2>BIOS / マシン構成の設定</h2>
+            <p>
+              実機から吸い出した <code>iplrom.dat</code> / <code>cgrom.dat</code> をお持ちの場合、
+              ツールバーの「設定」ダイアログからアップロードできます。アップロードした
+              ファイルはIndexedDBに保存され、同梱のROMより優先して使用されます。
+            </p>
+            <div class="note-box">
+              同梱の <code>cgrom</code> はパブリックドメインの東雲フォントから自作生成した
+              ものであり、実機のCGROMとは字形が異なります。
+            </div>
+            <p>
+              マシン構成として、CPU速度(10 / 16 / 25 / 33(OC) / 66(OC) / 100(OC) MHz)と
+              RAM容量(1〜12MB)も設定できます。
+            </p>
+          </div>
+          <div class="lang-en">
+            <h2>BIOS / machine configuration</h2>
+            <p>
+              If you have <code>iplrom.dat</code> / <code>cgrom.dat</code> dumped from real
+              hardware, you can upload them from the "Settings" toolbar dialog. Uploaded files
+              are saved to IndexedDB and take priority over the bundled ROMs.
+            </p>
+            <div class="note-box">
+              The bundled <code>cgrom</code> is generated from the public-domain Shinonome font
+              and its glyphs differ from the real hardware's CGROM.
+            </div>
+            <p>
+              You can also configure CPU speed (10 / 16 / 25 / 33(OC) / 66(OC) / 100(OC) MHz) and
+              RAM size (1–12MB) as part of the machine configuration.
+            </p>
+          </div>
+        </section>
+
+        <!-- 10. AIから操作する -->
+        <section class="help-card">
+          <div class="lang-ja">
+            <h2>AIから操作する（MCP連携）</h2>
+            <p>
+              WebX68k は <code>?bridge=1</code> (または特定ポートを使う場合は
+              <code>?bridge=&lt;ポート番号&gt;</code>、既定ポートは3099) を付けて開くと、
+              ローカルのWebSocketブリッジ経由でAIエージェントから操作できます。
+            </p>
+            <p>
+              セットアップ手順の詳細は
+              <code>mcp/README.md</code>
+              を参照してください。
+            </p>
+            <div class="note-box">
+              X68000には画面をテキストとして読み出す標準的な手段が無いため、
+              スクリーンショットを取得して内容を確認する運用になります。
+            </div>
+          </div>
+          <div class="lang-en">
+            <h2>Controlling WebX68k from AI agents (MCP)</h2>
+            <p>
+              Open WebX68k with <code>?bridge=1</code> (or <code>?bridge=&lt;port&gt;</code> to use
+              a specific port; the default port is 3099) to have it connect to a local WebSocket
+              bridge that AI agents can drive.
+            </p>
+            <p>
+              See
+              <code>mcp/README.md</code>
+              for full setup instructions.
+            </p>
+            <div class="note-box">
+              X68000 has no standard way to read the screen as text, so operation relies on taking
+              screenshots to check the contents.
+            </div>
+          </div>
+        </section>
+
+        <!-- 11. トラブルシューティング -->
+        <section class="help-card">
+          <div class="lang-ja">
+            <h2>トラブルシューティング</h2>
+            <ul>
+              <li><strong>音が遅れる/出ない</strong> — ブラウザの制限により、起動には最初のクリック操作が必要です。</li>
+              <li><strong>マウスが反応しない</strong> — マウスをキャプチャしていない可能性があります。画面を右ダブルクリックするか、ツールバーの「マウスキャプチャ」ボタンを押してください。カーソルの追従がずれた場合は「マウス再同期」ボタンで直せます。</li>
+              <li><strong>ディスクが認識されない</strong> — 拡張子を確認してください(FDDは<code>.xdf,.dim,.d88,.hdm,.img,.2hd</code>、HDDは<code>.hdf,.dup</code>)。</li>
+              <li><strong>ステート復元でおかしくなる</strong> — 保存時とディスク構成が異なる旨の確認ダイアログが出た場合、キャンセルすれば復元を中止できます。</li>
+            </ul>
+          </div>
+          <div class="lang-en">
+            <h2>Troubleshooting</h2>
+            <ul>
+              <li><strong>Audio is delayed or missing</strong> — Due to browser restrictions, starting requires an initial click.</li>
+              <li><strong>The mouse doesn't respond</strong> — The mouse may not be captured. Right double-click the screen, or press the "Capture Mouse" toolbar button. If the cursor drifts out of sync, use "Resync Mouse".</li>
+              <li><strong>A disk isn't recognized</strong> — Check the file extension (FDD: <code>.xdf,.dim,.d88,.hdm,.img,.2hd</code>; HDD: <code>.hdf,.dup</code>).</li>
+              <li><strong>Loading a state causes odd behavior</strong> — If a confirmation dialog about a disk configuration mismatch appears, canceling it aborts the load.</li>
+            </ul>
+          </div>
+        </section>
+      </div>
+    </main>
+
+    <footer class="help-footer">
+      <span class="lang-ja">
+        <a href="./index.html">WebX68k プレイヤーに戻る</a> /
+        <a href="./about.html?lang=ja">WebX68kについて</a> /
+        <a href="https://github.com/uraraworks/WebX68k" target="_blank" rel="noopener">GitHubで見る</a>
+      </span>
+      <span class="lang-en">
+        <a href="./index.html">Back to the WebX68k player</a> /
+        <a href="./about.html?lang=en">About WebX68k</a> /
+        <a href="https://github.com/uraraworks/WebX68k" target="_blank" rel="noopener">View on GitHub</a>
+      </span>
+    </footer>
+
+    <script>
+      (function () {
+        'use strict';
+
+        var STORAGE_KEY = 'webx68k.lang';
+
+        function readStoredLang() {
+          try {
+            var v = localStorage.getItem(STORAGE_KEY);
+            return v === 'ja' || v === 'en' ? v : null;
+          } catch (e) {
+            return null;
+          }
+        }
+
+        // 優先順位: URL ?lang= ＞ localStorage ＞ navigator.language(ja判定) ＞ 既定 'en'。
+        // src/strings.ts の resolveLang() と同じロジック。
+        function resolveLang() {
+          var params = new URLSearchParams(location.search);
+          var fromUrl = params.get('lang');
+          if (fromUrl === 'ja' || fromUrl === 'en') return fromUrl;
+
+          var stored = readStoredLang();
+          if (stored) return stored;
+
+          if (navigator.language && navigator.language.toLowerCase().indexOf('ja') === 0) return 'ja';
+
+          return 'en';
+        }
+
+        function setLang(lang) {
+          try {
+            localStorage.setItem(STORAGE_KEY, lang);
+          } catch (e) {
+            // localStorageが使えない環境ではメモリ上の切替のみ有効。
+          }
+          document.body.setAttribute('data-lang', lang);
+          document.documentElement.setAttribute('lang', lang);
+          document.title = lang === 'ja' ? 'WebX68k 使い方' : 'WebX68k Help';
+          var toggleBtn = document.getElementById('langToggleBtn');
+          if (toggleBtn) toggleBtn.textContent = lang === 'ja' ? 'EN' : '日本語';
+        }
+
+        var currentLang = resolveLang();
+        setLang(currentLang);
+
+        document.getElementById('langToggleBtn').addEventListener('click', function () {
+          currentLang = currentLang === 'ja' ? 'en' : 'ja';
+          setLang(currentLang);
+        });
+
+        // ツールバーのボタン一覧テーブルを生成する。
+        // アイコンのpath dは index.html のツールバーボタン定義と同一。
+        var BUTTONS = [
+          {
+            icon: 'M3 12a9 9 0 1 0 3-6.7M3 4v5h5',
+            ja: 'リセット',
+            en: 'Reset',
+            descJa: 'エミュレータをリセットして再起動します。',
+            descEn: 'Resets the emulator to restart it.',
+          },
+          {
+            icon: 'M6 10V19H18V10 M12 3v6 M9 6l3 3 3-3',
+            ja: 'ステート保存',
+            en: 'Save State',
+            descJa: '現在の実行状態をIndexedDBへスナップショット保存します。',
+            descEn: 'Snapshots the current running state to IndexedDB.',
+          },
+          {
+            icon: 'M6 10V19H18V10 M12 9V3 M9 6l3-3 3 3',
+            ja: 'ステート復元',
+            en: 'Load State',
+            descJa: '保存済みのステートから実行状態を復元します。',
+            descEn: 'Restores the running state from a previously saved state.',
+          },
+          {
+            icon: 'M12 3a6 6 0 0 1 6 6v6a6 6 0 0 1-12 0V9a6 6 0 0 1 6-6z M12 3v7 M12 7v3',
+            ja: 'マウスキャプチャ',
+            en: 'Capture Mouse',
+            descJa: '画面をクリックロックし、マウス操作をゲストへ送ります。画面の右ダブルクリックでも開始できます。Escキーで解除します。',
+            descEn: 'Locks the pointer to the screen and passes mouse input to the guest. Right double-click the screen to start it too. Press Esc to release.',
+          },
+          {
+            icon: 'M12 3v4 M12 17v4 M3 12h4 M17 12h4 M9 12a3 3 0 1 0 6 0 3 3 0 1 0 -6 0',
+            ja: 'マウス再同期',
+            en: 'Resync Mouse',
+            descJa: 'ホストのカーソル位置とゲスト側マウス位置の基準がズレたときに、押すと作り直せます。',
+            descEn: 'Re-establishes the reference point when the host cursor and the guest mouse position drift apart.',
+          },
+          {
+            icon: 'M7 7h10v10H7z M9 9h6v6H9z M7 4v3 M12 4v3 M17 4v3 M7 17v3 M12 17v3 M17 17v3 M4 7h3 M4 12h3 M4 17h3 M17 7h3 M17 12h3 M17 17h3',
+            ja: '設定(BIOS / マシン構成)',
+            en: 'Settings (BIOS / Machine Config)',
+            descJa: 'BIOSファイル(IPLROM.DAT / CGROM.DAT)とマシン構成(CPU速度・RAM容量)を設定するダイアログを開きます。',
+            descEn: 'Opens a dialog to configure the BIOS files (IPLROM.DAT / CGROM.DAT) and machine settings (CPU speed, RAM size).',
+          },
+          {
+            icon: 'M4 16h13l3-3V6a1 1 0 0 0-1-1H4a1 1 0 0 0-1 1v9a1 1 0 0 0 1 1z M4 20h13a3 3 0 0 0 3-3 M8 9h6v4H8z',
+            ja: 'ディスクライブラリ',
+            en: 'Disk Library',
+            descJa: 'これまでに保存されたディスクイメージの一覧を開き、起動・挿入・削除ができます。',
+            descEn: 'Opens the list of previously saved disk images, from which you can boot, insert, or delete them.',
+          },
+          {
+            icon: 'M3 8h13 M12 4l4 4-4 4 M21 16H8 M12 20l-4-4 4-4',
+            ja: 'ファイル転送',
+            en: 'File Transfer',
+            descJa: '2ペインのファイルマネージャダイアログを開き、このブラウザとディスクイメージの間でファイルをやり取りします。',
+            descEn: 'Opens a two-pane file manager dialog for exchanging files between this browser and a disk image.',
+          },
+          {
+            icon: 'M12 21a9 9 0 1 0 0-18 9 9 0 0 0 0 18z M9.6 9.2a2.4 2.4 0 1 1 3.3 2.2c-.7.3-.9.8-.9 1.6 M12 16.8h.01',
+            ja: 'ヘルプ',
+            en: 'Help',
+            descJa: 'このページ(使い方ページ)を別タブで開きます。',
+            descEn: 'Opens this Help page in a new tab.',
+          },
+        ];
+
+        function svgFor(pathD) {
+          return (
+            '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"' +
+            ' stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">' +
+            '<path d="' +
+            pathD +
+            '"/></svg>'
+          );
+        }
+
+        function buildTable(tbodyId, langKey, descKey) {
+          var tbody = document.getElementById(tbodyId);
+          var html = '';
+          for (var i = 0; i < BUTTONS.length; i++) {
+            var b = BUTTONS[i];
+            html +=
+              '<tr>' +
+              '<td class="btn-icon-cell"><span class="fake-icon-btn">' +
+              svgFor(b.icon) +
+              '</span></td>' +
+              '<td>' +
+              b[langKey] +
+              '</td>' +
+              '<td>' +
+              b[descKey] +
+              '</td>' +
+              '</tr>';
+          }
+          tbody.innerHTML = html;
+        }
+
+        buildTable('btnTableJa', 'ja', 'descJa');
+        buildTable('btnTableEn', 'en', 'descEn');
+      })();
+    </script>
+  </body>
+</html>
