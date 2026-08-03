@@ -50,8 +50,8 @@ MCP サーバー本体 (stdio transport) と、ブラウザと通信するため
 | `reset` | リセット |
 | `wait_screen_change` | 画面が変化して落ち着くまで待つ |
 | `save_state` / `load_state` | ステートの保存・復元 |
-| `list_disks` / `insert_disk` / `eject_disk` | ドライブ操作(FDD はリセット無しで差し替え) |
-| `disk_list_files` / `disk_read_file` / `disk_write_file` | ディスクイメージ内のファイル操作(FAT) |
+| `list_disks` / `insert_disk` / `eject_disk` | ドライブ操作(FDD はリセット無しで差し替え。HDD は起動前のみ) |
+| `disk_list_files` / `disk_read_file` / `disk_write_file` | ディスクイメージ内のファイル操作(FAT)。HDD への書き込みは起動前のみ |
 | `read_memory` | ゲストのメインメモリを読む(IOCS ワークエリアの確認等) |
 
 ## X68000 固有の注意点
@@ -61,6 +61,11 @@ MCP サーバー本体 (stdio transport) と、ブラウザと通信するため
   行い、処理の完了待ちは `wait_screen_change` を使ってください
 - **マウスは相対移動のみ**。X68000 のマウスは SCC 経由で移動量だけを送る方式で、カーソル位置は
   ゲスト側が管理しています。そのため絶対座標を指定するツールはありません
+- **HDD を触れるのは起動前だけ**。px68k-libretro は実行中の HDD 挿抜に対応していないため、
+  `insert_disk` / `eject_disk` / `disk_write_file` で HDD を指定できるのは起動前に限られます。
+  起動前の HDD はスロットに「セット」されるだけで起動はせず、その状態なら中身を直接編集できます。
+  起動後の HDD は読み出し専用です(コアが掴んでいる間にホストが書き換えるとゲスト側のキャッシュと
+  食い違うため)
 - **`type_text` は ASCII のみ**。全角文字はゲスト側の FEP を通す必要があるため非対応です。
   記号は X68000 の JIS 配列に合わせて SHIFT 付きに分解して送ります
 - **ブラウザのタブが非アクティブだと極端に遅くなります**。ブラウザはバックグラウンドタブの
