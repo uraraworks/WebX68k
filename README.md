@@ -98,6 +98,38 @@ FDD0/FDD1 の挿入・取り出しは**コアを再起動せず**に行う。px6
 起動中の HDD は読み出し専用(`editable: false`、`persist()` は拒否)になる。ダウンロードは中身を
 読むだけなので起動中でも可能。HDD を入れ替えたいときはコアをリセット(起動前の状態)してから操作する。
 
+## マウス入力
+
+X68000 のマウスは **SCC 経由で相対移動量(-128〜127)を送る方式**で、カーソル位置はゲスト側が
+自前で管理する（`libretro/mouse.c` の `Mouse_Event()` がデルタを累積し、`Mouse_SetData()` が
+クランプして SCC へ渡す）。ブラウザのカーソル座標を絶対座標として渡すことは原理的にできないため、
+**Pointer Lock でキャプチャして `movementX/Y` を積む**方式にしている（canvas クリックで開始、
+Esc で解除）。
+
+- **コアオプション `px68k_joy_mouse` を `"Mouse"` にすることが必須**。px68k は内部フラグ
+  `MouseSW` が立っていないと `Mouse_Event()` を丸ごと無視するため、これが無いとデルタを
+  返しても一切反応しない（`bootCore()` で設定）
+- `movementX/Y` は CSS ピクセル単位なので、`canvas.width / canvas.clientWidth` を掛けて
+  ゲスト1ドットに換算する。感度倍率は `localStorage` の `webx68k.mouseSensitivity`
+- コアは `retro_run()` 中に X/Y を1回ずつ読むため、ホスト側は読まれた分だけ差し引いて
+  次フレームへ繰り越す。端数を残すのは、感度を下げたときに微小移動が切り捨てで消えないようにするため
+- キャプチャ解除時は積み残しのデルタと押しっぱなし判定を捨てる（ボタンを押したまま Esc された場合の保険）
+
+### 配線確認の方法（マウス対応ソフトが無くても確認できる）
+
+`x68k/scc.c` の `MouseX`/`MouseY` は**ゲストが SCC をポーリングしたときにしか更新されない**ため、
+これだけ見ても配線の成否は分からない。そこで fork 側 `libretro/mouse.c` に累積デルタを覗く
+アクセサ（`Mouse_PeekDX/DY`、`Mouse_PeekStat`、`Mouse_IsEnabled`）を追加し、`core-shim.c` の
+getter 経由で `LibretroHost.readMouseState()` から読めるようにしている。
+
+開発ビルドでは `window.__webx68kDebug.moveMouse(dx, dy)` / `.mouseButton('left', true)` で
+Pointer Lock を経由せずに入力を注入できる（将来の MCP ブリッジの `mouse_move` 相当も
+この経路を使う想定）。実測では、注入したデルタが `sccX`/`sccY` にそのまま現れることを確認済み。
+
+**単発で注入して数百ms後に読むと 0 に見える**ので注意。Human68k は毎フレーム SCC を
+ポーリングしており、累積デルタは即座に吸われて次のポーリングで 0 に上書きされる。
+`requestAnimationFrame` ごとに読むこと。
+
 ## ステートセーブ / ロード
 
 ツールバーの2ボタン（保存/復元）で、実行中の状態をまるごと保存・復元できる（WebNP2 と同じ

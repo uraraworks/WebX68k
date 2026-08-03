@@ -81,3 +81,66 @@ void webx68k_fdd_eject(int drive)
 {
   FDD_EjectFD(drive);
 }
+
+/*
+ * マウス配線の診断用。
+ * px68k の MouseX/MouseY(scc.c) はゲストが SCC 経由でポーリングしたときにしか更新されないため、
+ * マウスを使うソフトが無い状態では常に 0 のままになる。fork 側 libretro/mouse.c に足した
+ * アクセサ経由で「累積デルタ」「ボタン状態」「マウス有効フラグ(MouseSW)」を直接読み、
+ * ホスト → コアまでの配線が通っているかをゲストソフト無しで確認できるようにする。
+ */
+extern float Mouse_PeekDX(void);
+extern float Mouse_PeekDY(void);
+extern int Mouse_PeekStat(void);
+extern int Mouse_IsEnabled(void);
+
+__attribute__((used))
+double get_mouse_dx(void)
+{
+  return (double)Mouse_PeekDX();
+}
+
+__attribute__((used))
+double get_mouse_dy(void)
+{
+  return (double)Mouse_PeekDY();
+}
+
+__attribute__((used))
+int get_mouse_stat(void)
+{
+  return Mouse_PeekStat();
+}
+
+__attribute__((used))
+int get_mouse_enabled(void)
+{
+  return Mouse_IsEnabled();
+}
+
+/*
+ * SCC へ実際に渡る値(x68k/scc.c のグローバル)。
+ * ゲストがマウスをポーリングすると Mouse_SetData() が累積デルタをここへ移して 0 に戻すため、
+ * 上の get_mouse_dx/dy と両方見ることで「累積中」か「ゲストに吸われた後」かを判別できる。
+ */
+extern signed char MouseX;
+extern signed char MouseY;
+extern unsigned char MouseSt;
+
+__attribute__((used))
+int get_mouse_scc_x(void)
+{
+  return MouseX;
+}
+
+__attribute__((used))
+int get_mouse_scc_y(void)
+{
+  return MouseY;
+}
+
+__attribute__((used))
+int get_mouse_scc_stat(void)
+{
+  return MouseSt;
+}

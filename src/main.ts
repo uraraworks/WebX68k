@@ -736,6 +736,9 @@ async function bootCore(): Promise<void> {
   // HDD0 の永続化(config読込)を有効化。これでLoadConfig()が /system/keropi/config の
   // HDD0= を読み、cmdファイル(FDD0/FDD1指定)と共存できる。
   host.setCoreOption('px68k_save_hdd_path', 'enabled');
+  // マウスを有効化する。px68k は MouseSW が立っていないと Mouse_Event() を丸ごと無視するため、
+  // このオプション("Mouse")が Mouse_StartCapture(1) を呼ぶまでマウス入力は一切通らない。
+  host.setCoreOption('px68k_joy_mouse', 'Mouse');
   await host.init(biosIplBytes!, biosCgBytes!);
 
   const fdd0Path = slots.fdd0
@@ -939,7 +942,57 @@ window.addEventListener('keyup', (e) => {
   host.setKey(code, false);
   e.preventDefault();
 });
-canvas.addEventListener('click', () => canvas.focus());
+// --- マウス入力 ---
+// X68000 のマウスは SCC 経由で相対移動量(-128..127)を送る方式で、ゲスト側が自前でカーソル位置を
+// 管理する。ブラウザのカーソル位置を絶対座標として渡すことは原理的にできないため、
+// Pointer Lock でキャプチャして movementX/Y(相対量)を積む。
+const MOUSE_SENSITIVITY_KEY = 'webx68k.mouseSensitivity';
+let mouseSensitivity = Number(localStorage.getItem(MOUSE_SENSITIVITY_KEY)) || 1;
+
+function isMouseCaptured(): boolean {
+  return document.pointerLockElement === canvas;
+}
+
+canvas.addEventListener('click', () => {
+  canvas.focus();
+  if (!running || isMouseCaptured()) return;
+  // requestPointerLock はユーザー操作起点でないと拒否される。拒否されても実害は無いので握り潰す。
+  void Promise.resolve(canvas.requestPointerLock()).catch(() => {});
+});
+
+document.addEventListener('pointerlockchange', () => {
+  if (isMouseCaptured()) {
+    showToast(t('mouseCaptured'));
+  } else {
+    // 解除時は積み残しのデルタと押しっぱなし判定を捨てる(ボタンを押したまま Esc された場合の保険)
+    host?.clearMouseState();
+  }
+});
+
+canvas.addEventListener('mousemove', (e) => {
+  if (!host || !isMouseCaptured()) return;
+  // movementX/Y は CSS ピクセル単位。canvas は拡大表示されるので、ゲスト側の1ドットに換算する。
+  const scale = canvas.clientWidth > 0 ? canvas.width / canvas.clientWidth : 1;
+  host.addMouseDelta(e.movementX * scale * mouseSensitivity, e.movementY * scale * mouseSensitivity);
+});
+
+canvas.addEventListener('mousedown', (e) => {
+  if (!host || !isMouseCaptured()) return;
+  if (e.button === 0) host.setMouseButton('left', true);
+  else if (e.button === 2) host.setMouseButton('right', true);
+  e.preventDefault();
+});
+
+window.addEventListener('mouseup', (e) => {
+  if (!host) return;
+  if (e.button === 0) host.setMouseButton('left', false);
+  else if (e.button === 2) host.setMouseButton('right', false);
+});
+
+// X68000 側で右ボタンを使うため、キャプチャ中はブラウザのコンテキストメニューを出さない
+canvas.addEventListener('contextmenu', (e) => {
+  if (isMouseCaptured()) e.preventDefault();
+});
 
 let lastFrameTime = 0;
 let accumulator = 0;
@@ -995,6 +1048,11 @@ function pollDiskAccess(now: number): void {
 if (import.meta.env.DEV) {
   (window as unknown as Record<string, unknown>).__webx68kDebug = {
     stat: () => ({ queuedSec: audio?.queuedSeconds ?? null, fps: host?.avInfo?.fps ?? null }),
+    mouse: () => ({ captured: isMouseCaptured(), sensitivity: mouseSensitivity, core: host?.readMouseState() ?? null }),
+    // Pointer Lock を経由せずに相対移動/ボタンを注入する。自動テスト用で、
+    // 将来の MCP ブリッジ(mouse_move 相当)もこの経路をそのまま使う想定。
+    moveMouse: (dx: number, dy: number) => host?.addMouseDelta(dx, dy),
+    mouseButton: (button: 'left' | 'right', down: boolean) => host?.setMouseButton(button, down),
   };
 }
 

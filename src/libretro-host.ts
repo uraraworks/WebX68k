@@ -23,7 +23,14 @@ const RETRO_ENVIRONMENT_SET_CORE_OPTIONS_V2 = 67;
 const RETRO_ENVIRONMENT_SET_CORE_OPTIONS_V2_INTL = 68;
 
 const RETRO_DEVICE_JOYPAD = 1;
+const RETRO_DEVICE_MOUSE = 2;
 const RETRO_DEVICE_KEYBOARD = 3;
+
+// retro_device_id_mouse
+const RETRO_DEVICE_ID_MOUSE_X = 0;
+const RETRO_DEVICE_ID_MOUSE_Y = 1;
+const RETRO_DEVICE_ID_MOUSE_LEFT = 2;
+const RETRO_DEVICE_ID_MOUSE_RIGHT = 3;
 
 const RETRO_PIXEL_FORMAT_RGB565 = 2;
 
@@ -74,6 +81,14 @@ export interface PX68KModule {
   _get_fdd_is_reading(): number;
   _get_fdd_access_drive(): number;
   _get_sasi_is_accessing(): number;
+  // マウス配線の診断用(core-shim.c 経由で fork の libretro/mouse.c のアクセサを公開)
+  _get_mouse_dx(): number;
+  _get_mouse_dy(): number;
+  _get_mouse_stat(): number;
+  _get_mouse_enabled(): number;
+  _get_mouse_scc_x(): number;
+  _get_mouse_scc_y(): number;
+  _get_mouse_scc_stat(): number;
   // FDD ホットマウント用(core-shim.c 経由で px68k の FDD_SetFD/FDD_EjectFD を公開)
   _webx68k_fdd_insert(drive: number, pathPtr: number): void;
   _webx68k_fdd_eject(drive: number): void;
@@ -118,6 +133,13 @@ export class LibretroHost {
 
   private keyState = new Set<number>();
 
+  // マウスは X68000 実機同様「相対移動量」で渡す(SCC が -128..127 のデルタを送る方式)。
+  // コアは retro_run() 中に X/Y を1回ずつ読むので、読まれた分だけ差し引いて次フレームへ繰り越す。
+  // 端数を残すのは、感度を下げたときに微小移動が切り捨てで消えてしまうのを防ぐため。
+  private mouseDx = 0;
+  private mouseDy = 0;
+  private mouseButtons = { left: false, right: false };
+
   private imageData: ImageData | null = null;
   private lastWidth = 0;
   private lastHeight = 0;
@@ -141,6 +163,51 @@ export class LibretroHost {
   setKey(retrok: number, down: boolean): void {
     if (down) this.keyState.add(retrok);
     else this.keyState.delete(retrok);
+  }
+
+  /** マウスの相対移動量を積む(ゲスト1ドット単位。呼び出し側で感度・表示倍率を換算済みの値を渡す) */
+  addMouseDelta(dx: number, dy: number): void {
+    this.mouseDx += dx;
+    this.mouseDy += dy;
+  }
+
+  setMouseButton(button: 'left' | 'right', down: boolean): void {
+    this.mouseButtons[button] = down;
+  }
+
+  /** キャプチャ解除時などに、積み残しのデルタとボタン押下状態を捨てる */
+  clearMouseState(): void {
+    this.mouseDx = 0;
+    this.mouseDy = 0;
+    this.mouseButtons.left = false;
+    this.mouseButtons.right = false;
+  }
+
+  /**
+   * コア内部のマウス状態を覗く(配線確認用)。
+   * dx/dy はコアが溜めている累積デルタで、ゲストが SCC 経由でポーリングしたときに 0 へ吸われる。
+   * enabled は px68k の MouseSW で、コアオプション px68k_joy_mouse が "Mouse" のときに 1 になる。
+   */
+  readMouseState(): {
+    dx: number;
+    dy: number;
+    stat: number;
+    enabled: boolean;
+    sccX: number;
+    sccY: number;
+    sccStat: number;
+  } {
+    const mod = this.mod;
+    return {
+      dx: mod._get_mouse_dx(),
+      dy: mod._get_mouse_dy(),
+      stat: mod._get_mouse_stat(),
+      enabled: mod._get_mouse_enabled() !== 0,
+      // ゲストがポーリングした時点で累積デルタがこちらへ移る(SCC へ渡る実値)
+      sccX: mod._get_mouse_scc_x(),
+      sccY: mod._get_mouse_scc_y(),
+      sccStat: mod._get_mouse_scc_stat(),
+    };
   }
 
   /**
@@ -201,6 +268,26 @@ export class LibretroHost {
     };
     const inputStateCb = (_port: number, device: number, _index: number, id: number): number => {
       if (device === RETRO_DEVICE_KEYBOARD) return this.keyState.has(id) ? 1 : 0;
+      if (device === RETRO_DEVICE_MOUSE) {
+        switch (id) {
+          case RETRO_DEVICE_ID_MOUSE_X: {
+            const step = Math.trunc(this.mouseDx);
+            this.mouseDx -= step;
+            return step;
+          }
+          case RETRO_DEVICE_ID_MOUSE_Y: {
+            const step = Math.trunc(this.mouseDy);
+            this.mouseDy -= step;
+            return step;
+          }
+          case RETRO_DEVICE_ID_MOUSE_LEFT:
+            return this.mouseButtons.left ? 1 : 0;
+          case RETRO_DEVICE_ID_MOUSE_RIGHT:
+            return this.mouseButtons.right ? 1 : 0;
+          default:
+            return 0;
+        }
+      }
       if (device === RETRO_DEVICE_JOYPAD) return 0;
       return 0;
     };
