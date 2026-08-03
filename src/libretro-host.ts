@@ -13,7 +13,9 @@ const RETRO_ENVIRONMENT_GET_LOG_INTERFACE = 27;
 const RETRO_ENVIRONMENT_SET_VARIABLES = 16;
 const RETRO_ENVIRONMENT_SET_SUPPORT_NO_GAME = 18;
 const RETRO_ENVIRONMENT_GET_SAVE_DIRECTORY = 31;
+const RETRO_ENVIRONMENT_SET_SYSTEM_AV_INFO = 32;
 const RETRO_ENVIRONMENT_SET_CONTROLLER_INFO = 35;
+const RETRO_ENVIRONMENT_SET_GEOMETRY = 37;
 const RETRO_ENVIRONMENT_SET_CORE_OPTIONS = 53;
 const RETRO_ENVIRONMENT_SET_CORE_OPTIONS_INTL = 54;
 const RETRO_ENVIRONMENT_SET_CORE_OPTIONS_DISPLAY = 55;
@@ -69,6 +71,9 @@ export interface PX68KModule {
   _get_fdd_is_reading(): number;
   _get_fdd_access_drive(): number;
   _get_sasi_is_accessing(): number;
+  // FDD ホットマウント用(core-shim.c 経由で px68k の FDD_SetFD/FDD_EjectFD を公開)
+  _webx68k_fdd_insert(drive: number, pathPtr: number): void;
+  _webx68k_fdd_eject(drive: number): void;
 }
 
 declare global {
@@ -244,6 +249,29 @@ export class LibretroHost {
       case RETRO_ENVIRONMENT_SET_SUPPORT_NO_GAME:
         return 1;
 
+      // px68k は画面モード(15kHz/31kHz)が切り替わるたびに FRAMERATE を作り直して
+      // SET_SYSTEM_AV_INFO を投げてくる(libretro.c の CHANGEAV_TIMING)。
+      // ここを無視すると「コアの1フレームあたり音声サンプル数(44100/FRAMERATE)」と
+      // 「ホストが回すフレームレート」がズレたままになり、その差の分だけ音声が
+      // 際限なく遅延していく(61.46 と 55.46 で約10%ズレる)。必ず追随させること。
+      case RETRO_ENVIRONMENT_SET_SYSTEM_AV_INFO: {
+        this._avInfo = this.parseAvInfo(data);
+        return 1;
+      }
+
+      // SET_GEOMETRY は retro_game_geometry のみ(= av_info 先頭20バイトと同レイアウト)。
+      // タイミング情報は据え置きで解像度だけ更新する。
+      case RETRO_ENVIRONMENT_SET_GEOMETRY: {
+        if (this._avInfo) {
+          this._avInfo.baseWidth = mod.HEAP32[data >> 2];
+          this._avInfo.baseHeight = mod.HEAP32[(data + 4) >> 2];
+          this._avInfo.maxWidth = mod.HEAP32[(data + 8) >> 2];
+          this._avInfo.maxHeight = mod.HEAP32[(data + 12) >> 2];
+          this._avInfo.aspectRatio = mod.HEAPF32[(data + 16) >> 2];
+        }
+        return 1;
+      }
+
       case RETRO_ENVIRONMENT_GET_LOG_INTERFACE:
         // struct retro_log_callback { retro_log_printf_t log; }
         // 可変長引数のため C シム(core-shim.c)の関数ポインタを渡す
@@ -345,6 +373,15 @@ export class LibretroHost {
     this.mod.FS.writeFile(path, data);
   }
 
+  /** FS 上のファイルを削除する(存在しなければ何もしない) */
+  removeFile(path: string): void {
+    try {
+      this.mod.FS.unlink(path);
+    } catch {
+      // 存在しなければ無視
+    }
+  }
+
   /** ディスクイメージのバイト列を FS の /game 配下へ書き込み、パスを返す */
   writeDiskImage(filename: string, data: Uint8Array): string {
     const path = `/game/${filename}`;
@@ -384,11 +421,10 @@ export class LibretroHost {
     this.mod._retro_unload_game();
   }
 
-  fetchAvInfo(): AvInfo {
+  /** retro_system_av_info 構造体(geometry 20byte + 4byte pad + timing 16byte)を読み出す */
+  private parseAvInfo(ptr: number): AvInfo {
     const mod = this.mod;
-    const ptr = mod._malloc(40); // geometry(20+4pad) + timing(16) = 40byte
-    mod._retro_get_system_av_info(ptr);
-    const info: AvInfo = {
+    return {
       baseWidth: mod.HEAP32[ptr >> 2],
       baseHeight: mod.HEAP32[(ptr + 4) >> 2],
       maxWidth: mod.HEAP32[(ptr + 8) >> 2],
@@ -397,9 +433,34 @@ export class LibretroHost {
       fps: mod.HEAPF64[(ptr + 24) >> 3],
       sampleRate: mod.HEAPF64[(ptr + 32) >> 3],
     };
+  }
+
+  fetchAvInfo(): AvInfo {
+    const mod = this.mod;
+    const ptr = mod._malloc(40); // geometry(20+4pad) + timing(16) = 40byte
+    mod._retro_get_system_av_info(ptr);
+    const info = this.parseAvInfo(ptr);
     mod._free(ptr);
     this._avInfo = info;
     return info;
+  }
+
+  /**
+   * 実行中の FDD ディスク差し替え(ホットマウント)。
+   * path が空文字列なら取り出し。コア再起動を伴わずに実機同様のメディア交換になる。
+   */
+  setFddImage(drive: number, path: string): void {
+    const mod = this.mod;
+    if (!path) {
+      mod._webx68k_fdd_eject(drive);
+      return;
+    }
+    const pathPtr = mallocString(mod, path);
+    try {
+      mod._webx68k_fdd_insert(drive, pathPtr);
+    } finally {
+      mod._free(pathPtr);
+    }
   }
 
   reset(): void {

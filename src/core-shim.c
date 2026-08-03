@@ -59,3 +59,25 @@ int get_sasi_is_accessing(void)
 {
   return SASI_IsAccessing;
 }
+
+/*
+ * FDD のホットマウント(実行中のディスク挿入・取り出し)用シム。
+ * px68k 本体の FDD_SetFD()/FDD_EjectFD() はどちらも実行中に呼んで安全で、
+ * 挿入時は SetDelay 経由、取り出し時は即時に FDC の割り込みを上げるため、
+ * ゲスト(Human68k 等)にもメディア交換として通知される。
+ * これを JS から叩けるようにすることで、ディスク差し替え時のコア再起動が不要になる。
+ */
+extern void FDD_SetFD(int drive, char *filename, int readonly);
+extern void FDD_EjectFD(int drive);
+
+__attribute__((used))
+void webx68k_fdd_insert(int drive, const char *path)
+{
+  FDD_SetFD(drive, (char *)path, 0);
+}
+
+__attribute__((used))
+void webx68k_fdd_eject(int drive)
+{
+  FDD_EjectFD(drive);
+}

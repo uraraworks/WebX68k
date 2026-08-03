@@ -222,15 +222,78 @@ async function restoreBios(): Promise<void> {
   setBiosStatus(biosCgStatus, biosCgState);
 }
 
-/** スロット1件分の表示(ドライブ行のファイル名 + 取り出し/ダウンロードボタン活性)を更新する。 */
-function updateSlotDisplay(slot: SlotId, label: string | null): void {
-  const els = slotElements[slot];
-  els.name.textContent = label ?? t('fdEmpty');
-  els.ejectBtn.disabled = label === null;
-  els.downloadBtn.disabled = label === null;
+/**
+ * 起動中は操作できないスロットか。
+ * HDD(SASI)は実機でも活線挿抜する機器ではなく、差し替えるとゲスト側が握っている
+ * マウント情報・キャッシュと実体がズレてしまうため、起動後は挿入も取り出しも禁止する
+ * (FDD は px68k の FDD_SetFD/FDD_EjectFD でホットマウントできるので対象外)。
+ */
+function isSlotLocked(slot: SlotId): boolean {
+  return slot === 'hdd' && host !== null && running;
 }
 
-/** ディスクをドライブへセットする(slots更新 + 表示更新)。起動中なら実機同様コアを再起動して反映する。 */
+/** ドライブ行のボタン活性・ツールチップを現在の状態に合わせて更新する。 */
+function updateSlotControls(): void {
+  for (const slot of SLOT_IDS) {
+    const els = slotElements[slot];
+    const locked = isSlotLocked(slot);
+    const mounted = slots[slot] !== null;
+    els.insertBtn.disabled = locked;
+    if (els.libraryBtn) els.libraryBtn.disabled = locked;
+    if (els.blankBtn) els.blankBtn.disabled = locked;
+    els.ejectBtn.disabled = locked || !mounted;
+    // ダウンロードは中身を読むだけなので起動中でも許可する
+    els.downloadBtn.disabled = !mounted;
+
+    // ロック中は理由をツールチップで出す。解除時は本来のタイトルへ戻す。
+    const lockedHint = t('slotLockedWhileRunning');
+    els.insertBtn.title = locked ? lockedHint : t('slotInsert');
+    if (els.libraryBtn) els.libraryBtn.title = locked ? lockedHint : t('slotInsertFromLibrary');
+    if (els.blankBtn) els.blankBtn.title = locked ? lockedHint : t('slotCreateBlank');
+    els.ejectBtn.title = locked ? lockedHint : t('slotEject');
+  }
+}
+
+/** スロット1件分の表示(ドライブ行のファイル名 + 各ボタン活性)を更新する。 */
+function updateSlotDisplay(slot: SlotId, label: string | null): void {
+  slotElements[slot].name.textContent = label ?? t('fdEmpty');
+  updateSlotControls();
+}
+
+/** FDD スロット(fdd0/fdd1)をドライブ番号へ変換する。HDD は対象外なので null。 */
+function fddDriveOf(slot: SlotId): number | null {
+  if (slot === 'fdd0') return 0;
+  if (slot === 'fdd1') return 1;
+  return null;
+}
+
+/**
+ * 実行中の FDD にディスクをホットマウントする(コア再起動なし)。
+ * px68k の FDD_SetFD()/FDD_EjectFD() は実行中に呼んでも安全で、FDC の割り込みを通じて
+ * ゲストにメディア交換として伝わるため、実機同様に「入れ替えただけ」の挙動になる。
+ */
+function hotSwapFdd(slot: SlotId, drive: number, image: { name: string; data: Uint8Array } | null): void {
+  const oldPath = mountedPaths[slot];
+  if (image) {
+    const path = host!.writeDiskImage(`${slot}_${sanitizeFileName(image.name)}`, image.data);
+    // FDD_SetFD は内部で先に旧ディスクを Eject する(= 旧イメージのファイルへ書き戻す)ため、
+    // 新パスをセットしてから旧ファイルを片付ける順序にすること。
+    host!.setFddImage(drive, path);
+    mountedPaths[slot] = path;
+    if (oldPath && oldPath !== path) host!.removeFile(oldPath);
+  } else {
+    // Eject 側もコア内部で FS のファイルへ書き戻してから外れるので、その後に削除する。
+    host!.setFddImage(drive, '');
+    mountedPaths[slot] = null;
+    if (oldPath) host!.removeFile(oldPath);
+  }
+}
+
+/**
+ * ディスクをドライブへセットする(slots更新 + 表示更新)。
+ * 起動中の場合、FDD は実機同様ホットマウントで差し替える(リセットは掛からない)。
+ * HDD は起動中の交換を禁止しているため(isSlotLocked)、ここへ来るのは起動前だけ。
+ */
 async function insertDiskBytes(
   slot: SlotId,
   name: string,
@@ -238,21 +301,36 @@ async function insertDiskBytes(
   displayLabel?: string,
   sourceKey?: string,
 ): Promise<void> {
+  // ボタンは無効化してあるが、ドラッグ&ドロップ等の経路もあるためここでも弾く
+  if (isSlotLocked(slot)) {
+    alert(t('slotLockedWhileRunning'));
+    return;
+  }
   slots[slot] = { name, data, sourceKey };
   updateSlotDisplay(slot, displayLabel ?? name);
 
   if (host && running) {
-    // FDD/HDD いずれもコアは実行中のホットマウントに対応していないため、
-    // 起動中の挿入はコアごと再起動して確実にブートし直す。
-    await restartCore();
+    const drive = fddDriveOf(slot);
+    if (drive !== null) hotSwapFdd(slot, drive, { name, data });
+    else await restartCore(); // 保険(現状 HDD はロック済みでここへは来ない)
   }
 }
 
 function ejectSlot(slot: SlotId): void {
+  if (isSlotLocked(slot)) {
+    alert(t('slotLockedWhileRunning'));
+    return;
+  }
+  const drive = fddDriveOf(slot);
+  const wasRunning = host !== null && running;
   slots[slot] = null;
-  mountedPaths[slot] = null;
   updateSlotDisplay(slot, null);
-  if (host && running) void restartCore();
+  if (wasRunning && drive !== null) {
+    hotSwapFdd(slot, drive, null);
+    return;
+  }
+  mountedPaths[slot] = null;
+  if (wasRunning) void restartCore();
 }
 
 biosIplInput.addEventListener('change', async () => {
@@ -676,16 +754,13 @@ async function bootCore(): Promise<void> {
   host.writeFile('/game/boot.cmd', new TextEncoder().encode(cmdText));
   host.loadGame('/game/boot.cmd');
 
-  for (const slot of SLOT_IDS) {
-    slotElements[slot].ejectBtn.disabled = slots[slot] === null;
-    slotElements[slot].downloadBtn.disabled = slots[slot] === null;
-  }
-
   host.fetchAvInfo();
 
   running = true;
   lastFrameTime = 0;
   accumulator = 0;
+  // running が立ってから更新する(HDD行のロック状態がここで確定する)
+  updateSlotControls();
   resetAccessLamps();
   scheduleNext();
 }
@@ -793,17 +868,10 @@ function applyDocumentStrings(): void {
     const drive = slotDisplayName(slot);
     els.label.textContent = drive;
     els.lamp.setAttribute('aria-label', t('diskLampLabel', { drive }));
-    els.insertBtn.title = t('slotInsert');
+    // title(ツールチップ)はロック状態で文言が変わるため updateSlotControls() 側で貼る
     els.insertBtn.setAttribute('aria-label', `${drive} ${t('slotInsert')}`);
-    if (els.libraryBtn) {
-      els.libraryBtn.title = t('slotInsertFromLibrary');
-      els.libraryBtn.setAttribute('aria-label', `${drive} ${t('slotInsertFromLibrary')}`);
-    }
-    if (els.blankBtn) {
-      els.blankBtn.title = t('slotCreateBlank');
-      els.blankBtn.setAttribute('aria-label', `${drive} ${t('slotCreateBlank')}`);
-    }
-    els.ejectBtn.title = t('slotEject');
+    els.libraryBtn?.setAttribute('aria-label', `${drive} ${t('slotInsertFromLibrary')}`);
+    els.blankBtn?.setAttribute('aria-label', `${drive} ${t('slotCreateBlank')}`);
     els.ejectBtn.setAttribute('aria-label', `${drive} ${t('slotEject')}`);
     els.downloadBtn.title = t('slotDownload');
     els.downloadBtn.setAttribute('aria-label', `${drive} ${t('slotDownload')}`);
@@ -813,6 +881,7 @@ function applyDocumentStrings(): void {
       els.name.textContent = t('bundledDiskDisplayName');
     }
   }
+  updateSlotControls();
 
 
   document.getElementById('footer-copyright')!.textContent = t('footerCopyright');
@@ -910,6 +979,13 @@ function pollDiskAccess(now: number): void {
   }
 }
 
+// 開発時デバッグ用: 音声遅延(キュー滞留秒)とコアの現在 fps をコンソールから覗けるようにする。
+if (import.meta.env.DEV) {
+  (window as unknown as Record<string, unknown>).__webx68kDebug = {
+    stat: () => ({ queuedSec: audio?.queuedSeconds ?? null, fps: host?.avInfo?.fps ?? null }),
+  };
+}
+
 function loop(t: number): void {
   if (!running || !host) return;
 
@@ -917,12 +993,28 @@ function loop(t: number): void {
   const dt = (t - lastFrameTime) / 1000;
   lastFrameTime = t;
 
+  // fps は画面モード(15kHz/31kHz)切り替えでコアから再通知される(SET_SYSTEM_AV_INFO)。
+  // 毎回 avInfo から読み直すことで、コアの1フレーム音声サンプル数(44100/fps)と
+  // ホストのフレーム供給レートを一致させ、音声の遅延蓄積を防ぐ。
   const fps = host.avInfo?.fps ?? 60;
-  const frameInterval = 1 / fps;
+
+  // 音声キューの滞留量(= 実際の音声遅延)を見てフレーム供給ペースを微調整する。
+  // 目標より溜まっていればフレーム間隔をわずかに伸ばして供給を絞り、少なければ詰める。
+  // 補正幅は最大±2%で、ピッチ変化として聞き取れるレベルではない。
+  // これが無いと、ディスクアクセス等で一度膨らんだ遅延がそのまま居座り続ける。
+  const queued = audio?.queuedSeconds ?? 0;
+  const err = queued - AudioEngine.TARGET_LATENCY_SEC;
+  const adjust = Math.max(-0.02, Math.min(0.02, err / 2));
+  const frameInterval = (1 / fps) * (1 + adjust);
   accumulator += dt;
 
+  // 補正が追いつかない急変(タブ復帰・重い処理からの復帰)に備えた保険。
+  let budget = 2;
+  if (queued > AudioEngine.MAX_LATENCY_SEC * 0.8) budget = 0;
+  else if (queued < AudioEngine.TARGET_LATENCY_SEC * 0.4) budget = 3;
+
   let ran = 0;
-  while (accumulator >= frameInterval && ran < 2) {
+  while (accumulator >= frameInterval && ran < budget) {
     host.runFrame();
     accumulator -= frameInterval;
     ran++;
@@ -1005,9 +1097,9 @@ interface FmVolumeHandle {
  * スロットのディスクイメージをFATボリュームとして開く。
  * 実行中かつ実際にコアへマウント済みなら、ゲスト側の書き込みを反映した最新バイト列を
  * FS(host.readFile)から読み直す(コアは/game配下のファイルを直接書き換えるため)。
- * persist() は書き換え結果を slots[] へ書き戻し、実行中ならコアを再起動して反映する
- * (px68k-libretroはFDD/HDDのホットマウント差し替えに対応していないため、既存の
- *  ディスク差し替え時と同じ「コア再起動」で安全側に倒す)。
+ * persist() は書き換え結果を slots[] へ書き戻し、実行中なら反映する。反映方法は
+ * 通常のディスク差し替えと揃えており、FDD はホットマウントで入れ替え(リセット無し)。
+ * 起動中の HDD は交換禁止(isSlotLocked)なので、読み出し専用として扱い persist() は拒否する。
  */
 function openSlotVolume(slot: SlotId): FmVolumeHandle {
   const pending = slots[slot];
@@ -1018,8 +1110,13 @@ function openSlotVolume(slot: SlotId): FmVolumeHandle {
   return {
     vol,
     persist: async () => {
+      if (isSlotLocked(slot)) throw new Error(t('slotLockedWhileRunning'));
       slots[slot] = { name: pending.name, data: image, sourceKey: pending.sourceKey };
-      if (host && running) await restartCore();
+      if (host && running) {
+        const drive = fddDriveOf(slot);
+        if (drive !== null) hotSwapFdd(slot, drive, { name: pending.name, data: image });
+        else await restartCore();
+      }
     },
   };
 }
@@ -1049,6 +1146,9 @@ async function fmListTargets(): Promise<FmTarget[]> {
     let note = '';
     if (!pending) {
       note = t('fmUnmountedLabel');
+    } else if (isSlotLocked(slot)) {
+      // 起動中の HDD は交換できないため、閲覧・取り出しのみ(書き込み不可)
+      note = t('fmRunningLockedNote');
     } else if (slot !== 'hdd' && !isFmEditableFdName(pending.name)) {
       note = t('fmNotEditableNote');
     } else {

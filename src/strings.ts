@@ -28,6 +28,7 @@ interface Dict {
   fdEmpty(): string;
   slotInsert(): string;
   slotEject(): string;
+  slotLockedWhileRunning(): string;
   /** ドライブアクセスランプのスクリーンリーダー向けラベル。 */
   diskLampLabel(args: { drive: string }): string;
   /** スロットの「ライブラリから挿入」ボタン(ツールチップ)。 */
@@ -85,6 +86,7 @@ interface Dict {
   fmUnmountedLabel(): string;
   fmMountedBadge(): string;
   fmNotEditableNote(): string;
+  fmRunningLockedNote(): string;
   fmPathRoot(): string;
   fmUpDir(): string;
   fmDirMarker(): string;
@@ -130,6 +132,7 @@ const STRINGS: Record<Lang, Dict> = {
     fdEmpty: () => '未挿入',
     slotInsert: () => 'ディスク挿入',
     slotEject: () => 'ディスク取り出し',
+    slotLockedWhileRunning: () => '起動中はHDDを交換できません(ページを再読み込みしてから操作してください)',
     diskLampLabel: ({ drive }) => `${drive} アクセスランプ`,
     slotInsertFromLibrary: () => 'ライブラリから挿入',
     slotInsertFromLibraryTitle: ({ drive }) => `${drive} へ挿入`,
@@ -174,7 +177,7 @@ const STRINGS: Record<Lang, Dict> = {
 
     fmDialogTitle: () => 'ファイル転送',
     fmDialogNote: () =>
-      'ホストPCとFDD1/FDD2/HDD・ライブラリ内のディスクイメージとの間でファイルをやり取りします。ファイル名は自動的に8.3形式へ変換されます。実行中スロットへ書き込むとエミュレータが再起動します。',
+      'ホストPCとFDD1/FDD2/HDD・ライブラリ内のディスクイメージとの間でファイルをやり取りします。ファイル名は自動的に8.3形式へ変換されます。実行中のFDDスロットへ書き込んだ場合はディスクを入れ直したのと同じ扱いになります。起動中のHDDは読み出し専用です。',
     fmHostPaneTitle: () => 'ホスト(このPC)',
     fmDiskPaneTitle: () => 'ディスクイメージ',
     fmSelectFilesBtn: () => 'ファイルを選択',
@@ -185,6 +188,7 @@ const STRINGS: Record<Lang, Dict> = {
     fmUnmountedLabel: () => '未挿入',
     fmMountedBadge: () => 'マウント中',
     fmNotEditableNote: () => '編集非対応',
+    fmRunningLockedNote: () => '起動中は変更不可',
     fmPathRoot: () => '/(ルート)',
     fmUpDir: () => '上の階層へ',
     fmDirMarker: () => 'DIR',
@@ -228,6 +232,7 @@ const STRINGS: Record<Lang, Dict> = {
     fdEmpty: () => 'empty',
     slotInsert: () => 'Insert disk',
     slotEject: () => 'Eject disk',
+    slotLockedWhileRunning: () => 'The HDD cannot be swapped while running (reload the page first)',
     diskLampLabel: ({ drive }) => `${drive} access lamp`,
     slotInsertFromLibrary: () => 'Insert from library',
     slotInsertFromLibraryTitle: ({ drive }) => `Insert into ${drive}`,
@@ -272,7 +277,7 @@ const STRINGS: Record<Lang, Dict> = {
 
     fmDialogTitle: () => 'File Transfer',
     fmDialogNote: () =>
-      'Transfer files between this PC and disk images in FDD1/FDD2/HDD or the library. File names are automatically converted to 8.3 format. Writing to a running slot restarts the emulator.',
+      'Transfer files between this PC and disk images in FDD1/FDD2/HDD or the library. File names are automatically converted to 8.3 format. Writing to a running FDD slot is treated as reinserting the disk. The HDD is read-only while the emulator is running.',
     fmHostPaneTitle: () => 'Host (this PC)',
     fmDiskPaneTitle: () => 'Disk Image',
     fmSelectFilesBtn: () => 'Select Files',
@@ -283,6 +288,7 @@ const STRINGS: Record<Lang, Dict> = {
     fmUnmountedLabel: () => 'empty',
     fmMountedBadge: () => 'mounted',
     fmNotEditableNote: () => 'not editable',
+    fmRunningLockedNote: () => 'locked while running',
     fmPathRoot: () => '/ (root)',
     fmUpDir: () => 'Up',
     fmDirMarker: () => 'DIR',

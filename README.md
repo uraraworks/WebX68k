@@ -77,7 +77,41 @@ cmd ファイルによる FDD0/FDD1 設定と競合しないため、
   `retro_run()` 直後にこれらを読み出し、`src/main.ts` 側で「直近アクセスから約120ms は
   点灯を保持する」残光処理をしてランプ表示に反映している。
 
-## 起動前の初期画面
+## ディスクのホットマウント(FDD)
+
+FDD0/FDD1 の挿入・取り出しは**コアを再起動せず**に行う。px68k 本体の `FDD_SetFD()` /
+`FDD_EjectFD()` は実行中に呼んでも安全で、挿入時は `SetDelay` 経由、取り出し時は即座に FDC の
+割り込みを上げるため、ゲスト(Human68k 等)にもメディア交換として正しく通知される。
+
+- `src/core-shim.c` の `webx68k_fdd_insert()` / `webx68k_fdd_eject()` でこの2つを公開し、
+  `build-core.sh` の `EXPORTED_FUNCTIONS` に追加している
+- `src/libretro-host.ts` の `setFddImage(drive, path)`(空パスで取り出し)から呼ぶ
+- `src/main.ts` の `hotSwapFdd()` が「新イメージをFSへ書き出す → `setFddImage()` → 旧FSファイル削除」
+  の順で処理する。`FDD_SetFD()` は内部で先に旧ディスクを Eject する(= 旧イメージのファイルへ
+  書き戻す)ため、この順序を守ること
+
+一方 HDD(SASI)は実機でも活線挿抜する機器ではなく、差し替えるとゲスト側が握っているマウント情報・
+キャッシュと実体がズレるため、**起動後は挿入も取り出しも禁止**している(`main.ts` の
+`isSlotLocked()` / `updateSlotControls()`)。HDD行のボタンは起動と同時に無効化され、
+ドラッグ&ドロップ等の経路も `insertDiskBytes()` / `ejectSlot()` の入口で弾く。ファイルマネージャからも
+起動中の HDD は読み出し専用(`editable: false`、`persist()` は拒否)になる。ダウンロードは中身を
+読むだけなので起動中でも可能。HDD を入れ替えたいときはコアをリセット(起動前の状態)してから操作する。
+
+## 音声遅延(サンプルレート・ドリフト)対策
+
+X68000 は画面モード(15kHz/31kHz)を切り替えるたびにフレームレートが変わり、px68k-libretro は
+その都度 `RETRO_ENVIRONMENT_SET_SYSTEM_AV_INFO` で新しい fps を通知してくる
+(`libretro.c` の `CHANGEAV_TIMING`。61.46/55.46 もしくは 59.94/55.5)。コアが1フレームで出力する
+音声サンプル数は `round(44100 / FRAMERATE)` なので、**この通知を無視してホスト側が古い fps で
+フレームを回すと最大10%ぶん音声が過剰供給され、その差が遅延として無限に積み上がる**
+(数十秒レベルの音声遅延の原因はこれ)。対策として以下3段構えにしている。
+
+1. `src/libretro-host.ts` が `SET_SYSTEM_AV_INFO` / `SET_GEOMETRY` を処理して `avInfo` を更新し、
+   `src/main.ts` のメインループは毎フレーム `avInfo.fps` を読み直す
+2. `src/main.ts` が音声キューの滞留量(= 実際の遅延秒数)を見てフレーム間隔を最大±2%調整する
+   (ドリフト補正)。一度膨らんだ遅延を目標値 80ms 付近へ戻す復元力になる
+3. `src/audio.ts` の AudioWorklet 側で滞留量の上限(250ms)を設け、超過分は古い側から捨てる
+   最終防波堤。滞留量は tick メッセージでメインスレッドへ返している
 
 WebNP2 に合わせ、起動前は canvas 上に「そのまま起動」/「システムディスクで起動」の2択
 オーバーレイを表示する（`index.html` の `#boot-overlay`、`src/main.ts` の `startFromOverlay()`）。
@@ -136,9 +170,9 @@ npm run dev     # 開発サーバー
 
 ### 実行中スロットへの書き込みの安全性
 
-px68k-libretroはFDD/HDDのホットマウント差し替えに対応していない(ディスク挿入UIも常にコア再起動
-で反映している)。ファイルマネージャからの書き込みも同じ方針に倣い、実行中スロットへ書き込むと
-その場でコアを再起動して反映する(`main.ts` の `openSlotVolume().persist()`)。また、実行中に
+ファイルマネージャからの書き込みは通常のディスク挿入と同じ経路で反映する。すなわちFDDは
+ホットマウントで入れ替え(リセットなし)、起動中のHDDは書き込み禁止(`main.ts` の
+`openSlotVolume().persist()`)。また、実行中に
 ゲスト側がFSへ書き込んでいる可能性があるため、書き込み前には常に `LibretroHost.readFile()` で
 コアのFS上の最新バイト列を読み直してから編集する(ゲスト側の変更を破棄しないため)。
 
