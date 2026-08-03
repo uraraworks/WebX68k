@@ -376,8 +376,12 @@
             <p>
               FDD はコアを再起動せずに挿入・取り出し(ホットマウント)ができ、起動中でも
               ディスクを差し替えられます。一方 HDD は実機でも活線挿抜する機器ではないため、
-              起動後は挿入も取り出しも禁止しています。HDD を入れ替えたいときはページを
-              再読み込みして起動前の状態に戻してください。
+              扱えるのは起動前だけです。起動前に HDD をセットすれば、ファイル転送から
+              中身を編集した上で起動できます。起動後は読み取り専用になり挿抜も禁止されるので、
+              HDD を入れ替えたいときはページを再読み込みして起動前の状態に戻してください。
+              HDD イメージを持っていなくても、「ブランクHDDを作成」ボタンで Human68k形式・
+              FAT16フォーマット済みの空HDD(40MB)をその場で作れます(IPLは持たないため、
+              FDD から起動した Human68k のデータドライブとして使います)。
             </p>
           </div>
           <div class="lang-en">
@@ -391,9 +395,13 @@
             <p>
               FDDs can be inserted and ejected without restarting the core (hot-swap), so you can
               switch floppies while the machine is running. The HDD, on the other hand, isn't something
-              you'd hot-swap on real hardware either, so both inserting and ejecting it are disabled
-              once the machine has booted. Reload the page to get back to the pre-boot state if you
-              need to change the HDD.
+              you'd hot-swap on real hardware either, so it can only be handled before boot: set one
+              before starting and you can edit its contents from the file transfer dialog first.
+              Once the machine has booted it becomes read-only and can no longer be swapped — reload
+              the page to get back to the pre-boot state if you need to change the HDD. If you don't
+              have a HDD image, the "Create blank HDD" button builds a Human68k-partitioned,
+              FAT16-formatted 40MB image on the spot (it carries no IPL, so it's used as a data drive
+              for Human68k booted from an FDD).
             </p>
           </div>
         </section>
@@ -404,7 +412,9 @@
             <h2>ディスクライブラリとファイル転送</h2>
             <p>
               これまでに読み込んだ FD/HDD イメージは「ディスクライブラリ」から一覧・起動・削除でき、
-              次回同じイメージを開いたときに続きから再開できます。
+              次回同じイメージを開いたときに続きから再開できます。ドロップ/選択/URLパラメータの
+              いずれかでZIP・LZHアーカイブを読み込んだ場合、中に複数枚のディスクが入っていれば
+              自動では装填せず、ライブラリへフォルダとしてまとめて登録して選んでもらいます。
             </p>
             <p>
               ツールバーの「ファイル転送」からは、FTPクライアント風の2ペインUIでホスト(ブラウザ)⇔
@@ -417,7 +427,10 @@
             <h2>Disk library and file transfer</h2>
             <p>
               Every FD/HDD image you've loaded is listed in the Disk Library, where you can boot, or
-              delete it. Opening the same image again resumes right where you left off.
+              delete it. Opening the same image again resumes right where you left off. When a
+              dropped/selected/URL-loaded ZIP or LZH archive contains multiple disk images, none of
+              them are auto-inserted — they're registered as a folder in the library for you to
+              choose from.
             </p>
             <p>
               The toolbar's "File Transfer" tool gives you an FTP-client-style two-pane UI for moving

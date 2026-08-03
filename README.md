@@ -22,37 +22,85 @@ See [docs/DESIGN.md](docs/DESIGN.md) for design and implementation details.
 |---|---|---|
 | `lang` | UI language (`ja` / `en`) | If omitted, resolved in order: `localStorage['webx68k.lang']` → the browser's `navigator.language` (`ja` if it starts with `ja`) → default `en`. Can be switched at runtime with the language toggle button on the toolbar; the choice is persisted to `localStorage` |
 | `bridge` | `1` (or empty) to enable the MCP WebSocket bridge | Connects to `ws://127.0.0.1:3099`. See "MCP support" below |
+| `fd1` / `fd2` | URL of a disk image to load into FDD1 / FDD2 | See below |
+| `hdd` | URL of a disk image to set into the HDD slot | See below |
+| `run` | `1` to auto-boot without showing the start overlay | |
+| `system` | `1` to load the bundled system disk (`human302.xdf`) into FDD1 | Ignored if `fd1` is also given — `fd1` takes priority |
 
-WebX68k does not (yet) support WebNP2-style disk-loading parameters such as
-`hdd=`/`fd1=`/`fd2=`. Disks are loaded from the bundled system disk, the Disk
-Library, or drag & drop.
+Notes on `fd1`/`fd2`/`hdd`:
+
+- The URL must be served from a **CORS-enabled origin**, or the fetch will fail.
+- Revisiting the same URL does **not** re-download it — the image already saved
+  in the browser (including any edits made from the guest side) is reused.
+- If the URL points to a **ZIP or LZH archive**, it is fetched and extracted the
+  same way as a dropped archive (see below): a single disk image inside goes
+  straight into the requested slot; multiple images are registered as a group
+  in the Disk Library, which opens automatically with that group expanded so
+  you can pick which disk goes where.
+- `run=1` is skipped automatically when the archive resolves to multiple disks,
+  since there's no way to know which one should boot.
+- With `run=1`, playback starts muted due to browser autoplay restrictions —
+  the first click or key press enables audio.
+- A `hdd` image is only *set* into the slot before boot; it does not boot by
+  itself unless `run=1` is also given. While set (and before boot), you can
+  still edit its contents via file transfer.
 
 ### Boot overlay
 
 On first load, a start overlay offers two choices:
 
-- **Start As-Is** — boots with no disk inserted (the IPL-ROM menu appears)
+- **Start Without a Disk** — boots with no disk inserted (the IPL-ROM menu
+  appears). If a HDD is already set (see below), this button instead reads
+  "Boot with the Selected Disks" and boots with it
 - **Start with System Disk** — boots with the bundled `human302.xdf` inserted
   into FDD1, straight into Human68k
 
 Audio playback requires a click due to browser autoplay restrictions, so
-clicking anywhere on the overlay (including empty space) behaves like "Start
-As-Is".
+clicking anywhere on the overlay (including empty space) behaves like the
+first button.
+
+### Drag & drop
+
+There are three places you can drop a disk image, ZIP, or LZH archive; the
+drop-accepting area is highlighted with a border while dragging:
+
+- **The screen area** (over the emulator display) — a HDD image goes to the
+  HDD slot (a message is shown if it's locked because the machine has already
+  booted); a FD image goes to FDD1, or to FDD2 if FDD1 is already occupied and
+  FDD2 is free (to make use of the two floppy drives). An archive containing
+  multiple images doesn't go into a slot — it's registered as a group and the
+  Disk Library opens so you can pick which disk goes where.
+- **A drive slot row** (FDD1 / FDD2 / HDD) — inserts straight into that slot,
+  as before.
+- **The Disk Library dialog** — only registers the file(s) into the library;
+  nothing is inserted into a slot, since opening the library means you're
+  about to choose a destination yourself.
 
 ### Drive slots (FDD1 / FDD2 / HDD)
 
 The toolbar's console footer has three drive rows: FDD1, FDD2, and HDD. Each
 row lets you insert a file, insert from the Disk Library, create a blank
 disk (FDD only), eject, or download the current image. Dropping a file onto
-a slot row inserts it into that slot.
+a slot row inserts it into that slot (see "Drag & drop" above for the other
+drop targets).
 
 - **FDD1/FDD2 are hot-swappable** — insert/eject while the core is running,
   no reset needed.
-- **HDD cannot be inserted or ejected while running** — its controls are
-  disabled once the machine has booted, because the guest OS holds mount
-  state that a live swap would desync. The toolbar's Reset button only resets
-  the running machine and does not release the lock — reload the page to
-  return to the pre-boot state and change the HDD image.
+- **HDDs can only be handled before boot.** The emulator core cannot swap a
+  HDD while running, so dropping/inserting a HDD image before boot no longer
+  boots the machine either: it is just *set* into the HDD slot (the slot name
+  is shown in italics). While it is only set, you can edit its contents from
+  the file transfer dialog; once you're ready, press the boot overlay's first
+  button (see "Boot overlay" above — its label switches to "Boot with the
+  Selected Disks" once a HDD is set). After boot, the HDD slot buttons and its
+  entry in the file transfer target list are disabled — reload the page to
+  return to the pre-boot state and swap the HDD image.
+- **Create a blank HDD** with the "Create blank HDD" button on the HDD slot
+  row: it builds a 40MB, FAT16-formatted, Human68k-partitioned image, saves
+  it to the Disk Library, and sets it into the HDD slot. It carries no IPL
+  (boot code), so it can't boot on its own — boot Human68k from a floppy and
+  use it as a data drive (confirmed on real hardware: booting the system
+  disk picks it up as `C:`, and `DIR C:` reports "40779K Byte 使用可能").
 
 ### Disk Library
 
@@ -64,8 +112,10 @@ you can re-insert them into any slot later without re-uploading.
 The "File transfer" toolbar button opens an FTP-client-style two-pane UI for
 moving files between your browser and a mounted disk image (FAT12/16,
 Human68k HDD partitions, Shift_JIS filenames, ZIP/LZH extraction on import).
-A running HDD is read-only in the file manager; FDD slots can be written to
-while running.
+The HDD can only be edited before boot — editing it saves straight back to
+IndexedDB, so the changes survive a page reload. Once the machine has
+booted, the HDD row is shown as locked/read-only. FDD slots can be written
+to while running.
 
 ### Save states
 
@@ -112,7 +162,8 @@ the bundled files on future visits.
 
 ## HDD/FDD handling caveats
 
-- **HDD**: insert/eject only while stopped (pre-boot); disabled once running.
+- **HDD**: can only be set/edited before boot; read-only and locked once
+  running. Blank HDDs are FAT16 data drives only (no IPL).
 - **FDD1/FDD2**: hot-swappable at any time.
 
 ## MCP support (control WebX68k from AI agents)
@@ -157,13 +208,23 @@ This repository is **GPLv2** ([COPYING](COPYING)).
 ## Implemented features
 
 - Bundled IPL-ROM/Human68k system disk — boots with no setup required
-- Boot overlay with "Start As-Is" / "Start with System Disk"
+- Boot overlay with "Start Without a Disk" (relabeled "Boot with the Selected
+  Disks" when a HDD is set) / "Start with System Disk"
 - FDD1/FDD2/HDD triple-mount (via a cmd-file + core-option combination), with
   HDD locked while running and FDD1/FDD2 hot-swappable
+- Setting a HDD before boot (from the library, a drop, or the slot buttons),
+  and editing its contents while it is only set
+- Blank HDD creation (40MB, FAT16-formatted, Human68k-partitioned; carries no
+  IPL, so it's a data drive only)
 - Real access lamps (lit only on actual read/write frames, not just "disk
   inserted"), tracked per-drive for FDD
 - Disk Library (browser-side, IndexedDB), blank FD creation, per-slot
   download
+- Loading disk images from a ZIP/LZH archive (drop, file picker, or the `fd1`/
+  `fd2`/`hdd` URL parameters): a single image inside goes straight into the
+  slot; multiple images are grouped as a folder in the Disk Library for you to
+  pick from, since the emulator can't tell whether a title wants FDD1+FDD2
+  loaded together or single-drive swapping
 - File manager: two-pane file transfer between browser and mounted disk
   images, with Human68k Shift_JIS filename handling and ZIP/LZH extraction
 - Save states (gzip-compressed, IndexedDB), with a disk-configuration
@@ -186,4 +247,8 @@ This repository is **GPLv2** ([COPYING](COPYING)).
   the core are ignored).
 - Only one HDD is exposed in the UI (`Config.HDImage[0]`); px68k-libretro
   itself supports up to 16, but WebX68k has a single HDD slot.
-- No WebNP2-style `hdd=`/`fd1=`/`fd2=` URL loading parameters yet.
+- Dropping/selecting/loading-by-URL a ZIP or LZH archive that contains more
+  than one disk image never auto-inserts any of them — it's always registered
+  as a group in the Disk Library for you to pick from, since there's no way to
+  tell whether a title expects simultaneous FDD1+FDD2 loading or single-drive
+  disk swapping.

@@ -286,25 +286,57 @@
           <div class="lang-ja">
             <h2>起動する</h2>
             <p>
-              ページを開くと起動オーバーレイが表示され、「そのまま起動」(内蔵IPL ROMメニューから起動)
+              ページを開くと起動オーバーレイが表示され、「ディスク無しで起動」(内蔵IPL ROMメニューから起動)
               と「システムディスクで起動」(同梱の <code>human302.xdf</code> をFDD1へ挿入してから起動)
               の2択が選べます。
             </p>
-            <img src="./help/overlay.png" alt="起動オーバーレイ。そのまま起動/システムディスクで起動の選択ボタンが並ぶ" />
+            <img src="./help/overlay.png" alt="起動オーバーレイ。ディスク無しで起動/システムディスクで起動の選択ボタンが並ぶ" />
             <p>
               ブラウザの音声再生制限により、起動にはクリック操作が必須です。
+            </p>
+            <p>
+              起動前に HDD を1つでもセットしている場合(次項参照)、1つ目のボタンの文言は
+              「セットしたディスクで起動」に変わり、押すとそのセット済みのHDDで起動します。
+            </p>
+            <p>
+              URLパラメータでディスクとオーバーレイの扱いを指定することもできます。
+              <code>?fd1=URL</code> / <code>?fd2=URL</code> でFDD1/FDD2へディスクイメージを、
+              <code>?hdd=URL</code> でHDDへイメージをセットした状態でページを開けます
+              (URLはCORSが有効なオリジンから配信されている必要があります)。同じURLに再度
+              アクセスした場合は再ダウンロードせず、ブラウザに保存済みのイメージ(編集内容含む)
+              から復帰します。<code>?system=1</code> は同梱システムディスクをFDD1へ
+              (<code>fd1</code> 指定時はそちらが優先)、<code>?run=1</code> はオーバーレイを
+              出さずそのまま自動起動します(自動再生制限により音は最初のクリック/キー入力まで
+              鳴りません)。指定URLがZIP/LZHアーカイブで複数枚のディスクを含む場合は、
+              自動起動せずディスクライブラリを開いて選んでもらう形になります。
             </p>
           </div>
           <div class="lang-en">
             <h2>Starting the emulator</h2>
             <p>
               A start overlay appears when you open the page, offering two choices:
-              "Start As-Is" (boots from the built-in IPL ROM menu) or "Start with System Disk"
+              "Start Without a Disk" (boots from the built-in IPL ROM menu) or "Start with System Disk"
               (inserts the bundled <code>human302.xdf</code> into FDD1 before starting).
             </p>
-            <img src="./help/overlay-en.png" alt="Start overlay showing Start As-Is / Start with System Disk choices" />
+            <img src="./help/overlay-en.png" alt="Start overlay showing Start Without a Disk / Start with System Disk choices" />
             <p>
               Due to browser autoplay restrictions, a click is required to start.
+            </p>
+            <p>
+              If a HDD is already set (see the next section), the first button's label changes to
+              "Boot with the Selected Disks" and boots with that HDD.
+            </p>
+            <p>
+              URL parameters can also control disk loading and the overlay: <code>?fd1=URL</code> /
+              <code>?fd2=URL</code> load a disk image into FDD1/FDD2, and <code>?hdd=URL</code> sets
+              one into the HDD, all before the page finishes opening (the URL must be served from a
+              CORS-enabled origin). Revisiting the same URL doesn't re-download it — the image
+              already saved in the browser, including any edits, is reused. <code>?system=1</code>
+              loads the bundled system disk into FDD1 (unless <code>fd1</code> is also given, which
+              takes priority), and <code>?run=1</code> auto-boots without showing the overlay
+              (playback starts muted until the first click or key press, due to autoplay
+              restrictions). If the URL resolves to a ZIP/LZH archive containing multiple disks, it
+              won't auto-boot — the Disk Library opens instead so you can pick.
             </p>
           </div>
         </section>
@@ -318,11 +350,28 @@
               「ディスク挿入」ボタンから選択して読み込ませます。ライブラリから挿入したり、
               ブランクディスクを新規作成したり、挿入中のディスクをダウンロードすることもできます。
             </p>
+            <p>
+              ドロップできる場所はドライブ行以外にも2つあり、ドラッグ中は受け付け可能な場所が
+              枠で強調表示されます。<strong>画面領域</strong>(エミュレータ画面の上)に落とすと、
+              HDDイメージはHDDスロットへ(起動後でロック済みならメッセージが出ます)、FDイメージは
+              FDD1へ(FDD1が埋まっていてFDD2が空ならFDD2へ)入ります。複数枚入りアーカイブは
+              スロットへは入らずライブラリへ登録してライブラリを開きます。<strong>ディスク
+              ライブラリのダイアログ</strong>に落とした場合は、スロットには入れずライブラリへの
+              登録だけを行います(挿入先はこれから選ぶ、という文脈のため)。
+            </p>
             <img src="./help/overview.png" alt="プレイヤー全体像。上部にツールバー、下部にFDD1/FDD2/HDDのスロット行" />
             <ul>
               <li>FDD対応拡張子: <code>.xdf</code> <code>.dim</code> <code>.d88</code> <code>.hdm</code> <code>.img</code> <code>.2hd</code></li>
               <li>HDD対応拡張子: <code>.hdf</code> <code>.dup</code></li>
             </ul>
+            <p>
+              <strong>ZIP・LZHアーカイブもそのままドロップ/選択できます。</strong>
+              中に入っているディスクイメージだけを取り出し(readmeなどは無視)、1枚だけなら
+              そのまま該当スロットへ入ります。複数枚入っている場合は自動では装填せず、
+              ディスクライブラリへフォルダとしてまとめて登録し、ライブラリを開いて選んでもらう
+              形になります(詳しくは次項)。対応形式はLZHが lh0/lh5/lh6/lh7、ZIPが
+              無圧縮(stored)およびdeflateです。
+            </p>
             <p>
               ただし、後述のファイルマネージャ(ファイル転送)でFAT編集ができるのは
               <code>.xdf</code> <code>.dim</code> <code>.hdm</code> <code>.img</code> <code>.2hd</code> のみです。
@@ -330,9 +379,13 @@
             </p>
             <div class="note-box">
               <strong>重要:</strong> FDDは起動中でもホットマウント(エミュレータの再起動なしに差し替え)
-              できますが、HDDは起動中の交換ができません。起動中はHDDのボタンが無効化され、
-              ドラッグ&ドロップも拒否されます。HDDを交換するにはページを再読み込みしてから
-              操作してください。
+              できますが、<strong>HDDは起動前しか扱えません</strong>。起動前にHDDをドロップ/挿入しても
+              その場では起動せず、HDDスロットへ「セット」した状態で止まります(スロット名が斜体で
+              表示されます)。セット中はファイル転送(ファイルマネージャ)から中身を編集でき、
+              準備ができたら起動オーバーレイのボタンで起動してください。起動後はHDDのボタンが
+              無効化され、ドラッグ&ドロップも拒否されます。HDDを交換するにはページを再読み込み
+              してから操作してください。HDDが無ければ「ブランクHDDを作成」ボタンでFAT16済みの
+              空イメージ(40MB)をその場で作れます(詳しくは後述)。
             </div>
           </div>
           <div class="lang-en">
@@ -342,11 +395,30 @@
               use the "Insert Disk" button to pick one. You can also insert from the library,
               create a new blank disk, or download the currently inserted disk.
             </p>
+            <p>
+              There are two more places you can drop a file besides a slot row; while dragging,
+              the drop-accepting area is highlighted with a border. Dropping onto the
+              <strong>screen area</strong> (over the emulator display) sends a HDD image to the
+              HDD slot (a message is shown if it's already locked after boot), and a FD image to
+              FDD1 (or FDD2 if FDD1 is occupied and FDD2 is free). An archive containing multiple
+              images isn't inserted into a slot — it's registered to the library, which then
+              opens. Dropping onto the <strong>Disk Library dialog</strong> only registers the
+              file(s) into the library without inserting into any slot, since opening the library
+              means you're about to choose a destination yourself.
+            </p>
             <img src="./help/overview-en.png" alt="Player overview with the toolbar on top and FDD1/FDD2/HDD slot rows below" />
             <ul>
               <li>FDD extensions: <code>.xdf</code> <code>.dim</code> <code>.d88</code> <code>.hdm</code> <code>.img</code> <code>.2hd</code></li>
               <li>HDD extensions: <code>.hdf</code> <code>.dup</code></li>
             </ul>
+            <p>
+              <strong>ZIP and LZH archives can be dropped or selected directly.</strong> Only the
+              disk image(s) inside are extracted (readme files etc. are ignored); a single image
+              goes straight into the target slot. If an archive contains multiple images, none of
+              them are auto-inserted — they're registered as a folder in the Disk Library for you
+              to pick from (see the next section for details). Supported formats: LZH lh0/lh5/lh6/
+              lh7, ZIP stored and deflate.
+            </p>
             <p>
               Note that the file manager (File Transfer) described below can only edit the FAT of
               <code>.xdf</code> <code>.dim</code> <code>.hdm</code> <code>.img</code> <code>.2hd</code> images.
@@ -354,9 +426,13 @@
             </p>
             <div class="note-box">
               <strong>Important:</strong> FDDs can be hot-swapped while the emulator is running (no
-              core restart needed), but the HDD cannot be swapped while running. The HDD buttons
-              are disabled while running, and drag & drop is also rejected. Reload the page first
-              if you need to swap the HDD.
+              core restart needed), but <strong>HDDs can only be handled before boot</strong>.
+              Dropping/inserting a HDD before boot doesn't start the machine either — it is just
+              <em>set</em> into the HDD slot (the slot name is shown in italics). While set, you can
+              edit its contents from the file transfer dialog; boot when you're ready from the boot
+              overlay. Once running, the HDD buttons are disabled and drag & drop is rejected —
+              reload the page to swap the HDD. If you don't have a HDD image, the "Create blank HDD"
+              button builds a FAT16-formatted 40MB image on the spot (details below).
             </div>
           </div>
         </section>
@@ -372,8 +448,23 @@
             </p>
             <img src="./help/library.png" alt="ディスクライブラリダイアログ" />
             <p>
-              各スロット行の「ライブラリから挿入」ボタンからも同様に挿入でき、
+              複数枚のディスクを含むZIP/LZHアーカイブを読み込んだ場合は、ここへ
+              <strong>フォルダとしてまとめて登録</strong>されます。フォルダを開くと中のディスク
+              一覧に切り替わり、FDD1 / FDD2 それぞれへ挿入できるので、2ドライブ同時装填型の
+              ソフトはここで続けて両方を指定できます。URLパラメータ(<code>fd1</code>/
+              <code>fd2</code>/<code>hdd</code>)経由でアーカイブを読み込んだ場合は、該当フォルダが
+              展開・強調表示された状態でこのダイアログが自動的に開きます。
+            </p>
+            <p>
+              各スロット行の「ライブラリから挿入」ボタンからも同様に挿入でき、フォルダを選ぶと
+              中のディスク一覧へ切り替わるので、続けて2枚目・3枚目へ差し替えられます。FDD行の
               「ブランク作成」でフォーマット済みの新規イメージを作ってライブラリへ保存できます。
+              HDD行には専用の「ブランクHDDを作成」ボタンがあり、Human68k形式でパーティション
+              分けされたFAT16フォーマット済み40MBイメージをその場で作成してライブラリへ保存し、
+              そのままHDDスロットへセットします。ただしIPL(起動コード)を持たないため単体では
+              起動できず、FDDからHuman68kを起動してデータ用ドライブとして使う想定です
+              (システムディスクで起動すると <code>C:</code> として認識されます)。
+              いずれもHDDの作成・セットができるのは起動前だけです。
             </p>
           </div>
           <div class="lang-en">
@@ -385,8 +476,22 @@
             </p>
             <img src="./help/library-en.png" alt="Disk Library dialog" />
             <p>
-              Each slot row's "Insert from Library" button works the same way, and "New Blank"
-              creates a freshly formatted image and saves it to the library.
+              When you load a ZIP/LZH archive containing multiple disk images, it's registered here
+              as a <strong>folder</strong>. Opening the folder switches to the list of disks inside,
+              and you can insert each one into FDD1 / FDD2 — so a title that expects both drives
+              loaded at once can be set up here in two steps. If the archive was loaded via a URL
+              parameter (<code>fd1</code>/<code>fd2</code>/<code>hdd</code>), this dialog opens
+              automatically with that folder expanded and highlighted.
+            </p>
+            <p>
+              Each slot row's "Insert from Library" button works the same way — picking a folder
+              switches to the disks inside it, so you can swap in the 2nd, 3rd disk, etc. The FDD rows'
+              "New Blank" creates a freshly formatted image and saves it to the library. The HDD row
+              has its own "Create blank HDD" button, which builds a Human68k-partitioned,
+              FAT16-formatted 40MB image on the spot, saves it to the library, and sets it into the
+              HDD slot right away. It carries no IPL (boot code), so it can't boot on its own — boot
+              Human68k from a floppy and use it as a data drive (the system disk picks it up as
+              <code>C:</code>). Creating or setting a HDD is only possible before boot.
             </p>
           </div>
         </section>
@@ -411,7 +516,9 @@
               それらを連結してデコードして一覧表示しています。
             </p>
             <p>
-              起動中のHDDは読み取り専用として扱われ、書き込み(persist)はできません。
+              HDDは<strong>起動前のみ</strong>編集できます。編集内容はそのままIndexedDB
+              (ディスクライブラリ)へ保存されるため、ページを再読み込みしても残ります。
+              起動後はHDDの行に「起動中は変更不可」と表示され、読み取り専用になります。
             </p>
           </div>
           <div class="lang-en">
@@ -432,7 +539,9 @@
               an MS-DOS reserved area, so the viewer decodes them by joining the two parts.
             </p>
             <p>
-              A running HDD is treated as read-only; writes (persisting) are not possible.
+              The HDD can only be edited <strong>before boot</strong>. Edits are saved straight to
+              IndexedDB (the disk library), so they survive a page reload. Once running, the HDD
+              row shows "locked while running" and becomes read-only.
             </p>
           </div>
         </section>

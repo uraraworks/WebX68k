@@ -16,7 +16,13 @@ Vite + TypeScript（フレームワーク無し）の最小構成です。
 - `src/audio.ts` … AudioWorklet によるストリーミング音声出力
 - `src/keyboard.ts` … `KeyboardEvent.code` → `RETROK_*` のマッピング
 - `src/bios-store.ts` … BIOS ファイルを IndexedDB に永続化するヘルパー
-- `src/disk-store.ts` … ディスクイメージ(FD/HDD)を IndexedDB に永続化する「ディスクライブラリ」ヘルパー
+- `src/disk-store.ts` … ディスクイメージ(FD/HDD)を IndexedDB に永続化する「ディスクライブラリ」ヘルパー。
+  拡張子なしイメージの内容ベース判定(`classifyDiskBytes()`/`detectDiskContentKind()`)もここにある(後述)
+- `src/api/archive.ts` … LZH/ZIP アーカイブ展開の公開API。拡張子判定と `lzh.ts`/`zip.ts` への振り分けのみ行う
+- `src/api/lzh.ts` … LZH 展開(ヘッダレベル0/1/2、メソッド lh0/lh5/lh6/lh7 対応)
+- `src/api/zip.ts` … ZIP 展開(圧縮方式 stored/deflate のみ対応。deflate は `DecompressionStream('deflate-raw')`)
+- `src/api/library.ts` … ディスクライブラリ一覧の構築(フラットな IndexedDB レコードを、アーカイブ由来の
+  複数ディスクをフォルダとしてまとめたツリーへ変換する)。DOM非依存の純粋関数で単体テスト可能
 - `src/core-shim.c` … アクセスランプ取得等、libretro API に無い可変長引数/グローバル参照のための C シム
 - `src/state-store.ts` … ステートセーブを IndexedDB に永続化するヘルパー(gzip 圧縮)
 - `src/bridge.ts` … MCP サーバーと繋ぐ WebSocket ブリッジ(`?bridge=1` で有効)
@@ -102,6 +108,47 @@ FDD0/FDD1 の挿入・取り出しは**コアを再起動せず**に行う。px6
 起動中の HDD は読み出し専用(`editable: false`、`persist()` は拒否)になる。ダウンロードは中身を
 読むだけなので起動中でも可能。ツールバーの「リセット」は `host.reset()` を呼ぶだけで `running` は
 下ろさない(ロックは解けない)ため、**HDD を入れ替えたいときはページを再読み込みして起動前の状態に戻す**。
+
+## ディスクイメージの形式判定(拡張子 vs 内容ベース)
+
+**px68k はディスク形式を拡張子だけで判定する。** `px68k-libretro/x68k/fdd.c` の
+`GetDiskType()` は `.D88`/`.88D` → D88、`.DIM` → DIM、それ以外はすべて XDF(生イメージ)として
+扱う。したがって、アーカイブ内の拡張子なしイメージに拡張子を補完するとき **種別を間違えると
+ディスクが壊れて見える**(DIMヘッダをディスクデータとして読んでしまう等)。
+
+このためアーカイブ内のエントリに限り、`src/disk-store.ts` の `classifyDiskBytes()` /
+`detectDiskContentKind()` が拡張子に頼らない内容ベースの判定を行う(単体ファイルのドロップ/
+ファイル選択は従来どおり**拡張子判定のみ**で、無関係なファイルを受け入れないようにしている)。
+判定順序は次のとおり:
+
+1. 拡張子で判定できるならそれを使う(挙動を変えない)
+2. オフセット `0x400` に `X68K` シグネチャがあれば `hdd`(`src/api/fat.ts` の
+   `hasHuman68kPartitionSignature()`、Human68k パーティション判定と同一ロジック)
+3. バイト長がX68000の既知の生フロッピーイメージサイズ(XDF)と完全一致すれば `fd`
+4. px68k の DIM 実装と整合する DIM ヘッダ付きイメージなら `fd`(保存時に `.dim` を補う。
+   下記参照)
+5. どれにも当たらなければ `null`(ディスクイメージ以外として除外)
+
+**DIM 判定は px68k の `disk_dim.c` と整合する条件でのみ認める。** 「生サイズ+256なら DIM」
+という緩い判定は誤判定する。`isValidDimImage()` は以下の両方を満たす場合だけ DIM と認める:
+
+1. 先頭バイト(type)が有効な DIM タイプ(`DIM_TRACK_LENGTH` に定義された 0/1/2/3/9)であること
+2. `(バイト長 - 256)` がそのタイプの1トラックあたりのバイト数で割り切れること(トラック数が
+   整数になること)
+
+実物の X68000 の DIM(市販ソフト「ストリートファイターII CE」4枚組)で確認したところ、
+`type=0x00`(2HD)・`DIFC HEADER` 署名あり・`(1261824-256)/8192 = 154.0` だった。逆に緩い判定で
+誤検出する例として、PC-98由来で `DIFC HEADER` 署名を持たないアーカイブ内ファイルが
+`type=1`(2HS)なのに `(サイズ-256)` が2HSのトラック長(9216)で割り切れないケースがある。
+
+拡張子補完(`ensureDiskExtension()`)は、内容ベースで DIM と判定した場合は必ず `.dim` を補う
+(`.xdf` にはしない)。ライブラリ表示のバッジ判定(`buildLibraryRow` の `classifyDiskKind()`)が
+拡張子で行われるため、ここを誤ると表示上の種別も壊れる。
+
+D&D の受け口は画面(`.stage`)・各ドライブ行・ディスクライブラリのダイアログ(`#library-backdrop
+.rom-modal`)の3か所(`src/main.ts` の `resolveStageDropSlot()` / `handleDroppedFileForLibrary()`
+付近)。複数枚入りアーカイブはどの受け口でもスロットへは自動装填せず、ライブラリへグループ登録して
+ダイアログを開く(どこへ入れるかはユーザーに選ばせる)方針で統一している。
 
 ## マウス入力
 
@@ -262,14 +309,28 @@ X68000 固有の制約として、**画面をテキストとして読む手段�
 
 ## 起動前の初期画面
 
-WebNP2 に合わせ、起動前は canvas 上に「そのまま起動」/「システムディスクで起動」の2択
+WebNP2 に合わせ、起動前は canvas 上に「ディスク無しで起動」/「システムディスクで起動」の2択
 オーバーレイを表示する（`index.html` の `#boot-overlay`、`src/main.ts` の `startFromOverlay()`）。
 
-- 「そのまま起動」… ディスク未挿入で IPL 起動（`loadGameNone` 相当、IPL ROM のメニューが出る）
+- 「ディスク無しで起動」… ディスク未挿入で IPL 起動（`loadGameNone` 相当、IPL ROM のメニューが出る）。
+  HDD がセット済みなら文言が「セットしたディスクで起動」に変わる(後述)
 - 「システムディスクで起動」… 同梱の `human302.xdf` を FDD0 へ挿入した状態で起動
 
 音声再生の制約上クリック操作が必須なため、オーバーレイの空白部分をクリックしても
-「そのまま起動」と同じ扱いになる。
+1つ目のボタンと同じ扱いになる。
+
+起動前に HDD をドロップ/挿入しても、この時点では起動せずスロットへ「セット」するだけに
+とどめている(`slots.hdd` = `PendingDisk`、まだコアへは渡さない)。1つ目のオーバーレイボタンは
+`updateOverlayBootLabel()` が `slots.hdd` の有無を見て文言を切り替える
+(`overlayBootPlain`=「ディスク無しで起動」/`overlayBootPlainPending`=「セットしたディスクで起動」)。
+セット中は `updateSlotControls()` がスロット名要素に `.pending` クラスを付け、CSS で斜体・
+半透明表示にして「マウント済み」と区別する。
+
+ファイルマネージャでの編集(`openSlotVolume(slot).persist()`)は `slots[slot]` を直接
+書き換えるため、起動時に `bootCore()` が読む `slots.hdd.data`(→`host.writeDiskImage()`)には
+編集後のバイト列がそのまま乗る。加えて `sourceKey` がライブラリ由来(同梱ディスク以外)なら
+`persist()` の中で IndexedDB(`saveDisk()`)へも書き戻すので、ページ再読み込み後もライブラリ側に
+編集内容が残る(これが無いと以前はメモリ上だけの変更としてページ再読み込みで消えていた)。
 
 ## フロントエンドのビルド
 
@@ -277,7 +338,13 @@ WebNP2 に合わせ、起動前は canvas 上に「そのまま起動」/「シ�
 npm install
 npm run build   # dist/ に出力
 npm run dev     # 開発サーバー
+npm run test    # ユニットテスト(vitest, test/*.test.ts)
 ```
+
+`test/fat-hdd.test.ts` は `createFormattedHdd()`(後述)のFAT16構造とパーティション
+テーブルのバイト列を固定するテスト。`public/help/*.png` (使い方ページの説明画像)を
+UI変更後に撮り直す際は、開発サーバーを起動した状態で `npm run capture-help`
+(`scripts/capture-help-shots.mjs`)を実行する。
 
 ## 同梱している ROM / ディスクイメージについて
 
@@ -371,6 +438,22 @@ NT フラグ(0x00/0x08/0x10/0x18)で必ず 0x20 未満なので、そこが 0x20
 ゲスト側がFSへ書き込んでいる可能性があるため、書き込み前には常に `LibretroHost.readFile()` で
 コアのFS上の最新バイト列を読み直してから編集する(ゲスト側の変更を破棄しないため)。
 
+### エラー表示の多言語化
+
+`api/fat.ts` の `DiskError` はコード(`d88NotEditable`/`hddInvalidHeader`/`hddNoFatPartition`/
+`invalidShortName`)を持つ例外で、以前はファイルマネージャが `err.message` をそのまま表示して
+いたため常に日本語文言になっていた(英語UIでも)。`strings.ts` の `describeError()` が
+コードの有無をダックタイピングで判定して現在言語の文言(`errD88NotEditable`等)へ差し替え、
+コードを持たない例外(内部エラー)はそのまま `err.message` を返す。`fat.ts` を import せず
+ダックタイピングにしているのは、循環依存を避けるため。
+
+### ファイルマネージャの細かい修正
+
+フォルダ行をダブルクリックすると下の階層へ移動する(`filemanager.ts`)が、既定のままだと
+ダブルクリックでフォルダ名がテキスト選択状態になり、ブラウザの選択範囲翻訳ポップアップ等が
+出てしまっていた。`.fm-disk-item.dir` に `user-select: none` を付けて選択させないようにした
+(ファイル行はファイル名をコピーできるよう選択可能のまま)。
+
 ### 実データ検証結果
 
 - `human302.xdf`(同梱システムディスク)をファイルマネージャで開き、ルート直下の
@@ -387,6 +470,54 @@ NT フラグ(0x00/0x08/0x10/0x18)で必ず 0x20 未満なので、そこが 0x20
   同名ファイルとバイト完全一致した。
 - `hd0.hdf`のコピーへ`VERIFY.TXT`を書き込み、保存後にイメージを開き直して、一覧のサイズと
   読み出した53バイトの内容が書き込み元と完全一致することを確認した。元イメージは変更していない。
+
+### HDDイメージの起動前編集・ブランクHDD作成
+
+WebNP2 と同様、コアが実行中のHDD挿抜に未対応なのは変わらないため、**編集できるのは
+起動前だけ**というルールで整理した。
+
+- HDD は起動前に「セット」した状態(`slots.hdd`)を経由し、実際にコアへ渡すのは起動時のみ。
+  起動後は `isSlotLocked('hdd')` が true になり、スロットのボタンもファイルマネージャの
+  対象一覧からも外れる(`main.ts` の `openSlotVolume().persist()` は起動後拒否)。
+- ファイルマネージャからの書き込みは起動前の HDD イメージへ直接反映し、その場で
+  IndexedDB(ディスクライブラリ)へ保存される。ページ再読み込みしても編集内容が残る。
+- `src/api/fat.ts` の `createFormattedHdd()` が、Human68k形式(パーティションテーブル+FAT16)
+  でフォーマット済みの空HDD(40MB)を生成する。IPLの実体(起動コード)は持たないため
+  **HDD単体では起動できない**。FDDからHuman68kを起動し、データ用ドライブとして
+  使う想定(`main.ts` の `handleCreateBlankHdd()` がHDDスロットの「ブランクHDDを作成」
+  ボタンに配線し、生成後はライブラリへ保存してそのままHDDスロットへセットする)。
+
+**ハマりどころ: パーティション名は必ず `"Human68k"` にすること。** Human68k は起動時に
+パーティションテーブル(オフセット `0x400`=シグネチャ`"X68K"`, `0x410`から16バイト単位の
+エントリ)の名前フィールドでこの文字列を探してドライブレターを割り当てる。最初の実装では
+別名(`"Human0"`)にしていたところ、ゲスト側から一切ドライブとして見えず、Human68k上で
+`ドライブ名が無効です` というエラーになった。実機吸い出しイメージの同オフセット(`0x410`)を
+確認したところ`"Human68k"`固定だったため、`HDD_PARTITION_NAME`定数をこれに合わせて修正し、
+実機で `C:` として認識され `DIR C:` が「40779K Byte 使用可能」を返すことを確認して解決した。
+再発防止のため `test/fat-hdd.test.ts` で `image.subarray(0x410, 0x418)` が `"Human68k"` と
+一致することをアサートしている。
+
+**ハマりどころ2: BPB のジオメトリは Human68k の流儀に合わせること(`spc=1` / `spf` は総セクタ数から算出)。**
+名前を直してドライブとしては認識されるようになった後も、**ホスト側で書いたファイルがゲストから
+見えず、ゲストが書いたファイルがホストから見えない**という症状が残った。Human68k は BPB の
+`sectorsPerCluster` / `sectorsPerFat` をそのまま信じず、次の前提でルートディレクトリ位置
+(`reserved + numFats × sectorsPerFat`)を自分で計算するため、こちらの書き込み位置とズレていた。
+
+- `sectorsPerCluster` は **1**(1セクタ=1クラスタ)。8 にしていたときは Human68k 側が
+  `spf=81` として root を `0x29400` に置き、こちらは `spf=10` で `0x5C00` に置いていた
+- `sectorsPerFat` は **総セクタ数**から `ceil((totalSectors + 2) × 2 / bytesPerSector)`。
+  データクラスタ数から最小値を求める一般的な FAT の式だと 1 セクタ小さくなり
+  (こちら `spf=80` → root `0x28C00` / Human68k `spf=81` → root `0x29400`)、
+  `numFats × 1` セクタぶんズレる
+- メディアバイト(`0x1c`)は `0xF8`。書き忘れて `0x00` になっていた
+
+切り分けは、**ゲストの Human68k 自身に `COPY A:\COMMAND.X C:\` を実行させてから
+イメージをダウンロードし、`COMMAND` と自作の `WORK` エントリのバイト位置を比較する**方法で行った
+(`0x29400` と `0x28C00` で 2 セクタずれていることが判明)。実機吸い出しイメージ
+(`_local/verify/hd0.hdf`、総セクタ40510)も同じ式で `spf=80` になっており裏が取れている。
+修正後、起動前にファイルマネージャで作成したディレクトリが Human68k の `DIR C:` に
+`WORK <dir>` として現れることを確認済み。`test/fat-hdd.test.ts` で BPB の各値と
+ルートディレクトリの絶対オフセットを固定してある。
 
 ## 未検証・既知の注意点
 
