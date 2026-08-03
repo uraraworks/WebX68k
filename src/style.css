@@ -179,6 +179,12 @@ main {
   height: 32px;
 }
 
+/* トグル状態のボタン(マウスキャプチャ中など)を押し込み表示にする */
+.toolbar button.icon-btn.active {
+  background: var(--footer-btn-bg-hover);
+  box-shadow: inset 0 1px 3px rgba(0, 0, 0, 0.5);
+}
+
 /* WebNP2 のツールバーアイコン意匠を踏襲したインラインSVG(currentColorで縁取り線画) */
 .btn-icon {
   width: 16px;

@@ -37,6 +37,8 @@ const bootOverlay = document.getElementById('boot-overlay') as HTMLDivElement;
 const btnBootPlain = document.getElementById('btn-boot-plain') as HTMLButtonElement;
 const btnBootSystem = document.getElementById('btn-boot-system') as HTMLButtonElement;
 const btnReset = document.getElementById('btn-reset') as HTMLButtonElement;
+const btnMouseCapture = document.getElementById('btn-mouse-capture') as HTMLButtonElement;
+const btnMouseResync = document.getElementById('btn-mouse-resync') as HTMLButtonElement;
 const btnSaveState = document.getElementById('btn-save-state') as HTMLButtonElement;
 const btnLoadState = document.getElementById('btn-load-state') as HTMLButtonElement;
 const toastEl = document.getElementById('toast') as HTMLDivElement;
@@ -866,6 +868,9 @@ function applyDocumentStrings(): void {
 
   btnReset.title = t('toolbarReset');
   btnReset.setAttribute('aria-label', t('toolbarReset'));
+  btnMouseCapture.setAttribute('aria-label', t('toolbarMouseCapture'));
+  btnMouseResync.setAttribute('aria-label', t('toolbarMouseResync'));
+  updateMouseControls();
   btnSaveState.title = t('toolbarSaveState');
   btnSaveState.setAttribute('aria-label', t('toolbarSaveState'));
   btnLoadState.title = t('toolbarLoadState');
@@ -943,41 +948,179 @@ window.addEventListener('keyup', (e) => {
   e.preventDefault();
 });
 // --- マウス入力 ---
-// X68000 のマウスは SCC 経由で相対移動量(-128..127)を送る方式で、ゲスト側が自前でカーソル位置を
-// 管理する。ブラウザのカーソル位置を絶対座標として渡すことは原理的にできないため、
-// Pointer Lock でキャプチャして movementX/Y(相対量)を積む。
+// X68000 のマウスは SCC 経由で相対移動量(-128..127)を送る方式で、カーソル位置はゲストが
+// 自前で管理する。そのため WebNP2 と同じく2つのモードを用意する。
+//
+//   追従モード(既定) … キャプチャせず、canvas 上のホストカーソル位置へゲストカーソルを追従させる。
+//                       相対量しか送れないので「基準合わせ(ホーミング)」でゲストカーソルを
+//                       左上へ寄せてから、推定位置との差分を送る。ズレたら「マウス再同期」で
+//                       ホーミングをやり直す。
+//   キャプチャモード … Pointer Lock で掴んで movementX/Y をそのまま送る。相対移動が要る
+//                       ソフト向け。右ダブルクリック or ツールバーのボタンで切り替え、Esc で解除。
 const MOUSE_SENSITIVITY_KEY = 'webx68k.mouseSensitivity';
-let mouseSensitivity = Number(localStorage.getItem(MOUSE_SENSITIVITY_KEY)) || 1;
+const mouseSensitivity = Number(localStorage.getItem(MOUSE_SENSITIVITY_KEY)) || 1;
+/** 右ダブルクリック判定の猶予(ms)。WebNP2 と同じ。 */
+const RIGHT_DOUBLE_CLICK_MS = 500;
+/**
+ * 追従モード(キャプチャせずホストカーソルへ追従させる)は**未完成のため既定で無効**。
+ *
+ * IOCS ワークからゲストカーソルの実座標を読む閉ループまでは動いたが
+ * (`LibretroHost.readGuestCursor()`)、送った移動量に対してカーソルが大きく動きすぎて
+ * 画面端から端へ発振する。IOCS 側の移動量倍率(_MS_SETADJ 相当)が効いていると見られ、
+ * 比例ゲインを 0.35 まで絞っても収束しなかった。倍率の特定が済むまで無効にしておく。
+ * 有効時のマウス操作は右ダブルクリック(またはツールバー)でのキャプチャで行う。
+ */
+const ENABLE_MOUSE_TRACKING = false;
+/** 閉ループ追従の比例ゲイン。IOCS 側の移動量倍率が不明なので、発振しない程度に絞る。 */
+const MOUSE_TRACK_GAIN = 0.35;
+/** IOCS ワークが読めないソフト向けフォールバックで、画面外まで押し切るための余白(ドット) */
+const MOUSE_HOMING_MARGIN = 64;
+
+/** ホスト側カーソルの canvas 内相対位置(0..1)。実際の目標座標はゲストの可動範囲から毎フレーム決める。 */
+let desiredRatioX = 0;
+let desiredRatioY = 0;
+let hasDesiredRatio = false;
+/** 追従が空回りしている(送っているのにカーソルが動かない)ことを検出するためのカウンタ */
+let trackStallFrames = 0;
+let trackLastCursorX = -1;
+let trackLastCursorY = -1;
+let trackDisabled = false;
 
 function isMouseCaptured(): boolean {
   return document.pointerLockElement === canvas;
 }
 
-canvas.addEventListener('click', () => {
-  canvas.focus();
-  if (!running || isMouseCaptured()) return;
-  // requestPointerLock はユーザー操作起点でないと拒否される。拒否されても実害は無いので握り潰す。
-  void Promise.resolve(canvas.requestPointerLock()).catch(() => {});
-});
+function isMouseTracking(): boolean {
+  return ENABLE_MOUSE_TRACKING && running && !isMouseCaptured();
+}
+
+/**
+ * 追従モードの1フレーム分の追い込み(閉ループ)。
+ *
+ * X68000 のマウスは相対量しか送れないが、IOCS はワークエリアにカーソルの実座標と可動範囲を
+ * 持っている($ACE/$AD0 と $A9A..$AA0)。そこを毎フレーム読んで「目標との差分」を送るため、
+ * ホスト側で位置を推定する必要がなく、ズレも自動的に吸収される。
+ * ±128/回でしか送れないので、大きなジャンプは数フレームかけて収束する。
+ */
+function stepMouseTracking(): void {
+  if (!host || !isMouseTracking() || !hasDesiredRatio || trackDisabled) return;
+  const cur = host.readGuestCursor();
+  // マウスを使っていないソフトではワークエリアが初期化されていない。その場合は何もしない。
+  if (!cur) return;
+
+  const targetX = Math.round(cur.minX + desiredRatioX * (cur.maxX - cur.minX));
+  const targetY = Math.round(cur.minY + desiredRatioY * (cur.maxY - cur.minY));
+  const dx = targetX - cur.x;
+  const dy = targetY - cur.y;
+  if (dx === 0 && dy === 0) {
+    trackStallFrames = 0;
+    trackLastCursorX = cur.x;
+    trackLastCursorY = cur.y;
+    return;
+  }
+
+  // 安全弁: 目標に届いていないのにカーソルがまったく動かない場合(IOCS ワークを使わず
+  // 自前でカーソルを管理するソフト等)、差分を送り続けると際限なくデルタを撃ち込むことになる。
+  // 送信待ちの間もカウントするため、pending の判定より前に置くこと。
+  if (cur.x === trackLastCursorX && cur.y === trackLastCursorY) {
+    if (++trackStallFrames > 90) {
+      trackDisabled = true;
+      host.clearMouseState();
+      showToast(t('mouseTrackUnavailable'));
+      return;
+    }
+  } else {
+    trackStallFrames = 0;
+    trackLastCursorX = cur.x;
+    trackLastCursorY = cur.y;
+  }
+
+  if (host.hasPendingMouseDelta()) return;
+  // IOCS はマウス移動量に倍率を掛けてカーソルを動かす(_MS_SETADJ)。倍率が不明なまま
+  // 誤差をそのまま送ると行き過ぎて発振するため、誤差の一部だけを送る比例制御にする。
+  // 端数で止まらないよう、最低1ドットは動かす。
+  const stepX = Math.trunc(dx * MOUSE_TRACK_GAIN) || Math.sign(dx);
+  const stepY = Math.trunc(dy * MOUSE_TRACK_GAIN) || Math.sign(dy);
+  host.addMouseDelta(stepX, stepY);
+}
+
+/**
+ * 強制的に基準を取り直す(ツールバーの「マウス再同期」)。
+ * 閉ループ追従が効いていれば本来ズレないが、IOCS ワークを使わず自前でカーソルを管理する
+ * ソフトのために、左上へ押し付ける従来のホーミングをフォールバックとして残す。
+ */
+function resyncGuestMouse(): void {
+  if (!host) return;
+  // 止めていた追従を再開させる
+  trackDisabled = false;
+  trackStallFrames = 0;
+  if (host.readGuestCursor()) return; // 閉ループが効いているので押し付け不要
+  const w = host.avInfo?.baseWidth || canvas.width;
+  const h = host.avInfo?.baseHeight || canvas.height;
+  const distance = Math.max(w, h) + MOUSE_HOMING_MARGIN;
+  host.addMouseDelta(-distance, -distance);
+}
+
+function setMouseCaptured(capture: boolean): void {
+  if (!running) return;
+  if (capture) {
+    if (isMouseCaptured()) return;
+    // requestPointerLock はユーザー操作から同期的に呼ぶ必要があるので非同期処理を挟まない
+    void Promise.resolve(canvas.requestPointerLock()).catch(() => {
+      showToast(t('mouseCaptureFailed'));
+    });
+  } else {
+    document.exitPointerLock();
+  }
+}
+
+canvas.addEventListener('click', () => canvas.focus());
 
 document.addEventListener('pointerlockchange', () => {
   if (isMouseCaptured()) {
     showToast(t('mouseCaptured'));
   } else {
-    // 解除時は積み残しのデルタと押しっぱなし判定を捨てる(ボタンを押したまま Esc された場合の保険)
+    // 解除時は積み残しのデルタと押しっぱなし判定を捨てる(ボタンを押したまま Esc された場合の保険)。
+    // 追従モードへ戻るので基準も作り直す。
     host?.clearMouseState();
+    if (running) showToast(t('mouseReleased'));
   }
+  updateMouseControls();
+});
+
+// キャプチャ開始は右ダブルクリック。追従モードでは左クリックをゲストへ通す必要があるため、
+// 左クリックはキャプチャのトリガにしない(WebNP2 と同じ流儀)。
+let lastRightClickAt = 0;
+canvas.addEventListener('contextmenu', (e) => {
+  e.preventDefault();
+  if (!running) return;
+  const now = performance.now();
+  if (now - lastRightClickAt < RIGHT_DOUBLE_CLICK_MS) {
+    lastRightClickAt = 0;
+    setMouseCaptured(!isMouseCaptured());
+    return;
+  }
+  lastRightClickAt = now;
 });
 
 canvas.addEventListener('mousemove', (e) => {
-  if (!host || !isMouseCaptured()) return;
-  // movementX/Y は CSS ピクセル単位。canvas は拡大表示されるので、ゲスト側の1ドットに換算する。
-  const scale = canvas.clientWidth > 0 ? canvas.width / canvas.clientWidth : 1;
-  host.addMouseDelta(e.movementX * scale * mouseSensitivity, e.movementY * scale * mouseSensitivity);
+  if (!host || !running) return;
+  if (isMouseCaptured()) {
+    // movementX/Y は CSS ピクセル単位。canvas は拡大表示されるので、ゲスト側の1ドットへ換算する。
+    const scale = canvas.clientWidth > 0 ? canvas.width / canvas.clientWidth : 1;
+    host.addMouseDelta(e.movementX * scale * mouseSensitivity, e.movementY * scale * mouseSensitivity);
+    return;
+  }
+  // 追従モード: canvas 内の相対位置(0..1)だけ記録し、実際の送信は stepMouseTracking に任せる
+  const rect = canvas.getBoundingClientRect();
+  if (rect.width <= 0 || rect.height <= 0) return;
+  desiredRatioX = Math.max(0, Math.min(1, (e.clientX - rect.left) / rect.width));
+  desiredRatioY = Math.max(0, Math.min(1, (e.clientY - rect.top) / rect.height));
+  hasDesiredRatio = true;
 });
 
 canvas.addEventListener('mousedown', (e) => {
-  if (!host || !isMouseCaptured()) return;
+  if (!host || !running) return;
   if (e.button === 0) host.setMouseButton('left', true);
   else if (e.button === 2) host.setMouseButton('right', true);
   e.preventDefault();
@@ -989,9 +1132,23 @@ window.addEventListener('mouseup', (e) => {
   else if (e.button === 2) host.setMouseButton('right', false);
 });
 
-// X68000 側で右ボタンを使うため、キャプチャ中はブラウザのコンテキストメニューを出さない
-canvas.addEventListener('contextmenu', (e) => {
-  if (isMouseCaptured()) e.preventDefault();
+/** マウス関連ボタンの活性・表示状態を現在のモードに合わせる。 */
+function updateMouseControls(): void {
+  const captured = isMouseCaptured();
+  btnMouseCapture.disabled = !running;
+  btnMouseCapture.classList.toggle('active', captured);
+  btnMouseCapture.title = captured ? t('toolbarMouseRelease') : t('toolbarMouseCapture');
+  btnMouseCapture.setAttribute('aria-pressed', captured ? 'true' : 'false');
+  // 再同期は追従モード専用(キャプチャ中は基準という概念が無い)
+  btnMouseResync.disabled = !ENABLE_MOUSE_TRACKING || !running || captured;
+  btnMouseResync.title = ENABLE_MOUSE_TRACKING ? t('toolbarMouseResync') : t('toolbarMouseResyncDisabled');
+}
+
+btnMouseCapture.addEventListener('click', () => setMouseCaptured(!isMouseCaptured()));
+btnMouseResync.addEventListener('click', () => {
+  if (!isMouseTracking()) return;
+  resyncGuestMouse();
+  showToast(t('mouseResynced'));
 });
 
 let lastFrameTime = 0;
@@ -1048,9 +1205,10 @@ function pollDiskAccess(now: number): void {
 if (import.meta.env.DEV) {
   (window as unknown as Record<string, unknown>).__webx68kDebug = {
     stat: () => ({ queuedSec: audio?.queuedSeconds ?? null, fps: host?.avInfo?.fps ?? null }),
-    mouse: () => ({ captured: isMouseCaptured(), sensitivity: mouseSensitivity, core: host?.readMouseState() ?? null }),
+    mouse: () => ({ captured: isMouseCaptured(), tracking: isMouseTracking(), ratio: { x: desiredRatioX, y: desiredRatioY }, pending: host?.hasPendingMouseDelta() ?? null, cursor: host?.readGuestCursor() ?? null, sensitivity: mouseSensitivity, core: host?.readMouseState() ?? null }),
     // Pointer Lock を経由せずに相対移動/ボタンを注入する。自動テスト用で、
     // 将来の MCP ブリッジ(mouse_move 相当)もこの経路をそのまま使う想定。
+    peek: (addr: number) => host?.peekWord(addr) ?? null,
     moveMouse: (dx: number, dy: number) => host?.addMouseDelta(dx, dy),
     mouseButton: (button: 'left' | 'right', down: boolean) => host?.setMouseButton(button, down),
   };
@@ -1089,7 +1247,10 @@ function loop(t: number): void {
     accumulator -= frameInterval;
     ran++;
   }
-  if (ran > 0) pollDiskAccess(t);
+  if (ran > 0) {
+    pollDiskAccess(t);
+    stepMouseTracking();
+  }
   // 破綻(タブ非アクティブ復帰等)したら蓄積をリセット
   if (accumulator > frameInterval * 4) accumulator = 0;
 
@@ -1130,6 +1291,7 @@ async function startFromOverlay(withSystemDisk: boolean): Promise<void> {
     btnReset.disabled = false;
     btnSaveState.disabled = false;
     btnLoadState.disabled = false;
+    updateMouseControls();
     canvas.focus();
   } catch (err) {
     console.error(err);

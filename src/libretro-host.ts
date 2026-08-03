@@ -89,6 +89,8 @@ export interface PX68KModule {
   _get_mouse_scc_x(): number;
   _get_mouse_scc_y(): number;
   _get_mouse_scc_stat(): number;
+  _webx68k_peek16(addr: number): number;
+  _webx68k_peek8(addr: number): number;
   // FDD ホットマウント用(core-shim.c 経由で px68k の FDD_SetFD/FDD_EjectFD を公開)
   _webx68k_fdd_insert(drive: number, pathPtr: number): void;
   _webx68k_fdd_eject(drive: number): void;
@@ -111,6 +113,15 @@ export interface AvInfo {
 }
 
 export type AudioPushFn = (samples: Float32Array) => void;
+
+/**
+ * 1回のポーリングでコアへ渡せる移動量は -128..127（SCC が送れる範囲）。
+ * これを超える分をそのまま渡すと Mouse_SetData() のクランプで切り捨てられて消えてしまうため、
+ * 範囲内に丸めて残りは次回へ繰り越す。追従モードの大きなジャンプもこれで完走できる。
+ */
+function clampStep(value: number): number {
+  return Math.max(-128, Math.min(127, Math.trunc(value)));
+}
 
 /** malloc した UTF-8 文字列へのポインタを返す（ホスト生存期間中は解放しない） */
 function mallocString(mod: PX68KModule, str: string): number {
@@ -173,6 +184,43 @@ export class LibretroHost {
 
   setMouseButton(button: 'left' | 'right', down: boolean): void {
     this.mouseButtons[button] = down;
+  }
+
+  /**
+   * まだコアへ渡しきれていない移動量が残っているか。
+   * 1回のポーリングで送れるのは ±128 までなので、大きな移動(追従モードの基準合わせ等)は
+   * 数フレームかけて消化される。その完了待ちに使う。
+   */
+  hasPendingMouseDelta(): boolean {
+    return Math.abs(this.mouseDx) >= 1 || Math.abs(this.mouseDy) >= 1;
+  }
+
+  /**
+   * ゲストのマウスカーソル状態を IOCS ワークエリアから読む。
+   * ホスト側で位置を推定しなくて済むので、追従モードを閉ループにできる。
+   *   $ACE/$AD0 = カーソル座標, $A9A..$AA0 = 可動範囲, $AA2 = 表示スイッチ
+   * 座標は符号付きワードとして解釈する。
+   */
+  /** ゲストメモリを1ワード(ビッグエンディアン)読む(デバッグ・IOCSワーク参照用) */
+  peekWord(addr: number): number {
+    return this.mod._webx68k_peek16(addr);
+  }
+
+  readGuestCursor(): { x: number; y: number; minX: number; minY: number; maxX: number; maxY: number; visible: boolean } | null {
+    const mod = this.mod;
+    const word = (addr: number): number => {
+      const v = mod._webx68k_peek16(addr);
+      return v >= 0x8000 ? v - 0x10000 : v;
+    };
+    const x = word(0x0ace);
+    const y = word(0x0ad0);
+    const minX = word(0x0a9a);
+    const minY = word(0x0a9c);
+    const maxX = word(0x0a9e);
+    const maxY = word(0x0aa0);
+    // 可動範囲が未初期化(すべて0など)ならワークエリアを信用しない
+    if (maxX <= minX || maxY <= minY) return null;
+    return { x, y, minX, minY, maxX, maxY, visible: mod._webx68k_peek8(0x0aa2) !== 0 };
   }
 
   /** キャプチャ解除時などに、積み残しのデルタとボタン押下状態を捨てる */
@@ -271,12 +319,12 @@ export class LibretroHost {
       if (device === RETRO_DEVICE_MOUSE) {
         switch (id) {
           case RETRO_DEVICE_ID_MOUSE_X: {
-            const step = Math.trunc(this.mouseDx);
+            const step = clampStep(this.mouseDx);
             this.mouseDx -= step;
             return step;
           }
           case RETRO_DEVICE_ID_MOUSE_Y: {
-            const step = Math.trunc(this.mouseDy);
+            const step = clampStep(this.mouseDy);
             this.mouseDy -= step;
             return step;
           }

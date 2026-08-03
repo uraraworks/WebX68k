@@ -119,6 +119,35 @@ int get_mouse_enabled(void)
 }
 
 /*
+ * ゲストのメインメモリを読む。
+ * IOCS はワークエリアにマウスカーソルの実座標と可動範囲を持っているので、
+ * ここを直接読めばホスト側で位置を推定する必要がなくなる(閉ループ追従)。
+ *   $ACE/$AD0 … カーソル X/Y 座標(word)
+ *   $A9A/$A9C/$A9E/$AA0 … 可動範囲の min X / min Y / max X / max Y(word)
+ *   $AA2 … カーソル表示スイッチ(byte)
+ * 68000 なのでワードはビッグエンディアンだが、px68k は MEM をバイトスワップして保持しており
+ * (mem_wrap.c の rm_main() が MEM[addr ^ 1] で読む)、素直に添字を辿ると上下バイトが入れ替わる。
+ * ここでも同じ ^1 を適用すること。
+ */
+extern unsigned char *MEM;
+
+__attribute__((used))
+int webx68k_peek16(unsigned int addr)
+{
+  if (!MEM)
+    return -1;
+  return (MEM[addr ^ 1] << 8) | MEM[(addr + 1) ^ 1];
+}
+
+__attribute__((used))
+int webx68k_peek8(unsigned int addr)
+{
+  if (!MEM)
+    return -1;
+  return MEM[addr ^ 1];
+}
+
+/*
  * SCC へ実際に渡る値(x68k/scc.c のグローバル)。
  * ゲストがマウスをポーリングすると Mouse_SetData() が累積デルタをここへ移して 0 に戻すため、
  * 上の get_mouse_dx/dy と両方見ることで「累積中」か「ゲストに吸われた後」かを判別できる。

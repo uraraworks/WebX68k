@@ -27,6 +27,14 @@ interface Dict {
   stateLoadFailed(): string;
   stateNotFound(): string;
   mouseCaptured(): string;
+  mouseReleased(): string;
+  mouseResynced(): string;
+  mouseTrackUnavailable(): string;
+  mouseCaptureFailed(): string;
+  toolbarMouseCapture(): string;
+  toolbarMouseRelease(): string;
+  toolbarMouseResync(): string;
+  toolbarMouseResyncDisabled(): string;
   stateDiskMismatch(args: { saved: string; current: string }): string;
   toolbarDiskLibrary(): string;
   toolbarFileManager(): string;
@@ -141,6 +149,14 @@ const STRINGS: Record<Lang, Dict> = {
     stateLoadFailed: () => 'ステートの復元に失敗しました。',
     stateNotFound: () => '保存されたステートがありません。',
     mouseCaptured: () => 'マウスをキャプチャしました(Esc で解除)。',
+    mouseReleased: () => 'マウスのキャプチャを解除しました。',
+    mouseResynced: () => 'マウスの基準を取り直しました。',
+    mouseTrackUnavailable: () => 'このソフトではマウス追従を利用できません。右ダブルクリックでキャプチャしてください。',
+    mouseCaptureFailed: () => 'マウスをキャプチャできませんでした。',
+    toolbarMouseCapture: () => 'マウスキャプチャ(右ダブルクリック)',
+    toolbarMouseRelease: () => 'マウスキャプチャを解除(Esc)',
+    toolbarMouseResync: () => 'マウス再同期',
+    toolbarMouseResyncDisabled: () => 'マウス再同期(追従モードは開発中)',
     stateDiskMismatch: ({ saved, current }) =>
       `保存時とディスク構成が異なります。\n保存時: ${saved}\n現在: ${current}\nこのまま復元すると誤動作する可能性があります。続けますか?`,
     toolbarDiskLibrary: () => 'ディスクライブラリ',
@@ -251,6 +267,14 @@ const STRINGS: Record<Lang, Dict> = {
     stateLoadFailed: () => 'Failed to load the state.',
     stateNotFound: () => 'No saved state found.',
     mouseCaptured: () => 'Mouse captured (press Esc to release).',
+    mouseReleased: () => 'Mouse capture released.',
+    mouseResynced: () => 'Mouse position re-synced.',
+    mouseTrackUnavailable: () => 'Mouse tracking is unavailable for this software. Right double-click to capture instead.',
+    mouseCaptureFailed: () => 'Could not capture the mouse.',
+    toolbarMouseCapture: () => 'Capture mouse (right double-click)',
+    toolbarMouseRelease: () => 'Release mouse (Esc)',
+    toolbarMouseResync: () => 'Re-sync mouse',
+    toolbarMouseResyncDisabled: () => 'Re-sync mouse (tracking mode is under development)',
     stateDiskMismatch: ({ saved, current }) =>
       `The mounted disks differ from when the state was saved.\nSaved: ${saved}\nCurrent: ${current}\nLoading anyway may cause the guest to misbehave. Continue?`,
     toolbarDiskLibrary: () => 'Disk Library',
