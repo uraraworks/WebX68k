@@ -130,13 +130,40 @@ npm run build   # dist/ に出力
 npm run dev     # 開発サーバー
 ```
 
-## BIOS ファイルについて
+## 同梱している ROM / ディスクイメージについて
 
-本リポジトリに BIOS ファイル（`IPLROM.DAT` / `CGROM.DAT`）は含まれていません。著作権の関係上、
-各自で実機からの吸い出し、または下記のような配布元から入手し、画面の「BIOS 設定」パネルから
-読み込んでください（読み込んだファイルはブラウザの IndexedDB に保存され、次回以降は自動で読み込まれます）。
+`public/system/` に以下を同梱しており、何も用意しなくてもブラウザで開くだけで Human68k が
+起動する。いずれも再配布可能なものだけを選んでいる。
+
+| ファイル | 内容 | 出所・扱い |
+| --- | --- | --- |
+| `iplrom.dat` | X68000 IPL-ROM v1.0（初代〜EXPERT 系。内部に `ROM debugger Ver 1.0 / Copyright Hudson soft 1987`） | シャープ株式会社ほか権利各社が @nifty シャープ・プロダクツ・ユーザーズ・フォーラムで無償公開したもの。`許諾条件.txt` の条件下で無改変・無償で再頒布 |
+| `human302.xdf` | Human68k version 3.02 システムディスク | 同上 |
+| `許諾条件.txt` | 上記2点の使用許諾条件 | **再頒布時の添付が許諾条件で必須**。削除しないこと |
+| `cgrom.dat` | フォント ROM (CGROM) | **実機の CGROM は無償公開の対象外なので同梱できない**。代替として東雲フォント(パブリックドメイン)から `tools/gen-cgrom/` で生成した自作品。字形は実機と異なる |
+
+実機から吸い出した本物の CGROM / IPL-ROM を使いたい場合は、画面の「BIOS 設定」パネルから
+読み込める（読み込んだファイルはブラウザの IndexedDB に保存され、次回以降は自動で読み込まれる。
+同梱品より優先される）。配布元の例:
 
 - http://retropc.net/x68000/software/sharp/x68bios/
+
+なお検証用の実機 ROM / HDD イメージは `_local/verify/`（`.gitignore` 対象）へ置くこと。
+`public/` 配下に置くとビルド時に `dist/` へコピーされ配布物に混入する。
+
+## ライセンス
+
+本リポジトリは **GPLv2**（[COPYING](COPYING)）。
+
+- `public/core/px68k_libretro.js` / `.wasm` は GPLv2 の
+  [px68k-libretro](https://github.com/libretro/px68k-libretro) を emscripten でビルドしたもの。
+  ビルドに使ったソースは fork の [uraraworks/px68k-libretro](https://github.com/uraraworks/px68k-libretro)
+  `emscripten` ブランチ（アクセスランプ用フックの最小パッチ入り）で、ビルド手順は
+  [scripts/build-core.sh](scripts/build-core.sh) にそのまま置いてある
+- フロントエンド（`src/` 以下）も上記コアと一体で動作するため GPLv2 に揃えている
+- `tools/gen-cgrom/` が生成する `cgrom.dat` の字形はパブリックドメインの東雲フォント由来
+  （[tools/gen-cgrom/NOTICE.md](tools/gen-cgrom/NOTICE.md) 参照）
+- `public/system/` の ROM / ディスクイメージは GPLv2 ではなく、前節の許諾条件に従う
 
 ## ファイル転送(ファイルマネージャ)
 
