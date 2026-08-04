@@ -5,10 +5,14 @@
 // エミュレータ本体はブラウザ内で動き、MCP サーバーはユーザーのマシン上で動く。ページ側から
 // ws://127.0.0.1:<port> へ繋ぎに行く構成なので、ローカル開発サーバーでも公開ページでも同じように使える。
 
+import type { TextScreenDump } from './text-screen';
+
 /** ブリッジから叩くエミュレータ側の操作。main.ts が実装を渡す。 */
 export interface BridgeHost {
   /** 画面を PNG の dataURL で取得 */
   screenshot(): string;
+  /** TVRAM に描画された ANK テキストと認識診断を取得 */
+  screenText(): TextScreenDump;
   /** 画面の内容が変わったかを判定するためのハッシュ */
   screenHash(): number;
   reset(): void;
@@ -150,6 +154,9 @@ export class Bridge {
 
       case 'screenshot':
         return { dataUrl: h.screenshot() };
+
+      case 'screen_text':
+        return h.screenText();
 
       case 'reset':
         h.reset();

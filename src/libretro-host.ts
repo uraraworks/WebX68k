@@ -1,6 +1,13 @@
 // px68k-libretro (emscripten ビルド) コアの JS ホスト実装。
 // libretro API の callback を wasm 関数テーブルへ登録し、コアを駆動する。
 
+import {
+  extractTextScreenFromCore,
+  MINIMUM_ANK_CGROM_SIZE,
+  type TextScreenDump,
+  unavailableTextScreenDump,
+} from './text-screen';
+
 // ---- RETRO_ENVIRONMENT_* (libretro.h より) ----
 const RETRO_ENVIRONMENT_GET_CAN_DUPE = 3;
 const RETRO_ENVIRONMENT_GET_SYSTEM_DIRECTORY = 9;
@@ -97,6 +104,11 @@ export interface PX68KModule {
   // FDD ホットマウント用(core-shim.c 経由で px68k の FDD_SetFD/FDD_EjectFD を公開)
   _webx68k_fdd_insert(drive: number, pathPtr: number): void;
   _webx68k_fdd_eject(drive: number): void;
+  _webx68k_tvram_data?: () => number;
+  _webx68k_text_dot_x?: () => number;
+  _webx68k_text_dot_y?: () => number;
+  _webx68k_text_scroll_x?: () => number;
+  _webx68k_text_scroll_y?: () => number;
 }
 
 declare global {
@@ -161,6 +173,8 @@ export class LibretroHost {
   private callbackPtrs: number[] = [];
 
   private _avInfo: AvInfo | null = null;
+  // FS へ書いたものと逆引き用を必ず同じバイト列にするための唯一の CGROM 保持先。
+  private coreCgrom: Uint8Array | null = null;
 
   constructor(canvas: HTMLCanvasElement, audioPush: AudioPushFn) {
     this.canvas = canvas;
@@ -172,6 +186,22 @@ export class LibretroHost {
 
   get avInfo(): AvInfo | null {
     return this._avInfo;
+  }
+
+  /** 現在の TVRAM 表示を ANK 文字列として読む。取得不能時も例外ではなく診断結果を返す。 */
+  readTextScreen(): TextScreenDump {
+    if (!this.coreCgrom) return unavailableTextScreenDump('CGROM が設定されていません');
+    if (!this.mod) return unavailableTextScreenDump('コアが初期化されていません');
+    if (this.coreCgrom.byteLength < MINIMUM_ANK_CGROM_SIZE) {
+      return unavailableTextScreenDump(
+        `CGROM が短すぎます: ${this.coreCgrom.byteLength} bytes (必要: ${MINIMUM_ANK_CGROM_SIZE})`,
+      );
+    }
+    try {
+      return extractTextScreenFromCore(this.mod, this.coreCgrom);
+    } catch (err) {
+      return unavailableTextScreenDump(err instanceof Error ? err.message : String(err));
+    }
   }
 
   setKey(retrok: number, down: boolean): void {
@@ -291,7 +321,9 @@ export class LibretroHost {
     this.mkdirSafe('/game');
 
     mod.FS.writeFile('/system/keropi/iplrom.dat', biosIpl);
-    mod.FS.writeFile('/system/keropi/cgrom.dat', biosCg);
+    // 呼び出し元による後日の変更を遮断し、この同じ配列を FS 書き込みと逆引きの両方に使う。
+    this.coreCgrom = biosCg.slice();
+    mod.FS.writeFile('/system/keropi/cgrom.dat', this.coreCgrom);
 
     this.systemDirPtr = mallocString(mod, '/system');
     this.saveDirPtr = mallocString(mod, '/save');

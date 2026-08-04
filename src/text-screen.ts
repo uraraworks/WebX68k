@@ -6,6 +6,7 @@ const TVRAM_BYTES_PER_LINE = TVRAM_WIDTH / 8;
 const ANK_8X16_OFFSET = 0x3a800;
 const ANK_8X16_GLYPH_BYTES = 16;
 const ANK_GLYPH_COUNT = 256;
+export const MINIMUM_ANK_CGROM_SIZE = ANK_8X16_OFFSET + ANK_GLYPH_COUNT * ANK_8X16_GLYPH_BYTES;
 
 export interface TextScreenDiagnostics {
   columns: number;
@@ -18,6 +19,8 @@ export interface TextScreenDiagnostics {
 }
 
 export interface TextScreenDump {
+  available: boolean;
+  unavailableReason?: string;
   lines: string[];
   diagnostics: TextScreenDiagnostics;
 }
@@ -55,9 +58,8 @@ function decodeAnk(code: number): string {
 
 /** CGROM.DAT の ANK 8x16 ブロックから、完全一致用の逆引き表を作る。 */
 export function createAnk8x16ReverseTable(cgrom: Uint8Array): Map<string, string> {
-  const end = ANK_8X16_OFFSET + ANK_GLYPH_COUNT * ANK_8X16_GLYPH_BYTES;
-  if (cgrom.byteLength < end) {
-    throw new Error(`CGROM が短すぎます: ${cgrom.byteLength} bytes (必要: ${end})`);
+  if (cgrom.byteLength < MINIMUM_ANK_CGROM_SIZE) {
+    throw new Error(`CGROM が短すぎます: ${cgrom.byteLength} bytes (必要: ${MINIMUM_ANK_CGROM_SIZE})`);
   }
 
   const table = new Map<string, string>();
@@ -143,6 +145,7 @@ export function extractTextScreen(
   }
 
   return {
+    available: true,
     lines,
     diagnostics: {
       columns,
@@ -152,6 +155,24 @@ export function extractTextScreen(
       unknownCells,
       coverage: nonEmptyCells === 0 ? 0 : matchedCells / nonEmptyCells,
       nonEmptyPlaneCells,
+    },
+  };
+}
+
+/** 初期化前や CGROM 不足時に、呼び出し側を例外で止めず取得不可を伝える。 */
+export function unavailableTextScreenDump(reason: string): TextScreenDump {
+  return {
+    available: false,
+    unavailableReason: reason,
+    lines: [],
+    diagnostics: {
+      columns: 0,
+      rows: 0,
+      nonEmptyCells: 0,
+      matchedCells: 0,
+      unknownCells: 0,
+      coverage: 0,
+      nonEmptyPlaneCells: [0, 0, 0, 0],
     },
   };
 }

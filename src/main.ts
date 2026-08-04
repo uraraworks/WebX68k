@@ -2547,6 +2547,15 @@ function toSlotId(value: string): SlotId {
 
 const bridgeHost: BridgeHost = {
   screenshot: () => canvas.toDataURL('image/png'),
+  screenText: () => host?.readTextScreen() ?? {
+    available: false,
+    unavailableReason: 'コアが起動していません',
+    lines: [],
+    diagnostics: {
+      columns: 0, rows: 0, nonEmptyCells: 0, matchedCells: 0, unknownCells: 0,
+      coverage: 0, nonEmptyPlaneCells: [0, 0, 0, 0],
+    },
+  },
   screenHash: () => {
     // 全画素を舐めると重いので間引いてハッシュする(画面変化の検出用途)
     const ctx = canvas.getContext('2d');

@@ -150,7 +150,7 @@ server.tool(
 
 server.tool(
   'screenshot',
-  'X68000 の画面を PNG 画像として取得する。X68000 の画面はグラフィックなのでテキストとして読み出す手段が無く、画面の内容を確認する唯一の方法がこのツールになる。',
+  'X68000 の画面を PNG 画像として取得する。GVRAM / BG / スプライトを含む画面全体の確認に使う。',
   {},
   async () =>
     withBridge(async () => {
@@ -159,6 +159,15 @@ server.tool(
       const base64 = dataUrl.slice(dataUrl.indexOf(',') + 1);
       return { content: [{ type: 'image', data: base64, mimeType: 'image/png' }] };
     })
+);
+
+server.tool(
+  'screen_text',
+  'テキスト画面(TVRAM)に描かれた文字のみを、行配列とカバレッジ等の診断情報付きで取得する。' +
+    'GVRAM / BG / スプライトに描かれた文字は取得できず、ゲームの多くはこちらを使うため、カバレッジが 0 に近い場合は screenshot で確認すること。' +
+    '現状は ANK のみで、漢字には未対応。',
+  {},
+  async () => withBridge(async () => jsonResult(await sendCommand('screen_text')))
 );
 
 server.tool(
