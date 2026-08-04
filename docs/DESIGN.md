@@ -15,6 +15,7 @@ Vite + TypeScript（フレームワーク無し）の最小構成です。
 - `src/libretro-host.ts` … libretro コールバックを wasm 関数テーブルに登録し、コアを駆動するホスト実装
 - `src/audio.ts` … AudioWorklet によるストリーミング音声出力
 - `src/keyboard.ts` … `KeyboardEvent.code` → `RETROK_*` のマッピング
+- `src/virtual-keyboard.ts` … X68000仮想キーボード、Pointer管理、物理入力との押下状態統合
 - `src/bios-store.ts` … BIOS ファイルを IndexedDB に永続化するヘルパー
 - `src/disk-store.ts` … ディスクイメージ(FD/HDD)を IndexedDB に永続化する「ディスクライブラリ」ヘルパー。
   拡張子なしイメージの内容ベース判定(`classifyDiskBytes()`/`detectDiskContentKind()`)もここにある(後述)
@@ -149,6 +150,57 @@ D&D の受け口は画面(`.stage`)・各ドライブ行・ディスクライブ
 .rom-modal`)の3か所(`src/main.ts` の `resolveStageDropSlot()` / `handleDroppedFileForLibrary()`
 付近)。複数枚入りアーカイブはどの受け口でもスロットへは自動装填せず、ライブラリへグループ登録して
 ダイアログを開く(どこへ入れるかはユーザーに選ばせる)方針で統一している。
+
+## 仮想キーボード
+
+キー配列は `virtual-keyboard.ts` の `KBD_ROWS` に二次元配列リテラルとして置き、各要素に
+ラベル・RETROK・相対幅・修飾種別を同居させる。コアへ生のX68000スキャンコードは送らず、
+`keyboard.ts` の `RETROK` を介して物理キーボードと同じ `setKey()` 経路へ流す。XF1〜XF5、
+かな、ローマ字、コード入力、ひらがな、全角、COPYはfork側コアの `KeyTable` に追加した専用の
+RETROKを直接送る。従来のCOMPOSE経路はコア側に後方互換として残すが、仮想キーボードでは使わない。
+
+| X68000キー | RETROK | 値 |
+| --- | --- | ---: |
+| XF1 | `RETROK_EURO` | 321 |
+| XF2 | `RETROK_UNDO` | 322 |
+| XF3 | `RETROK_OEM_102` | 323 |
+| XF4 | `RETROK_BROWSER_BACK` | 324 |
+| XF5 | `RETROK_BROWSER_FORWARD` | 325 |
+| かな | `RETROK_BROWSER_REFRESH` | 326 |
+| ローマ字 | `RETROK_BROWSER_STOP` | 327 |
+| コード入力 | `RETROK_BROWSER_SEARCH` | 328 |
+| ひらがな | `RETROK_BROWSER_FAVORITES` | 329 |
+| 全角 | `RETROK_BROWSER_HOME` | 330 |
+| COPY | `RETROK_VOLUME_MUTE` | 331 |
+
+`core-shim.c` の `webx68k_keybuf_peek()` / `webx68k_keybuf_write_pointer()` は、Node 上の
+Vitest からコア内部の `KeyBuf` と書き込みポインタを観測し、仮想キーボードの
+RETROK が実際に X68000 スキャンコードへ変換されたことを確認するためのデバッグ用
+エクスポートである。リングバッファの内容を読むだけでゲスト状態は変更しないが、
+入力履歴を観測できるため、配布サイズと情報露出を最小化したいリリースでは
+`build-core.sh` の `EXPORTED_FUNCTIONS` とシム本体から外す判断余地がある。
+
+SHIFT・CTRL・OPT.1・OPT.2は `Map` で複数同時に保持するワンショットとし、修飾キー自身の
+再タップ、または通常キーのpointerup後に一括解除する。CAPS・かな・ローマ字・コード入力・
+ひらがな・全角は再タップまで `.active` 表示を保つロックとする。状態キーはmake/breakパルスで
+ゲスト側を切り替え、UIだけをロック表示する。
+
+入力はPointer Eventsだけを使い、`pointerId` ごとの押下先を `Map` に記録して各ボタンで
+`setPointerCapture()` する。pointerup/cancel/leaveで必ず対応する入力元だけを解放し、500ms後・
+50ms間隔の長押しリピートも入力元ごとに管理する。`blur` とhiddenへの
+`visibilitychange` では全入力元を強制解放する。`SharedKeyInput` は物理・仮想・MCP入力を
+入力元別に参照カウントし、同じRETROKを複数経路が押している間は片方のbreakで解除しない。
+
+表示時はパネルの実測高をCSS変数へ反映し、従来のcanvas高上限`60vh`から差し引く。
+canvas自体は引き続き`width/height:auto`なので固有の画素比を維持し、画面回転を含むresize時に
+再計測する。テンキーは横幅を常時消費しない別クラスタで、既定では非表示にする。
+
+かな副刻印はX68000のJISかな配列（Q=た、W=て、E=い、A=ち、S=と等）に準拠し、
+`KBD_ROWS`の`kana` / `kanaShift`に定義する。640px以上は英数とかなを併記し、640px未満は
+かなロックOFFで英数のみ、ONでかなのみに入れ替える。かなロック中にSHIFTがラッチされた間は
+`kanaShift`を選び、SHIFT解除後は`kana`へ戻す。この状態はゲストではなくクライアント側のロック状態を正とし、
+ゲスト側とずれた場合はかなキーの押し直しで合わせる。物理キーボードの`KanaMode`も共有入力に統合し、
+リピートでない初回keydownで仮想キーボードの表示ロックを反転する。
 
 ## マウス入力
 

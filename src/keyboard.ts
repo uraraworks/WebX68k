@@ -136,6 +136,17 @@ export const RETROK = {
   BREAK: 318,
   MENU: 319,
   POWER: 320,
+  EURO: 321,
+  UNDO: 322,
+  OEM_102: 323,
+  BROWSER_BACK: 324,
+  BROWSER_FORWARD: 325,
+  BROWSER_REFRESH: 326,
+  BROWSER_STOP: 327,
+  BROWSER_SEARCH: 328,
+  BROWSER_FAVORITES: 329,
+  BROWSER_HOME: 330,
+  VOLUME_MUTE: 331,
 } as const;
 
 // KeyboardEvent.code (物理キー位置) -> RETROK
@@ -176,6 +187,7 @@ export const CODE_TO_RETROK: Record<string, number> = {
   Backspace: RETROK.BACKSPACE,
   Tab: RETROK.TAB,
   CapsLock: RETROK.CAPSLOCK,
+  KanaMode: RETROK.BROWSER_REFRESH,
   ShiftLeft: RETROK.LSHIFT,
   ShiftRight: RETROK.RSHIFT,
   ControlLeft: RETROK.LCTRL,

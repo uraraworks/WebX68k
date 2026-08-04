@@ -91,6 +91,9 @@ export interface PX68KModule {
   _get_mouse_scc_stat(): number;
   _webx68k_peek16(addr: number): number;
   _webx68k_peek8(addr: number): number;
+  // RETROK → X68000 スキャンコード結合テスト用
+  _webx68k_keybuf_peek(index: number): number;
+  _webx68k_keybuf_write_pointer(): number;
   // FDD ホットマウント用(core-shim.c 経由で px68k の FDD_SetFD/FDD_EjectFD を公開)
   _webx68k_fdd_insert(drive: number, pathPtr: number): void;
   _webx68k_fdd_eject(drive: number): void;

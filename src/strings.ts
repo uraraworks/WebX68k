@@ -43,6 +43,8 @@ interface Dict {
   toolbarMouseResync(): string;
   toolbarFullscreen(): string;
   toolbarFullscreenExit(): string;
+  toolbarVirtualKeyboard(): string;
+  toolbarVirtualKeyboardHide(): string;
   stateDiskMismatch(args: { saved: string; current: string }): string;
   toolbarDiskLibrary(): string;
   toolbarFileManager(): string;
@@ -223,6 +225,8 @@ const STRINGS: Record<Lang, Dict> = {
     toolbarMouseResync: () => 'マウス再同期',
     toolbarFullscreen: () => 'フルスクリーン',
     toolbarFullscreenExit: () => 'フルスクリーンを解除(Esc)',
+    toolbarVirtualKeyboard: () => '仮想キーボードを表示',
+    toolbarVirtualKeyboardHide: () => '仮想キーボードを隠す',
     stateDiskMismatch: ({ saved, current }) =>
       `保存時とディスク構成が異なります。\n保存時: ${saved}\n現在: ${current}\nこのまま復元すると誤動作する可能性があります。続けますか?`,
     toolbarDiskLibrary: () => 'ディスクライブラリ',
@@ -383,6 +387,8 @@ const STRINGS: Record<Lang, Dict> = {
     toolbarMouseResync: () => 'Re-sync mouse',
     toolbarFullscreen: () => 'Fullscreen',
     toolbarFullscreenExit: () => 'Exit fullscreen (Esc)',
+    toolbarVirtualKeyboard: () => 'Show virtual keyboard',
+    toolbarVirtualKeyboardHide: () => 'Hide virtual keyboard',
     stateDiskMismatch: ({ saved, current }) =>
       `The mounted disks differ from when the state was saved.\nSaved: ${saved}\nCurrent: ${current}\nLoading anyway may cause the guest to misbehave. Continue?`,
     toolbarDiskLibrary: () => 'Disk Library',

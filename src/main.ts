@@ -44,6 +44,7 @@ import { buildFileManagerDialog, type FmTarget } from './filemanager';
 import { Bridge, resolveBridgeUrl, type BridgeHost } from './bridge';
 import { RETROK, charToKey, codeToRetrok } from './keyboard';
 import { LibretroHost } from './libretro-host';
+import { createVirtualKeyboard, SharedKeyInput } from './virtual-keyboard';
 import {
   getState,
   saveState as putState,
@@ -60,6 +61,8 @@ const btnScreenshot = document.getElementById('btn-screenshot') as HTMLButtonEle
 const btnMouseCapture = document.getElementById('btn-mouse-capture') as HTMLButtonElement;
 const btnMouseResync = document.getElementById('btn-mouse-resync') as HTMLButtonElement;
 const btnFullscreen = document.getElementById('btn-fullscreen') as HTMLButtonElement;
+const btnVirtualKeyboard = document.getElementById('btn-virtual-keyboard') as HTMLButtonElement;
+const virtualKeyboardPanel = document.getElementById('virtual-keyboard') as HTMLDivElement;
 const stageEl = document.querySelector('.stage') as HTMLDivElement;
 const btnSaveState = document.getElementById('btn-save-state') as HTMLButtonElement;
 const btnLoadState = document.getElementById('btn-load-state') as HTMLButtonElement;
@@ -176,6 +179,22 @@ let audio: AudioEngine | null = null;
 let host: LibretroHost | null = null;
 let running = false;
 let bootStarted = false;
+
+// 物理・仮想・ブリッジ入力を入力元ごとに保持し、同じキーの片側だけが先に離れても
+// コア側の押下状態が消えないよう集約する。
+const sharedKeyInput = new SharedKeyInput((retrok, down) => host?.setKey(retrok, down));
+const virtualKeyboard = createVirtualKeyboard(
+  virtualKeyboardPanel,
+  canvas,
+  sharedKeyInput,
+  (visible) => {
+    btnVirtualKeyboard.classList.toggle('active', visible);
+    btnVirtualKeyboard.setAttribute('aria-pressed', visible ? 'true' : 'false');
+    btnVirtualKeyboard.title = visible ? t('toolbarVirtualKeyboardHide') : t('toolbarVirtualKeyboard');
+    btnVirtualKeyboard.setAttribute('aria-label', btnVirtualKeyboard.title);
+  },
+);
+btnVirtualKeyboard.addEventListener('click', () => virtualKeyboard.toggle());
 
 // 同梱ROM/ディスク(public/system/)のパス。ユーザーが独自ファイルを設定した場合はそちらを優先する。
 // GitHub Pages のプロジェクトページ(https://<user>.github.io/WebX68k/)配下でも解決できるよう、
@@ -1531,6 +1550,8 @@ function applyDocumentStrings(): void {
   btnMouseResync.setAttribute('aria-label', t('toolbarMouseResync'));
   updateMouseControls();
   updateFullscreenControl();
+  btnVirtualKeyboard.title = virtualKeyboard.isVisible() ? t('toolbarVirtualKeyboardHide') : t('toolbarVirtualKeyboard');
+  btnVirtualKeyboard.setAttribute('aria-label', btnVirtualKeyboard.title);
   btnSaveState.title = t('toolbarSaveState');
   btnSaveState.setAttribute('aria-label', t('toolbarSaveState'));
   btnLoadState.title = t('toolbarLoadState');
@@ -1601,18 +1622,25 @@ btnLang.addEventListener('click', () => {
 
 // キーボード入力: canvas にフォーカスがある間だけ捕捉する
 canvas.tabIndex = 0;
+const physicalPressed = new Set<string>();
 window.addEventListener('keydown', (e) => {
   if (document.activeElement !== canvas || !host) return;
   const code = codeToRetrok(e.code);
-  host.setKey(code, true);
+  if (code === RETROK.UNKNOWN) return;
+  const firstPress = !physicalPressed.has(e.code);
+  physicalPressed.add(e.code);
+  sharedKeyInput.press(`physical:${e.code}`, code);
+  if (firstPress && code === RETROK.BROWSER_REFRESH) virtualKeyboard.togglePhysicalKanaLock();
   e.preventDefault();
 });
 window.addEventListener('keyup', (e) => {
-  if (document.activeElement !== canvas || !host) return;
+  if (!physicalPressed.delete(e.code)) return;
   const code = codeToRetrok(e.code);
-  host.setKey(code, false);
+  if (code === RETROK.UNKNOWN) return;
+  sharedKeyInput.release(`physical:${e.code}`, code);
   e.preventDefault();
 });
+window.addEventListener('blur', () => physicalPressed.clear());
 // --- マウス入力 ---
 // X68000 のマウスは SCC 経由で相対移動量(-128..127)を送る方式で、カーソル位置はゲストが
 // 自前で管理する。そのため WebNP2 と同じく2つのモードを用意する。
@@ -2110,6 +2138,7 @@ async function startFromOverlay(withSystemDisk: boolean): Promise<void> {
     btnLoadState.disabled = false;
     btnScreenshot.disabled = false;
     btnFullscreen.disabled = false;
+    btnVirtualKeyboard.disabled = false;
     updateMouseControls();
     updateFullscreenControl();
     canvas.focus();
@@ -2528,7 +2557,9 @@ const bridgeHost: BridgeHost = {
     return h;
   },
   reset: () => host?.reset(),
-  setKey: (retrok, down) => host?.setKey(retrok, down),
+  setKey: (retrok, down) => down
+    ? sharedKeyInput.press('bridge:key', retrok)
+    : sharedKeyInput.release('bridge:key', retrok),
   typeText: async (text) => {
     if (!host) throw new Error('not booted');
     const skipped: string[] = [];
@@ -2539,11 +2570,11 @@ const bridgeHost: BridgeHost = {
         skipped.push(ch);
         continue;
       }
-      if (key.shift) host.setKey(RETROK.LSHIFT, true);
-      host.setKey(key.code, true);
+      if (key.shift) sharedKeyInput.press('bridge:type', RETROK.LSHIFT);
+      sharedKeyInput.press('bridge:type', key.code);
       await new Promise((r) => setTimeout(r, 90));
-      host.setKey(key.code, false);
-      if (key.shift) host.setKey(RETROK.LSHIFT, false);
+      sharedKeyInput.release('bridge:type', key.code);
+      if (key.shift) sharedKeyInput.release('bridge:type', RETROK.LSHIFT);
       await new Promise((r) => setTimeout(r, 60));
       typed++;
     }

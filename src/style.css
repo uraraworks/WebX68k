@@ -144,7 +144,8 @@ main {
   image-rendering: -moz-crisp-edges;
   background: #000;
   max-width: 90vw;
-  max-height: 60vh;
+  /* 仮想キーボード表示時だけ、その実測高を従来の60vh上限から差し引く。 */
+  max-height: max(120px, calc(60vh - var(--virtual-keyboard-height, 0px)));
   /*
    * width/height は auto にすること。768px/512px のように固定寸法を入れると、
    * max-width(90vw) と max-height(60vh) が縦横それぞれ独立に効いて箱の縦横比が崩れ、
@@ -204,6 +205,94 @@ main {
   max-width: 100%;
   max-height: 100%;
   object-fit: contain;
+}
+
+/* X68000仮想キーボード(画面とツールバーの間)。 */
+.virtual-keyboard {
+  display: flex;
+  gap: 6px;
+  padding: 6px;
+  background: linear-gradient(var(--footer-bg-top), var(--footer-bg-bottom));
+  border-top: 1px solid var(--footer-border);
+  touch-action: none;
+  user-select: none;
+  -webkit-user-select: none;
+  -webkit-touch-callout: none;
+  overscroll-behavior: contain;
+}
+
+.virtual-keyboard.hidden,
+.virtual-keypad.hidden {
+  display: none;
+}
+
+.virtual-keyboard-main {
+  display: flex;
+  flex: 1 1 auto;
+  min-width: 0;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.virtual-keypad {
+  display: flex;
+  flex: 0 0 180px;
+  flex-direction: column;
+  gap: 3px;
+  padding-left: 6px;
+  border-left: 1px solid var(--footer-border);
+}
+
+.virtual-keyboard-row {
+  display: flex;
+  gap: 3px;
+  min-width: 0;
+}
+
+.virtual-key {
+  position: relative;
+  flex: 1 1 0;
+  min-width: 0;
+  height: 34px;
+  padding: 0 2px;
+  overflow: hidden;
+  white-space: pre-line;
+  font: 600 10px/1.05 system-ui, sans-serif;
+  background: var(--footer-btn-bg);
+  color: var(--footer-text);
+  border: 1px solid var(--footer-btn-border);
+  border-radius: 4px;
+  cursor: pointer;
+  touch-action: none;
+  user-select: none;
+  -webkit-user-select: none;
+  -webkit-touch-callout: none;
+}
+
+.virtual-key-primary {
+  white-space: pre-line;
+}
+
+/* 640px以上では、実機キーキャップのように英数を主刻印、かなを隅の副刻印として併記する。 */
+.virtual-key-kana {
+  position: absolute;
+  right: 3px;
+  bottom: 2px;
+  font-size: 8px;
+  font-weight: 500;
+  line-height: 1;
+  color: color-mix(in srgb, currentColor 78%, transparent);
+  pointer-events: none;
+}
+
+.virtual-key.pressed {
+  background: var(--footer-btn-bg-hover);
+}
+
+.virtual-key.active {
+  background: var(--accent-dim);
+  border-color: var(--accent);
+  color: #ffffff;
 }
 
 .console-footer {
@@ -914,12 +1003,19 @@ footer.app-footer a {
 
 
 /* スマホ幅 */
-@media (max-width: 640px) {
+@media (width < 640px) {
   main { padding: 8px 4px; gap: 8px; }
   header.app-header { padding: 6px 10px; }
   header.app-header .app-tagline { display: none; }
   .console-footer { padding: 8px 6px; }
-  }
+  .virtual-keyboard { gap: 3px; padding: 4px 2px; }
+  .virtual-keyboard-main, .virtual-keypad, .virtual-keyboard-row { gap: 2px; }
+  .virtual-keypad { flex-basis: 112px; padding-left: 3px; }
+  .virtual-key { height: 29px; padding: 0 1px; font-size: 7px; }
+  .virtual-key-kana { display: none; position: static; font-size: inherit; font-weight: inherit; color: inherit; }
+  .virtual-keyboard.kana-locked .virtual-key.has-kana .virtual-key-primary { display: none; }
+  .virtual-keyboard.kana-locked .virtual-key.has-kana .virtual-key-kana { display: inline; }
+}
 
 /* ファイルマネージャ(FTPクライアント風2ペイン)。移植元: WebNP2 src/ui/styles.css。rom-modal系の見た目を踏襲しつつ幅広に。 */
 .fm-modal-backdrop {

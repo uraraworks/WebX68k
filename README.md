@@ -132,6 +132,15 @@ video resolution (it's resized in `handleVideoRefresh()` whenever the mode
 changes — 256x256 / 512x512 / 768x512 etc.), so the saved image is exactly
 the resolution currently being displayed, with no letterboxing to crop.
 
+### Virtual keyboard
+
+The keyboard icon on the toolbar opens an X68000-layout virtual keyboard.
+SHIFT, CTRL, OPT.1 and OPT.2 are one-shot modifiers consumed after the next
+regular key; Caps, Kana, Roman and Code Input stay visually locked until tapped
+again. Multi-modifier chords, multi-touch input, and long-press repeat are
+supported. Open the separate keypad only when needed with the Keypad button.
+Kana labels reflect the virtual keyboard's client-side state; if it differs from the guest, press the Kana key again to bring them back in sync.
+
 ### Mouse
 
 Click "Capture Mouse" on the toolbar, or **double right-click on the

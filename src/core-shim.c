@@ -148,6 +148,28 @@ int webx68k_peek8(unsigned int addr)
 }
 
 /*
+ * 仮想キーボードの結合テスト用。
+ * libretro の入力状態から生成された X68000 スキャンコードを、コア内部の
+ * リングバッファから直接観測する。読み出し側が範囲外のインデックスを渡しても
+ * KeyBufSize が 2 の累乗であることを利用して必ず 0..KeyBufSize-1 に収める。
+ */
+#define KeyBufSize 128
+extern unsigned char KeyBuf[KeyBufSize];
+extern unsigned char KeyBufWP;
+
+__attribute__((used))
+int webx68k_keybuf_peek(unsigned int index)
+{
+  return KeyBuf[index & (KeyBufSize - 1)];
+}
+
+__attribute__((used))
+int webx68k_keybuf_write_pointer(void)
+{
+  return KeyBufWP;
+}
+
+/*
  * SCC へ実際に渡る値(x68k/scc.c のグローバル)。
  * ゲストがマウスをポーリングすると Mouse_SetData() が累積デルタをここへ移して 0 に戻すため、
  * 上の get_mouse_dx/dy と両方見ることで「累積中」か「ゲストに吸われた後」かを判別できる。
