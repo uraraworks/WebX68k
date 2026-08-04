@@ -11,7 +11,7 @@ import type { TextScreenDump } from './text-screen';
 export interface BridgeHost {
   /** 画面を PNG の dataURL で取得 */
   screenshot(): string;
-  /** TVRAM に描画された ANK テキストと認識診断を取得 */
+  /** TVRAM に描画された ANK・16x16漢字テキストと認識診断を取得 */
   screenText(): TextScreenDump;
   /** 画面の内容が変わったかを判定するためのハッシュ */
   screenHash(): number;

@@ -188,7 +188,7 @@ export class LibretroHost {
     return this._avInfo;
   }
 
-  /** 現在の TVRAM 表示を ANK 文字列として読む。取得不能時も例外ではなく診断結果を返す。 */
+  /** 現在の TVRAM 表示を ANK・16x16漢字文字列として読む。取得不能時も例外ではなく診断結果を返す。 */
   readTextScreen(): TextScreenDump {
     if (!this.coreCgrom) return unavailableTextScreenDump('CGROM が設定されていません');
     if (!this.mod) return unavailableTextScreenDump('コアが初期化されていません');

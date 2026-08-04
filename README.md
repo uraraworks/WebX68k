@@ -206,10 +206,10 @@ Open the page with `?bridge=1` to have it connect to a local MCP server
 (`ws://127.0.0.1:3099`) for screen capture, key/mouse input, and disk
 operations. Setup and the tool list live in [mcp/README.md](mcp/README.md).
 
-The `screen_text` tool reads ANK characters drawn on the text screen (TVRAM)
-and returns recognition diagnostics. It does not read kanji or text drawn on
-GVRAM, BG, or sprites (as used by many games); use `screenshot` when coverage
-is near zero. See [mcp/README.md](mcp/README.md) for details.
+The `screen_text` tool reads 8x16 ANK and 16x16 kanji drawn on the text screen
+(TVRAM) and returns recognition diagnostics. It cannot read text drawn on GVRAM,
+BG, or sprites (as used by many games); use `screenshot` when coverage is near
+zero. See [mcp/README.md](mcp/README.md) for details.
 
 ## Development
 
@@ -269,7 +269,7 @@ This repository is **GPLv2** ([COPYING](COPYING)).
   double right-click or toolbar button, release via Esc
 - Audio-drift correction so screen-mode changes (15kHz/31kHz) don't cause
   runaway audio delay
-- MCP bridge (`?bridge=1`) for AI-agent control: screenshot, TVRAM ANK text,
+- MCP bridge (`?bridge=1`) for AI-agent control: screenshot, TVRAM ANK/kanji text,
   key/mouse input, disk operations
 - Japanese/English UI toggle
 - Own-BIOS loading (IPLROM.DAT/CGROM.DAT) via the Settings panel, persisted

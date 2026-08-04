@@ -2554,6 +2554,7 @@ const bridgeHost: BridgeHost = {
     diagnostics: {
       columns: 0, rows: 0, nonEmptyCells: 0, matchedCells: 0, unknownCells: 0,
       coverage: 0, nonEmptyPlaneCells: [0, 0, 0, 0],
+      kanjiFontAvailable: false,
     },
   },
   screenHash: () => {
