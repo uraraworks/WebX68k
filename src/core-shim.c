@@ -170,6 +170,48 @@ int webx68k_keybuf_write_pointer(void)
 }
 
 /*
+ * テキスト画面取得スパイク用。
+ * X68000 の TVRAM は文字コードではなく 1024x1024x4plane のビットマップなので、
+ * JS 側で CGROM の 8x16 グリフと照合できるよう、生配列と表示範囲・スクロール量を公開する。
+ * ポインタは Emscripten の HEAPU8 から読み、TVRAM 自体の所有権はコア側に残す。
+ */
+extern unsigned char TVRAM[0x80000];
+extern unsigned int TextDotX;
+extern unsigned int TextDotY;
+extern unsigned int TextScrollX;
+extern unsigned int TextScrollY;
+
+__attribute__((used))
+unsigned char *webx68k_tvram_data(void)
+{
+  return TVRAM;
+}
+
+__attribute__((used))
+int webx68k_text_dot_x(void)
+{
+  return (int)TextDotX;
+}
+
+__attribute__((used))
+int webx68k_text_dot_y(void)
+{
+  return (int)TextDotY;
+}
+
+__attribute__((used))
+int webx68k_text_scroll_x(void)
+{
+  return (int)TextScrollX;
+}
+
+__attribute__((used))
+int webx68k_text_scroll_y(void)
+{
+  return (int)TextScrollY;
+}
+
+/*
  * SCC へ実際に渡る値(x68k/scc.c のグローバル)。
  * ゲストがマウスをポーリングすると Mouse_SetData() が累積デルタをここへ移して 0 に戻すため、
  * 上の get_mouse_dx/dy と両方見ることで「累積中」か「ゲストに吸われた後」かを判別できる。

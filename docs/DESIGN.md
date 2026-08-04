@@ -25,6 +25,7 @@ Vite + TypeScript（フレームワーク無し）の最小構成です。
 - `src/api/library.ts` … ディスクライブラリ一覧の構築(フラットな IndexedDB レコードを、アーカイブ由来の
   複数ディスクをフォルダとしてまとめたツリーへ変換する)。DOM非依存の純粋関数で単体テスト可能
 - `src/core-shim.c` … アクセスランプ取得等、libretro API に無い可変長引数/グローバル参照のための C シム
+- `src/text-screen.ts` … TVRAM の8x16セルをCGROMのANKグリフへ完全一致させるテキスト取得スパイク
 - `src/state-store.ts` … ステートセーブを IndexedDB に永続化するヘルパー(gzip 圧縮)
 - `src/bridge.ts` … MCP サーバーと繋ぐ WebSocket ブリッジ(`?bridge=1` で有効)
 - `mcp/` … MCP サーバー(stdio) + WebSocket ブリッジ。詳細は [mcp/README.md](mcp/README.md)
@@ -150,6 +151,20 @@ D&D の受け口は画面(`.stage`)・各ドライブ行・ディスクライブ
 .rom-modal`)の3か所(`src/main.ts` の `resolveStageDropSlot()` / `handleDroppedFileForLibrary()`
 付近)。複数枚入りアーカイブはどの受け口でもスロットへは自動装填せず、ライブラリへグループ登録して
 ダイアログを開く(どこへ入れるかはユーザーに選ばせる)方針で統一している。
+
+## TVRAM テキスト取得スパイク
+
+X68000 の TVRAM は文字コードではなく 1024x1024x4プレーンのビットマップである。
+`src/text-screen.ts` は4プレーンを論理ORし、8x16セルを `cgrom.dat` の ANK 8x16ブロック
+（オフセット `0x3a800`、1文字16バイト）から実行時に作る逆引き表へ完全一致させる。
+`TextScrollX/Y` を加味して循環サンプリングするため、CRTCスクロール後も表示座標を基準にできる。
+空セルは空白、未知グリフは `�` とし、行末だけをトリムする。戻り値には行配列に加えて、非空・一致・
+未知セル数、一致率、プレーン別非空セル数を含め、TVRAM未使用画面と未対応グリフを区別可能にしている。
+
+`core-shim.c` のTVRAMポインタと表示範囲getterを使うため、追加後はwasm再ビルドが必要。
+`test/text-screen.test.ts` は合成TVRAMで4プレーン・列位置・スクロールを常時検証し、再ビルド後は同じテストが
+Node上のwasm実メモリも検証する。スパイク時のHuman68k 3.02起動実測では非空768セル中426セルのANKが一致し、
+`Command version 3.00`、`B>ECHO OFF`、`B>` を取得できた。未一致342セルは主に対象外の16x16漢字等である。
 
 ## 仮想キーボード
 
