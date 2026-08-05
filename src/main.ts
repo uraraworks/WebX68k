@@ -1927,6 +1927,28 @@ function isStageFullscreen(): boolean {
   return document.fullscreenElement === stageEl || (document as any).webkitFullscreenElement === stageEl;
 }
 
+/**
+ * ネイティブの Fullscreen API が使えるか。
+ *
+ * iPhone の WebKit は <video> 以外の全画面表示に対応しておらず、
+ * requestFullscreen も webkitRequestFullscreen も生えていない
+ * (iPad は webkit 版を持つ)。iOS版 Chrome も中身は WebKit なので同じ。
+ * 呼んでも例外すら出ずに何も起きないため、事前に判定して代替(疑似フルスクリーン)へ倒す。
+ */
+function nativeFullscreenSupported(el: HTMLElement): boolean {
+  const withWebkit = el as HTMLElement & { webkitRequestFullscreen?: () => void };
+  const doc = document as Document & { webkitFullscreenEnabled?: boolean };
+  const hasMethod =
+    typeof el.requestFullscreen === 'function' || typeof withWebkit.webkitRequestFullscreen === 'function';
+  const enabled = document.fullscreenEnabled ?? doc.webkitFullscreenEnabled ?? false;
+  return hasMethod && enabled;
+}
+
+/** 現在ページ側のクロームを畳んで疑似フルスクリーン中かどうか。 */
+function isPseudoFullscreen(): boolean {
+  return document.body.classList.contains('pseudo-fullscreen');
+}
+
 function setFullscreen(makeFullscreen: boolean): void {
   if (makeFullscreen) {
     if (isStageFullscreen()) return;
@@ -1945,14 +1967,35 @@ function setFullscreen(makeFullscreen: boolean): void {
 
 /** フルスクリーンボタンの見た目(トグル状態)を実際の全画面状態に追従させる。マウスキャプチャボタンと同じ流儀。 */
 function updateFullscreenControl(): void {
-  const fs = isStageFullscreen();
-  btnFullscreen.classList.toggle('active', fs);
-  btnFullscreen.title = fs ? t('toolbarFullscreenExit') : t('toolbarFullscreen');
+  const nativeFs = isStageFullscreen();
+  const pseudoFs = isPseudoFullscreen();
+  btnFullscreen.classList.toggle('active', nativeFs || pseudoFs);
+  // 疑似フルスクリーンは Esc では抜けられない(nativeFullscreenSupported() の
+  // コメント/click ハンドラのコメント参照: Esc は canvas 経由で X68000 の ESC
+  // キーとして送られるため、ページ側で横取りするとゲストソフトと競合する)。
+  // ネイティブと同じ "(Esc)" 付きラベルを出すと嘘になるので、疑似フルスクリーン
+  // 専用のラベルを別に用意して3分岐にする。
+  btnFullscreen.title = nativeFs
+    ? t('toolbarFullscreenExit')
+    : pseudoFs
+      ? t('toolbarFullscreenExitPseudo')
+      : t('toolbarFullscreen');
   btnFullscreen.setAttribute('aria-label', btnFullscreen.title);
-  btnFullscreen.setAttribute('aria-pressed', fs ? 'true' : 'false');
+  btnFullscreen.setAttribute('aria-pressed', nativeFs || pseudoFs ? 'true' : 'false');
 }
 
-btnFullscreen.addEventListener('click', () => setFullscreen(!isStageFullscreen()));
+btnFullscreen.addEventListener('click', () => {
+  if (nativeFullscreenSupported(stageEl)) {
+    setFullscreen(!isStageFullscreen());
+    return;
+  }
+  // iPhone の WebKit は <video> 以外の Fullscreen API を持たないため、ネイティブ版は
+  // 無反応になる。ページ側のクロームを畳んで画面を最大化する疑似フルスクリーンで
+  // 代替する(解除操作のため .toolbar は残す)。
+  document.body.classList.toggle('pseudo-fullscreen');
+  updateFullscreenControl();
+  rescale();
+});
 document.addEventListener('fullscreenchange', updateFullscreenControl);
 document.addEventListener('webkitfullscreenchange', updateFullscreenControl);
 
@@ -2037,7 +2080,15 @@ function rescale(): void {
   // (WebNP2側)特有の懸念であり、WebX68k の rescale() は resize 等のイベント発火のたびに
   // 1パスだけ計算して終わる(自分自身の呼び直しをトリガーする仕組みを持たない)ため、
   // この収縮ループは原理的に起こらない。よってここでは単純に幅・高さ両方の fit を使う。
-  const scale = fit >= 1 ? Math.min(MAX_SCALE, Math.floor(fit)) : Math.max(0.3, Math.min(1, fit));
+  // 疑似フルスクリーン中は整数倍への丸めと MAX_SCALE の上限を外し、fit をそのまま使って
+  // 画面いっぱいに拡大する(下限 0.3 は維持)。ネイティブのフルスクリーンは
+  // .stage:fullscreen #screen の object-fit:contain で整数倍に丸めず連続的に最大化して
+  // いるため、その代替である疑似フルスクリーンも同じ見え方に揃えるのが狙い。
+  const scale = isPseudoFullscreen()
+    ? Math.max(0.3, fit)
+    : fit >= 1
+      ? Math.min(MAX_SCALE, Math.floor(fit))
+      : Math.max(0.3, Math.min(1, fit));
 
   const w = Math.round(nativeWidth * scale);
   const h = Math.round(nativeHeight * scale);

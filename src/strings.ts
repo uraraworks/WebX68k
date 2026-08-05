@@ -43,6 +43,7 @@ interface Dict {
   toolbarMouseResync(): string;
   toolbarFullscreen(): string;
   toolbarFullscreenExit(): string;
+  toolbarFullscreenExitPseudo(): string;
   toolbarVirtualKeyboard(): string;
   toolbarVirtualKeyboardHide(): string;
   stateDiskMismatch(args: { saved: string; current: string }): string;
@@ -225,6 +226,12 @@ const STRINGS: Record<Lang, Dict> = {
     toolbarMouseResync: () => 'マウス再同期',
     toolbarFullscreen: () => 'フルスクリーン',
     toolbarFullscreenExit: () => 'フルスクリーンを解除(Esc)',
+    // 疑似フルスクリーン(CSSクラスのみ)はEscで抜けられない。Escはcanvas経由でX68000側の
+    // ESCキーとして送られるため、ページ側で横取りするとゲストソフトのESC入力と競合する。
+    // ネイティブのフルスクリーンはブラウザがページ外でEscを処理するのでこの競合が起きないが、
+    // 疑似フルスクリーンで同じことをすると競合するため、解除はツールバーのボタンのみとし、
+    // ラベルからも "(Esc)" を外す。
+    toolbarFullscreenExitPseudo: () => 'フルスクリーンを解除',
     toolbarVirtualKeyboard: () => '仮想キーボードを表示',
     toolbarVirtualKeyboardHide: () => '仮想キーボードを隠す',
     stateDiskMismatch: ({ saved, current }) =>
@@ -387,6 +394,12 @@ const STRINGS: Record<Lang, Dict> = {
     toolbarMouseResync: () => 'Re-sync mouse',
     toolbarFullscreen: () => 'Fullscreen',
     toolbarFullscreenExit: () => 'Exit fullscreen (Esc)',
+    // Pseudo-fullscreen (a CSS class only) cannot be exited with Esc. Esc is forwarded to the
+    // guest (X68000) via the canvas as its ESC key, so intercepting it on the page would
+    // conflict with guest software that uses ESC. Native fullscreen doesn't have this problem
+    // because the browser handles Esc outside the page, but pseudo-fullscreen would, so exit is
+    // toolbar-button-only and the label drops "(Esc)" accordingly.
+    toolbarFullscreenExitPseudo: () => 'Exit fullscreen',
     toolbarVirtualKeyboard: () => 'Show virtual keyboard',
     toolbarVirtualKeyboardHide: () => 'Hide virtual keyboard',
     stateDiskMismatch: ({ saved, current }) =>

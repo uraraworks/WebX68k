@@ -36,6 +36,14 @@
 
 html {
   height: 100%;
+  /* iOS Safari のテキスト自動拡大(auto text inflation)を止める。
+     縦持ちの初回表示だけ文字が勝手に大きくなり、起動オーバーレイの中身が
+     .stage をはみ出して上端のボタンが .console-card の overflow:hidden で
+     切れる(WebX68k も .console-card が overflow:hidden で同じ構造)。横持ちに
+     すると倍率が再計算されて直り、縦に戻すと「文字が小さくなった」ように
+     見えるのはこのため(そちらが本来のサイズ)。 */
+  -webkit-text-size-adjust: 100%;
+  text-size-adjust: 100%;
 }
 
 body {
@@ -640,7 +648,12 @@ main {
   display: flex;
   flex-direction: column;
   align-items: center;
-  justify-content: center;
+  /* 狭い画面では canvas が縮んで .stage がボタン3個+注意書きより低くなり得る。
+     素の center だと溢れた分が上下へ均等にはみ出し、上端のボタンが
+     .console-card の overflow:hidden で切れてスクロールでも辿り着けない。
+     溢れたときだけ先頭揃えに切り替わる safe center + 縦スクロールにする。 */
+  justify-content: safe center;
+  overflow-y: auto;
   gap: 14px;
   cursor: pointer;
   z-index: 10;
@@ -1355,4 +1368,24 @@ footer.app-footer a {
   .fm-body { flex-direction: column; }
   .fm-transfer-controls { flex-direction: row; }
   .fm-transfer-btn { transform: rotate(90deg); }
+}
+
+/* 疑似フルスクリーン。
+   iPhone の WebKit は <video> 以外の Fullscreen API を持たず、ネイティブの
+   全画面表示ができない(iOS版 Chrome も中身は WebKit なので同じ)。代わりに
+   ページ側のクロームを畳んで実行画面へ面積を明け渡す。.toolbar は解除操作に
+   必要なので畳まずに残す。 */
+body.pseudo-fullscreen header.app-header,
+body.pseudo-fullscreen footer.app-footer,
+body.pseudo-fullscreen .fd-slots {
+  display: none;
+}
+
+body.pseudo-fullscreen main {
+  padding: 0;
+  gap: 0;
+}
+
+body.pseudo-fullscreen .console-card {
+  box-shadow: none;
 }
