@@ -185,8 +185,20 @@ OPT.1・OPT.2は次の通常キーを離すまで有効なワンショット、C
 ## MCP対応 (AIエージェントからの遠隔操作)
 
 `?bridge=1` を付けて開くと、ページがローカルのMCPサーバー(`ws://127.0.0.1:3099`)へ
-接続し、画面取得・キー/マウス入力・ディスク操作ができるようになります。セットアップと
-提供ツールの一覧は [mcp/README.md](mcp/README.md) を参照してください。
+接続し、画面取得・キー/マウス入力・ディスク操作ができるようになります。
+
+セットアップは、依存を埋め込んだ単一ファイルを落として登録するだけです
+(git clone も npm install も不要。Node.js 18 以上があれば動きます):
+
+```sh
+curl -fLO https://github.com/uraraworks/WebX68k/releases/latest/download/webx68k-mcp.mjs
+claude mcp add webx68k -- node "$PWD/webx68k-mcp.mjs"
+```
+
+あとはブラウザで `https://uraraworks.github.io/WebX68k/?bridge=1` を開けば繋がります
+(公開ページで使う場合は Chrome 系か Firefox。Safari は https から `ws://` を
+localhost 宛てでもブロックします)。詳しい手順と提供ツールの一覧は
+[mcp/README.md](mcp/README.md) を参照してください。
 
 `screen_text` ツールでテキスト画面(TVRAM)の8x16 ANK・16x16漢字と認識診断を取得できます。
 GVRAM / BG / スプライト上の文字（ゲームの多くはこちら）は取得できません。カバレッジが 0 に

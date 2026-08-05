@@ -8,11 +8,15 @@
     "node": ">=18"
   },
   "scripts": {
-    "start": "node server.mjs"
+    "start": "node server.mjs",
+    "bundle": "esbuild server.mjs --bundle --platform=node --format=esm --target=node18 --external:bufferutil --external:utf-8-validate --banner:js=\"import{createRequire as __webx68kCreateRequire}from'node:module';const require=__webx68kCreateRequire(import.meta.url);\" --outfile=dist/webx68k-mcp.mjs"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "latest",
     "ws": "latest",
     "zod": "^3"
+  },
+  "devDependencies": {
+    "esbuild": "^0.25.0"
   }
 }

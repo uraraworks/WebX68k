@@ -204,7 +204,20 @@ the bundled files on future visits.
 
 Open the page with `?bridge=1` to have it connect to a local MCP server
 (`ws://127.0.0.1:3099`) for screen capture, key/mouse input, and disk
-operations. Setup and the tool list live in [mcp/README.md](mcp/README.md).
+operations.
+
+Setup is a single self-contained file — no `git clone`, no `npm install`,
+just Node.js 18+:
+
+```sh
+curl -fLO https://github.com/uraraworks/WebX68k/releases/latest/download/webx68k-mcp.mjs
+claude mcp add webx68k -- node "$PWD/webx68k-mcp.mjs"
+```
+
+Then open `https://uraraworks.github.io/WebX68k/?bridge=1` (use a
+Chromium-based browser or Firefox — Safari blocks `ws://` from https pages
+even to localhost). Full instructions and the tool list live in
+[mcp/README.md](mcp/README.md).
 
 The `screen_text` tool reads 8x16 ANK and 16x16 kanji drawn on the text screen
 (TVRAM) and returns recognition diagnostics. It cannot read text drawn on GVRAM,

@@ -11,32 +11,52 @@ MCP サーバー本体 (stdio transport) と、ブラウザと通信するため
 
 ## セットアップ
 
-前提: Node.js 18 以上。
+前提: Node.js 18 以上。git も npm も不要です。
 
-1. 依存をインストールする:
+1. 依存を埋め込んだ単一ファイルを Release から取得する(好きな場所でよい):
 
    ```sh
-   cd <クローン先>/WebX68k/mcp
-   npm install
+   curl -fLO https://github.com/uraraworks/WebX68k/releases/latest/download/webx68k-mcp.mjs
    ```
 
-2. MCP サーバーとして登録する(`<絶対パス>` は実パスに置き換える):
+2. MCP サーバーとして登録する(`<絶対パス>` は 1. で置いた場所に置き換える):
 
    ```sh
-   claude mcp add webx68k -- node <絶対パス>/WebX68k/mcp/server.mjs
+   claude mcp add webx68k -- node <絶対パス>/webx68k-mcp.mjs
    ```
 
    Claude Code 以外の MCP クライアントの場合は、stdio transport で
-   `node <絶対パス>/WebX68k/mcp/server.mjs` を起動する設定を追加します。
+   `node <絶対パス>/webx68k-mcp.mjs` を起動する設定を追加します。
 
-3. ブラウザで WebX68k を `bridge=1` パラメータ付きで開く:
+3. ブラウザで WebX68k を `bridge=1` パラメータ付きで開く(どちらでもよい):
 
+   - 公開ページ: `https://uraraworks.github.io/WebX68k/?bridge=1`
    - ローカル: `http://localhost:5299/?bridge=1`（リポジトリ直下で `npm install && npm run dev`）
 
    ページ側は切断されても3秒間隔で繋ぎ直しに行くので、MCP サーバーを後から起動しても構いません。
 
+更新するときは 1. の `curl` をもう一度実行してファイルを差し替えるだけでよく、
+`claude mcp add` のやり直しは不要です。
+
+**Safari 非対応(公開ページ利用時)**: https ページから `ws://127.0.0.1` への接続は
+Chrome / Edge / Firefox ではローカルホスト例外で許可されますが、Safari はブロックします。
+公開ページ + MCP の組み合わせは Chrome 系か Firefox を使ってください。
+ローカル (http://localhost) で開く場合はどのブラウザでも動きます。
+
 ブリッジのポートを変えたい場合は、サーバー側は環境変数 `WEBX68K_BRIDGE_PORT`、
 ページ側は `?bridge=<ポート番号>` で指定します(既定 3099。WebNP2 の 3098 とは別ポート)。
+
+### リポジトリから直接動かす場合(開発者向け)
+
+`server.mjs` をそのまま使う方法です。リポジトリを触っている人向けで、
+上の単一ファイル版と機能は同じです。
+
+```sh
+git clone https://github.com/uraraworks/WebX68k.git
+cd WebX68k/mcp
+npm install
+claude mcp add webx68k -- node "$PWD/server.mjs"
+```
 
 ## 提供するツール
 
@@ -75,3 +95,34 @@ MCP サーバー本体 (stdio transport) と、ブラウザと通信するため
 - **ブラウザのタブが非アクティブだと極端に遅くなります**。ブラウザはバックグラウンドタブの
   タイマーを強く抑制するため、`type_text` のようにキーを1文字ずつ間隔を空けて送るツールは
   タイムアウトすることがあります。操作中はタブを表示したままにしてください
+
+## リリース手順(メンテナ向け)
+
+配布物は `server.mjs` に依存を埋め込んだ単一ファイル `webx68k-mcp.mjs` です。
+`mcp-` で始まるタグを push すると
+[.github/workflows/release-mcp.yml](../.github/workflows/release-mcp.yml) が
+ビルド・スモークテスト・Release 作成まで自動で行います。
+
+```sh
+git tag mcp-2026-08-06
+git push origin mcp-2026-08-06
+```
+
+タグ名は日付形式にしています。npm と違って同じ内容を再配布する制約が無いため、
+semver で厳密に刻む必要はなく、更新順が分かれば十分という判断です。
+利用者に案内する URL は `releases/latest/download/webx68k-mcp.mjs` で固定できるので、
+タグを増やしても手順書の書き換えは発生しません。
+
+手元で確認する場合:
+
+```sh
+npm install
+npm run bundle
+node ../scripts/smoke-test-mcp-bundle.mjs dist/webx68k-mcp.mjs
+```
+
+スモークテストは実際にバンドルを起動し、`initialize` → `tools/list` が通ること、
+主要ツールが揃っていること、WebSocket ブリッジが立ち上がることを確認します。
+esbuild のバンドルは依存パッケージ内の動的 `require` で壊れることがあり
+(`ws` が該当するため `--banner` で `createRequire` を注入しています)、
+この種の事故は起動してみないと検出できないため Release 前に必ず通します。

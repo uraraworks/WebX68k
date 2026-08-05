@@ -1,0 +1,41 @@
+name: Release MCP server
+
+# `mcp-YYYY-MM-DD` 形式のタグを push すると、依存を埋め込んだ単一ファイル
+# `webx68k-mcp.mjs` をビルドして GitHub Release に添付する。
+# 利用者はファイル1個を落とすだけで済む（git clone も npm install も不要）:
+#   https://github.com/uraraworks/WebX68k/releases/latest/download/webx68k-mcp.mjs
+#
+# 注意: 上の `latest` URL は「リポジトリ内で最新の Release」を指す。将来
+# MCP 以外の Release を作る場合は、そちらにも同名アセットを含めるか、
+# README の案内をタグ固定 URL に変更すること。
+
+on:
+  push:
+    tags: ['mcp-*']
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Install deps
+        working-directory: mcp
+        run: npm install
+      - name: Bundle single-file server
+        working-directory: mcp
+        run: npm run bundle
+      - name: Smoke test (initialize + tools/list over stdio)
+        working-directory: mcp
+        run: node ../scripts/smoke-test-mcp-bundle.mjs dist/webx68k-mcp.mjs
+      - name: Publish release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: mcp/dist/webx68k-mcp.mjs
+          generate_release_notes: true
