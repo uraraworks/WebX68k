@@ -110,6 +110,13 @@ main {
   flex-direction: column;
   overflow: hidden;
   background: var(--header-bg);
+  /*
+   * rescale() が等倍未満へも縮小するようになった現在は保険に近いが、念のため main の
+   * 内容幅を超えないようにしておく。#screen(canvas) 自体には掛けない: max-* を canvas に
+   * 直接掛けると2倍表示時にクランプされて縦横比が崩れる罠を過去に踏んでいるため、
+   * 上限は器(card/stage)側だけに掛ける。
+   */
+  max-width: 100%;
   box-shadow:
     0 18px 40px rgba(0, 0, 0, 0.35),
     0 4px 14px rgba(0, 0, 0, 0.25);
@@ -121,6 +128,8 @@ main {
   display: flex;
   align-items: center;
   justify-content: center;
+  /* .console-card 側の max-width:100% と同じ保険。canvas 自体には掛けない(理由は同上)。 */
+  max-width: 100%;
   line-height: 0;
   box-shadow:
     inset 0 0 0 1px rgba(0, 0, 0, 0.6),
@@ -143,16 +152,29 @@ main {
   image-rendering: pixelated;
   image-rendering: -moz-crisp-edges;
   background: #000;
-  max-width: 90vw;
-  /* 仮想キーボード表示時だけ、その実測高を従来の60vh上限から差し引く。 */
-  max-height: max(120px, calc(60vh - var(--virtual-keyboard-height, 0px)));
   /*
-   * width/height は auto にすること。768px/512px のように固定寸法を入れると、
-   * max-width(90vw) と max-height(60vh) が縦横それぞれ独立に効いて箱の縦横比が崩れ、
-   * canvas は既定の object-fit:fill なので画面が引き伸ばされて表示される
-   * (実測: 属性 768x512=比1.500 が 588x467=比1.257 になっていた)。
-   * canvas は置換要素で固有の縦横比(width/height 属性 = コアが今出している実解像度)を
-   * 持つため、auto にしておけば max-* が効いても比率を保ったまま縮小される。
+   * ウィンドウ表示時のサイズ決定は main.ts の rescale() (JS側)が持つ。CSS の max-* だと
+   * canvas の固有サイズ(コアの実解像度)からの“縮小”にしか効かず、ウィンドウが大きい
+   * ときに等倍より拡大されない(auto は img/canvas のような置換要素でも縮小専用で、
+   * 拡大するには object-fit 系が要る。フルスクリーンだけ下の :fullscreen 用ルールで
+   * object-fit:contain を使っているのはそのため)。rescale() は起動直後・resize・
+   * 画面モード変更・仮想キーボード表示切替のたびに canvas.style.width/height を直接
+   * px で書き換えて拡大方向にも追従させる。
+   *
+   * max-width/max-height はあえて付けない。width と max-width は別プロパティなので
+   * 「インラインが同名のスタイルシート指定より強い」規則は効かず、rescale() が
+   * canvas.style.width/height をインラインで指定していても max-* は後からそれをクランプ
+   * してしまう。実際に max-width:90vw / max-height:60vh を置いていたときは、
+   * (1) 1倍未満に決して縮小しないと決めたのに viewport が狭いと 90vw 側にクランプされて
+   * 結局1倍未満になり文字が潰れて読めなくなる、(2) width/height を両方インラインで
+   * 指定している所へ片方の max-* だけが効くと縦横比が崩れて object-fit:fill で
+   * 引き伸ばし表示になる(旧コメントにあった「768x512=比1.500 が 588x467=比1.257」の
+   * 実測症状そのもの)、という2つのバグを引き起こしていた。
+   * 1倍が最小と決めた以上、JSがまだ走っていない一瞬のフォールバックは
+   * width/height:auto(canvas の固有サイズ=実解像度そのまま)だけで十分であり、
+   * これは rescale() が最終的に到達する状態(1倍時)とも一致する。
+   * 万一その固有サイズがウィンドウより大きくてもクランプせず、.stage の横スクロールで
+   * 端まで到達できる(縦は従来通りページ側のスクロールに任せる)。
    * 併せてマウスの移動量換算(canvas.width / canvas.clientWidth)も縦横で同じ倍率になる。
    */
   width: auto;

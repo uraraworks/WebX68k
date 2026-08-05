@@ -194,7 +194,6 @@ export function selectKanaLabel(def: VirtualKeyDef, kanaLocked: boolean, shiftLa
 
 export function createVirtualKeyboard(
   panel: HTMLElement,
-  canvas: HTMLCanvasElement,
   input: SharedKeyInput,
   onVisibilityChanged?: (visible: boolean) => void,
 ): VirtualKeyboard {
@@ -368,9 +367,11 @@ export function createVirtualKeyboard(
   updateKanaDisplay();
 
   function refreshLayout(): void {
+    // パネルの実測高が必要な側(main.ts の rescale())は onVisibilityChanged 経由で自分で
+    // getBoundingClientRect() を呼んで実測するため、ここでは rAF でレイアウト確定を
+    // 待ってから通知するだけでよい(以前はここで CSS 変数 --virtual-keyboard-height に
+    // 高さを書き出していたが、リスケールが CSS の max-height 頼みではなくなったため撤去)。
     window.requestAnimationFrame(() => {
-      const height = panel.classList.contains('hidden') ? 0 : panel.getBoundingClientRect().height;
-      canvas.style.setProperty('--virtual-keyboard-height', `${Math.ceil(height)}px`);
       onVisibilityChanged?.(!panel.classList.contains('hidden'));
     });
   }

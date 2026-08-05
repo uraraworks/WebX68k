@@ -176,6 +176,15 @@ export class LibretroHost {
   // FS へ書いたものと逆引き用を必ず同じバイト列にするための唯一の CGROM 保持先。
   private coreCgrom: Uint8Array | null = null;
 
+  /**
+   * X68000 は画面モード変更で実行中に canvas.width/height(実解像度)が変わる。
+   * ウィンドウ表示の等倍/整数倍リスケール(main.ts側)は canvas の実解像度を基準に
+   * 計算しているため、解像度が変わった瞬間に再計算してもらう必要がある。
+   * 毎フレーム呼ぶと無駄なので、handleVideoRefresh() 内で解像度が実際に変わった
+   * ときだけ呼ぶ。呼び出し元(main.ts)が未配線でも動くよう任意プロパティにしている。
+   */
+  onResolutionChanged?: () => void;
+
   constructor(canvas: HTMLCanvasElement, audioPush: AudioPushFn) {
     this.canvas = canvas;
     const ctx = canvas.getContext('2d');
@@ -497,6 +506,9 @@ export class LibretroHost {
       this.imageData = this.ctx2d.createImageData(width, height);
       this.lastWidth = width;
       this.lastHeight = height;
+      // 実解像度が変わった直後だけ通知する(このコールバックは毎フレーム発生するhandleVideoRefresh
+      // 全体ではなく、このifブロックの内側=解像度変化があった時にしか呼ばれない)。
+      this.onResolutionChanged?.();
     }
 
     const mod = this.mod;

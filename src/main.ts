@@ -64,6 +64,11 @@ const btnFullscreen = document.getElementById('btn-fullscreen') as HTMLButtonEle
 const btnVirtualKeyboard = document.getElementById('btn-virtual-keyboard') as HTMLButtonElement;
 const virtualKeyboardPanel = document.getElementById('virtual-keyboard') as HTMLDivElement;
 const stageEl = document.querySelector('.stage') as HTMLDivElement;
+// ウィンドウ表示時のリスケール(後述の rescale())で高さ計算に使う周辺要素。
+const mainEl = document.querySelector('main') as HTMLElement;
+const consoleCardEl = document.querySelector('.console-card') as HTMLElement;
+const consoleFooterEl = document.querySelector('.console-footer') as HTMLElement;
+const pageHeaderEl = document.querySelector('header.app-header') as HTMLElement | null;
 const btnSaveState = document.getElementById('btn-save-state') as HTMLButtonElement;
 const btnLoadState = document.getElementById('btn-load-state') as HTMLButtonElement;
 const toastEl = document.getElementById('toast') as HTMLDivElement;
@@ -185,13 +190,16 @@ let bootStarted = false;
 const sharedKeyInput = new SharedKeyInput((retrok, down) => host?.setKey(retrok, down));
 const virtualKeyboard = createVirtualKeyboard(
   virtualKeyboardPanel,
-  canvas,
   sharedKeyInput,
   (visible) => {
     btnVirtualKeyboard.classList.toggle('active', visible);
     btnVirtualKeyboard.setAttribute('aria-pressed', visible ? 'true' : 'false');
     btnVirtualKeyboard.title = visible ? t('toolbarVirtualKeyboardHide') : t('toolbarVirtualKeyboard');
     btnVirtualKeyboard.setAttribute('aria-label', btnVirtualKeyboard.title);
+    // 仮想キーボードの表示/非表示でパネル高が変わり、画面に使える縦幅も変わるため再計算する。
+    // このコールバックは virtual-keyboard.ts の refreshLayout() が rAF 内(パネル実測後)で
+    // 呼んでくれるので、ここで呼ぶ rescale() も実測済みの高さを見て走る。
+    rescale();
   },
 );
 btnVirtualKeyboard.addEventListener('click', () => virtualKeyboard.toggle());
@@ -1359,6 +1367,9 @@ function sanitizeFileName(name: string): string {
  */
 async function bootCore(): Promise<void> {
   host = new LibretroHost(canvas, (samples) => audio!.push(samples));
+  // X68000 は画面モード変更で実行中に canvas の実解像度(width/height)が変わる。
+  // ウィンドウ表示のリスケールは実解像度基準で倍率を決めるため、変わった直後に再計算させる。
+  host.onResolutionChanged = () => rescale();
   host.setCoreOption('px68k_cpuspeed', cpuSpeed);
   host.setCoreOption('px68k_ramsize', ramSize);
   // HDD0 の永続化(config読込)を有効化。これでLoadConfig()が /system/keropi/config の
@@ -1945,6 +1956,120 @@ btnFullscreen.addEventListener('click', () => setFullscreen(!isStageFullscreen()
 document.addEventListener('fullscreenchange', updateFullscreenControl);
 document.addEventListener('webkitfullscreenchange', updateFullscreenControl);
 
+/*
+ * ==== ウィンドウ表示時のリスケール ====
+ * style.css の #screen は width/height:auto + max-width/max-height なので、canvas の固有
+ * サイズ(コアの実解像度)より狭くする方向にしか効かず、ウィンドウが大きいときに画面が
+ * 等倍より拡大されない(auto は img/canvas のような置換要素でも“縮小”専用で、拡大には
+ * object-fit 系が要る。フルスクリーンだけ object-fit:contain で拡大できているのはそのため)。
+ * ここでは移植元 WebNP2 (src/ui/player.ts の rescale()) と同じく、実際に存在するヘッダー/
+ * コンソールバー/仮想キーボードパネルの高さを実測して JS 側で倍率を決め、canvas に
+ * インラインの width/height(px)を直接指定する。
+ */
+
+// ユーザーの明示的な指定(WebNP2 の見た目に揃える)。整数倍スケールはこれを超えて拡大しない。
+const MAX_SCALE = 2;
+// 実解像度(canvas.width/height)がまだ0(起動前・BIOS未設定時など)の場合のフォールバック。
+// X68000起動直後の既定解像度(768x512, テキストV-RAM相当)を使う。
+const FALLBACK_NATIVE_WIDTH = 768;
+const FALLBACK_NATIVE_HEIGHT = 512;
+
+/**
+ * canvas の表示倍率(等倍〜整数倍、収まらない場合は端数の縮小)を実測して決める。
+ * フルスクリーン中は CSS 側(.stage:fullscreen #screen の object-fit:contain、
+ * style.css の該当コメント参照)に表示サイズを任せているため、ここでインラインの
+ * width/height を触ると「スタイルシートよりインラインが強い」性質でフルスクリーンの
+ * CSS ルールが効かなくなってしまう。フルスクリーン中は何もしない
+ * (fullscreenchange 側で入る/抜けるタイミングにインラインスタイルの付け外しをしている)。
+ */
+function rescale(): void {
+  if (isStageFullscreen()) return;
+
+  const nativeWidth = canvas.width || FALLBACK_NATIVE_WIDTH;
+  const nativeHeight = canvas.height || FALLBACK_NATIVE_HEIGHT;
+
+  const mainStyle = getComputedStyle(mainEl);
+  const mainPaddingH = parseFloat(mainStyle.paddingLeft) + parseFloat(mainStyle.paddingRight);
+  const mainPaddingV = parseFloat(mainStyle.paddingTop) + parseFloat(mainStyle.paddingBottom);
+  const cardStyle = getComputedStyle(consoleCardEl);
+  const cardGap = parseFloat(cardStyle.rowGap || cardStyle.gap) || 0;
+
+  const availWidth = Math.max(1, window.innerWidth - mainPaddingH);
+
+  const kbdVisible = !virtualKeyboardPanel.classList.contains('hidden');
+  // .console-card の子要素は stage / virtual-keyboard(表示時のみ) / console-footer の順。
+  // gap は「表示されている子要素の間」の数だけ効く。
+  const visibleCardChildren = 2 + (kbdVisible ? 1 : 0);
+  const gapsInCard = Math.max(0, visibleCardChildren - 1) * cardGap;
+
+  const reservedHeight =
+    (pageHeaderEl?.getBoundingClientRect().height ?? 0) +
+    consoleFooterEl.getBoundingClientRect().height +
+    (kbdVisible ? virtualKeyboardPanel.getBoundingClientRect().height : 0) +
+    mainPaddingV +
+    gapsInCard;
+
+  // 実測誤差(サブピクセル丸め・スクロールバー分など)の余白として少し余裕を持たせる。
+  const availHeight = Math.max(1, window.innerHeight - reservedHeight - 4);
+
+  const fit = Math.min(availWidth / nativeWidth, availHeight / nativeHeight);
+  // 実機検証の結果、1倍未満への縮小を禁止すると狭い画面(スマホ等)で画面下のツールバー/
+  // ドライブ行がビューポート外へ押し出されて操作できなくなることが判明したため、
+  // 等倍未満への縮小を復活させた。fit は幅・高さ両方から求めた最小値であり、
+  // 高さでも縮む(=UIがはみ出さない)のが今回の狙いそのものなので、幅だけを基準にする
+  // WebNP2 方式は採用しない。
+  //
+  // WebNP2 の rescale() コメントには「高さ由来で縮めると、カード幅縮小→ツールバー折返しで
+  // 周辺高さ増→さらに縮小…の収縮ループに陥る」という注意書きがあるが、これは
+  // ResizeObserver 等でカードのサイズ変化を監視して rescale() を再帰的に呼び直す実装
+  // (WebNP2側)特有の懸念であり、WebX68k の rescale() は resize 等のイベント発火のたびに
+  // 1パスだけ計算して終わる(自分自身の呼び直しをトリガーする仕組みを持たない)ため、
+  // この収縮ループは原理的に起こらない。よってここでは単純に幅・高さ両方の fit を使う。
+  const scale = fit >= 1 ? Math.min(MAX_SCALE, Math.floor(fit)) : Math.max(0.3, Math.min(1, fit));
+
+  const w = Math.round(nativeWidth * scale);
+  const h = Math.round(nativeHeight * scale);
+  canvas.style.width = `${w}px`;
+  canvas.style.height = `${h}px`;
+}
+
+// visualViewport の resize は購読しない: ピンチズーム操作でも発火するため、ここで再フィット
+// すると自前のリサイズがピンチ操作を引き戻してしまう(既知の罠。WebNP2でも同じ理由で避けている)。
+window.addEventListener('resize', rescale);
+window.addEventListener('orientationchange', rescale);
+
+// フルスクリーンの出入りに合わせてインラインスタイルを付け外しする。
+// canvas.style.width/height を設定したままだと、インラインスタイルはスタイルシートの
+// セレクタより強いため、フルスクリーン用ルール(.stage:fullscreen #screen の
+// width:100%/height:100%/object-fit:contain)が効かなくなりフルスクリーンが壊れる。
+document.addEventListener('fullscreenchange', () => {
+  if (isStageFullscreen()) {
+    canvas.style.width = '';
+    canvas.style.height = '';
+  } else {
+    rescale();
+  }
+});
+document.addEventListener('webkitfullscreenchange', () => {
+  if (isStageFullscreen()) {
+    canvas.style.width = '';
+    canvas.style.height = '';
+  } else {
+    rescale();
+  }
+});
+
+// スクリプト読み込み直後(起動前オーバーレイが出ている段階)にも一度リスケールしておく。
+// resize 等のイベントが飛んでくるのを待つだけの設計だと、ユーザーが最初に開いたときに
+// 見る画面が(ウィンドウが2倍以上収まる広さであっても)常に1倍のまま固まってしまう
+// (実測で確認済み: リロード直後は canvas.style.width が未設定=CSSのwidth:autoフォールバック
+// のままで、resize を1回発生させて初めて意図した倍率になっていた)。
+// rescale() はヘッダー/.console-footer の高さを getBoundingClientRect() で実測するため、
+// レイアウトが確定してから呼ぶ必要があり、rAF を1回挟んで呼ぶ。起動前は canvas.width/height
+// がまだ0の可能性があるが、その場合は rescale() 内の768x512フォールバックが使われるので
+// そのままでよい(bootCore() 直後に実解像度確定後の再計算が別途走る)。
+requestAnimationFrame(() => rescale());
+
 // Esc の挙動について(実キーボードで確認済み):
 // フルスクリーン + マウスキャプチャ(Pointer Lock)の両方が有効な状態で Esc を1回押すと、
 // **キャプチャとフルスクリーンが同時に解除される**。「1回目でキャプチャだけ解除され、
@@ -2132,6 +2257,9 @@ async function startFromOverlay(withSystemDisk: boolean): Promise<void> {
     });
 
     await bootCore();
+    // 起動直後(初回描画後)の実解像度で一度リスケールしておく。以降は
+    // host.onResolutionChanged(解像度変更時)と各種resize/表示切替のイベントに任せる。
+    rescale();
 
     btnReset.disabled = false;
     btnSaveState.disabled = false;
