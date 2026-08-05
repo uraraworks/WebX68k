@@ -265,6 +265,16 @@ async function run() {
       await waitForScreenPainted(page, 25000);
       await shoot(page, '.console-card', `overview${suffix}.png`);
 
+      // --- keyboard: 仮想キーボードパネル(overviewで起動済みのHuman68k画面を流用) ---
+      // 仮想キーボードを開くと .console-card の縦が伸びてビューポート(700px)に収まらないため、
+      // 撮影中だけ縦を1100pxに広げる。
+      await page.setViewport({ ...VIEWPORT, height: 1100 });
+      await clickToolbarButton(page, 'btn-virtual-keyboard');
+      await sleep(400);
+      await shoot(page, '.console-card', `keyboard${suffix}.png`);
+      await clickToolbarButton(page, 'btn-virtual-keyboard');
+      await page.setViewport(VIEWPORT);
+
       await page.close();
     }
   } finally {

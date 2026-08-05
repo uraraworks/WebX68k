@@ -575,6 +575,40 @@
           <div class="lang-ja">
             <h2>キーボードとマウス</h2>
             <p>
+              画面(canvas)にフォーカスがある状態でキーを打つと、そのままゲスト(X68000)へ
+              渡ります。キー判定は <code>KeyboardEvent.code</code>(物理的な刻印位置)ベースなので、
+              ホストのキーボード配列(JIS/US など)に関わらず、刻印されている位置のキーとして
+              動作します。
+            </p>
+            <img src="./help/keyboard.png" alt="ツールバーの「仮想キーボード」ボタンで表示した仮想キーボードパネル" />
+            <p>
+              ツールバーの「仮想キーボード」ボタンを押すと、画面下に仮想キーボードが
+              表示/非表示されます。タッチ環境など物理キーボードを使いにくい場面向けの機能です。
+              修飾キーはワンショット(次の1打で自動解除。SHIFT / CTRL / OPT.1 / OPT.2)と
+              ロック(再タップまで維持。CAPS / かな / ローマ字 / コード入力 / ひらがな / 全角)の
+              2種類があり、複数同時にラッチできます。PC幅(640px以上)ではキー右下に
+              実機キーキャップ風のかな刻印を常時併記し、スマホ幅(640px未満)では副刻印を隠す
+              代わりに、かなロック中だけ主刻印(英数)がかな刻印に入れ替わります。
+              かなロック中に SHIFT をラッチすると、さらに副刻印(ぁ ぃ っ 、 。 「 」 など)に
+              切り替わります。
+              「テンキー」キーを押すとテンキークラスタを表示/非表示できます(横幅が伸びて
+              モバイルでは崩れやすいため既定は非表示です)。
+            </p>
+            <div class="note-box">
+              <strong>注意:</strong> XF1〜XF5 / BREAK / COPY / ローマ字 / コード入力 /
+              ひらがな / 全角は、物理キーボードに対応するキーが無いため仮想キーボードから
+              入力してください。なお UNDO は End、記号入力は PrintScreen、登録は
+              ScrollLock、ROLL UP / ROLL DOWN は PageDown / PageUp に割り当てられていますが、
+              これらのキーが無いキーボードも多いので、その場合も仮想キーボードが便利です。
+            </div>
+            <p>
+              物理キーボード・仮想キーボード・(MCP経由の)自動操作は、それぞれ入力元ごとに
+              押下状態を数えており、同じキーを複数の入力元から押しても、最後の入力元が
+              離すまでキーは離れたとみなされません。またタブ切り替えなどで画面がフォーカスを
+              失った際は、押しっぱなしになったキーをすべて強制的に離すため、キーが固着する
+              ことはありません。
+            </p>
+            <p>
               マウスをキャプチャすると、以降のマウス操作がゲスト(X68000)へ渡ります。
               キャプチャは画面上での<strong>右ダブルクリック</strong>、またはツールバーの
               「マウスキャプチャ」ボタンで開始できます。
@@ -599,6 +633,41 @@
           </div>
           <div class="lang-en">
             <h2>Keyboard and mouse</h2>
+            <p>
+              While the screen (canvas) has focus, keys you press are passed straight through to
+              the guest (X68000). Key detection is based on <code>KeyboardEvent.code</code> (the
+              physical key position), so it works the same regardless of your host keyboard
+              layout (JIS, US, etc.) — it maps to whatever is engraved at that position.
+            </p>
+            <img src="./help/keyboard-en.png" alt="The virtual keyboard panel shown via the toolbar's Virtual Keyboard button" />
+            <p>
+              Pressing the "Virtual Keyboard" toolbar button shows/hides an on-screen keyboard at
+              the bottom of the screen, for situations like touch devices where a physical
+              keyboard is awkward to use. Modifier keys come in two flavors: one-shot (auto-released
+              after the next keypress — SHIFT / CTRL / OPT.1 / OPT.2) and lock (held until tapped
+              again — CAPS / Kana / Romaji / Code Input / Hiragana / Zenkaku), and multiple can be
+              latched at the same time. At PC widths (640px and up), a small kana engraving is
+              always shown in the corner of each key, like a real keycap. At phone widths (below
+              640px) there's no room for that, so it's hidden instead — the primary (alphanumeric)
+              engraving swaps for the kana one only while kana lock is active. Latching SHIFT while
+              kana lock is active swaps it again to the secondary engraving (ぁ ぃ っ 、 。 「 」 etc.).
+              Pressing the "Ten-key" key toggles the numeric pad cluster (hidden by default since
+              its extra width tends to break the layout on mobile).
+            </p>
+            <div class="note-box">
+              <strong>Note:</strong> XF1–XF5, BREAK, COPY, Romaji, Code Input, Hiragana, and
+              Zenkaku have no physical-keyboard counterpart, so enter them from the virtual
+              keyboard. UNDO, symbol input, Register, and ROLL UP/DOWN are mapped to End,
+              PrintScreen, ScrollLock, and PageDown/PageUp respectively, but many keyboards lack
+              those keys too, so the virtual keyboard is handy for them as well.
+            </div>
+            <p>
+              The physical keyboard, virtual keyboard, and automated input (e.g. via MCP) each
+              keep their own reference count of pressed keys per input source, so pressing the
+              same key from more than one source doesn't release it until the last source lets go.
+              Losing focus (e.g. switching tabs) forcibly releases every held key, so keys never
+              get stuck down.
+            </p>
             <p>
               Once the mouse is captured, subsequent mouse input is passed to the guest (X68000).
               Capture starts with a <strong>right double-click</strong> on the screen, or via the
@@ -866,6 +935,13 @@
             en: 'Fullscreen',
             descJa: '画面全体をフルスクリーン表示します(画面モード変更にも追従してアスペクト比を保ちます)。もう一度押すか、Escキーで解除します。マウスキャプチャ中にEscキーを押すと、キャプチャとフルスクリーンが同時に解除されます。',
             descEn: 'Shows the screen in fullscreen, keeping the aspect ratio even when the screen mode changes. Press again, or press Esc, to exit. While the mouse is captured, pressing Esc releases both the capture and fullscreen at the same time.',
+          },
+          {
+            icon: 'M3 6h18v12H3z M6 9h1 M10 9h1 M14 9h1 M18 9h1 M6 12h1 M10 12h1 M14 12h1 M18 12h1 M7 15h10',
+            ja: '仮想キーボード',
+            en: 'Virtual Keyboard',
+            descJa: '画面下に仮想キーボードを表示/非表示します。タッチ環境向け。物理キーボードに無い XF1-5 などの X68000 固有キーもここから入力できます。',
+            descEn: 'Shows/hides an on-screen keyboard at the bottom of the screen, for touch devices. It also lets you enter X68000-specific keys like XF1-5 that the physical keyboard has no counterpart for.',
           },
           {
             icon: 'M7 7h10v10H7z M9 9h6v6H9z M7 4v3 M12 4v3 M17 4v3 M7 17v3 M12 17v3 M17 17v3 M4 7h3 M4 12h3 M4 17h3 M17 7h3 M17 12h3 M17 17h3',

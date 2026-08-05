@@ -483,7 +483,8 @@
               相対移動量しか送れずカーソル位置はゲスト側が管理するため、ブラウザの絶対座標を
               直接渡すことはできません。そこで WebX68k は IOCS のワークエリアを毎フレーム読んで
               ゲストカーソルの現在位置を把握し、目標との差分だけを送る閉ループで絶対位置に
-              追従させています。Esc キーまたはツールバーのボタンでキャプチャを解除できます。
+              追従させています。キャプチャの解除は Esc キーのみです(キャプチャ中はカーソルが
+              ゲスト側に奪われるため、ツールバーのボタンはクリックできません)。
             </p>
           </div>
           <div class="lang-en">
@@ -495,8 +496,41 @@
               cursor position — so the browser's absolute pointer coordinates can't be handed over
               directly. To work around that, WebX68k reads the IOCS work area every frame to learn the
               guest cursor's current position and sends only the difference from the target, forming a
-              closed loop that tracks absolute position. Press Esc or use the toolbar button to release
-              the capture.
+              closed loop that tracks absolute position. The only way to release the capture is the
+              Esc key (while captured, the cursor belongs to the guest, so the toolbar button can't
+              be clicked).
+            </p>
+          </div>
+        </section>
+
+        <!-- 特徴5.5: 仮想キーボード -->
+        <section class="help-card feature-card">
+          <div class="lang-ja">
+            <h2>仮想キーボード</h2>
+            <p>
+              px68k-libretro 本体にはソフトキーボードが無いため、タッチ環境でも X68000 を
+              操作できるよう独自に実装したものです。PC幅ではキー右下に実機キーキャップ風の
+              かな刻印を常時併記し、スマホ幅では副刻印を隠す代わりに、かなロック中だけ
+              主刻印(英数)がかな刻印に入れ替わります。かなロック中に SHIFT をラッチすると、
+              さらに副刻印(ぁ ぃ っ 、 。 「 」 など)に切り替わります。
+              修飾キーはワンショット(SHIFT / CTRL / OPT.1 / OPT.2)とロック(CAPS / かな /
+              ローマ字 / コード入力 / ひらがな / 全角)の2種類で複数同時ラッチでき、
+              XF1〜XF5 は常設、テンキーは「テンキー」キーでクラスタごとトグル表示します。
+            </p>
+          </div>
+          <div class="lang-en">
+            <h2>Virtual keyboard</h2>
+            <p>
+              px68k-libretro itself ships no on-screen keyboard, so WebX68k built its own so the
+              X68000 can be operated on touch devices too. At PC widths, a small kana engraving is
+              always shown in the corner of each key, like a real keycap. At phone widths there's
+              no room for that, so it's hidden instead — the primary (alphanumeric) engraving swaps
+              for the kana one only while kana lock is active. Latching SHIFT while kana lock is
+              active swaps it again to the secondary engraving (ぁ ぃ っ 、 。 「 」 etc.).
+              Modifier keys come in two flavors — one-shot (SHIFT / CTRL / OPT.1 / OPT.2) and lock
+              (CAPS / Kana / Romaji / Code Input / Hiragana / Zenkaku) — and multiple can be latched
+              at once. XF1–XF5 are always present, and the "Ten-key" key toggles the numeric pad
+              cluster on and off.
             </p>
           </div>
         </section>
