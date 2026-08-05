@@ -1982,6 +1982,18 @@ const FALLBACK_NATIVE_HEIGHT = 512;
  * CSS ルールが効かなくなってしまう。フルスクリーン中は何もしない
  * (fullscreenchange 側で入る/抜けるタイミングにインラインスタイルの付け外しをしている)。
  */
+/**
+ * getComputedStyle() から取り出した長さ値を安全に数値化する。
+ * 外部スタイルシートの読み込みが完了する前(下記 rescale() のコメント参照)は
+ * getComputedStyle() が空文字を返すことがあり、parseFloat("") は NaN になる。
+ * NaN はそのまま四則演算に伝播して最終的に canvas.style.width = "NaNpx" のような
+ * 無効値の代入(ブラウザに黙って無視される)を引き起こすため、ここで 0 に丸めておく。
+ */
+function parseLengthOrZero(value: string): number {
+  const n = parseFloat(value);
+  return Number.isFinite(n) ? n : 0;
+}
+
 function rescale(): void {
   if (isStageFullscreen()) return;
 
@@ -1989,10 +2001,10 @@ function rescale(): void {
   const nativeHeight = canvas.height || FALLBACK_NATIVE_HEIGHT;
 
   const mainStyle = getComputedStyle(mainEl);
-  const mainPaddingH = parseFloat(mainStyle.paddingLeft) + parseFloat(mainStyle.paddingRight);
-  const mainPaddingV = parseFloat(mainStyle.paddingTop) + parseFloat(mainStyle.paddingBottom);
+  const mainPaddingH = parseLengthOrZero(mainStyle.paddingLeft) + parseLengthOrZero(mainStyle.paddingRight);
+  const mainPaddingV = parseLengthOrZero(mainStyle.paddingTop) + parseLengthOrZero(mainStyle.paddingBottom);
   const cardStyle = getComputedStyle(consoleCardEl);
-  const cardGap = parseFloat(cardStyle.rowGap || cardStyle.gap) || 0;
+  const cardGap = parseLengthOrZero(cardStyle.rowGap || cardStyle.gap);
 
   const availWidth = Math.max(1, window.innerWidth - mainPaddingH);
 
@@ -2029,6 +2041,12 @@ function rescale(): void {
 
   const w = Math.round(nativeWidth * scale);
   const h = Math.round(nativeHeight * scale);
+  // 上流の getComputedStyle() 由来の値が(NaN ガードをすり抜けるような想定外の経路で)
+  // 有限値でなかった場合、"NaNpx" のような無効値をインラインへ書き込むとブラウザはそれを
+  // 黙って無視する(=canvas.style.width が未設定のまま残り続ける)。無効な計算結果を
+  // そのまま突っ込むより、ここで諦めて CSS 側のフォールバック(width/height:auto)に
+  // 任せたほうが安全なので、書き換えずに抜ける。
+  if (!Number.isFinite(w) || !Number.isFinite(h) || w <= 0 || h <= 0) return;
   canvas.style.width = `${w}px`;
   canvas.style.height = `${h}px`;
 }
@@ -2069,6 +2087,16 @@ document.addEventListener('webkitfullscreenchange', () => {
 // がまだ0の可能性があるが、その場合は rescale() 内の768x512フォールバックが使われるので
 // そのままでよい(bootCore() 直後に実解像度確定後の再計算が別途走る)。
 requestAnimationFrame(() => rescale());
+// ↑の rAF は「できるだけ早く正しい倍率にする」ためのもので、devサーバーでは十分だった。
+// しかし GitHub Pages への本番デプロイ(index.htmlが外部<link>でCSSを読み込む構成)では、
+// rAF が発火した時点でまだ外部スタイルシートの適用が終わっておらず、getComputedStyle()が
+// パディング等を空文字で返す→NaN計算→無効な"NaNpx"が黙って無視される、という形で
+// リロード直後は必ず1倍に固まる不具合が実機で再現した(devサーバーはViteがCSSをJS経由で
+// 同期的に注入するため、rAF時点で既に適用済みで再現しなかった)。上のNaNガードで
+// 無効値の代入自体は防いだが、それだけだと「安全に何もしない」だけで倍率は直らないため、
+// window の load イベント(外部CSS/フォント/画像を含め読み込みが確実に終わったタイミング)
+// でもう一度呼び、最終的に正しい倍率へ収束させる保険を入れる。
+window.addEventListener('load', () => rescale());
 
 // Esc の挙動について(実キーボードで確認済み):
 // フルスクリーン + マウスキャプチャ(Pointer Lock)の両方が有効な状態で Esc を1回押すと、
