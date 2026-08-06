@@ -124,11 +124,27 @@ The save/load toolbar buttons snapshot and restore the full emulator state
 quick-save slot is kept. If the currently inserted disks don't match what
 was mounted at save time, you'll be asked to confirm before restoring.
 
-A state records *which* disks were mounted, not their contents. Anything the
-guest writes to a disk (in-game save data, for example) is lost when the disk
-is ejected or the page is reloaded, since it isn't written back to the disk
-library automatically — export the image with the drive row's download button
-to keep it.
+A state records *which* disks were mounted, not their contents. Disk contents are
+persisted separately by the autosave below, so loading a state does not rewind a
+disk to how it was at save time.
+
+### Disk autosave
+
+Whatever the guest writes to a disk is written back to the disk library
+(IndexedDB) automatically. px68k keeps those writes only in the core's in-memory
+image (FDD) or the emscripten FS file (HDD), so without this they would vanish
+when the page goes away.
+
+- Write-only dirty flags live in the fork (`FDD_DirtyMask` in fdd.c, `SASI_Dirty`
+  in sasi.c) and are read through `core-shim.c` getters each frame. Unlike the
+  access-lamp flags they are not cleared per frame — the host clears them right
+  before it snapshots, so writes during a snapshot are not lost.
+- Reading an FDD image requires an eject/re-insert, which the guest sees as a
+  media change, so it only happens 1.5s after the access lamp goes quiet. The HDD
+  is read straight from the FS file, with a minimum interval instead.
+- Write-back also runs on eject, before `restartCore()`, and on
+  `visibilitychange` (hidden).
+- The bundled system disk (human302.xdf) is excluded — it is a fixed library entry.
 
 ### Screenshot
 

@@ -61,6 +61,40 @@ int get_sasi_is_accessing(void)
 }
 
 /*
+ * 書き戻し(オートセーブ)用のダーティフラグ。
+ * アクセスランプ用のフラグと違い毎フレームクリアされないので、JS 側は
+ * 「立っている & ランプが静か」を条件に吸い出し、保存し終えてから clear を呼ぶ。
+ * 取りこぼしを防ぐため、クリアは必ず「吸い出した後」ではなく「吸い出す直前」に
+ * 行うこと(吸い出し中に来た書き込みを消さないため)。
+ */
+extern int FDD_DirtyMask;
+extern int SASI_Dirty;
+
+__attribute__((used))
+int get_fdd_dirty_mask(void)
+{
+  return FDD_DirtyMask;
+}
+
+__attribute__((used))
+void clear_fdd_dirty(int drive)
+{
+  FDD_DirtyMask &= ~(1 << drive);
+}
+
+__attribute__((used))
+int get_sasi_dirty(void)
+{
+  return SASI_Dirty;
+}
+
+__attribute__((used))
+void clear_sasi_dirty(void)
+{
+  SASI_Dirty = 0;
+}
+
+/*
  * FDD のホットマウント(実行中のディスク挿入・取り出し)用シム。
  * px68k 本体の FDD_SetFD()/FDD_EjectFD() はどちらも実行中に呼んで安全で、
  * 挿入時は SetDelay 経由、取り出し時は即時に FDC の割り込みを上げるため、

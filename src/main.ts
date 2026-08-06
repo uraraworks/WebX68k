@@ -590,6 +590,8 @@ function ejectSlot(slot: SlotId): void {
     alert(t('slotLockedWhileRunning'));
     return;
   }
+  // 抜く前にゲストの書き込みを回収する(吸い出しは同期なので、ここを抜ける時点で取得済み)。
+  void persistSlotToLibrary(slot);
   const drive = fddDriveOf(slot);
   const wasRunning = host !== null && running;
   slots[slot] = null;
@@ -1439,6 +1441,9 @@ async function bootCore(): Promise<void> {
 
 /** 実行中のコアを破棄して作り直す */
 async function restartCore(): Promise<void> {
+  // 載せ直すと slots[].data から書き直すことになるので、その前にゲストの書き込みを回収する
+  // (設定変更でCPU速度を変えただけでセーブデータが消える、という事故を防ぐ)。
+  flushAllSlots();
   running = false;
   cancelScheduled();
   host?.dispose();
@@ -2245,6 +2250,118 @@ function pollDiskAccess(now: number): void {
   }
 }
 
+// --- ディスクのオートセーブ ---
+// px68k はゲストの書き込みを、FDD ならコアのメモリ上のイメージ、HDD なら FS 上のファイルに
+// しか持たない。何もしないとページを離れた時点で消えるため(ゲーム内セーブが次回に残らない)、
+// fork 側に足した書き込み専用のダーティフラグを見て、静かなタイミングでライブラリへ書き戻す。
+const AUTOSAVE_POLL_MS = 1000;
+// FDD の吸い出しは Eject を挟む=ゲストにはメディア交換として見えるため、読み書きの最中に
+// やるとソフトが転ぶ。アクセスランプが消えてこの時間が経つまで待つ。
+const FDD_QUIET_MS = 1500;
+// HDD は 40MB 級になるので、書き込みが続いている間も保存間隔を空ける。
+const HDD_MIN_INTERVAL_MS = 10000;
+
+let lastAutoSaveCheckAt = 0;
+let lastHddSaveAt = -Infinity;
+let autoSaveRunning = false;
+
+/** ファイル転送ダイアログが開いている間は、同じイメージを両側から書き換えないよう触らない。 */
+function isFileManagerOpen(): boolean {
+  return fileManagerRoot.querySelector('.fm-modal-backdrop:not(.hidden)') !== null;
+}
+
+/**
+ * スロットの現在の内容(ゲストの書き込み反映後)をディスクライブラリへ書き戻す。
+ *
+ * 同梱ディスクはライブラリ先頭の固定エントリで差し替えできないため対象外。
+ * ダーティフラグのクリアは吸い出しの「前」に行う(後にすると、吸い出し中に発生した
+ * 書き込みまで一緒に消えて、その分が二度と保存されなくなる)。
+ */
+async function persistSlotToLibrary(slot: SlotId): Promise<boolean> {
+  const pending = slots[slot];
+  if (!host || !running || !pending) return false;
+  const { sourceKey } = pending;
+  if (!sourceKey || sourceKey === BUNDLED_DISK_SOURCE_KEY) return false;
+
+  const drive = fddDriveOf(slot);
+  host.clearDirty(drive === null ? { hdd: true } : { fddDrive: drive });
+
+  let live: Uint8Array | null = null;
+  try {
+    live = readLiveSlotImage(slot);
+  } catch (err) {
+    console.error('ディスクの吸い出しに失敗しました。', err);
+    return false;
+  }
+  if (!live) return false;
+  const data = live.slice();
+
+  try {
+    await saveDisk({ sourceKey, name: pending.name, bytes: data, savedAt: Date.now() });
+  } catch (err) {
+    console.error('ディスクライブラリへの書き戻しに失敗しました。', err);
+    return false;
+  }
+
+  // 待っている間に排出・差し替えが起きているかもしれないので、同じディスクのままの
+  // ときだけスロット側も更新する(そうしないと排出済みスロットを復活させてしまう)。
+  if (slots[slot]?.sourceKey === sourceKey) slots[slot] = { ...slots[slot]!, data };
+  if (!libraryBackdrop.classList.contains('hidden')) void refreshLibraryList();
+  return true;
+}
+
+/**
+ * 全スロットを即座に書き戻す(排出・コア再起動・ページ離脱の直前用)。
+ * readLiveSlotImage() による吸い出しは同期なので、await しなくてもバイト列の取得だけは
+ * この関数を抜ける前に終わっている。IndexedDB への書き込みだけが非同期で後を追う。
+ */
+function flushAllSlots(): void {
+  if (!host || !running) return;
+  const dirty = host.readDirtyState();
+  for (const slot of SLOT_IDS) {
+    const drive = fddDriveOf(slot);
+    const isDirty = drive === null ? dirty.hdd : (dirty.fddMask & (1 << drive)) !== 0;
+    if (isDirty) void persistSlotToLibrary(slot);
+  }
+}
+
+function pollAutoSave(now: number): void {
+  if (!host || !running || autoSaveRunning) return;
+  if (now - lastAutoSaveCheckAt < AUTOSAVE_POLL_MS) return;
+  lastAutoSaveCheckAt = now;
+  if (isFileManagerOpen()) return;
+
+  const dirty = host.readDirtyState();
+  const targets: SlotId[] = [];
+  for (const slot of ['fdd0', 'fdd1'] as const) {
+    const drive = fddDriveOf(slot)!;
+    if ((dirty.fddMask & (1 << drive)) === 0) continue;
+    if (now - lastAccessAt[slot] < FDD_QUIET_MS) continue;
+    targets.push(slot);
+  }
+  if (dirty.hdd && now - lastHddSaveAt >= HDD_MIN_INTERVAL_MS) targets.push('hdd');
+  if (targets.length === 0) return;
+
+  autoSaveRunning = true;
+  void (async () => {
+    try {
+      for (const slot of targets) {
+        const saved = await persistSlotToLibrary(slot);
+        if (saved && slot === 'hdd') lastHddSaveAt = performance.now();
+      }
+    } finally {
+      autoSaveRunning = false;
+    }
+  })();
+}
+
+// ページ離脱時の保険。beforeunload/unload は非同期処理を完走できず、モバイル Safari では
+// そもそも発火しないことがあるため、最後に信頼できる visibilitychange(hidden) で叩く。
+// ただし主役はあくまで上の定期保存で、こちらは取りこぼしを拾うだけ。
+document.addEventListener('visibilitychange', () => {
+  if (document.visibilityState === 'hidden') flushAllSlots();
+});
+
 // 開発時デバッグ用: 音声遅延(キュー滞留秒)とコアの現在 fps をコンソールから覗けるようにする。
 if (import.meta.env.DEV) {
   (window as unknown as Record<string, unknown>).__webx68kDebug = {
@@ -2293,6 +2410,7 @@ function loop(t: number): void {
   }
   if (ran > 0) {
     pollDiskAccess(t);
+    pollAutoSave(t);
     stepMouseTracking();
   }
   // 破綻(タブ非アクティブ復帰等)したら蓄積をリセット

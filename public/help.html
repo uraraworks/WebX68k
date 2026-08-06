@@ -734,12 +734,9 @@
             </p>
             <div class="note-box">
               <strong>注意:</strong> ステートに<strong>ディスクイメージの中身は含まれません</strong>
-              (記録されるのは「どのディスクが挿入されていたか」だけです)。またゲームなどが
-              ディスクへ書き込んだ内容(セーブデータ等)は、<strong>ディスクを取り出すか
-              ページを再読み込みすると失われます</strong>。ディスクライブラリへ自動では
-              書き戻していないためです。残したい場合は、ドライブ行の<strong>ダウンロード</strong>
-              ボタンでそのときのディスクイメージを書き出して保管し、次回はそのファイルを
-              読み込ませてください(ダウンロードはゲストの書き込みを反映した内容を取り出します)。
+              (記録されるのは「どのディスクが挿入されていたか」だけです)。ディスクの中身は
+              ステートとは別に管理され、下記のオートセーブでディスクライブラリへ保存されます。
+              そのためステートを復元しても、ディスクの中身は保存時点へは戻りません。
             </div>
           </div>
           <div class="lang-en">
@@ -755,11 +752,84 @@
             </p>
             <div class="note-box">
               <strong>Note:</strong> A state does <strong>not</strong> contain the contents of the
-              disk images — only which disks were inserted. Anything the guest writes to a disk
-              (in-game save data, for example) is <strong>lost when you eject the disk or reload
-              the page</strong>, because it is not written back to the disk library automatically.
-              To keep it, use the <strong>download</strong> button on the drive row to export the
-              current image (the export reflects the guest's writes) and load that file next time.
+              disk images — only which disks were inserted. Disk contents are managed separately and
+              are written to the disk library by the autosave described below, so restoring a state
+              does not rewind a disk to how it was at save time.
+            </div>
+          </div>
+        </section>
+
+        <!-- 8.5 ディスクの保存とデータが消える条件 -->
+        <section class="help-card">
+          <div class="lang-ja">
+            <h2>ディスクの保存と、データが消える条件</h2>
+            <p>
+              ゲーム内セーブなど、ゲスト(X68000側)がディスクへ書き込んだ内容は、
+              <strong>自動的にディスクライブラリへ保存されます</strong>。ディスクへの書き込みを
+              検出したあと、アクセスが落ち着いたタイミングで書き戻す仕組みです(HDDは容量が
+              大きいため間隔を空けます)。ディスクの取り出し時、マシン構成の変更時、
+              タブを離れたときにも保存されるので、次にそのディスクを挿せば続きから遊べます。
+            </p>
+            <div class="note-box">
+              <strong>同梱のシステムディスク(human302.xdf)だけは対象外です。</strong>
+              ライブラリ先頭の固定エントリで差し替えできないため、ここへ書き込んだ内容は
+              保存されません。書き換えて使いたい場合は、一度ダウンロードして別ファイルとして
+              読み込み直してください。
+            </div>
+            <p>
+              保存先はサーバーではなく<strong>ブラウザ内のストレージ(IndexedDB)</strong>です。
+              これは Cookie と同じ扱いで、次のような場合に<strong>まとめて消えます</strong>。
+            </p>
+            <ul>
+              <li>ブラウザの「Cookie と他のサイトデータ」を削除したとき(「キャッシュされた画像とファイル」だけの削除では消えません)</li>
+              <li>「閲覧履歴データの削除」でサイトデータにチェックが入っていたとき</li>
+              <li>シークレット/プライベートウィンドウを閉じたとき</li>
+              <li>端末の空き容量が不足し、ブラウザが自動で整理したとき</li>
+              <li><strong>Safari で7日間このサイトを開かなかったとき</strong>(WebKit の仕様で、スクリプトから書き込めるストレージが一括削除されます)</li>
+            </ul>
+            <div class="note-box">
+              <strong>大事なデータは定期的にダウンロードしてください。</strong>
+              ドライブ行の<strong>ダウンロード</strong>ボタンで、ゲストの書き込みを反映した
+              ディスクイメージを手元のファイルとして書き出せます。ブラウザのストレージは
+              いつ消えてもおかしくないものなので、遊び込んだディスクほど手元に控えを
+              持っておくと安心です。また別のブラウザや別の端末へは引き継がれないため、
+              持ち出すときにもダウンロードしたファイルを使います。
+            </div>
+          </div>
+          <div class="lang-en">
+            <h2>How disks are saved, and when the data disappears</h2>
+            <p>
+              Anything the guest (the X68000 side) writes to a disk — in-game save data, for
+              example — is <strong>saved to the disk library automatically</strong>. Once a write is
+              detected, the image is written back as soon as disk activity settles down (the HDD is
+              saved less often because of its size). Saving also happens when you eject a disk,
+              change the machine configuration, or leave the tab, so inserting that disk again
+              picks up where you left off.
+            </p>
+            <div class="note-box">
+              <strong>The bundled system disk (human302.xdf) is the one exception.</strong>
+              It is a fixed entry at the top of the library and cannot be replaced, so writes to it
+              are not saved. If you want to modify it, download it and load it back as a separate
+              file.
+            </div>
+            <p>
+              This is stored in <strong>your browser's storage (IndexedDB)</strong>, not on a
+              server. It behaves just like cookies, and it <strong>all disappears</strong> when:
+            </p>
+            <ul>
+              <li>You clear "Cookies and other site data" (clearing only "Cached images and files" does not remove it)</li>
+              <li>You clear browsing data with site data included</li>
+              <li>You close a private/incognito window</li>
+              <li>The device runs low on space and the browser reclaims storage</li>
+              <li><strong>You don't open this site in Safari for seven days</strong> (WebKit deletes all script-writable storage)</li>
+            </ul>
+            <div class="note-box">
+              <strong>Download anything you care about, regularly.</strong>
+              The <strong>download</strong> button on each drive row exports the disk image —
+              including the guest's writes — as a file on your machine. Browser storage can vanish
+              at any time, so the more you have invested in a disk, the more worth keeping a copy.
+              Storage is also never shared with another browser or device, so use the downloaded
+              file when you want to take a disk elsewhere.
             </div>
           </div>
         </section>

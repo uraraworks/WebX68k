@@ -348,10 +348,10 @@
               X68000 エミュレータ
               <a href="https://github.com/uraraworks/px68k-libretro" target="_blank" rel="noopener">px68k-libretro</a>
               の wasm ビルドをそのまま使っているため、アプリのインストールもブラウザプラグインも
-              不要です。対応ブラウザで URL を開けば、その場で X68000 が起動します。読み込んだディスクや
-              ファイル転送で加えた変更はブラウザ内(IndexedDB)にのみ保存され、サーバーへ送信されることは
-              ありません。なおゲスト(X68000側)がディスクへ書き込んだ内容は自動保存されないため、
-              残したい場合はドライブ行のダウンロードでイメージを書き出してください。
+              不要です。対応ブラウザで URL を開けば、その場で X68000 が起動します。読み込んだディスクも、
+              ゲーム内セーブなどゲストが書き込んだ内容も、ブラウザ内(IndexedDB)にのみ保存され、
+              サーバーへ送信されることはありません。ただしブラウザのストレージは Cookie と同じく
+              サイトデータの削除等で消えるため、大事なディスクはダウンロードして保管してください。
             </p>
           </div>
           <div class="lang-en">
@@ -360,11 +360,10 @@
               WebX68k runs a WebAssembly build of the X68000 emulator
               <a href="https://github.com/uraraworks/px68k-libretro" target="_blank" rel="noopener">px68k-libretro</a>
               as-is, so there's no app to install and no browser plugin needed. Open the URL in a
-              supported browser and the X68000 starts right there. Disks you load, and any changes you
-              make through file transfer, are stored only inside your browser (IndexedDB) and are never
-              sent to a server. Note that what the guest (the X68000 side) writes to a disk is not saved
-              automatically — use the download button on the drive row to export the image if you want
-              to keep it.
+              supported browser and the X68000 starts right there. The disks you load — and whatever the
+              guest writes to them, such as in-game saves — are stored only inside your browser
+              (IndexedDB) and are never sent to a server. Browser storage is cleared along with cookies
+              when site data is deleted, so download any disk you care about to keep a copy.
             </p>
           </div>
         </section>

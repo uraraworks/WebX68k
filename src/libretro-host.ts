@@ -88,6 +88,10 @@ export interface PX68KModule {
   _get_fdd_is_reading(): number;
   _get_fdd_access_drive(): number;
   _get_sasi_is_accessing(): number;
+  _get_fdd_dirty_mask(): number;
+  _clear_fdd_dirty(drive: number): void;
+  _get_sasi_dirty(): number;
+  _clear_sasi_dirty(): void;
   // マウス配線の診断用(core-shim.c 経由で fork の libretro/mouse.c のアクセサを公開)
   _get_mouse_dx(): number;
   _get_mouse_dy(): number;
@@ -705,6 +709,26 @@ export class LibretroHost {
       fddDrive: mod._get_fdd_access_drive(),
       hddAccessing: mod._get_sasi_is_accessing() !== 0,
     };
+  }
+
+  /**
+   * ゲストがディスクへ書き込んだか(オートセーブ用のダーティフラグ)。
+   * アクセスランプ用のフラグと違い、コアは自動でクリアしないので、
+   * ホストが保存を終えるまで立ち続ける。
+   */
+  readDirtyState(): { fddMask: number; hdd: boolean } {
+    const mod = this.mod;
+    return { fddMask: mod._get_fdd_dirty_mask(), hdd: mod._get_sasi_dirty() !== 0 };
+  }
+
+  /**
+   * ダーティフラグを落とす。
+   * 吸い出しの「直前」に呼ぶこと。吸い出した後にクリアすると、吸い出し中に
+   * 発生した書き込みまで一緒に消してしまい、その分が保存されなくなる。
+   */
+  clearDirty(target: { fddDrive?: number; hdd?: boolean }): void {
+    if (target.fddDrive !== undefined) this.mod._clear_fdd_dirty(target.fddDrive);
+    if (target.hdd) this.mod._clear_sasi_dirty();
   }
 
   /** コールバック用関数テーブルエントリを解放する */
