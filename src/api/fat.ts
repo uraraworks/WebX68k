@@ -576,29 +576,92 @@ export function openDiskImage(image: Uint8Array, fileName: string): FatVolume {
 
 // --- FAT12フォーマット済みブランクFD生成 ------------------------------------
 
-/** X68000 2HD(1024B/sector × 8sector/track × 77cylinder × 2head = 1232KB/1,261,568byte)のジオメトリ定数。 */
-const FD_2HD_BYTES_PER_SECTOR = 1024;
-const FD_2HD_SECTORS_PER_TRACK = 8;
-const FD_2HD_CYLINDERS = 77;
-const FD_2HD_HEADS = 2;
-const FD_2HD_TOTAL_BYTES =
-  FD_2HD_BYTES_PER_SECTOR * FD_2HD_SECTORS_PER_TRACK * FD_2HD_CYLINDERS * FD_2HD_HEADS;
+/** ブランクFD生成でサポートするX68000標準フォーマットの識別子。 */
+export type BlankFdFormatId = '2hd1232' | '2hd1440' | '2dd640' | '2dd720';
+
+interface FdGeometry {
+  bytesPerSector: number;
+  sectorsPerTrack: number;
+  cylinders: number;
+  heads: number;
+  totalSectors: number;
+  media: number;
+  rootEntries: number;
+  sectorsPerCluster: number;
+  sectorsPerFat: number;
+}
+
+/** X68000標準フォーマットのジオメトリ定数(BPBにそのまま書き込む値)。 */
+const FD_GEOMETRIES: Record<BlankFdFormatId, FdGeometry> = {
+  // 1024B/sector × 8sector/track × 77cylinder × 2head = 1232KB/1,261,568byte(XDF標準)。
+  '2hd1232': {
+    bytesPerSector: 1024,
+    sectorsPerTrack: 8,
+    cylinders: 77,
+    heads: 2,
+    totalSectors: 1232,
+    media: 0xfe,
+    rootEntries: 192,
+    sectorsPerCluster: 1,
+    sectorsPerFat: 2,
+  },
+  '2hd1440': {
+    bytesPerSector: 512,
+    sectorsPerTrack: 18,
+    cylinders: 80,
+    heads: 2,
+    totalSectors: 2880,
+    media: 0xf0,
+    rootEntries: 224,
+    sectorsPerCluster: 1,
+    sectorsPerFat: 9,
+  },
+  '2dd640': {
+    bytesPerSector: 512,
+    sectorsPerTrack: 8,
+    cylinders: 80,
+    heads: 2,
+    totalSectors: 1280,
+    media: 0xfb,
+    rootEntries: 112,
+    sectorsPerCluster: 2,
+    sectorsPerFat: 2,
+  },
+  '2dd720': {
+    bytesPerSector: 512,
+    sectorsPerTrack: 9,
+    cylinders: 80,
+    heads: 2,
+    totalSectors: 1440,
+    media: 0xf9,
+    rootEntries: 112,
+    sectorsPerCluster: 2,
+    sectorsPerFat: 3,
+  },
+};
 
 /**
- * X68000 2HD(1232KB)のFAT12フォーマット済みベタイメージを新規生成する。
+ * X68000標準フォーマット(既定は2HD 1232KB)のFAT12フォーマット済みベタイメージを新規生成する。
  * Human68k側でのFORMATが不要な、そのままFATとして読み書きできるブランクFDを返す。
  */
-export function createFormattedFd(): Uint8Array {
-  const bytesPerSector = FD_2HD_BYTES_PER_SECTOR;
-  const sectorsPerCluster = 1;
+export function createFormattedFd(formatId: BlankFdFormatId = '2hd1232'): Uint8Array {
+  const geometry = FD_GEOMETRIES[formatId];
+  const {
+    bytesPerSector,
+    sectorsPerTrack,
+    cylinders,
+    heads,
+    totalSectors,
+    media,
+    rootEntries,
+    sectorsPerCluster,
+    sectorsPerFat,
+  } = geometry;
   const reservedSectors = 1;
   const numFats = 2;
-  const rootEntries = 192;
-  const totalSectors = 1232;
-  const media = 0xfe;
-  const sectorsPerFat = 2;
 
-  const image = new Uint8Array(FD_2HD_TOTAL_BYTES);
+  const totalBytes = bytesPerSector * sectorsPerTrack * cylinders * heads;
+  const image = new Uint8Array(totalBytes);
 
   // ブートセクタ(BPB)
   image[0] = 0xeb; // ジャンプ命令(ダミー)
@@ -612,8 +675,8 @@ export function createFormattedFd(): Uint8Array {
   writeU16(image, 19, totalSectors);
   image[21] = media;
   writeU16(image, 22, sectorsPerFat);
-  writeU16(image, 24, FD_2HD_SECTORS_PER_TRACK);
-  writeU16(image, 26, FD_2HD_HEADS);
+  writeU16(image, 24, sectorsPerTrack);
+  writeU16(image, 26, heads);
   writeU32(image, 32, 0);
   // ブートシグネチャ
   image[510] = 0x55;

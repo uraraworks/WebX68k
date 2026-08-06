@@ -10,6 +10,7 @@ import {
   fatReadFile,
   fatWriteFile,
   openDiskImage,
+  type BlankFdFormatId,
   type FatEntry,
 } from './api/fat';
 import { loadBiosFile, saveBiosFile } from './bios-store';
@@ -20,10 +21,6 @@ import {
   deleteDiskGroup,
   detectDiskContentKind,
   ensureDiskExtension,
-  FD_SIZE_2DD_640,
-  FD_SIZE_2DD_720,
-  FD_SIZE_2HD_1232,
-  FD_SIZE_2HD_1440,
   fileKeyFor,
   getDisk,
   listDisks,
@@ -1270,12 +1267,13 @@ async function openSlotLibraryMenu(slot: SlotId, anchorEl: HTMLButtonElement): P
 }
 
 // X68000 標準フォーマット(2HD 1232KB=XDF標準 / 2HD 1440KB / 2DD 640KB / 2DD 720KB)。
-// 中身はゼロ埋め(Human68kのFORMAT.Xで初期化する前提)。
-const BLANK_FORMATS: Array<{ id: string; labelKey: 'blankFormat2hd1232' | 'blankFormat2hd1440' | 'blankFormat2dd640' | 'blankFormat2dd720'; size: number }> = [
-  { id: '2hd1232', labelKey: 'blankFormat2hd1232', size: FD_SIZE_2HD_1232 },
-  { id: '2hd1440', labelKey: 'blankFormat2hd1440', size: FD_SIZE_2HD_1440 },
-  { id: '2dd640', labelKey: 'blankFormat2dd640', size: FD_SIZE_2DD_640 },
-  { id: '2dd720', labelKey: 'blankFormat2dd720', size: FD_SIZE_2DD_720 },
+// 中身はFAT12フォーマット済み(createFormattedFd())で生成する。
+// イメージ長は createFormattedFd() 側のジオメトリで決まる(disk-store.ts の FD_SIZE_* と一致)。
+const BLANK_FORMATS: Array<{ id: BlankFdFormatId; labelKey: 'blankFormat2hd1232' | 'blankFormat2hd1440' | 'blankFormat2dd640' | 'blankFormat2dd720' }> = [
+  { id: '2hd1232', labelKey: 'blankFormat2hd1232' },
+  { id: '2hd1440', labelKey: 'blankFormat2hd1440' },
+  { id: '2dd640', labelKey: 'blankFormat2dd640' },
+  { id: '2dd720', labelKey: 'blankFormat2dd720' },
 ];
 
 /** 既存のライブラリ登録名と重複しないブランクディスク名を作る(WebNP2の createBlankFd の命名規則を踏襲)。 */
@@ -1287,12 +1285,12 @@ function uniqueBlankName(baseName: string, existingNames: Set<string>, ext = '.x
   return name;
 }
 
-/** 未フォーマットのブランクディスク(ゼロ埋め)を生成し、指定スロットへ挿入してライブラリにも登録する。 */
-async function handleCreateBlank(slot: SlotId, formatId: string, sizeBytes: number): Promise<void> {
+/** FAT12フォーマット済みのブランクディスクを生成し、指定スロットへ挿入してライブラリにも登録する。 */
+async function handleCreateBlank(slot: SlotId, formatId: BlankFdFormatId): Promise<void> {
   const stored = await listDisks();
   const existingNames = new Set(stored.map((d) => d.name));
   const name = uniqueBlankName(`blank_${formatId}`, existingNames);
-  const data = new Uint8Array(sizeBytes); // ゼロ埋め
+  const data = createFormattedFd(formatId);
   const sourceKey = fileKeyFor(name, data.length);
   await saveDisk({ sourceKey, name, bytes: data, savedAt: Date.now() });
   await insertDiskBytes(slot, name, data, undefined, sourceKey);
@@ -1330,7 +1328,7 @@ function openSlotBlankMenu(slot: SlotId, anchorEl: HTMLButtonElement): void {
     const row = menuRow(t(fmt.labelKey));
     onActivate(row, () => {
       closeSlotPopupMenu();
-      void handleCreateBlank(slot, fmt.id, fmt.size);
+      void handleCreateBlank(slot, fmt.id);
     });
     slotPopupMenu.append(row);
   }
