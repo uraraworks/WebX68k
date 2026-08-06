@@ -513,6 +513,28 @@ function fddDriveOf(slot: SlotId): number | null {
 }
 
 /**
+ * 実行中スロットの「現時点の」イメージバイト列を取り出す(未起動/未マウントなら null)。
+ *
+ * FDD は px68k がイメージをまるごとメモリに載せて動かし、FS 上のファイルへ書き戻すのは
+ * Eject のときだけなので、ファイルをそのまま読むと「マウントした瞬間の内容」しか得られない
+ * (ゲストが作ったファイルは見えないし、それを土台に書き戻すとゲストの書き込みが消える)。
+ * そこで一度 Eject して書き戻させ、同じファイルを入れ直してから読む。
+ * HDD(SASI)はセクタ単位で FS のファイルを直接書き換えるため、そのまま読めばよい。
+ */
+function readLiveSlotImage(slot: SlotId): Uint8Array | null {
+  const path = mountedPaths[slot];
+  if (!host || !running || !path) return null;
+  const drive = fddDriveOf(slot);
+  if (drive === null) return host.readFile(path);
+  host.setFddImage(drive, '');
+  try {
+    return host.readFile(path);
+  } finally {
+    host.setFddImage(drive, path);
+  }
+}
+
+/**
  * 実行中の FDD にディスクをホットマウントする(コア再起動なし)。
  * px68k の FDD_SetFD()/FDD_EjectFD() は実行中に呼んでも安全で、FDC の割り込みを通じて
  * ゲストにメディア交換として伝わるため、実機同様に「入れ替えただけ」の挙動になる。
@@ -520,12 +542,17 @@ function fddDriveOf(slot: SlotId): number | null {
 function hotSwapFdd(slot: SlotId, drive: number, image: { name: string; data: Uint8Array } | null): void {
   const oldPath = mountedPaths[slot];
   if (image) {
+    // 必ず先に Eject すること。FDD_SetFD は内部で旧ディスクを Eject し、そのとき
+    // XDF_Eject/DIM_Eject/D88_Eject が「コアがメモリに持っているイメージ」を無条件で
+    // ファイルへ書き戻す。ファイルを先に書いてから SetFD すると、同名パス(=同じスロットへ
+    // 同じディスクを入れ直すファイルマネージャの書き戻し)では古い内容で上書きされ、
+    // 転送・mkdir の結果が丸ごと消える。test/core-fdd-hotswap.test.ts で実測済み。
+    host!.setFddImage(drive, '');
+    mountedPaths[slot] = null;
     const path = host!.writeDiskImage(`${slot}_${sanitizeFileName(image.name)}`, image.data);
-    // FDD_SetFD は内部で先に旧ディスクを Eject する(= 旧イメージのファイルへ書き戻す)ため、
-    // 新パスをセットしてから旧ファイルを片付ける順序にすること。
+    if (oldPath && oldPath !== path) host!.removeFile(oldPath);
     host!.setFddImage(drive, path);
     mountedPaths[slot] = path;
-    if (oldPath && oldPath !== path) host!.removeFile(oldPath);
   } else {
     // Eject 側もコア内部で FS のファイルへ書き戻してから外れるので、その後に削除する。
     host!.setFddImage(drive, '');
@@ -1326,16 +1353,13 @@ async function handleDownloadDisk(slot: SlotId): Promise<void> {
     alert(t('alertDownloadNoImage'));
     return;
   }
-  // 起動中でFSへ書き込み済みなら、ゲスト側の書き込みを反映した最新バイト列を
-  // mod.FS.readFile() で読み直す(コアは/game配下のファイルを直接書き換えるため)。
-  const path = mountedPaths[slot];
+  // 起動中でFSへ書き込み済みなら、ゲスト側の書き込みを反映した最新バイト列を読み直す
+  // (FDD はコアのメモリ上にあるので readLiveSlotImage() が Eject 経由で吸い出す)。
   let bytes: Uint8Array = pending.data;
-  if (host && running && path) {
-    try {
-      bytes = host.readFile(path);
-    } catch (err) {
-      console.error('FS からのディスク読み出しに失敗しました。挿入時点のバイト列を使用します。', err);
-    }
+  try {
+    bytes = readLiveSlotImage(slot) ?? pending.data;
+  } catch (err) {
+    console.error('FS からのディスク読み出しに失敗しました。挿入時点のバイト列を使用します。', err);
   }
   const blob = new Blob([bytes.slice()], { type: 'application/octet-stream' });
   const url = URL.createObjectURL(blob);
@@ -2536,8 +2560,9 @@ interface FmVolumeHandle {
 
 /**
  * スロットのディスクイメージをFATボリュームとして開く。
- * 実行中かつ実際にコアへマウント済みなら、ゲスト側の書き込みを反映した最新バイト列を
- * FS(host.readFile)から読み直す(コアは/game配下のファイルを直接書き換えるため)。
+ * 実行中かつ実際にコアへマウント済みなら、readLiveSlotImage() でゲスト側の書き込みを
+ * 反映した最新バイト列を取り出す(FDD はコアのメモリ上にあり、Eject しないとファイルへ
+ * 出てこないため。ここを怠るとゲストが作ったファイルが見えず、書き戻しで消える)。
  * persist() は書き換え結果を slots[] へ書き戻し、実行中なら反映する。反映方法は
  * 通常のディスク差し替えと揃えており、FDD はホットマウントで入れ替え(リセット無し)。
  * 起動中の HDD は交換禁止(isSlotLocked)なので、読み出し専用として扱い persist() は拒否する。
@@ -2545,8 +2570,7 @@ interface FmVolumeHandle {
 function openSlotVolume(slot: SlotId): FmVolumeHandle {
   const pending = slots[slot];
   if (!pending) throw new Error('ディスクが挿入されていません');
-  const path = mountedPaths[slot];
-  const image = host && running && path ? host.readFile(path) : pending.data;
+  const image = readLiveSlotImage(slot) ?? pending.data;
   const vol = openDiskImage(image, pending.name);
   return {
     vol,
@@ -2570,6 +2594,13 @@ function openSlotVolume(slot: SlotId): FmVolumeHandle {
 
 /** ライブラリ(IndexedDB)上のディスクイメージをFATボリュームとして開く。書き戻しはIndexedDBへ保存する。 */
 async function openLibraryVolume(sourceKey: string): Promise<FmVolumeHandle> {
+  // 同じイメージがスロットにマウント済みなら、スロット側を実体として扱う。
+  // ライブラリの複製を書き換えても、マウント中のディスク(コアのメモリ上)には届かず、
+  // 「転送したのにゲストから見えない」状態になるため。openSlotVolume の persist が
+  // IndexedDB へも書き戻すので、ライブラリ側の内容もずれない。
+  const mountedSlot = SLOT_IDS.find((slot) => slots[slot]?.sourceKey === sourceKey);
+  if (mountedSlot) return openSlotVolume(mountedSlot);
+
   const stored = await getDisk(sourceKey);
   if (!stored) throw new Error('ライブラリにイメージが見つかりません');
   const image = stored.bytes.slice();
