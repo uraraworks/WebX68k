@@ -12,7 +12,11 @@ permissions:
 
 concurrency:
   group: pages
-  cancel-in-progress: true
+  # Pages のデプロイは途中でキャンセルすると配信側に中途半端な状態が残り、後続が
+  # deployment_queued のまま返ってこなくなることがある(GitHub 公式のスターター
+  # ワークフローが Pages 向けに false を指定しているのはこのため)。連続プッシュ時は
+  # 打ち切らずに順番待ちさせる。
+  cancel-in-progress: false
 
 jobs:
   build:
