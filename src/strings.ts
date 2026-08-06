@@ -162,6 +162,7 @@ interface Dict {
   errHddInvalidHeader(args: { format: string }): string;
   errHddNoFatPartition(): string;
   errInvalidShortName(args: { name: string }): string;
+  errNotFormatted(): string;
 
   // --- URLパラメータ(?fd1=/?fd2=/?hdd=/?system=/?run=)によるディスク自動セット ---
   /** IndexedDBに保存済みのURL由来イメージを再利用するときのトースト。 */
@@ -340,6 +341,8 @@ const STRINGS: Record<Lang, Dict> = {
     errHddNoFatPartition: () => 'HDDイメージ内にFAT12/16パーティションが見つかりません。',
     errInvalidShortName: ({ name }) =>
       `ファイル名は8.3形式にしてください(2バイト文字・長い名前は不可): ${name}`,
+    errNotFormatted: () =>
+      'このディスクは未フォーマットか、FAT12/16として読めない形式です。Human68kのFORMATコマンドでフォーマットするか、フォーマット済みのブランクディスクを作成してください。',
 
     urlDiskResumed: ({ label, name }) => `${label}: 前回保存した「${name}」を復元しました。`,
     urlFetching: ({ label, name }) => `${label}: 「${name}」を取得しています…`,
@@ -508,6 +511,8 @@ const STRINGS: Record<Lang, Dict> = {
     errHddNoFatPartition: () => 'No FAT12/16 partition was found in this HDD image.',
     errInvalidShortName: ({ name }) =>
       `File names must be in 8.3 form (no double-byte or long names): ${name}`,
+    errNotFormatted: () =>
+      'This disk is unformatted, or not readable as FAT12/16. Format it with the Human68k FORMAT command, or create a pre-formatted blank disk.',
 
     urlDiskResumed: ({ label, name }) => `${label}: Resumed the previously saved "${name}".`,
     urlFetching: ({ label, name }) => `${label}: Fetching "${name}"...`,
@@ -595,6 +600,8 @@ export function describeError(err: unknown): string {
         return t('errHddNoFatPartition');
       case 'invalidShortName':
         return t('errInvalidShortName', params);
+      case 'notFormatted':
+        return t('errNotFormatted');
       default:
         break;
     }

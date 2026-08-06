@@ -14,13 +14,13 @@ import { decodeSjis } from './sjis';
 /**
  * 利用者向けのディスク操作エラー。UIで言語別のメッセージへ差し替えられるよう
  * コードを持たせる(message自体は開発時/ブリッジ経由での確認用のフォールバック)。
- * 内部整合性の異常(不正なBPB等)は従来どおり素のErrorのままにしてある。
  */
 export type DiskErrorCode =
   | 'd88NotEditable'
   | 'hddInvalidHeader'
   | 'hddNoFatPartition'
-  | 'invalidShortName';
+  | 'invalidShortName'
+  | 'notFormatted';
 
 export class DiskError extends Error {
   constructor(
@@ -115,7 +115,7 @@ function writeU32BE(buf: Uint8Array, off: number, val: number): void {
  */
 export function openFat(image: Uint8Array, offset = 0): FatVolume {
   if (image.length < offset + 512) {
-    throw new Error(`openFat: image too small (${image.length} bytes)`);
+    throw new DiskError('notFormatted', `openFat: image too small (${image.length} bytes)`);
   }
   const b = image;
   const o = offset;
@@ -132,19 +132,19 @@ export function openFat(image: Uint8Array, offset = 0): FatVolume {
   const totalSectors = totalSectors16 !== 0 ? totalSectors16 : totalSectors32;
 
   if (!VALID_SECTOR_SIZES.includes(bytesPerSector)) {
-    throw new Error(`openFat: invalid BPB (bytes/sector=${bytesPerSector})`);
+    throw new DiskError('notFormatted', `openFat: invalid BPB (bytes/sector=${bytesPerSector})`);
   }
   if (sectorsPerCluster === 0) {
-    throw new Error('openFat: invalid BPB (sectors/cluster=0)');
+    throw new DiskError('notFormatted', 'openFat: invalid BPB (sectors/cluster=0)');
   }
   if (numFats === 0) {
-    throw new Error('openFat: invalid BPB (FAT count=0)');
+    throw new DiskError('notFormatted', 'openFat: invalid BPB (FAT count=0)');
   }
   if (sectorsPerFat === 0) {
-    throw new Error('openFat: invalid BPB (sectors/FAT=0)');
+    throw new DiskError('notFormatted', 'openFat: invalid BPB (sectors/FAT=0)');
   }
   if (totalSectors === 0) {
-    throw new Error('openFat: invalid BPB (total sectors=0)');
+    throw new DiskError('notFormatted', 'openFat: invalid BPB (total sectors=0)');
   }
 
   const rootDirSectors = Math.ceil((rootEntries * DIR_ENTRY_SIZE) / bytesPerSector);
@@ -157,7 +157,7 @@ export function openFat(image: Uint8Array, offset = 0): FatVolume {
 
   const volumeEnd = o + totalSectors * bytesPerSector;
   if (dataSectors < 0 || volumeEnd > image.length) {
-    throw new Error(`openFat: BPB volume exceeds image (${volumeEnd} > ${image.length})`);
+    throw new DiskError('notFormatted', `openFat: BPB volume exceeds image (${volumeEnd} > ${image.length})`);
   }
 
   return {

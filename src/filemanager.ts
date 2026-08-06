@@ -453,8 +453,13 @@ export function buildFileManagerDialog(container: HTMLElement, callbacks: FileMa
       renderDiskList();
       renderSpace();
     } catch (err) {
+      // 空き容量表示も戻すこと。残したままだと直前に選んでいた別ディスクの数値が
+      // そのまま出て、読めなかったディスクの容量に見えてしまう。
       currentEntries = [];
+      freeBytes = 0;
+      totalBytes = 0;
       renderDiskList();
+      renderSpace();
       setStatus(t('fmListLoadFailed', { message: describeError(err) }), true);
     }
   }
