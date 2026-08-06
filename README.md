@@ -187,7 +187,7 @@ redistributable:
 |---|---|---|
 | `iplrom.dat` | X68000 IPL-ROM v1.0 | Released for free redistribution by Sharp Corp. and other rights holders via the `@nifty` Sharp Products Users Forum. Redistributed unmodified and free of charge under the terms in `許諾条件.txt` |
 | `human302.xdf` | Human68k version 3.02 system disk | Same terms as above |
-| `許諾条件.txt` | License terms for the two files above | **Must be included when redistributing** — do not remove it |
+| [`許諾条件.txt`](public/system/許諾条件.txt) | License terms for the two files above | **Must be included when redistributing** — do not remove it. It sits next to the images in `public/system/`, and is served on the published site at [`/system/許諾条件.txt`](https://uraraworks.github.io/WebX68k/system/許諾条件.txt) |
 | `cgrom.dat` | Font ROM (CGROM) | The real hardware CGROM isn't covered by the free-redistribution grant, so this is a self-generated replacement built from the public-domain Shinonome font (`tools/gen-cgrom/`). Glyph shapes differ from the real ROM |
 
 If you have a real, dumped IPL-ROM/CGROM, you can load them from the
