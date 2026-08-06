@@ -456,8 +456,10 @@
               できます。保存データは gzip 圧縮されます。
             </p>
             <p>
-              ステートにはディスクイメージの中身は含まれないため、復元は「いま挿さっているディスク」
-              の上に行われます。セーブ時と違うディスク構成のまま復元するとゲストが正しく動かないため、
+              保存されるのは本体側(CPU・メモリ・各コントローラ)の状態だけで、ディスクイメージの
+              中身は含まれません。そのため復元しても、ドライブのディスクが入れ替わったり、中身が
+              保存時点へ戻ったりすることはなく、そのとき挿さっているディスクがそのまま使われます。
+              保存したときと違うディスクを挿した状態で復元するとゲストが正しく動かないため、
               ロード時に保存時のドライブ構成と現在の構成を照合し、食い違う場合は確認ダイアログを
               表示してから復元する安全策を取っています。
             </p>
@@ -469,9 +471,11 @@
               (IndexedDB). Saved data is gzip-compressed.
             </p>
             <p>
-              A saved state doesn't include the contents of disk images, so restoring it applies on
-              top of whatever disks are currently inserted. Restoring with a different disk setup than
-              when you saved could make the guest misbehave, so on load WebX68k compares the drive
+              What gets saved is the machine state only — CPU, memory and the various controllers —
+              not the contents of the disk images. Restoring therefore never swaps the disks in the
+              drives or rewinds their contents to how they were at save time: whatever is inserted at
+              that moment keeps being used. Restoring with a different disk inserted than when you
+              saved could make the guest misbehave, so on load WebX68k compares the drive
               configuration at save time against the current one and shows a confirmation dialog
               before restoring if they don't match.
             </p>
