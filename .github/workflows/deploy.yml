@@ -37,3 +37,8 @@ jobs:
     steps:
       - id: deployment
         uses: actions/deploy-pages@v4
+        with:
+          # 既定の10分では Pages 側が deployment_queued のまま返ってこず打ち切られることがある
+          # (2026-08-06 に4回連続で Timeout reached, aborting!)。ビルドとアップロードは常に
+          # 成功しているので、単に待ちを長くする。上限まで待っても失敗するなら Pages 側の問題。
+          timeout: 1800000
