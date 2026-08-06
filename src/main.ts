@@ -1268,15 +1268,22 @@ async function openSlotLibraryMenu(slot: SlotId, anchorEl: HTMLButtonElement): P
   renderSlotLibraryMenu(slot, anchorEl, nodes);
 }
 
-// X68000 標準フォーマット(2HD 1232KB=XDF標準 / 2HD 1440KB / 2DD 640KB / 2DD 720KB)。
-// 中身はFAT12フォーマット済み(createFormattedFd())で生成する。
-// イメージ長は createFormattedFd() 側のジオメトリで決まる(disk-store.ts の FD_SIZE_* と一致)。
-const BLANK_FORMATS: Array<{ id: BlankFdFormatId; labelKey: 'blankFormat2hd1232' | 'blankFormat2hd1440' | 'blankFormat2dd640' | 'blankFormat2dd720' }> = [
-  { id: '2hd1232', labelKey: 'blankFormat2hd1232' },
-  { id: '2hd1440', labelKey: 'blankFormat2hd1440' },
-  { id: '2dd640', labelKey: 'blankFormat2dd640' },
-  { id: '2dd720', labelKey: 'blankFormat2dd720' },
-];
+/*
+ * ブランクディスクは 2HD 1232KB(XDF標準)のみ作れる。中身はFAT12フォーマット済み
+ * (createFormattedFd())で生成する。
+ *
+ * かつては 2HD 1440KB / 2DD 640KB / 2DD 720KB も選べたが、これらは動作しないので外した。
+ * px68k のベタイメージ(XDF)ドライバは x68k/disk_xdf.c が 1,261,568 バイト固定で malloc/read/
+ * write し、セクタ読み書きも `memcpy(buf, XDFImg+pos, 1024)` と 1024B 決め打ちになっている。
+ * つまり 512B/セクタの形式(1440KB・2DD)は、FAT としては正しく作れてもコアが 1024B/セクタとして
+ * 読むため、書き込みが本来と違う位置に落ちてディレクトリに現れない(見かけ上は書き込みに成功する
+ * ので気づきにくい)。拡張子による判定(fdd.c の GetDiskType)で .d88/.dim 以外は XDF 扱いになる。
+ *
+ * これらの形式に対応するなら、ベタイメージではなくセクタ長を持てる D88 コンテナで書き出す必要が
+ * ある(px68k の disk_d88.c はセクタ単位の情報を持つので任意ジオメトリを扱える)。その場合は
+ * ファイル転送(fat.ts)側も D88 の読み書きに対応させること。
+ * createFormattedFd() 自体は他ジオメトリのFATも正しく生成できるので、そのまま残してある。
+ */
 
 /** 既存のライブラリ登録名と重複しないブランクディスク名を作る(WebNP2の createBlankFd の命名規則を踏襲)。 */
 function uniqueBlankName(baseName: string, existingNames: Set<string>, ext = '.xdf'): string {
@@ -1316,25 +1323,6 @@ async function handleCreateBlankHdd(): Promise<void> {
   await insertDiskBytes('hdd', name, data, undefined, sourceKey);
   if (!libraryBackdrop.classList.contains('hidden')) void refreshLibraryList();
   showToast(t('statusHddBlankCreated', { name }));
-}
-
-/** 「ブランク作成」ポップアップ: X68000標準フォーマットから選ばせる。 */
-function openSlotBlankMenu(slot: SlotId, anchorEl: HTMLButtonElement): void {
-  slotPopupMenu.textContent = '';
-  const title = document.createElement('div');
-  title.className = 'library-menu-title';
-  title.textContent = t('slotCreateBlankTitle', { drive: slotDisplayName(slot) });
-  slotPopupMenu.append(title);
-
-  for (const fmt of BLANK_FORMATS) {
-    const row = menuRow(t(fmt.labelKey));
-    onActivate(row, () => {
-      closeSlotPopupMenu();
-      void handleCreateBlank(slot, fmt.id);
-    });
-    slotPopupMenu.append(row);
-  }
-  positionSlotPopupMenu(anchorEl);
 }
 
 slotPopupMenu.addEventListener('click', (e) => e.stopPropagation());
@@ -1474,9 +1462,9 @@ for (const slot of SLOT_IDS) {
       closeSlotPopupMenu();
       return;
     }
-    // HDDはフォーマットが単一(FAT16固定)なのでメニューを出さず即作成する。FDは従来通り選択メニュー。
+    // HDD は FAT16 固定、FD も 2HD 1232KB のみになったのでメニューを出さず即作成する。
     if (slot === 'hdd') void handleCreateBlankHdd();
-    else openSlotBlankMenu(slot, els.blankBtn!);
+    else void handleCreateBlank(slot, '2hd1232');
   });
   els.ejectBtn.addEventListener('click', () => ejectSlot(slot));
   els.downloadBtn.addEventListener('click', () => void handleDownloadDisk(slot));

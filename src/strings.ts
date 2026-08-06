@@ -63,19 +63,14 @@ interface Dict {
   slotInsertFromLibrary(): string;
   /** 「ライブラリから挿入」メニューの見出し。 */
   slotInsertFromLibraryTitle(args: { drive: string }): string;
+  /** FDDスロットの「ブランク作成」ボタン(2HD 1232KB 固定で即作成)。 */
   slotCreateBlank(): string;
-  /** 「ブランク作成」メニューの見出し。 */
-  slotCreateBlankTitle(args: { drive: string }): string;
   /** HDDスロットの「ブランクHDD作成」ボタン(起動前のみ・単一フォーマットで即作成)。 */
   hddCreateBlank(): string;
   /** ブランクHDDを作ってセットしたときの通知(トースト)。 */
   statusHddBlankCreated(args: { name: string }): string;
   slotDownload(): string;
   libraryMenuEmpty(): string;
-  blankFormat2hd1232(): string;
-  blankFormat2hd1440(): string;
-  blankFormat2dd640(): string;
-  blankFormat2dd720(): string;
   alertBiosMissing(): string;
   alertBootFailed(args: { message: string }): string;
   alertDownloadNoImage(): string;
@@ -250,16 +245,11 @@ const STRINGS: Record<Lang, Dict> = {
     slotInsertFromLibrary: () => 'ライブラリから挿入',
     slotInsertFromLibraryTitle: ({ drive }) => `${drive} へ挿入`,
     slotCreateBlank: () => 'ブランク作成',
-    slotCreateBlankTitle: ({ drive }) => `${drive} へブランクディスクを作成`,
     hddCreateBlank: () => 'ブランクHDDを作成(40MB・FAT16)',
     statusHddBlankCreated: ({ name }) =>
       `ブランクHDD「${name}」を作成してセットしました(40MB・FAT16)。単体では起動できないため、FDDからHuman68kを起動してデータ用ドライブとして使ってください。`,
     slotDownload: () => 'ダウンロード',
     libraryMenuEmpty: () => '保存済みのディスクイメージはありません。',
-    blankFormat2hd1232: () => '2HD 1232KB (XDF標準)',
-    blankFormat2hd1440: () => '2HD 1440KB',
-    blankFormat2dd640: () => '2DD 640KB',
-    blankFormat2dd720: () => '2DD 720KB',
     alertBiosMissing: () => 'BIOS ファイル (IPLROM.DAT / CGROM.DAT) を設定してください。',
     alertBootFailed: ({ message }) => `起動に失敗しました: ${message}`,
     alertDownloadNoImage: () => 'このドライブにはディスクが挿入されていません。',
@@ -420,16 +410,11 @@ const STRINGS: Record<Lang, Dict> = {
     slotInsertFromLibrary: () => 'Insert from library',
     slotInsertFromLibraryTitle: ({ drive }) => `Insert into ${drive}`,
     slotCreateBlank: () => 'New Blank',
-    slotCreateBlankTitle: ({ drive }) => `Create blank disk for ${drive}`,
     hddCreateBlank: () => 'Create blank HDD (40MB, FAT16)',
     statusHddBlankCreated: ({ name }) =>
       `Created and set blank HDD "${name}" (40MB, FAT16). It is not bootable on its own — boot Human68k from an FDD and use it as a data drive.`,
     slotDownload: () => 'Download',
     libraryMenuEmpty: () => 'No saved disk images yet.',
-    blankFormat2hd1232: () => '2HD 1232KB (XDF standard)',
-    blankFormat2hd1440: () => '2HD 1440KB',
-    blankFormat2dd640: () => '2DD 640KB',
-    blankFormat2dd720: () => '2DD 720KB',
     alertBiosMissing: () => 'Please set the BIOS files (IPLROM.DAT / CGROM.DAT).',
     alertBootFailed: ({ message }) => `Failed to start: ${message}`,
     alertDownloadNoImage: () => 'No disk is inserted in this drive.',

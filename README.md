@@ -288,7 +288,7 @@ This repository is **GPLv2** ([COPYING](COPYING)).
   IPL, so it's a data drive only)
 - Real access lamps (lit only on actual read/write frames, not just "disk
   inserted"), tracked per-drive for FDD
-- Disk Library (browser-side, IndexedDB), blank FD creation, per-slot
+- Disk Library (browser-side, IndexedDB), blank FD creation (2HD 1232KB), per-slot
   download
 - Loading disk images from a ZIP/LZH archive (drop, file picker, or the `fd1`/
   `fd2`/`hdd` URL parameters): a single image inside goes straight into the
