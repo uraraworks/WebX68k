@@ -124,6 +124,12 @@ The save/load toolbar buttons snapshot and restore the full emulator state
 quick-save slot is kept. If the currently inserted disks don't match what
 was mounted at save time, you'll be asked to confirm before restoring.
 
+A state records *which* disks were mounted, not their contents. Anything the
+guest writes to a disk (in-game save data, for example) is lost when the disk
+is ejected or the page is reloaded, since it isn't written back to the disk
+library automatically — export the image with the drive row's download button
+to keep it.
+
 ### Screenshot
 
 The "Screenshot" toolbar button saves the current display as a PNG

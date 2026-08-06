@@ -619,6 +619,18 @@
               キャプチャの解除は <strong>Esc</strong> キー(ブラウザ標準の Pointer Lock API の機能)です。
               マウスボタンの入力は、キャプチャ中のみゲストへ渡ります。
             </p>
+            <p>
+              キャプチャしていないときは<strong>絶対位置追従モード</strong>で動きます。ホスト側の
+              カーソル位置に合わせて、ゲスト側カーソルが同じ位置へ来るように移動量を送ります
+              (X68000のマウスは相対量しか送れないため、IOCSのワークエリアから実際のカーソル
+              位置を読み取る閉ループになっています)。
+            </p>
+            <div class="note-box">
+              <strong>注意:</strong> <strong>追従モードが使えないソフトもあります</strong>。IOCSの
+              ワークエリアを使わず自前でカーソルを管理するソフトでは、移動量を送ってもカーソルが
+              動きません。この場合は自動的に追従を止めて「このソフトでは追従が使えません」と
+              通知しますので、右ダブルクリックでキャプチャして操作してください。
+            </div>
             <div class="note-box">
               <strong>注意:</strong> フルスクリーン表示中にマウスをキャプチャしている場合、
               <strong>Esc キーを1回押すとキャプチャとフルスクリーンが同時に解除されます</strong>
@@ -679,6 +691,19 @@
               Release capture with <strong>Esc</strong> (a standard feature of the browser's
               Pointer Lock API). Mouse button input is only passed to the guest while captured.
             </p>
+            <p>
+              While not captured, the mouse runs in <strong>absolute position tracking mode</strong>:
+              movement deltas are sent so that the guest cursor lands where your host cursor is.
+              (The X68000 mouse can only report relative movement, so this is a closed loop that
+              reads the actual cursor position back from the IOCS work area.)
+            </p>
+            <div class="note-box">
+              <strong>Note:</strong> <strong>Tracking mode doesn't work with every piece of
+              software.</strong> Titles that manage the cursor themselves instead of using the IOCS
+              work area won't move their cursor no matter what deltas we send. In that case tracking
+              is disabled automatically with a "Mouse tracking is unavailable for this software"
+              toast — right double-click to capture the mouse and use it that way instead.
+            </div>
             <div class="note-box">
               <strong>Note:</strong> If the mouse is captured while fullscreen is active,
               <strong>pressing Esc once releases both the capture and fullscreen at the same
@@ -707,6 +732,15 @@
               一緒に記録されます。復元時に現在のディスク構成と異なる場合は確認ダイアログが
               表示され、キャンセルすれば復元を中止できます。
             </p>
+            <div class="note-box">
+              <strong>注意:</strong> ステートに<strong>ディスクイメージの中身は含まれません</strong>
+              (記録されるのは「どのディスクが挿入されていたか」だけです)。またゲームなどが
+              ディスクへ書き込んだ内容(セーブデータ等)は、<strong>ディスクを取り出すか
+              ページを再読み込みすると失われます</strong>。ディスクライブラリへ自動では
+              書き戻していないためです。残したい場合は、ドライブ行の<strong>ダウンロード</strong>
+              ボタンでそのときのディスクイメージを書き出して保管し、次回はそのファイルを
+              読み込ませてください(ダウンロードはゲストの書き込みを反映した内容を取り出します)。
+            </div>
           </div>
           <div class="lang-en">
             <h2>Saving state and resuming</h2>
@@ -719,6 +753,14 @@
               alongside the state. If it differs from the current configuration at load time, a
               confirmation dialog appears; canceling it aborts the restore.
             </p>
+            <div class="note-box">
+              <strong>Note:</strong> A state does <strong>not</strong> contain the contents of the
+              disk images — only which disks were inserted. Anything the guest writes to a disk
+              (in-game save data, for example) is <strong>lost when you eject the disk or reload
+              the page</strong>, because it is not written back to the disk library automatically.
+              To keep it, use the <strong>download</strong> button on the drive row to export the
+              current image (the export reflects the guest's writes) and load that file next time.
+            </div>
           </div>
         </section>
 
