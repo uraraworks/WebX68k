@@ -184,6 +184,25 @@ interface Dict {
   urlArchiveNeedsSelection(): string;
   /** run=1自動起動時、自動再生制限でAudioContextがsuspendedのままのときに出す表示。 */
   audioMutedBanner(): string;
+
+  // --- ジョイスティック設定ダイアログ(表示のみ。割当編集は次フェーズ) ---
+  toolbarGamepad(): string;
+  gamepadDialogTitle(): string;
+  gamepadDialogDescription(): string;
+  gamepadDialogClose(): string;
+  /** パッド未接続時の案内(Chromeは入力があるまでgetGamepads()に列挙しないため)。 */
+  gamepadNoPads(): string;
+  gamepadConnectedTitle(): string;
+  /** 接続順に割り当てられたポート番号(1/2)の表示。 */
+  gamepadPortAssigned(args: { port: number }): string;
+  /** 3台目以降など、どちらのポートにも割り当てられていない場合。 */
+  gamepadPortUnassigned(): string;
+  gamepadPhysicalTitle(): string;
+  gamepadX68kTitle(): string;
+  gamepadTargetUp(): string;
+  gamepadTargetDown(): string;
+  gamepadTargetLeft(): string;
+  gamepadTargetRight(): string;
 }
 
 const STRINGS: Record<Lang, Dict> = {
@@ -351,6 +370,22 @@ const STRINGS: Record<Lang, Dict> = {
     urlArchiveNeedsSelection: () =>
       'アーカイブに複数のディスクイメージが含まれていたため、ライブラリを開きました。使用するイメージを選んでください(自動起動はしません)。',
     audioMutedBanner: () => '自動再生の制限により音声が無効です。クリックまたはキー入力で音声が有効になります。',
+
+    toolbarGamepad: () => 'ジョイスティック設定',
+    gamepadDialogTitle: () => 'ジョイスティック設定',
+    gamepadDialogDescription: () =>
+      '接続中のゲームパッドと、現在の割当(接続順にポート1/2)を確認できます。割当の変更は未対応です(今後対応予定)。',
+    gamepadDialogClose: () => '閉じる',
+    gamepadNoPads: () => 'パッドが検出されていません。パッドのボタンを1回押すと認識されます。',
+    gamepadConnectedTitle: () => '接続中のパッド',
+    gamepadPortAssigned: ({ port }) => `ポート${port}`,
+    gamepadPortUnassigned: () => '未割当',
+    gamepadPhysicalTitle: () => '物理入力',
+    gamepadX68kTitle: () => 'X68000側入力',
+    gamepadTargetUp: () => '上',
+    gamepadTargetDown: () => '下',
+    gamepadTargetLeft: () => '左',
+    gamepadTargetRight: () => '右',
   },
   en: {
     title: () => 'WebX68k - X68000 Emulator',
@@ -516,6 +551,22 @@ const STRINGS: Record<Lang, Dict> = {
     urlArchiveNeedsSelection: () =>
       'The archive contains multiple disk images, so the library was opened. Please choose which image to use (auto-boot is skipped).',
     audioMutedBanner: () => 'Audio is muted due to autoplay restrictions. Click or press a key to enable sound.',
+
+    toolbarGamepad: () => 'Joystick Settings',
+    gamepadDialogTitle: () => 'Joystick Settings',
+    gamepadDialogDescription: () =>
+      'Check which gamepads are connected and their current assignment (ports 1/2, in connection order). Editing the assignment is not supported yet (planned for a future update).',
+    gamepadDialogClose: () => 'Close',
+    gamepadNoPads: () => 'No pad detected. Press any button on the pad once to have it recognized.',
+    gamepadConnectedTitle: () => 'Connected Pads',
+    gamepadPortAssigned: ({ port }) => `Port ${port}`,
+    gamepadPortUnassigned: () => 'Unassigned',
+    gamepadPhysicalTitle: () => 'Physical Input',
+    gamepadX68kTitle: () => 'X68000 Input',
+    gamepadTargetUp: () => 'Up',
+    gamepadTargetDown: () => 'Down',
+    gamepadTargetLeft: () => 'Left',
+    gamepadTargetRight: () => 'Right',
   },
 };
 

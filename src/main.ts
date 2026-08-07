@@ -42,6 +42,7 @@ import { Bridge, resolveBridgeUrl, type BridgeHost } from './bridge';
 import { RETROK, charToKey, codeToRetrok } from './keyboard';
 import { LibretroHost } from './libretro-host';
 import { GamepadManager } from './gamepad';
+import { buildGamepadDialog } from './gamepad-ui';
 import { createVirtualKeyboard, SharedKeyInput } from './virtual-keyboard';
 import {
   getState,
@@ -70,6 +71,8 @@ const pageHeaderEl = document.querySelector('header.app-header') as HTMLElement 
 const btnSaveState = document.getElementById('btn-save-state') as HTMLButtonElement;
 const btnLoadState = document.getElementById('btn-load-state') as HTMLButtonElement;
 const toastEl = document.getElementById('toast') as HTMLDivElement;
+const btnGamepad = document.getElementById('btn-gamepad') as HTMLButtonElement;
+const gamepadRoot = document.getElementById('gamepad-root') as HTMLDivElement;
 const btnSettings = document.getElementById('btn-settings') as HTMLButtonElement;
 const btnDiskLibrary = document.getElementById('btn-disk-library') as HTMLButtonElement;
 const btnFileManager = document.getElementById('btn-file-manager') as HTMLButtonElement;
@@ -206,6 +209,18 @@ function gamepadsByPort(): [Gamepad | null, Gamepad | null] {
   };
   return [at(0), at(1)];
 }
+
+// ジョイスティック設定ダイアログ(見える化のみ。割当編集は次フェーズ)。
+// バインディングの実体(GamepadManager)は main.ts 側に持ったまま、gamepad-ui.ts へは
+// 「ポート割当を引く」「解決済みビットマスクを計算する」の2つだけコールバックで渡す。
+const gamepadDialog = buildGamepadDialog(gamepadRoot, {
+  getPort: (gamepadIndex) => {
+    const port = connectedGamepadIndices.indexOf(gamepadIndex);
+    return port === 0 || port === 1 ? port : null;
+  },
+  resolveBits: (pad) => gamepadManager.poll([pad, null])[0],
+});
+btnGamepad.addEventListener('click', () => gamepadDialog.open());
 // 押しっぱなし固着の予防(仮想キーボードの releaseAll と同じ思想)。
 // フォーカスが外れた/タブが隠れた瞬間の入力は届いても意味がないので、コア側の状態を明示的に0へ戻す。
 window.addEventListener('blur', () => {
@@ -1628,6 +1643,9 @@ function applyDocumentStrings(): void {
   btnSaveState.setAttribute('aria-label', t('toolbarSaveState'));
   btnLoadState.title = t('toolbarLoadState');
   btnLoadState.setAttribute('aria-label', t('toolbarLoadState'));
+  btnGamepad.title = t('toolbarGamepad');
+  btnGamepad.setAttribute('aria-label', t('toolbarGamepad'));
+  gamepadDialog.applyStrings();
   btnSettings.title = t('toolbarSettings');
   btnSettings.setAttribute('aria-label', t('toolbarSettings'));
   btnDiskLibrary.title = t('toolbarDiskLibrary');
@@ -2406,6 +2424,25 @@ if (import.meta.env.DEV) {
     peek: (addr: number) => host?.peekWord(addr) ?? null,
     moveMouse: (dx: number, dy: number) => host?.addMouseDelta(dx, dy),
     mouseButton: (button: 'left' | 'right', down: boolean) => host?.setMouseButton(button, down),
+    // 各ポートの解決済みRetroPadビットマスクと、解決前の生の入力(pressed/axes)を返す。
+    // ヘッドレスでの検証用(ブラウザUIを開かなくても割当が効いているか確認できる)。
+    joy: () => {
+      const pads = gamepadsByPort();
+      const [bits0, bits1] = gamepadManager.poll(pads);
+      const rawOf = (pad: Gamepad | null) =>
+        pad === null
+          ? null
+          : {
+              id: pad.id,
+              index: pad.index,
+              buttons: Array.from(pad.buttons, (b) => b.pressed),
+              axes: Array.from(pad.axes),
+            };
+      return {
+        port0: { bits: bits0, raw: rawOf(pads[0]) },
+        port1: { bits: bits1, raw: rawOf(pads[1]) },
+      };
+    },
   };
 }
 

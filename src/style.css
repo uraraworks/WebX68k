@@ -1389,3 +1389,154 @@ body.pseudo-fullscreen main {
 body.pseudo-fullscreen .console-card {
   box-shadow: none;
 }
+
+/* ジョイスティック設定ダイアログ(見える化のみ)。rom-modal系の見た目を踏襲しつつ、
+   ライブ表示(物理入力/X68000側入力を並べる)を持てるよう fm-modal 同様に幅広にする。 */
+.gp-modal-backdrop {
+  z-index: 110;
+}
+
+.gp-modal {
+  max-width: 720px;
+  width: 100%;
+}
+
+.gp-title {
+  margin: 0;
+  font-size: 16px;
+}
+
+.gp-desc {
+  margin: 0;
+  font-size: 12px;
+  color: var(--text-dim);
+  line-height: 1.6;
+}
+
+.gp-pad-list {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.gp-hint {
+  font-size: 12px;
+  color: var(--text-dim);
+  padding: 4px 2px;
+}
+
+.gp-pad-row {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px 10px;
+  font-size: 12px;
+  padding: 4px 6px;
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  background: var(--bg);
+}
+
+.gp-pad-index {
+  color: var(--text-dim);
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+
+.gp-pad-id {
+  flex: 1 1 auto;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+
+.gp-pad-mapping {
+  color: var(--text-dim);
+}
+
+.gp-pad-port {
+  font-weight: 600;
+  color: var(--accent-dim);
+}
+
+.gp-live-container {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.gp-live-block {
+  border-top: 1px solid var(--border);
+  padding-top: 8px;
+}
+
+.gp-live-title {
+  margin: 0 0 6px;
+  font-size: 12px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  color: var(--text-dim);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.gp-live-row {
+  display: flex;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.gp-live-col {
+  flex: 1 1 240px;
+  min-width: 200px;
+}
+
+.gp-live-col-title {
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--text-dim);
+  margin-bottom: 4px;
+}
+
+.gp-btns,
+.gp-axes,
+.gp-targets {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+
+.gp-btn,
+.gp-target {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 24px;
+  height: 22px;
+  padding: 0 6px;
+  border-radius: 4px;
+  border: 1px solid var(--border);
+  background: var(--bg-panel);
+  font-size: 11px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+
+.gp-axis {
+  display: inline-flex;
+  align-items: center;
+  height: 22px;
+  padding: 0 6px;
+  border-radius: 4px;
+  border: 1px solid var(--border);
+  background: var(--bg-panel);
+  font-size: 11px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+
+.gp-btn.active,
+.gp-axis.active,
+.gp-target.active {
+  border-color: var(--accent);
+  background: var(--accent);
+  color: #ffffff;
+}

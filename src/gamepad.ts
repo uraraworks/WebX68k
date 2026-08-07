@@ -36,7 +36,7 @@ export type JoyTarget =
  * TRG3..TRG8 は現状 PAD_2BUTTON 固定では参照されない。将来 CPSF 等の多ボタン対応をする際に
  * 割り当て直す前提で、空いている RetroPad ボタン ID を仮に割り振ってあるだけの枠。
  */
-const TARGET_TO_RETRO_ID: Record<JoyTarget, number> = {
+export const TARGET_TO_RETRO_ID: Record<JoyTarget, number> = {
   UP: 4,
   DOWN: 5,
   LEFT: 6,
