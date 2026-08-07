@@ -1540,3 +1540,150 @@ body.pseudo-fullscreen .console-card {
   background: var(--accent);
   color: #ffffff;
 }
+
+/* ポート手動選択・割当編集エリア。 */
+.gp-port-select {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font-size: 12px;
+}
+
+.gp-port-select-row,
+.gp-edit-pad-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.gp-port-select-input,
+.gp-edit-pad-input,
+.gp-source-combo,
+.gp-dest-combo {
+  font-size: 12px;
+  padding: 2px 4px;
+  border-radius: 4px;
+  border: 1px solid var(--border);
+  background: var(--bg);
+  color: inherit;
+  max-width: 220px;
+}
+
+.gp-editor {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.gp-deadzone-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 12px;
+}
+
+.gp-deadzone-value {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  min-width: 3.5em;
+}
+
+.gp-reset-btn,
+.gp-detect-btn {
+  align-self: flex-start;
+  font-size: 12px;
+  padding: 3px 10px;
+  border-radius: 5px;
+  border: 1px solid var(--border);
+  background: var(--bg-panel);
+  color: inherit;
+  cursor: pointer;
+}
+
+.gp-detect-btn:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+.gp-bind-table {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.gp-bind-row {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px;
+  padding: 4px 6px;
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  background: var(--bg);
+  font-size: 12px;
+}
+
+.gp-bind-row-label {
+  min-width: 3em;
+  font-weight: 600;
+  color: var(--accent-dim);
+}
+
+.gp-chip-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  flex: 1 1 auto;
+}
+
+.gp-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 4px 2px 8px;
+  border-radius: 999px;
+  border: 1px solid var(--border);
+  background: var(--bg-panel);
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+
+.gp-chip-empty {
+  color: var(--text-dim);
+}
+
+.gp-chip-remove {
+  border: none;
+  background: transparent;
+  color: inherit;
+  cursor: pointer;
+  font-size: 12px;
+  line-height: 1;
+  padding: 2px 4px;
+}
+
+.gp-detect-status {
+  font-size: 11px;
+  color: var(--accent);
+}
+
+.gp-generic-section {
+  border-top: 1px solid var(--border);
+  padding-top: 8px;
+}
+
+.gp-generic-title {
+  margin: 0 0 6px;
+  font-size: 12px;
+  color: var(--text-dim);
+}
+
+.gp-generic-row {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px;
+  font-size: 12px;
+}
+
+.gp-pending-source {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+}

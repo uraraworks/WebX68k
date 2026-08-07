@@ -41,7 +41,16 @@ import { buildFileManagerDialog, type FmTarget } from './filemanager';
 import { Bridge, resolveBridgeUrl, type BridgeHost } from './bridge';
 import { RETROK, charToKey, codeToRetrok } from './keyboard';
 import { LibretroHost } from './libretro-host';
-import { assignPorts, GamepadManager } from './gamepad';
+import {
+  assignPorts,
+  defaultProfileFor,
+  GamepadManager,
+  loadGamepadStore,
+  saveGamepadStore,
+  type Binding,
+  type GamepadStore,
+  type Source,
+} from './gamepad';
 import { buildGamepadDialog } from './gamepad-ui';
 import { createVirtualKeyboard, SharedKeyInput } from './virtual-keyboard';
 import {
@@ -187,18 +196,45 @@ let running = false;
 let bootStarted = false;
 
 // --- ジョイスティック(ゲームパッド)入力 ---
-// マッピングの実体は gamepad.ts の GamepadManager(Phase 1 は既定マッピング固定)。
+// マッピングの実体は gamepad.ts の GamepadManager。パッドごとに割当(bindings)とデッドゾーンが
+// 異なりうる(non-standard パッドは index の意味がパッド固有なので、他パッドの設定を流用できない)ため、
+// GamepadManager は「Gamepad.id ごとに1つ」持つ(managerForPad())。永続化(localStorage)も
+// Gamepad.id をキーにしており、挿し替えても両方のプロファイルが残る。
 // 「どの Gamepad.index をどのポート(0/1)に割り当てるか」は gamepad.ts の assignPorts() が
-// 唯一の情報源(毎回の navigator.getGamepads() の結果だけから決まる純粋関数)。
+// 唯一の情報源(毎回の navigator.getGamepads() の結果と、手動固定(gamepadStore.portPads)だけから
+// 決まる純粋関数)。
 // gamepadconnected/gamepaddisconnected イベントでは状態を持たない
 // (イベントを経ずに navigator.getGamepads() へ現れたパッドを割当から取りこぼすバグを踏んだため。
 //  UIの再描画は gamepad-ui.ts 側の requestAnimationFrame ループが担っており、
 //  ここでイベント購読して明示的に再描画をトリガする必要は無い)。
-const gamepadManager = new GamepadManager();
+const gamepadStore: GamepadStore = loadGamepadStore();
+const gamepadManagers = new Map<string, GamepadManager>();
+
+/** Gamepad.id に対応する GamepadManager を返す(無ければ保存済み/既定プロファイルから作る)。 */
+function managerForPad(pad: Gamepad): GamepadManager {
+  let mgr = gamepadManagers.get(pad.id);
+  if (!mgr) {
+    const profile = gamepadStore.pads[pad.id] ?? defaultProfileFor(pad);
+    if (!gamepadStore.pads[pad.id]) {
+      gamepadStore.pads[pad.id] = profile;
+      saveGamepadStore(gamepadStore);
+    }
+    mgr = GamepadManager.fromProfile(profile);
+    gamepadManagers.set(pad.id, mgr);
+  }
+  return mgr;
+}
+
+/** そのパッドの現在の GamepadManager 状態を localStorage へ書き戻す(編集操作のたびに呼ぶ)。 */
+function persistPad(pad: Gamepad): void {
+  gamepadStore.pads[pad.id] = managerForPad(pad).toProfile();
+  saveGamepadStore(gamepadStore);
+}
+
 /** navigator.getGamepads() を assignPorts() でポート0/1に詰めた Gamepad 配列(未接続ポートは null)を作る。 */
 function gamepadsByPort(): [Gamepad | null, Gamepad | null] {
   const all = navigator.getGamepads();
-  const ports = assignPorts(all);
+  const ports = assignPorts(all, gamepadStore.portPads);
   const byPort: [Gamepad | null, Gamepad | null] = [null, null];
   for (const pad of all) {
     if (!pad) continue;
@@ -208,13 +244,51 @@ function gamepadsByPort(): [Gamepad | null, Gamepad | null] {
   return byPort;
 }
 
-// ジョイスティック設定ダイアログ(見える化のみ。割当編集は次フェーズ)。
-// バインディングの実体(GamepadManager)は main.ts 側に持ったまま、gamepad-ui.ts へは
-// 「ポート割当を引く」「解決済みビットマスクを計算する」の2つだけコールバックで渡す。
-// どちらも assignPorts()/pollByPort() を経由するため、host.onPoll 側と同じ割当結果を見る。
+/** port0/1ぶんのRetroPadビットマスクを、各パッド固有のGamepadManagerで計算する。 */
+function pollBitsByPort(): [number, number] {
+  const pads = gamepadsByPort();
+  const result: [number, number] = [0, 0];
+  for (let port = 0; port < 2; port++) {
+    const pad = pads[port];
+    if (pad) result[port] = managerForPad(pad).bitsForPad(pad);
+  }
+  return result;
+}
+
+// ジョイスティック設定ダイアログ(見える化+割当編集)。
+// バインディングの実体(GamepadManager)・永続化は main.ts 側に持ったまま、gamepad-ui.ts へは
+// 読み書きの操作だけをコールバックで渡す(gamepad-ui.ts はロジックを持たず表示と仲介に徹する)。
 const gamepadDialog = buildGamepadDialog(gamepadRoot, {
-  getPort: (gamepadIndex) => assignPorts(navigator.getGamepads()).get(gamepadIndex) ?? null,
-  resolveBits: (pad) => gamepadManager.pollByPort([pad])[0],
+  getPort: (gamepadIndex) => assignPorts(navigator.getGamepads(), gamepadStore.portPads).get(gamepadIndex) ?? null,
+  resolveBits: (pad) => managerForPad(pad).bitsForPad(pad),
+  getDeadzone: (pad) => managerForPad(pad).getDeadzone(),
+  setDeadzone: (pad, value) => {
+    managerForPad(pad).setDeadzone(value);
+    persistPad(pad);
+  },
+  getBindingsForTarget: (pad, target) => managerForPad(pad).bindingsForTarget(target),
+  getKeyBindings: (pad) =>
+    managerForPad(pad)
+      .getAllBindings()
+      .filter((e): e is { source: Source; binding: Extract<Binding, { kind: 'key' }> } => e.binding.kind === 'key')
+      .map((e) => ({ source: e.source, retrok: e.binding.retrok })),
+  addBinding: (pad, source, binding) => {
+    managerForPad(pad).addBinding(source, binding);
+    persistPad(pad);
+  },
+  removeBinding: (pad, source, binding) => {
+    managerForPad(pad).removeBinding(source, binding);
+    persistPad(pad);
+  },
+  resetToPreset: (pad) => {
+    managerForPad(pad).resetToPreset();
+    persistPad(pad);
+  },
+  getPortSelection: () => gamepadStore.portPads,
+  setPortSelection: (port, padId) => {
+    gamepadStore.portPads[port] = padId;
+    saveGamepadStore(gamepadStore);
+  },
 });
 btnGamepad.addEventListener('click', () => gamepadDialog.open());
 // 押しっぱなし固着の予防(仮想キーボードの releaseAll と同じ思想)。
@@ -1444,7 +1518,7 @@ async function bootCore(): Promise<void> {
   host.setCoreOption('px68k_joytype2', 'Default (2 Buttons)');
   await host.init(biosIplBytes!, biosCgBytes!);
   host.onPoll = () => {
-    const [bits0, bits1] = gamepadManager.poll(gamepadsByPort());
+    const [bits0, bits1] = pollBitsByPort();
     host!.setJoyState(0, bits0);
     host!.setJoyState(1, bits1);
   };
@@ -2424,7 +2498,7 @@ if (import.meta.env.DEV) {
     // ヘッドレスでの検証用(ブラウザUIを開かなくても割当が効いているか確認できる)。
     joy: () => {
       const pads = gamepadsByPort();
-      const [bits0, bits1] = gamepadManager.poll(pads);
+      const [bits0, bits1] = pollBitsByPort();
       const rawOf = (pad: Gamepad | null) =>
         pad === null
           ? null

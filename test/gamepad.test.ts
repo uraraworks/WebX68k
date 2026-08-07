@@ -1,5 +1,16 @@
 import { describe, expect, it } from 'vitest';
-import { assignPorts, DEFAULT_DEADZONE, GamepadManager } from '../src/gamepad';
+import {
+  assignPorts,
+  defaultProfileFor,
+  DEFAULT_DEADZONE,
+  detectNewlyActiveSource,
+  GamepadManager,
+  loadGamepadStore,
+  presetProfile,
+  saveGamepadStore,
+  snapshotPad,
+  type GamepadStore,
+} from '../src/gamepad';
 
 // libretro.h の RETRO_DEVICE_ID_JOYPAD_* / TARGET_TO_RETRO_ID(gamepad.ts)と対応する。
 const RETRO_B = 0; // TRG1
@@ -166,5 +177,170 @@ describe('assignPorts', () => {
     expect(ports.get(1)).toBe(0);
     expect(ports.get(2)).toBe(1);
     expect(ports.has(0)).toBe(false);
+  });
+
+  it('手動指定(portPads)が接続中なら優先し、残りは自動で埋める', () => {
+    const padA = makeGamepad({ index: 0 });
+    const padB = makeGamepad({ index: 1 });
+    // A(index0)はもともと自動ならport0だが、port1へ手動固定されているのでそちらへ。
+    const ports = assignPorts([padA, padB], [null, 'mock']);
+    // padA/padBはどちらもid='mock'なので、最初に見つかったpresent順(index昇順=padA)がport1に固定される。
+    expect(ports.get(0)).toBe(1);
+    expect(ports.get(1)).toBe(0);
+  });
+
+  it('手動指定されたidが未接続なら無視して自動割当のみで埋める', () => {
+    const pad0 = makeGamepad({ index: 0 });
+    const ports = assignPorts([pad0], ['not-connected', null]);
+    expect(ports.get(0)).toBe(0);
+  });
+});
+
+/** テスト用の簡易 Storage 実装(localStorageの代わりに渡す)。 */
+class FakeStorage implements Pick<Storage, 'getItem' | 'setItem'> {
+  private map = new Map<string, string>();
+  getItem(key: string): string | null {
+    return this.map.get(key) ?? null;
+  }
+  setItem(key: string, value: string): void {
+    this.map.set(key, value);
+  }
+}
+
+describe('gamepad永続化(loadGamepadStore/saveGamepadStore)', () => {
+  it('保存→読込のラウンドトリップ', () => {
+    const storage = new FakeStorage();
+    const store: GamepadStore = {
+      version: 1,
+      pads: { 'pad-a': presetProfile(0.3) },
+      portPads: ['pad-a', null],
+    };
+    saveGamepadStore(store, storage);
+    const loaded = loadGamepadStore(storage);
+    expect(loaded).toEqual(store);
+  });
+
+  it('未保存(初回)は空ストアを返す', () => {
+    const storage = new FakeStorage();
+    const loaded = loadGamepadStore(storage);
+    expect(loaded).toEqual({ version: 1, pads: {}, portPads: [null, null] });
+  });
+
+  it('壊れたJSONで例外を投げず既定へフォールバックする', () => {
+    const storage = new FakeStorage();
+    storage.setItem('webx68k.gamepad', '{not valid json');
+    const loaded = loadGamepadStore(storage);
+    expect(loaded).toEqual({ version: 1, pads: {}, portPads: [null, null] });
+  });
+
+  it('未知バージョンのデータは既定へフォールバックする', () => {
+    const storage = new FakeStorage();
+    storage.setItem('webx68k.gamepad', JSON.stringify({ version: 99, pads: {}, portPads: [null, null] }));
+    const loaded = loadGamepadStore(storage);
+    expect(loaded).toEqual({ version: 1, pads: {}, portPads: [null, null] });
+  });
+
+  it('構造が不正な保存データ(bindingsが配列でない等)でも既定へフォールバックする', () => {
+    const storage = new FakeStorage();
+    storage.setItem(
+      'webx68k.gamepad',
+      JSON.stringify({ version: 1, pads: { 'pad-a': { deadzone: 0.5, bindings: 'oops' } }, portPads: [null, null] }),
+    );
+    const loaded = loadGamepadStore(storage);
+    expect(loaded).toEqual({ version: 1, pads: {}, portPads: [null, null] });
+  });
+
+  it('複数パッドのプロファイルが共存する(挿し替えても両方残る)', () => {
+    const storage = new FakeStorage();
+    const store: GamepadStore = {
+      version: 1,
+      pads: {
+        'pad-a': presetProfile(0.5),
+        'pad-b': { deadzone: 0.4, bindings: [{ source: { kind: 'button', index: 3 }, binding: { kind: 'joy', target: 'TRG1' } }] },
+      },
+      portPads: [null, null],
+    };
+    saveGamepadStore(store, storage);
+    const loaded = loadGamepadStore(storage);
+    expect(Object.keys(loaded.pads).sort()).toEqual(['pad-a', 'pad-b']);
+    expect(loaded.pads['pad-a']).toEqual(presetProfile(0.5));
+    expect(loaded.pads['pad-b'].bindings).toHaveLength(1);
+  });
+});
+
+describe('defaultProfileFor', () => {
+  it('mapping===standard なら XINPUT_PRESET を既定にする', () => {
+    const profile = defaultProfileFor({ mapping: 'standard' });
+    expect(profile).toEqual(presetProfile());
+  });
+
+  it('standard 以外(non-standard)は全未割当で始める', () => {
+    const profile = defaultProfileFor({ mapping: '' });
+    expect(profile.bindings).toEqual([]);
+  });
+});
+
+describe('detectNewlyActiveSource(検出モードの押下判定)', () => {
+  it('押されていなかったボタンが押されたら、そのSourceを返す', () => {
+    const pad = makeGamepad({ buttons: { 3: true } });
+    const prev = snapshotPad(makeGamepad({}));
+    const curr = snapshotPad(pad);
+    expect(detectNewlyActiveSource(prev, curr, DEFAULT_DEADZONE)).toEqual({ kind: 'button', index: 3 });
+  });
+
+  it('押しっぱなしのボタン(prevで既に真)は誤検出しない', () => {
+    const held = makeGamepad({ buttons: { 3: true } });
+    const prev = snapshotPad(held);
+    const curr = snapshotPad(held);
+    expect(detectNewlyActiveSource(prev, curr, DEFAULT_DEADZONE)).toBeNull();
+  });
+
+  it('軸がデッドゾーンを超えた方向をdir込みで返す(正方向)', () => {
+    const prev = snapshotPad(makeGamepad({}));
+    const curr = snapshotPad(makeGamepad({ axes: { 0: 0.9 } }));
+    expect(detectNewlyActiveSource(prev, curr, DEFAULT_DEADZONE)).toEqual({ kind: 'axis', index: 0, dir: 1 });
+  });
+
+  it('軸がデッドゾーンを超えた方向をdir込みで返す(負方向)', () => {
+    const prev = snapshotPad(makeGamepad({}));
+    const curr = snapshotPad(makeGamepad({ axes: { 1: -0.9 } }));
+    expect(detectNewlyActiveSource(prev, curr, DEFAULT_DEADZONE)).toEqual({ kind: 'axis', index: 1, dir: -1 });
+  });
+
+  it('何も変化が無ければnull', () => {
+    const pad = makeGamepad({ buttons: { 0: true }, axes: { 0: 0.8 } });
+    const snap = snapshotPad(pad);
+    expect(detectNewlyActiveSource(snap, snap, DEFAULT_DEADZONE)).toBeNull();
+  });
+});
+
+describe('GamepadManager プロファイル往復・編集操作', () => {
+  it('fromProfile/toProfileでラウンドトリップする', () => {
+    const profile = presetProfile(0.4);
+    const mgr = GamepadManager.fromProfile(profile);
+    expect(mgr.getDeadzone()).toBe(0.4);
+    expect(mgr.toProfile().bindings.length).toBe(profile.bindings.length);
+  });
+
+  it('addBinding/removeBindingで行のチップが増減する', () => {
+    const mgr = new GamepadManager([], 0.5);
+    const source = { kind: 'button' as const, index: 5 };
+    mgr.addBinding(source, { kind: 'joy', target: 'TRG1' });
+    expect(mgr.bindingsForTarget('TRG1')).toEqual([source]);
+    mgr.removeBinding(source, { kind: 'joy', target: 'TRG1' });
+    expect(mgr.bindingsForTarget('TRG1')).toEqual([]);
+  });
+
+  it('resetToPresetでXINPUT_PRESET相当に戻る', () => {
+    const mgr = new GamepadManager([], 0.5);
+    mgr.addBinding({ kind: 'button', index: 5 }, { kind: 'joy', target: 'TRG1' });
+    mgr.resetToPreset();
+    expect(mgr.bindingsForTarget('TRG1')).toEqual([{ kind: 'button', index: 0 }]);
+  });
+
+  it('bitsForPadは単一Gamepadに対してpoll()と同じ結果を返す', () => {
+    const mgr = new GamepadManager();
+    const pad = makeGamepad({ buttons: { 0: true } });
+    expect(mgr.bitsForPad(pad)).toBe(mgr.poll([pad])[0]);
   });
 });

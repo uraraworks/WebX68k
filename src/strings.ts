@@ -203,6 +203,34 @@ interface Dict {
   gamepadTargetDown(): string;
   gamepadTargetLeft(): string;
   gamepadTargetRight(): string;
+
+  // --- ジョイスティック割当編集(検出/コンボ選択/デッドゾーン/ポート選択/永続化) ---
+  /** 編集対象パッドを選ぶセレクトのラベル。 */
+  gamepadEditingPadLabel(): string;
+  /** 割当編集テーブルの見出し。 */
+  gamepadBindingsTitle(): string;
+  /** [検出]ボタン。押すと次の物理入力をその行へ割り当てる。 */
+  gamepadDetectBtn(): string;
+  /** 検出モード中の案内(次の入力待ち)。 */
+  gamepadDetectWaiting(): string;
+  /** チップ(現在の割当1件)の削除ボタンのaria-label。 */
+  gamepadRemoveBindingLabel(): string;
+  /** コンボボックスの未選択時プレースホルダ。 */
+  gamepadComboPlaceholder(): string;
+  /** コンボボックスの「キーボード」optgroupラベル(中身の出力配線は次担当が実装)。 */
+  gamepadComboKeyboardGroup(): string;
+  /** コンボボックスの「ジョイスティック(物理入力)」optgroupラベル。 */
+  gamepadComboJoystickGroup(): string;
+  /** standardでないパッドのボタン表記(例: 「ボタン7」)。 */
+  gamepadButtonLabel(args: { index: number }): string;
+  /** standardでないパッドの軸表記(例: 「軸0 +」)。 */
+  gamepadAxisLabel(args: { index: number; dir: string }): string;
+  gamepadDeadzoneLabel(): string;
+  gamepadResetPresetBtn(): string;
+  /** ポートごとの使用パッド選択セレクトのラベル。 */
+  gamepadPortDeviceLabel(args: { port: number }): string;
+  /** ポート選択の「自動(接続順)」オプション。 */
+  gamepadPortAutoOption(): string;
 }
 
 const STRINGS: Record<Lang, Dict> = {
@@ -374,7 +402,7 @@ const STRINGS: Record<Lang, Dict> = {
     toolbarGamepad: () => 'ジョイスティック設定',
     gamepadDialogTitle: () => 'ジョイスティック設定',
     gamepadDialogDescription: () =>
-      '接続中のゲームパッドと、現在の割当(接続順にポート1/2)を確認できます。割当の変更は未対応です(今後対応予定)。',
+      '接続中のゲームパッドの割当を確認・編集できます。設定はブラウザに保存され、パッドごとに区別されます。',
     gamepadDialogClose: () => '閉じる',
     gamepadNoPads: () => 'パッドが検出されていません。パッドのボタンを1回押すと認識されます。',
     gamepadConnectedTitle: () => '接続中のパッド',
@@ -386,6 +414,21 @@ const STRINGS: Record<Lang, Dict> = {
     gamepadTargetDown: () => '下',
     gamepadTargetLeft: () => '左',
     gamepadTargetRight: () => '右',
+
+    gamepadEditingPadLabel: () => '編集するパッド',
+    gamepadBindingsTitle: () => '割当編集',
+    gamepadDetectBtn: () => '検出',
+    gamepadDetectWaiting: () => '入力を待っています…(Escでキャンセル)',
+    gamepadRemoveBindingLabel: () => '削除',
+    gamepadComboPlaceholder: () => '追加する入力を選択…',
+    gamepadComboKeyboardGroup: () => 'キーボード(割当のみ・出力は未対応)',
+    gamepadComboJoystickGroup: () => 'ジョイスティック(物理入力)',
+    gamepadButtonLabel: ({ index }) => `ボタン${index}`,
+    gamepadAxisLabel: ({ index, dir }) => `軸${index} ${dir}`,
+    gamepadDeadzoneLabel: () => 'デッドゾーン',
+    gamepadResetPresetBtn: () => 'XInput標準に戻す',
+    gamepadPortDeviceLabel: ({ port }) => `ポート${port}のパッド`,
+    gamepadPortAutoOption: () => '自動(接続順)',
   },
   en: {
     title: () => 'WebX68k - X68000 Emulator',
@@ -555,7 +598,7 @@ const STRINGS: Record<Lang, Dict> = {
     toolbarGamepad: () => 'Joystick Settings',
     gamepadDialogTitle: () => 'Joystick Settings',
     gamepadDialogDescription: () =>
-      'Check which gamepads are connected and their current assignment (ports 1/2, in connection order). Editing the assignment is not supported yet (planned for a future update).',
+      'Check and edit the button/axis assignment for each connected gamepad. Settings are saved in your browser, per pad.',
     gamepadDialogClose: () => 'Close',
     gamepadNoPads: () => 'No pad detected. Press any button on the pad once to have it recognized.',
     gamepadConnectedTitle: () => 'Connected Pads',
@@ -567,6 +610,21 @@ const STRINGS: Record<Lang, Dict> = {
     gamepadTargetDown: () => 'Down',
     gamepadTargetLeft: () => 'Left',
     gamepadTargetRight: () => 'Right',
+
+    gamepadEditingPadLabel: () => 'Editing Pad',
+    gamepadBindingsTitle: () => 'Edit Assignment',
+    gamepadDetectBtn: () => 'Detect',
+    gamepadDetectWaiting: () => 'Waiting for input… (Esc to cancel)',
+    gamepadRemoveBindingLabel: () => 'Remove',
+    gamepadComboPlaceholder: () => 'Select an input to add…',
+    gamepadComboKeyboardGroup: () => 'Keyboard (assignment only, output not wired yet)',
+    gamepadComboJoystickGroup: () => 'Joystick (Physical Input)',
+    gamepadButtonLabel: ({ index }) => `Button ${index}`,
+    gamepadAxisLabel: ({ index, dir }) => `Axis ${index} ${dir}`,
+    gamepadDeadzoneLabel: () => 'Deadzone',
+    gamepadResetPresetBtn: () => 'Reset to XInput Defaults',
+    gamepadPortDeviceLabel: ({ port }) => `Port ${port} Pad`,
+    gamepadPortAutoOption: () => 'Automatic (connection order)',
   },
 };
 
