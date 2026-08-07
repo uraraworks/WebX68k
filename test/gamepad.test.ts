@@ -11,6 +11,7 @@ import {
   snapshotPad,
   type GamepadStore,
 } from '../src/gamepad';
+import { SharedKeyInput } from '../src/virtual-keyboard';
 
 // libretro.h の RETRO_DEVICE_ID_JOYPAD_* / TARGET_TO_RETRO_ID(gamepad.ts)と対応する。
 const RETRO_B = 0; // TRG1
@@ -342,5 +343,106 @@ describe('GamepadManager プロファイル往復・編集操作', () => {
     const mgr = new GamepadManager();
     const pad = makeGamepad({ buttons: { 0: true } });
     expect(mgr.bitsForPad(pad)).toBe(mgr.poll([pad])[0]);
+  });
+});
+
+// kind:'key' バインディングの出力配線(main.ts の host.onPoll 経路が使う)。
+// joy側(bitsForPad)とは独立に「今フレーム押されている retrok の集合」を返すことを確認する。
+describe('GamepadManager.keysForPad(kind:key バインディングの出力)', () => {
+  it('kind:key を割り当てたボタンが押されていればその retrok を含む集合を返す', () => {
+    const mgr = new GamepadManager([], 0.5);
+    mgr.addBinding({ kind: 'button', index: 5 }, { kind: 'key', retrok: 97 });
+    expect(mgr.keysForPad(makeGamepad({ buttons: { 5: true } }))).toEqual(new Set([97]));
+    expect(mgr.keysForPad(makeGamepad({ buttons: { 5: false } }))).toEqual(new Set());
+  });
+
+  it('joy割当とkey割当は独立に共存する(bitsForPadとkeysForPadが別々に効く)', () => {
+    const mgr = new GamepadManager([], 0.5);
+    mgr.addBinding({ kind: 'button', index: 0 }, { kind: 'joy', target: 'TRG1' });
+    mgr.addBinding({ kind: 'button', index: 1 }, { kind: 'key', retrok: 122 });
+    const pad = makeGamepad({ buttons: { 0: true, 1: true } });
+    expect(mgr.bitsForPad(pad)).toBe(1 << RETRO_B);
+    expect(mgr.keysForPad(pad)).toEqual(new Set([122]));
+  });
+
+  it('複数ボタンに割り当てたkeyは全て集合に含まれる', () => {
+    const mgr = new GamepadManager([], 0.5);
+    mgr.addBinding({ kind: 'button', index: 0 }, { kind: 'key', retrok: 97 });
+    mgr.addBinding({ kind: 'button', index: 1 }, { kind: 'key', retrok: 98 });
+    const pad = makeGamepad({ buttons: { 0: true, 1: true } });
+    expect(mgr.keysForPad(pad)).toEqual(new Set([97, 98]));
+  });
+});
+
+// main.ts の syncGamepadKeys()/releaseGamepadKeys() 相当のロジック(SharedKeyInputへの
+// press/release差分配線と解放漏れ対策)。main.ts自体はDOM初期化を伴い直接importできないため、
+// 実際に使うのと同じ2つの部品(GamepadManager.keysForPad + SharedKeyInput)を組み合わせて検証する。
+describe('ゲームパッドkey割当のSharedKeyInput配線(main.tsのsyncGamepadKeys相当)', () => {
+  /** main.ts の syncGamepadKeys() と同じ「前フレームとの差分だけpress/release」ロジック。 */
+  function makeSync(input: SharedKeyInput, mgr: GamepadManager, source: string) {
+    let prev = new Set<number>();
+    return (pad: Gamepad | null) => {
+      const next = pad ? mgr.keysForPad(pad) : new Set<number>();
+      for (const k of next) if (!prev.has(k)) input.press(source, k);
+      for (const k of prev) if (!next.has(k)) input.release(source, k);
+      prev = next;
+    };
+  }
+
+  it('①押下→保持→解放が press/release として1回ずつだけ出る(オートリピートしない)', () => {
+    const events: Array<[number, boolean]> = [];
+    const input = new SharedKeyInput((retrok, down) => events.push([retrok, down]));
+    const mgr = new GamepadManager([], 0.5);
+    mgr.addBinding({ kind: 'button', index: 0 }, { kind: 'key', retrok: 97 });
+    const sync = makeSync(input, mgr, 'gamepad:0');
+
+    sync(makeGamepad({ buttons: { 0: true } })); // press
+    sync(makeGamepad({ buttons: { 0: true } })); // 押しっぱなし: 何も出ない
+    sync(makeGamepad({ buttons: { 0: true } })); // 押しっぱなし: 何も出ない
+    sync(makeGamepad({ buttons: { 0: false } })); // release
+
+    expect(events).toEqual([[97, true], [97, false]]);
+  });
+
+  it('②同じretrokが物理キーボードとゲームパッドのkey割当の両方から来ても参照カウントで壊れない', () => {
+    const events: Array<[number, boolean]> = [];
+    const input = new SharedKeyInput((retrok, down) => events.push([retrok, down]));
+    const mgr = new GamepadManager([], 0.5);
+    mgr.addBinding({ kind: 'button', index: 0 }, { kind: 'key', retrok: 97 });
+    const sync = makeSync(input, mgr, 'gamepad:0');
+
+    input.press('physical:KeyA', 97); // 物理キーボードが先に押す
+    sync(makeGamepad({ buttons: { 0: true } })); // ゲームパッド側でも同じキーが押される
+    expect(events).toEqual([[97, true]]); // 既に押下中なので二重にpressは出ない
+
+    sync(makeGamepad({ buttons: { 0: false } })); // ゲームパッドだけ離す
+    expect(events).toEqual([[97, true]]); // 物理キーボードがまだ押しているので解放されない
+
+    input.release('physical:KeyA', 97);
+    expect(events).toEqual([[97, true], [97, false]]); // 最後の入力元が離れて初めて解放される
+  });
+
+  it('③解放漏れ対策: releaseSource(gamepad:N) でそのポート由来の押下だけをまとめて解放できる(切断/割当変更/編集時)', () => {
+    const events: Array<[number, boolean]> = [];
+    const input = new SharedKeyInput((retrok, down) => events.push([retrok, down]));
+    const mgr = new GamepadManager([], 0.5);
+    mgr.addBinding({ kind: 'button', index: 0 }, { kind: 'key', retrok: 97 });
+    mgr.addBinding({ kind: 'button', index: 1 }, { kind: 'key', retrok: 98 });
+    const sync = makeSync(input, mgr, 'gamepad:0');
+
+    sync(makeGamepad({ buttons: { 0: true, 1: true } }));
+    expect(events.filter(([, down]) => down)).toEqual(
+      expect.arrayContaining([[97, true], [98, true]]),
+    );
+
+    // パッド切断/ポート割当変更/割当編集はいずれも「そのポートのsourceを丸ごと解放する」で
+    // 塞ぐ(main.tsのreleaseGamepadKeys相当)。物理キーボード側の押下は無関係のsourceなので
+    // 巻き込まれない。
+    input.press('physical:KeyA', 97);
+    input.releaseSource('gamepad:0');
+    const releases = events.filter(([, down]) => !down);
+    expect(releases).toEqual(expect.arrayContaining([[98, false]]));
+    // 97は物理キーボードがまだ押しているので解放されていないはず。
+    expect(releases.find(([retrok]) => retrok === 97)).toBeUndefined();
   });
 });

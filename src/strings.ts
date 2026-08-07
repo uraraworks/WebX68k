@@ -231,6 +231,27 @@ interface Dict {
   gamepadPortDeviceLabel(args: { port: number }): string;
   /** ポート選択の「自動(接続順)」オプション。 */
   gamepadPortAutoOption(): string;
+
+  // --- ジョイスティック位置ベースのボタン表記(RetroPad命名(B/A/Y/X)は実機印刷と食い違うため) ---
+  /** standardマッピングのボタン表記。indexを主表記にし、位置名を添える(例: 「#0 (下)」)。 */
+  gamepadPositionalButtonLabel(args: { index: number; position: string }): string;
+  gamepadPosDown(): string;
+  gamepadPosRight(): string;
+  gamepadPosLeft(): string;
+  gamepadPosUp(): string;
+  gamepadPosL(): string;
+  gamepadPosR(): string;
+  gamepadPosL2(): string;
+  gamepadPosR2(): string;
+  gamepadPosSelect(): string;
+  gamepadPosStart(): string;
+  gamepadPosL3(): string;
+  gamepadPosR3(): string;
+  gamepadPosDpadUp(): string;
+  gamepadPosDpadDown(): string;
+  gamepadPosDpadLeft(): string;
+  gamepadPosDpadRight(): string;
+  gamepadPosHome(): string;
 }
 
 const STRINGS: Record<Lang, Dict> = {
@@ -421,7 +442,7 @@ const STRINGS: Record<Lang, Dict> = {
     gamepadDetectWaiting: () => '入力を待っています…(Escでキャンセル)',
     gamepadRemoveBindingLabel: () => '削除',
     gamepadComboPlaceholder: () => '追加する入力を選択…',
-    gamepadComboKeyboardGroup: () => 'キーボード(割当のみ・出力は未対応)',
+    gamepadComboKeyboardGroup: () => 'キーボード',
     gamepadComboJoystickGroup: () => 'ジョイスティック(物理入力)',
     gamepadButtonLabel: ({ index }) => `ボタン${index}`,
     gamepadAxisLabel: ({ index, dir }) => `軸${index} ${dir}`,
@@ -429,6 +450,25 @@ const STRINGS: Record<Lang, Dict> = {
     gamepadResetPresetBtn: () => 'XInput標準に戻す',
     gamepadPortDeviceLabel: ({ port }) => `ポート${port}のパッド`,
     gamepadPortAutoOption: () => '自動(接続順)',
+
+    gamepadPositionalButtonLabel: ({ index, position }) => `#${index} (${position})`,
+    gamepadPosDown: () => '下',
+    gamepadPosRight: () => '右',
+    gamepadPosLeft: () => '左',
+    gamepadPosUp: () => '上',
+    gamepadPosL: () => 'L',
+    gamepadPosR: () => 'R',
+    gamepadPosL2: () => 'L2',
+    gamepadPosR2: () => 'R2',
+    gamepadPosSelect: () => 'Select',
+    gamepadPosStart: () => 'Start',
+    gamepadPosL3: () => 'L3',
+    gamepadPosR3: () => 'R3',
+    gamepadPosDpadUp: () => '十字上',
+    gamepadPosDpadDown: () => '十字下',
+    gamepadPosDpadLeft: () => '十字左',
+    gamepadPosDpadRight: () => '十字右',
+    gamepadPosHome: () => 'Home',
   },
   en: {
     title: () => 'WebX68k - X68000 Emulator',
@@ -617,7 +657,7 @@ const STRINGS: Record<Lang, Dict> = {
     gamepadDetectWaiting: () => 'Waiting for input… (Esc to cancel)',
     gamepadRemoveBindingLabel: () => 'Remove',
     gamepadComboPlaceholder: () => 'Select an input to add…',
-    gamepadComboKeyboardGroup: () => 'Keyboard (assignment only, output not wired yet)',
+    gamepadComboKeyboardGroup: () => 'Keyboard',
     gamepadComboJoystickGroup: () => 'Joystick (Physical Input)',
     gamepadButtonLabel: ({ index }) => `Button ${index}`,
     gamepadAxisLabel: ({ index, dir }) => `Axis ${index} ${dir}`,
@@ -625,6 +665,25 @@ const STRINGS: Record<Lang, Dict> = {
     gamepadResetPresetBtn: () => 'Reset to XInput Defaults',
     gamepadPortDeviceLabel: ({ port }) => `Port ${port} Pad`,
     gamepadPortAutoOption: () => 'Automatic (connection order)',
+
+    gamepadPositionalButtonLabel: ({ index, position }) => `#${index} (${position})`,
+    gamepadPosDown: () => 'Down',
+    gamepadPosRight: () => 'Right',
+    gamepadPosLeft: () => 'Left',
+    gamepadPosUp: () => 'Up',
+    gamepadPosL: () => 'L',
+    gamepadPosR: () => 'R',
+    gamepadPosL2: () => 'L2',
+    gamepadPosR2: () => 'R2',
+    gamepadPosSelect: () => 'Select',
+    gamepadPosStart: () => 'Start',
+    gamepadPosL3: () => 'L3',
+    gamepadPosR3: () => 'R3',
+    gamepadPosDpadUp: () => 'D-Pad Up',
+    gamepadPosDpadDown: () => 'D-Pad Down',
+    gamepadPosDpadLeft: () => 'D-Pad Left',
+    gamepadPosDpadRight: () => 'D-Pad Right',
+    gamepadPosHome: () => 'Home',
   },
 };
 

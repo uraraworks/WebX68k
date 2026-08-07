@@ -420,18 +420,45 @@ export class GamepadManager {
     return this.poll(byPort);
   }
 
+  /**
+   * 現在押されている物理Sourceのうち kind:'key' で割り当てられている retrok の集合を返す。
+   * bitsForPad()(joy側)とは別の返り値にしてあるのは、呼び出し側(main.ts)が
+   * SharedKeyInput へ渡す差分計算をjoy側のビットマスク処理と独立に行えるようにするため。
+   * オートリピートはしない(呼び出し側が前フレームとの差分を見て press/release するだけの
+   * 「今フレーム押されている集合」を返すのがこのメソッドの責務。押しっぱなしはpressを
+   * 連打しない=呼び出し側で同じ retrok が続けて入っていれば無視される前提)。
+   */
+  keysForPad(pad: Gamepad): Set<number> {
+    const keys = new Set<number>();
+    this.forEachActiveSource(pad, (source) => {
+      const list = this.bindings.get(sourceKey(source));
+      if (!list) return;
+      for (const binding of list) {
+        if (binding.kind === 'key') keys.add(binding.retrok);
+      }
+    });
+    return keys;
+  }
+
   private computeBits(pad: Gamepad): number {
     let bits = 0;
+    this.forEachActiveSource(pad, (source) => {
+      bits |= this.bitsFor(source);
+    });
+    return bits;
+  }
+
+  /** 現在押されている(デッドゾーンを超えた)物理Sourceを列挙する(bitsFor/keysForPadの共通イテレータ)。 */
+  private forEachActiveSource(pad: Gamepad, fn: (source: Source) => void): void {
     for (let index = 0; index < pad.buttons.length; index++) {
       if (!pad.buttons[index].pressed) continue;
-      bits |= this.bitsFor({ kind: 'button', index });
+      fn({ kind: 'button', index });
     }
     for (let index = 0; index < pad.axes.length; index++) {
       const value = pad.axes[index];
-      if (value <= -this.deadzone) bits |= this.bitsFor({ kind: 'axis', index, dir: -1 });
-      if (value >= this.deadzone) bits |= this.bitsFor({ kind: 'axis', index, dir: 1 });
+      if (value <= -this.deadzone) fn({ kind: 'axis', index, dir: -1 });
+      if (value >= this.deadzone) fn({ kind: 'axis', index, dir: 1 });
     }
-    return bits;
   }
 
   private bitsFor(source: Source): number {

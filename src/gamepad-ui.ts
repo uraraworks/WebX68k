@@ -31,52 +31,56 @@ import {
   TARGET_TO_RETRO_ID,
 } from './gamepad';
 import { t } from './strings';
+import { KBD_ROWS, KEYPAD_ROWS } from './virtual-keyboard';
 
 /** X68000側(標準2ボタンパッド)として表示する対象と表示順。TRG3以降は現状未使用のため出さない。 */
 const DISPLAY_TARGETS: readonly JoyTarget[] = ['UP', 'DOWN', 'LEFT', 'RIGHT', 'TRG1', 'TRG2'];
 
 /**
- * Gamepad API の standard mapping における物理ボタン名(RetroPad/SNES系の命名に合わせる。
- * gamepad.ts の TARGET_TO_RETRO_ID コメントにある RetroPad B/A/Y/X/L/R/L2/R2 と揃えてある)。
- * 言語非依存の技術名として扱い、TRG1/TRG2表記と同様に ja/en どちらでも同じ文字列を出す。
+ * Gamepad API の standard mapping における物理ボタンの「位置」表記。
+ * RetroPad命名(id=0='B' 等)をそのまま出すと、8BitDo M30 や Xboxパッドの実機印刷と
+ * 食い違って確実に混乱する(下ボタンが「B」と表示される等)ため、index主表記+位置名の
+ * 併記にする(例: 「#0 (下)」)。indexはライブ表示のボタン番号表示と対応が取れる。
+ * 並びは standard mapping の button index 順(0..16)。
  */
-const STANDARD_BUTTON_NAMES: readonly string[] = [
-  'B', // 0: 下ボタン
-  'A', // 1: 右ボタン
-  'Y', // 2: 左ボタン
-  'X', // 3: 上ボタン
-  'L',
-  'R',
-  'L2',
-  'R2',
-  'Select',
-  'Start',
-  'L3',
-  'R3',
-  'Up',
-  'Down',
-  'Left',
-  'Right',
-  'Home',
+const STANDARD_BUTTON_POSITIONS: ReadonlyArray<() => string> = [
+  () => t('gamepadPosDown'), // 0
+  () => t('gamepadPosRight'), // 1
+  () => t('gamepadPosLeft'), // 2
+  () => t('gamepadPosUp'), // 3
+  () => t('gamepadPosL'), // 4
+  () => t('gamepadPosR'), // 5
+  () => t('gamepadPosL2'), // 6
+  () => t('gamepadPosR2'), // 7
+  () => t('gamepadPosSelect'), // 8
+  () => t('gamepadPosStart'), // 9
+  () => t('gamepadPosL3'), // 10
+  () => t('gamepadPosR3'), // 11
+  () => t('gamepadPosDpadUp'), // 12
+  () => t('gamepadPosDpadDown'), // 13
+  () => t('gamepadPosDpadLeft'), // 14
+  () => t('gamepadPosDpadRight'), // 15
+  () => t('gamepadPosHome'), // 16
 ];
 
 /**
- * 「その他の割当(キーボード)」セクションで選べる代表的なキー。実際の出力配線は次担当が行う
- * (今回はUIの型・選択肢を用意するところまで)。値は keyboard.ts の RETROK.* と同じ数値
- * (libretro RETROK_* 準拠)を直接埋め込む(このファイルは表示専用でRETROKロジックに依存しないため、
- * import はせず必要な値だけリテラルで持つ)。
+ * 「その他の割当(キーボード)」セクションで選べるキー一覧。
+ * virtual-keyboard.ts の KBD_ROWS/KEYPAD_ROWS(X68000キーボードの全キー定義。VirtualKeyDefの
+ * label/retrokを持つ)をそのまま流用し、ここでの重複ハードコードは持たない
+ * (キー配列の唯一の情報源は virtual-keyboard.ts 側)。
  */
-const KEYBOARD_OPTIONS: ReadonlyArray<{ retrok: number; label: string }> = [
-  { retrok: 27, label: 'ESC' }, // RETROK.ESCAPE
-  { retrok: 32, label: 'Space' }, // RETROK.SPACE
-  { retrok: 13, label: 'Enter' }, // RETROK.RETURN
-  { retrok: 122, label: 'Z' }, // RETROK.z
-  { retrok: 120, label: 'X' }, // RETROK.x
-  { retrok: 273, label: 'Up' }, // RETROK.UP
-  { retrok: 274, label: 'Down' }, // RETROK.DOWN
-  { retrok: 276, label: 'Left' }, // RETROK.LEFT
-  { retrok: 275, label: 'Right' }, // RETROK.RIGHT
-];
+const KEYBOARD_OPTIONS: ReadonlyArray<{ retrok: number; label: string }> = (() => {
+  const seen = new Set<number>();
+  const out: Array<{ retrok: number; label: string }> = [];
+  for (const row of [...KBD_ROWS, ...KEYPAD_ROWS]) {
+    for (const def of row) {
+      if (def.retrok === undefined || seen.has(def.retrok)) continue;
+      seen.add(def.retrok);
+      out.push({ retrok: def.retrok, label: def.label.replace('\n', ' ') });
+    }
+  }
+  return out;
+})();
 
 /**
  * main.ts側(割当ロジック・永続化の実体を持つ側)から渡してもらう情報。
@@ -142,11 +146,12 @@ function targetLabel(target: JoyTarget): string {
   }
 }
 
-/** ボタン/軸の物理入力を人間可読なラベルへ。standard mapping ならRetroPad系の名前、それ以外はindex表記。 */
+/** ボタン/軸の物理入力を人間可読なラベルへ。standard mapping なら位置ベースの名前、それ以外はindex表記。 */
 function sourceLabel(source: Source, pad: Gamepad): string {
   if (source.kind === 'button') {
-    const named = pad.mapping === 'standard' ? STANDARD_BUTTON_NAMES[source.index] : undefined;
-    return named ?? t('gamepadButtonLabel', { index: source.index });
+    const positionFn = pad.mapping === 'standard' ? STANDARD_BUTTON_POSITIONS[source.index] : undefined;
+    if (positionFn) return t('gamepadPositionalButtonLabel', { index: source.index, position: positionFn() });
+    return t('gamepadButtonLabel', { index: source.index });
   }
   return t('gamepadAxisLabel', { index: source.index, dir: source.dir > 0 ? '+' : '-' });
 }

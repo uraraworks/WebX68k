@@ -245,14 +245,66 @@ function gamepadsByPort(): [Gamepad | null, Gamepad | null] {
 }
 
 /** port0/1ぶんのRetroPadビットマスクを、各パッド固有のGamepadManagerで計算する。 */
-function pollBitsByPort(): [number, number] {
-  const pads = gamepadsByPort();
+function pollBitsByPort(pads: readonly (Gamepad | null)[]): [number, number] {
   const result: [number, number] = [0, 0];
   for (let port = 0; port < 2; port++) {
     const pad = pads[port];
     if (pad) result[port] = managerForPad(pad).bitsForPad(pad);
   }
   return result;
+}
+
+// --- ゲームパッドの kind:'key' 割当の出力配線 ---
+// joy側(px68kのジョイスティックポート)とは別に、パッドのボタン/軸へキーボードキーを割り当てた
+// ぶんは SharedKeyInput 経由でゲストへ届ける。source文字列は `gamepad:0`/`gamepad:1` のように
+// ポート別にする(sharedKeyInput は宣言がこのブロックより後にあるため、関数はここでは定義だけ
+// し、実体の呼び出しは sharedKeyInput 定義後にまとめる)。
+// 「今フレーム押されている retrok の集合」を毎フレーム前フレームと差分し、増えた分をpress、
+// 減った分をreleaseする(押しっぱなしはpressを連打しない=オートリピートしない。リピートは
+// ゲスト側の責務)。
+let gamepadKeyState: [Set<number>, Set<number>] = [new Set(), new Set()];
+
+/** ポートport(0/1)の `gamepad:N` ソースから、現在保持している押下をすべて解放する。 */
+function releaseGamepadKeys(port: 0 | 1): void {
+  sharedKeyInput.releaseSource(`gamepad:${port}`);
+  gamepadKeyState[port] = new Set();
+}
+
+function releaseAllGamepadKeys(): void {
+  releaseGamepadKeys(0);
+  releaseGamepadKeys(1);
+}
+
+/**
+ * そのGamepadが現在ポート0/1のどちらに割り当たっているかを調べ、割り当たっていれば
+ * そのポートの `gamepad:N` ソースを解放する(バインディング編集直後の固着防止)。
+ * 未接続/未割当のパッドに対しては何もしない。
+ */
+function releaseGamepadKeysForPad(pad: Gamepad): void {
+  const port = assignPorts(navigator.getGamepads(), gamepadStore.portPads).get(pad.index);
+  if (port === 0 || port === 1) releaseGamepadKeys(port);
+}
+
+/**
+ * host.onPoll から毎フレーム呼ぶ。port0/1ぶんの kind:'key' 押下集合を計算し、
+ * 前フレームとの差分だけを sharedKeyInput へ press/release する。
+ * パッドが切断された(pads[port]がnull)場合は次の集合が空になるため、
+ * 保持していたキーは自然に全解放される(切断イベントに頼らない設計と一貫)。
+ */
+function syncGamepadKeys(pads: readonly (Gamepad | null)[]): void {
+  for (let port = 0; port < 2; port++) {
+    const pad = pads[port];
+    const next = pad ? managerForPad(pad).keysForPad(pad) : new Set<number>();
+    const prev = gamepadKeyState[port];
+    const source = `gamepad:${port}`;
+    for (const retrok of next) {
+      if (!prev.has(retrok)) sharedKeyInput.press(source, retrok);
+    }
+    for (const retrok of prev) {
+      if (!next.has(retrok)) sharedKeyInput.release(source, retrok);
+    }
+    gamepadKeyState[port] = next;
+  }
 }
 
 // ジョイスティック設定ダイアログ(見える化+割当編集)。
@@ -275,19 +327,26 @@ const gamepadDialog = buildGamepadDialog(gamepadRoot, {
   addBinding: (pad, source, binding) => {
     managerForPad(pad).addBinding(source, binding);
     persistPad(pad);
+    // 割当を追加した瞬間、そのポートが既に(別の割当で)キーを押しっぱなし扱いのままだと
+    // 新しい割当と混ざって固着しうるため、編集のたびに一旦解放して次のpollでクリーンに再計算させる。
+    releaseGamepadKeysForPad(pad);
   },
   removeBinding: (pad, source, binding) => {
     managerForPad(pad).removeBinding(source, binding);
     persistPad(pad);
+    releaseGamepadKeysForPad(pad);
   },
   resetToPreset: (pad) => {
     managerForPad(pad).resetToPreset();
     persistPad(pad);
+    releaseGamepadKeysForPad(pad);
   },
   getPortSelection: () => gamepadStore.portPads,
   setPortSelection: (port, padId) => {
     gamepadStore.portPads[port] = padId;
     saveGamepadStore(gamepadStore);
+    // ポート割当が変わると `gamepad:0`/`gamepad:1` とパッドの対応がずれるため、両方解放する。
+    releaseAllGamepadKeys();
   },
 });
 btnGamepad.addEventListener('click', () => gamepadDialog.open());
@@ -296,11 +355,13 @@ btnGamepad.addEventListener('click', () => gamepadDialog.open());
 window.addEventListener('blur', () => {
   host?.setJoyState(0, 0);
   host?.setJoyState(1, 0);
+  releaseAllGamepadKeys();
 });
 document.addEventListener('visibilitychange', () => {
   if (document.visibilityState === 'hidden') {
     host?.setJoyState(0, 0);
     host?.setJoyState(1, 0);
+    releaseAllGamepadKeys();
   }
 });
 
@@ -1518,9 +1579,11 @@ async function bootCore(): Promise<void> {
   host.setCoreOption('px68k_joytype2', 'Default (2 Buttons)');
   await host.init(biosIplBytes!, biosCgBytes!);
   host.onPoll = () => {
-    const [bits0, bits1] = pollBitsByPort();
+    const pads = gamepadsByPort();
+    const [bits0, bits1] = pollBitsByPort(pads);
     host!.setJoyState(0, bits0);
     host!.setJoyState(1, bits1);
+    syncGamepadKeys(pads);
   };
 
   const fdd0Path = slots.fdd0
@@ -2498,7 +2561,7 @@ if (import.meta.env.DEV) {
     // ヘッドレスでの検証用(ブラウザUIを開かなくても割当が効いているか確認できる)。
     joy: () => {
       const pads = gamepadsByPort();
-      const [bits0, bits1] = pollBitsByPort();
+      const [bits0, bits1] = pollBitsByPort(pads);
       const rawOf = (pad: Gamepad | null) =>
         pad === null
           ? null
@@ -2513,6 +2576,9 @@ if (import.meta.env.DEV) {
         port1: { bits: bits1, raw: rawOf(pads[1]) },
       };
     },
+    // TVRAM の文字画面をテキストで読む(ゲームパッドのキー割当検証等、末端(ゲスト側の受信結果)を
+    // 実測するためのフック。?bridge=1 のMCPブリッジと同じ host.readTextScreen() を使う)。
+    screenText: () => host?.readTextScreen() ?? null,
   };
 }
 

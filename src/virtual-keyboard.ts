@@ -104,7 +104,7 @@ export const KBD_ROWS: VirtualKeyDef[][] = [
   ],
 ];
 
-const KEYPAD_ROWS: VirtualKeyDef[][] = [
+export const KEYPAD_ROWS: VirtualKeyDef[][] = [
   [
     { label: 'CLR', retrok: RETROK.CLEAR }, { label: '/', retrok: RETROK.KP_DIVIDE },
     { label: '*', retrok: RETROK.KP_MULTIPLY }, { label: '-', retrok: RETROK.KP_MINUS },
