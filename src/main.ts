@@ -41,6 +41,7 @@ import { buildFileManagerDialog, type FmTarget } from './filemanager';
 import { Bridge, resolveBridgeUrl, type BridgeHost } from './bridge';
 import { RETROK, charToKey, codeToRetrok } from './keyboard';
 import { LibretroHost } from './libretro-host';
+import { GamepadManager } from './gamepad';
 import { createVirtualKeyboard, SharedKeyInput } from './virtual-keyboard';
 import {
   getState,
@@ -181,6 +182,42 @@ let audio: AudioEngine | null = null;
 let host: LibretroHost | null = null;
 let running = false;
 let bootStarted = false;
+
+// --- ジョイスティック(ゲームパッド)入力 ---
+// マッピングの実体は gamepad.ts の GamepadManager(Phase 1 は既定マッピング固定)。
+// ここでは「どの Gamepad.index をどのポート(0/1)に割り当てるか」だけを管理する。
+// Phase 3 で接続台数・選択UIを作る前提で、今は接続順にポート0→1へ詰めるだけにしてある。
+const gamepadManager = new GamepadManager();
+let connectedGamepadIndices: number[] = [];
+window.addEventListener('gamepadconnected', (e) => {
+  if (!connectedGamepadIndices.includes(e.gamepad.index)) {
+    connectedGamepadIndices.push(e.gamepad.index);
+  }
+});
+window.addEventListener('gamepaddisconnected', (e) => {
+  connectedGamepadIndices = connectedGamepadIndices.filter((i) => i !== e.gamepad.index);
+});
+/** 接続順にポート0/1へ割り当てた Gamepad 配列(未接続ポートは null)を作る。 */
+function gamepadsByPort(): [Gamepad | null, Gamepad | null] {
+  const all = navigator.getGamepads();
+  const at = (port: number): Gamepad | null => {
+    const index = connectedGamepadIndices[port];
+    return index === undefined ? null : (all[index] ?? null);
+  };
+  return [at(0), at(1)];
+}
+// 押しっぱなし固着の予防(仮想キーボードの releaseAll と同じ思想)。
+// フォーカスが外れた/タブが隠れた瞬間の入力は届いても意味がないので、コア側の状態を明示的に0へ戻す。
+window.addEventListener('blur', () => {
+  host?.setJoyState(0, 0);
+  host?.setJoyState(1, 0);
+});
+document.addEventListener('visibilitychange', () => {
+  if (document.visibilityState === 'hidden') {
+    host?.setJoyState(0, 0);
+    host?.setJoyState(1, 0);
+  }
+});
 
 // 物理・仮想・ブリッジ入力を入力元ごとに保持し、同じキーの片側だけが先に離れても
 // コア側の押下状態が消えないよう集約する。
@@ -1390,7 +1427,16 @@ async function bootCore(): Promise<void> {
   // マウスを有効化する。px68k は MouseSW が立っていないと Mouse_Event() を丸ごと無視するため、
   // このオプション("Mouse")が Mouse_StartCapture(1) を呼ぶまでマウス入力は一切通らない。
   host.setCoreOption('px68k_joy_mouse', 'Mouse');
+  // ジョイスティックは Phase 1 では既定マッピング固定の2ボタンパッド前提で動かす
+  // (Config.JOY_TYPE を PAD_2BUTTON にしておかないと Joystick_Update の TRG1/TRG2 判定と噛み合わない)。
+  host.setCoreOption('px68k_joytype1', 'Default (2 Buttons)');
+  host.setCoreOption('px68k_joytype2', 'Default (2 Buttons)');
   await host.init(biosIplBytes!, biosCgBytes!);
+  host.onPoll = () => {
+    const [bits0, bits1] = gamepadManager.poll(gamepadsByPort());
+    host!.setJoyState(0, bits0);
+    host!.setJoyState(1, bits1);
+  };
 
   const fdd0Path = slots.fdd0
     ? host.writeDiskImage(`fdd0_${sanitizeFileName(slots.fdd0.name)}`, slots.fdd0.data)

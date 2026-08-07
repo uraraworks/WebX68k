@@ -386,7 +386,7 @@ export class LibretroHost {
       /* keyState/mouse は DOM イベントで直接更新される。joyState 用のフックのみ呼ぶ */
       this.onPoll?.();
     };
-    const inputStateCb = (_port: number, device: number, _index: number, id: number): number => {
+    const inputStateCb = (port: number, device: number, _index: number, id: number): number => {
       if (device === RETRO_DEVICE_KEYBOARD) return this.keyState.has(id) ? 1 : 0;
       if (device === RETRO_DEVICE_MOUSE) {
         switch (id) {
@@ -409,8 +409,8 @@ export class LibretroHost {
         }
       }
       if (device === RETRO_DEVICE_JOYPAD) {
-        if (_port !== 0 && _port !== 1) return 0;
-        return (this.joyState[_port] >> id) & 1;
+        if (port !== 0 && port !== 1) return 0;
+        return (this.joyState[port] >> id) & 1;
       }
       return 0;
     };
