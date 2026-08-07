@@ -113,6 +113,8 @@ export interface PX68KModule {
   _webx68k_text_dot_y?: () => number;
   _webx68k_text_scroll_x?: () => number;
   _webx68k_text_scroll_y?: () => number;
+  // ジョイスティック配線の結合テスト用(core-shim.c 経由で libretro/joystick.c の Joystick_Read を公開)
+  _webx68k_joystick_read(port: number): number;
 }
 
 declare global {
@@ -170,6 +172,11 @@ export class LibretroHost {
   private mouseDy = 0;
   private mouseButtons = { left: false, right: false };
 
+  // RetroPad の押下状態をビットマスクで保持(bit = RETRO_DEVICE_ID_JOYPAD_*)。
+  // ポート0/1の2系統ぶん。コアは retro_run() 中に inputStateCb を1IDずつ呼ぶので、
+  // ここではポーリングされた瞬間の状態をそのまま返せればよい(マウスと違い積算しない)。
+  private joyState: [number, number] = [0, 0];
+
   private imageData: ImageData | null = null;
   private lastWidth = 0;
   private lastHeight = 0;
@@ -188,6 +195,12 @@ export class LibretroHost {
    * ときだけ呼ぶ。呼び出し元(main.ts)が未配線でも動くよう任意プロパティにしている。
    */
   onResolutionChanged?: () => void;
+
+  /**
+   * retro_run() 冒頭、コアが Joystick_Update() 等で入力を読み出す前に呼ばれる input_poll コールバックのフック。
+   * 結合テストで「このフレームでポーリングされたか」を検出する目的で任意プロパティにしている。
+   */
+  onPoll?: () => void;
 
   constructor(canvas: HTMLCanvasElement, audioPush: AudioPushFn) {
     this.canvas = canvas;
@@ -230,6 +243,11 @@ export class LibretroHost {
 
   setMouseButton(button: 'left' | 'right', down: boolean): void {
     this.mouseButtons[button] = down;
+  }
+
+  /** ジョイパッドの押下状態を RetroPad ID ビットマスクで設定する(port: 0 or 1)。 */
+  setJoyState(port: number, bits: number): void {
+    this.joyState[port] = bits;
   }
 
   /**
@@ -365,7 +383,8 @@ export class LibretroHost {
     };
     const audioSampleBatchCb = (data: number, frames: number): number => this.handleAudioBatch(data, frames);
     const inputPollCb = (): void => {
-      /* no-op: keyState は DOM イベントで直接更新される */
+      /* keyState/mouse は DOM イベントで直接更新される。joyState 用のフックのみ呼ぶ */
+      this.onPoll?.();
     };
     const inputStateCb = (_port: number, device: number, _index: number, id: number): number => {
       if (device === RETRO_DEVICE_KEYBOARD) return this.keyState.has(id) ? 1 : 0;
@@ -389,7 +408,10 @@ export class LibretroHost {
             return 0;
         }
       }
-      if (device === RETRO_DEVICE_JOYPAD) return 0;
+      if (device === RETRO_DEVICE_JOYPAD) {
+        if (_port !== 0 && _port !== 1) return 0;
+        return (this.joyState[_port] >> id) & 1;
+      }
       return 0;
     };
 

@@ -153,6 +153,25 @@ int get_mouse_enabled(void)
 }
 
 /*
+ * ジョイスティック配線の結合テスト用。
+ * libretro/joystick.c の Joystick_Read(num) をそのまま呼ぶ。
+ * Config.JOY_TYPE[num] == PAD_2BUTTON(デフォルト)のとき、Joystick_Read は
+ * JoyPortData[num] == 0xff の場合だけ 0xff(全ボタン未押下)を返し、それ以外は
+ * Joystick_Update() が毎フレーム計算した JoyState[num][0] を返す。
+ * JoyPortData の初期値は 0(0xff ではない)なので、ゲストソフトが明示的に
+ * ポートへ 0xff を書き込まない限り Joystick_Read はホストの入力状態をそのまま
+ * 反映する。ゲストが実際に I/O ポート経由で読む値と完全に一致させるため、
+ * JoyState を直接覗くのではなく Joystick_Read() を呼ぶ方を選んだ。
+ */
+extern unsigned char Joystick_Read(unsigned char num);
+
+__attribute__((used))
+int webx68k_joystick_read(int port)
+{
+  return Joystick_Read((unsigned char)port);
+}
+
+/*
  * ゲストのメインメモリを読む。
  * IOCS はワークエリアにマウスカーソルの実座標と可動範囲を持っているので、
  * ここを直接読めばホスト側で位置を推定する必要がなくなる(閉ループ追従)。
