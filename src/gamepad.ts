@@ -87,6 +87,26 @@ export const XINPUT_PRESET: ReadonlyArray<{ source: Source; binding: Binding }> 
 export const DEFAULT_DEADZONE = 0.5;
 
 /**
+ * 「どの Gamepad.index をどのポート(0/1)に割り当てるか」を決める、唯一の情報源。
+ *
+ * navigator.getGamepads() が返す配列(疎な配列。切断済みindexはnullのまま残る)から
+ * 非nullのものだけを Gamepad.index の昇順に並べ、先頭からポート0/1へ割り当てる。
+ * gamepadconnected/gamepaddisconnected イベントの発火有無には一切依存しない
+ * (イベントを経ずに navigator.getGamepads() へ現れたパッドも正しく拾うため)。
+ * 3台目以降は割当なし(呼び出し側は Map に index が無ければ未割当として扱う)。
+ *
+ * 戻り値は Gamepad.index -> port(0|1) の Map。
+ */
+export function assignPorts(gamepads: readonly (Gamepad | null)[]): ReadonlyMap<number, number> {
+  const present = gamepads.filter((pad): pad is Gamepad => pad != null).sort((a, b) => a.index - b.index);
+  const map = new Map<number, number>();
+  for (let port = 0; port < 2 && port < present.length; port++) {
+    map.set(present[port].index, port);
+  }
+  return map;
+}
+
+/**
  * Gamepad -> RetroPad ID ビットマスクへの変換器。
  *
  * ブラウザ無しでユニットテストできるよう、`navigator.getGamepads()` への依存は持たない。
@@ -115,9 +135,9 @@ export class GamepadManager {
   }
 
   /**
-   * 接続中の Gamepad 配列(navigator.getGamepads() の戻り値そのまま)から、
+   * 配列のインデックスがそのままポート番号として詰められた Gamepad 配列
+   * (呼び出し側が既にポート割当を済ませたもの。要素数2、未接続ポートは null)から、
    * port 0/1 ぶんの RetroPad ID ビットマスクを計算して返す。
-   * 配列のインデックスがそのままポート番号になる(2台目以降は port 1 まで、それ以上は無視)。
    */
   poll(gamepads: readonly (Gamepad | null)[]): [number, number] {
     const result: [number, number] = [0, 0];
@@ -127,6 +147,23 @@ export class GamepadManager {
       result[port] = this.computeBits(pad);
     }
     return result;
+  }
+
+  /**
+   * navigator.getGamepads() の戻り値そのまま(疎な配列、ポート未割当)を受け取り、
+   * assignPorts() で port 0/1 を決めたうえでビットマスクを計算する。
+   * 「割当をどう決めるか」の唯一の情報源は assignPorts() であることを保証するため、
+   * 呼び出し側(main.ts の host.onPoll、gamepad-ui.ts のライブ表示)はこちらを使うこと。
+   */
+  pollByPort(gamepads: readonly (Gamepad | null)[]): [number, number] {
+    const ports = assignPorts(gamepads);
+    const byPort: [Gamepad | null, Gamepad | null] = [null, null];
+    for (const pad of gamepads) {
+      if (!pad) continue;
+      const port = ports.get(pad.index);
+      if (port === 0 || port === 1) byPort[port] = pad;
+    }
+    return this.poll(byPort);
   }
 
   private computeBits(pad: Gamepad): number {

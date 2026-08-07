@@ -41,7 +41,7 @@ import { buildFileManagerDialog, type FmTarget } from './filemanager';
 import { Bridge, resolveBridgeUrl, type BridgeHost } from './bridge';
 import { RETROK, charToKey, codeToRetrok } from './keyboard';
 import { LibretroHost } from './libretro-host';
-import { GamepadManager } from './gamepad';
+import { assignPorts, GamepadManager } from './gamepad';
 import { buildGamepadDialog } from './gamepad-ui';
 import { createVirtualKeyboard, SharedKeyInput } from './virtual-keyboard';
 import {
@@ -188,37 +188,33 @@ let bootStarted = false;
 
 // --- ジョイスティック(ゲームパッド)入力 ---
 // マッピングの実体は gamepad.ts の GamepadManager(Phase 1 は既定マッピング固定)。
-// ここでは「どの Gamepad.index をどのポート(0/1)に割り当てるか」だけを管理する。
-// Phase 3 で接続台数・選択UIを作る前提で、今は接続順にポート0→1へ詰めるだけにしてある。
+// 「どの Gamepad.index をどのポート(0/1)に割り当てるか」は gamepad.ts の assignPorts() が
+// 唯一の情報源(毎回の navigator.getGamepads() の結果だけから決まる純粋関数)。
+// gamepadconnected/gamepaddisconnected イベントでは状態を持たない
+// (イベントを経ずに navigator.getGamepads() へ現れたパッドを割当から取りこぼすバグを踏んだため。
+//  UIの再描画は gamepad-ui.ts 側の requestAnimationFrame ループが担っており、
+//  ここでイベント購読して明示的に再描画をトリガする必要は無い)。
 const gamepadManager = new GamepadManager();
-let connectedGamepadIndices: number[] = [];
-window.addEventListener('gamepadconnected', (e) => {
-  if (!connectedGamepadIndices.includes(e.gamepad.index)) {
-    connectedGamepadIndices.push(e.gamepad.index);
-  }
-});
-window.addEventListener('gamepaddisconnected', (e) => {
-  connectedGamepadIndices = connectedGamepadIndices.filter((i) => i !== e.gamepad.index);
-});
-/** 接続順にポート0/1へ割り当てた Gamepad 配列(未接続ポートは null)を作る。 */
+/** navigator.getGamepads() を assignPorts() でポート0/1に詰めた Gamepad 配列(未接続ポートは null)を作る。 */
 function gamepadsByPort(): [Gamepad | null, Gamepad | null] {
   const all = navigator.getGamepads();
-  const at = (port: number): Gamepad | null => {
-    const index = connectedGamepadIndices[port];
-    return index === undefined ? null : (all[index] ?? null);
-  };
-  return [at(0), at(1)];
+  const ports = assignPorts(all);
+  const byPort: [Gamepad | null, Gamepad | null] = [null, null];
+  for (const pad of all) {
+    if (!pad) continue;
+    const port = ports.get(pad.index);
+    if (port === 0 || port === 1) byPort[port] = pad;
+  }
+  return byPort;
 }
 
 // ジョイスティック設定ダイアログ(見える化のみ。割当編集は次フェーズ)。
 // バインディングの実体(GamepadManager)は main.ts 側に持ったまま、gamepad-ui.ts へは
 // 「ポート割当を引く」「解決済みビットマスクを計算する」の2つだけコールバックで渡す。
+// どちらも assignPorts()/pollByPort() を経由するため、host.onPoll 側と同じ割当結果を見る。
 const gamepadDialog = buildGamepadDialog(gamepadRoot, {
-  getPort: (gamepadIndex) => {
-    const port = connectedGamepadIndices.indexOf(gamepadIndex);
-    return port === 0 || port === 1 ? port : null;
-  },
-  resolveBits: (pad) => gamepadManager.poll([pad, null])[0],
+  getPort: (gamepadIndex) => assignPorts(navigator.getGamepads()).get(gamepadIndex) ?? null,
+  resolveBits: (pad) => gamepadManager.pollByPort([pad])[0],
 });
 btnGamepad.addEventListener('click', () => gamepadDialog.open());
 // 押しっぱなし固着の予防(仮想キーボードの releaseAll と同じ思想)。

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { DEFAULT_DEADZONE, GamepadManager } from '../src/gamepad';
+import { assignPorts, DEFAULT_DEADZONE, GamepadManager } from '../src/gamepad';
 
 // libretro.h の RETRO_DEVICE_ID_JOYPAD_* / TARGET_TO_RETRO_ID(gamepad.ts)と対応する。
 const RETRO_B = 0; // TRG1
@@ -10,7 +10,9 @@ const RETRO_LEFT = 6;
 const RETRO_RIGHT = 7;
 
 /** テスト用の最小 Gamepad モック(標準マッピング準拠、17ボタン/4軸)。 */
-function makeGamepad(opts: { buttons?: Record<number, boolean>; axes?: Record<number, number> } = {}): Gamepad {
+function makeGamepad(
+  opts: { buttons?: Record<number, boolean>; axes?: Record<number, number>; index?: number } = {},
+): Gamepad {
   const buttons = Array.from({ length: 17 }, (_, i) => ({
     pressed: opts.buttons?.[i] ?? false,
     touched: false,
@@ -20,7 +22,7 @@ function makeGamepad(opts: { buttons?: Record<number, boolean>; axes?: Record<nu
   for (const [k, v] of Object.entries(opts.axes ?? {})) axes[Number(k)] = v;
   return {
     id: 'mock',
-    index: 0,
+    index: opts.index ?? 0,
     connected: true,
     timestamp: 0,
     mapping: 'standard',
@@ -115,5 +117,54 @@ describe('GamepadManager (XINPUT_PRESET)', () => {
     const [bits0, bits1] = mgr.poll([null, null]);
     expect(bits0).toBe(0);
     expect(bits1).toBe(0);
+  });
+});
+
+// gamepadconnected イベントを経ずに navigator.getGamepads() へ現れたパッドが
+// ポート割当から漏れるバグ(ライブ表示は正しく光るのにコアへ届かない)への回帰テスト。
+// assignPorts() は毎回のポーリング結果だけから割当を決める純粋関数であること、
+// イベントの発火有無に依存しないことを保証する。
+describe('assignPorts', () => {
+  it('非nullが1つだけ(index 0)なら port0 に割り当てる', () => {
+    const pad = makeGamepad({ index: 0 });
+    const ports = assignPorts([pad]);
+    expect(ports.get(0)).toBe(0);
+    expect(ports.size).toBe(1);
+  });
+
+  it('配列に穴がある(index 0 が null, index 1 に実体)場合でも詰めて port0 へ割り当てる', () => {
+    const pad1 = makeGamepad({ index: 1 });
+    const ports = assignPorts([null, pad1]);
+    expect(ports.get(1)).toBe(0);
+    expect(ports.size).toBe(1);
+  });
+
+  it('2台接続時は index の昇順で port0/port1 に詰める(navigator配列中の位置には依存しない)', () => {
+    const padHigh = makeGamepad({ index: 3 });
+    const padLow = makeGamepad({ index: 1 });
+    // 配列上は index 3 のパッドが先に来ていても、index の昇順で割り当てる。
+    const ports = assignPorts([padHigh, padLow]);
+    expect(ports.get(1)).toBe(0);
+    expect(ports.get(3)).toBe(1);
+  });
+
+  it('3台目は未割当のまま(Mapにエントリが無い)', () => {
+    const pad0 = makeGamepad({ index: 0 });
+    const pad1 = makeGamepad({ index: 1 });
+    const pad2 = makeGamepad({ index: 2 });
+    const ports = assignPorts([pad0, pad1, pad2]);
+    expect(ports.get(0)).toBe(0);
+    expect(ports.get(1)).toBe(1);
+    expect(ports.has(2)).toBe(false);
+  });
+
+  it('切断で詰め直る: index 0 が消えても残りは port0 から詰め直される', () => {
+    const pad1 = makeGamepad({ index: 1 });
+    const pad2 = makeGamepad({ index: 2 });
+    // 直前まで index 0 が port0, index 1 が port1 だった状態から index 0 が切断された想定。
+    const ports = assignPorts([null, pad1, pad2]);
+    expect(ports.get(1)).toBe(0);
+    expect(ports.get(2)).toBe(1);
+    expect(ports.has(0)).toBe(false);
   });
 });
