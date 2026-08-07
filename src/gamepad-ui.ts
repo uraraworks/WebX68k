@@ -40,7 +40,8 @@ const DISPLAY_TARGETS: readonly JoyTarget[] = ['UP', 'DOWN', 'LEFT', 'RIGHT', 'T
  * Gamepad API の standard mapping における物理ボタンの「位置」表記。
  * RetroPad命名(id=0='B' 等)をそのまま出すと、8BitDo M30 や Xboxパッドの実機印刷と
  * 食い違って確実に混乱する(下ボタンが「B」と表示される等)ため、index主表記+位置名の
- * 併記にする(例: 「#0 (下)」)。indexはライブ表示のボタン番号表示と対応が取れる。
+ * 併記にする(例: 「#1 (下)」。表示は1始まり、配列自体は0始まりのGamepad API index順)。
+ * indexはライブ表示のボタン番号表示と対応が取れる。
  * 並びは standard mapping の button index 順(0..16)。
  */
 const STANDARD_BUTTON_POSITIONS: ReadonlyArray<() => string> = [
@@ -146,14 +147,23 @@ function targetLabel(target: JoyTarget): string {
   }
 }
 
+/**
+ * ボタン/軸番号の表示専用変換(内部は0始まりのGamepad API index、UI表示のみ1始まり)。
+ * Windowsの「ゲームコントローラーの設定」の表記に合わせるための変換で、ここでしか+1しない
+ * (localStorageの保存値やwindow.__webx68kDebugの生値は0始まりのまま扱うこと)。
+ */
+export function toDisplayIndex(index: number): number {
+  return index + 1;
+}
+
 /** ボタン/軸の物理入力を人間可読なラベルへ。standard mapping なら位置ベースの名前、それ以外はindex表記。 */
-function sourceLabel(source: Source, pad: Gamepad): string {
+export function sourceLabel(source: Source, pad: Gamepad): string {
   if (source.kind === 'button') {
     const positionFn = pad.mapping === 'standard' ? STANDARD_BUTTON_POSITIONS[source.index] : undefined;
-    if (positionFn) return t('gamepadPositionalButtonLabel', { index: source.index, position: positionFn() });
-    return t('gamepadButtonLabel', { index: source.index });
+    if (positionFn) return t('gamepadPositionalButtonLabel', { index: toDisplayIndex(source.index), position: positionFn() });
+    return t('gamepadButtonLabel', { index: toDisplayIndex(source.index) });
   }
-  return t('gamepadAxisLabel', { index: source.index, dir: source.dir > 0 ? '+' : '-' });
+  return t('gamepadAxisLabel', { index: toDisplayIndex(source.index), dir: source.dir > 0 ? '+' : '-' });
 }
 
 /** そのパッドで選択可能な物理Source一覧(コンボボックスの選択肢生成用)。 */
@@ -283,7 +293,7 @@ export function buildGamepadDialog(container: HTMLElement, callbacks: GamepadDia
     const buttons = pad.buttons ?? [];
     for (let i = 0; i < buttons.length; i++) {
       const pressed = buttons[i]?.pressed === true;
-      wrap.append(el('span', { class: pressed ? 'gp-btn active' : 'gp-btn' }, [String(i)]));
+      wrap.append(el('span', { class: pressed ? 'gp-btn active' : 'gp-btn' }, [String(toDisplayIndex(i))]));
     }
     return wrap;
   }
@@ -296,7 +306,7 @@ export function buildGamepadDialog(container: HTMLElement, callbacks: GamepadDia
       const raw = axes[i];
       const value = typeof raw === 'number' && Number.isFinite(raw) ? raw : 0;
       const active = Math.abs(value) > DEFAULT_DEADZONE;
-      wrap.append(el('span', { class: active ? 'gp-axis active' : 'gp-axis' }, [`A${i}: ${value.toFixed(2)}`]));
+      wrap.append(el('span', { class: active ? 'gp-axis active' : 'gp-axis' }, [`A${toDisplayIndex(i)}: ${value.toFixed(2)}`]));
     }
     return wrap;
   }
