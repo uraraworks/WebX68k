@@ -471,13 +471,22 @@ export class GamepadManager {
    * 指定 JoyTarget の kind:'joy' バインディングを、渡された1つの Source だけに置き換える
    * (編集UIの行の[検出]用。「最後に検出した1つだけになる」という置き換え動作)。
    * 対象は target の一致だけで選ぶ(source は問わない)ため、その行が複数Sourceの割当を
-   * 持っていても全部消してから1つだけ積み直す。他の target 向けの binding や、同じ Source に
-   * 乗っている他の target/kind:'key' の binding には触れない(sourceKey が一致しても
-   * binding.kind==='joy' && binding.target===target 以外はそのまま残す)。
+   * 持っていても全部消してから1つだけ積み直す。
+   *
+   * さらに、検出で拾った source が「別の target」に持っている kind:'joy' の割当も外す
+   * (「このボタンは○○です」という宣言として扱うため。外さないと、例えばボタン3を
+   * DOWN に割り当てた状態で UP の行で検出してボタン3を押すと、ボタン3が UP と DOWN の
+   * 両方を押す状態になってしまう)。
+   * ただし同じ source に乗っている kind:'key' の割当には触れない(joy とキーは別レイヤー。
+   * 意図的に1ボタンへ複数機能を乗せたい場合は、従来どおりコンボボックス
+   * 「追加する入力を選択…」から addBinding() で足せる)。
    */
   replaceTargetBinding(source: Source, target: JoyTarget): void {
     for (const { source: existingSource, binding } of this.getAllBindings()) {
-      if (binding.kind === 'joy' && binding.target === target) {
+      if (binding.kind !== 'joy') continue;
+      const sameTarget = binding.target === target;
+      const sameSource = sourcesEqual(existingSource, source);
+      if (sameTarget || sameSource) {
         this.removeBinding(existingSource, binding);
       }
     }

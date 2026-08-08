@@ -509,7 +509,10 @@ describe('GamepadManager.replaceTargetBinding([検出]の置き換え動作)', (
     expect(mgr.bindingsForTarget('TRG1')).toEqual([{ kind: 'button', index: 2 }]);
   });
 
-  it('同じ物理入力が別の行にも割り当たっていても、その行の割当は壊れない', () => {
+  // 二重割当バグの再現/修正確認。修正前は「検出で拾った source が他の target に持つ joy 割当」が
+  // 残ってしまい、例えばボタン3を DOWN に割り当てた状態で UP の行を検出してボタン3を押すと
+  // ボタン3が UP/DOWN 両方を押す状態になっていた。
+  it('検出で拾った物理入力が別の行(target)に joy 割当を持っていた場合、その割当も外れる', () => {
     const mgr = new GamepadManager([], 0.5);
     const shared = { kind: 'button' as const, index: 3 };
     // button 3 が TRG1 と TRG2 の両方に割り当たっている状態を作る。
@@ -517,23 +520,40 @@ describe('GamepadManager.replaceTargetBinding([検出]の置き換え動作)', (
     mgr.addBinding(shared, { kind: 'joy', target: 'TRG2' });
     mgr.addBinding({ kind: 'button', index: 0 }, { kind: 'joy', target: 'TRG1' });
 
-    // TRG1 の行だけを button 3 で置き換える。
+    // TRG1 の行を button 3 で置き換える。「このボタンは TRG1」という宣言として扱われるべき。
     mgr.replaceTargetBinding(shared, 'TRG1');
 
     expect(mgr.bindingsForTarget('TRG1')).toEqual([shared]);
-    // TRG2 側の割当(同じsourceを使っていた)は巻き添えで消えない。
-    expect(mgr.bindingsForTarget('TRG2')).toEqual([shared]);
+    // TRG2 側に残っていた同じ物理入力の割当は、二重押下を防ぐため外れる。
+    expect(mgr.bindingsForTarget('TRG2')).toEqual([]);
   });
 
-  it('同じ物理入力への kind:key バインディングは巻き込まれない', () => {
+  it('別の物理入力に割り当たっている他の行(target)には触れない', () => {
+    const mgr = new GamepadManager([], 0.5);
+    const other = { kind: 'button' as const, index: 9 };
+    mgr.addBinding(other, { kind: 'joy', target: 'TRG2' });
+    mgr.addBinding({ kind: 'button', index: 0 }, { kind: 'joy', target: 'TRG1' });
+
+    mgr.replaceTargetBinding({ kind: 'button', index: 2 }, 'TRG1');
+
+    // button 9 -> TRG2 は無傷。
+    expect(mgr.bindingsForTarget('TRG2')).toEqual([other]);
+  });
+
+  it('同じ物理入力への kind:key バインディングは巻き込まれない(joyとキーは別レイヤー)', () => {
     const mgr = new GamepadManager([], 0.5);
     const shared = { kind: 'button' as const, index: 4 };
     mgr.addBinding(shared, { kind: 'key', retrok: 97 });
+    // shared がすでに別 target(TRG2) にも joy 割当を持っている状態も混ぜておく。
+    mgr.addBinding(shared, { kind: 'joy', target: 'TRG2' });
     mgr.addBinding({ kind: 'button', index: 0 }, { kind: 'joy', target: 'TRG1' });
 
     mgr.replaceTargetBinding(shared, 'TRG1');
 
     expect(mgr.bindingsForTarget('TRG1')).toEqual([shared]);
+    // joy側の他target割当(TRG2)は外れる。
+    expect(mgr.bindingsForTarget('TRG2')).toEqual([]);
+    // key割当は joy とは別レイヤーなので残る。
     const keyBindings = mgr
       .getAllBindings()
       .filter((e) => e.binding.kind === 'key')

@@ -569,6 +569,7 @@ export function buildGamepadDialog(container: HTMLElement, callbacks: GamepadDia
   /** 「その他の割当(キーボード)」セクション。検出→宛先(ジョイスティック/キーボード)選択→追加、の2段階フロー。 */
   function renderGenericSection(pad: Gamepad, padType: PadType): HTMLElement {
     const title = el('h4', { class: 'gp-generic-title' }, [t('gamepadComboKeyboardGroup')]);
+    const desc = el('p', { class: 'gp-generic-desc' }, [t('gamepadGenericSectionDesc')]);
 
     const chipsEl = el('div', { class: 'gp-chip-list' });
     for (const { source, retrok } of callbacks.getKeyBindings(pad)) {
@@ -581,7 +582,7 @@ export function buildGamepadDialog(container: HTMLElement, callbacks: GamepadDia
       chipsEl.append(el('span', { class: 'gp-chip' }, [`${sourceLabel(source, pad)} → ${label}`, removeBtn]));
     }
     if (callbacks.getKeyBindings(pad).length === 0) {
-      chipsEl.append(el('span', { class: 'gp-chip-empty' }, ['—']));
+      chipsEl.append(el('span', { class: 'gp-chip-empty' }, [t('gamepadGenericEmptyLabel')]));
     }
 
     const statusEl = el('span', { class: 'gp-detect-status' });
@@ -629,7 +630,7 @@ export function buildGamepadDialog(container: HTMLElement, callbacks: GamepadDia
       );
     }
 
-    return el('div', { class: 'gp-generic-section' }, [title, row]);
+    return el('div', { class: 'gp-generic-section' }, [title, desc, row]);
   }
 
   /** 検出モードの押下判定(毎フレーム)。DOM再構築はせず、案内テキストと他ボタンのdisabledだけその場で更新する。 */

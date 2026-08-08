@@ -1696,6 +1696,12 @@ body.pseudo-fullscreen .console-card {
   color: var(--text-dim);
 }
 
+.gp-generic-desc {
+  margin: 0 0 8px;
+  font-size: 11px;
+  color: var(--text-dim);
+}
+
 .gp-generic-row {
   display: flex;
   align-items: center;

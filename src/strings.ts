@@ -225,10 +225,14 @@ interface Dict {
   gamepadComboPlaceholder(): string;
   /** コンボボックスの「キーボード」optgroupラベル(中身の出力配線は次担当が実装)。 */
   gamepadComboKeyboardGroup(): string;
+  /** 「その他の割当(キーボード)」セクション見出しの下に出す一行説明。何をする欄か読み取れない対策。 */
+  gamepadGenericSectionDesc(): string;
+  /** キーボード割当が0件のときのチップ表示(単なる「—」だと読み取れないため明示する)。 */
+  gamepadGenericEmptyLabel(): string;
   /**
    * 「その他の割当」セクションの[検出]ボタンのツールチップ。JoyTarget行の[検出]と違い、
    * こちらは「新しい入力を捕まえてから宛先(ジョイスティック行 or キー)を選んで追加する」フローで、
-   * 既存の割当を置き換えるものではない旨を明記する。
+   * 既存の割当を置き換えるものではない旨と、操作順(パッドのボタンを押す→キーを選ぶ)を明記する。
    */
   gamepadGenericDetectBtnTitle(): string;
   /** 「その他の割当」セクションの[検出]ボタンのラベル(置き換えではなく新規追加フローなので文言を分ける)。 */
@@ -467,8 +471,12 @@ const STRINGS: Record<Lang, Dict> = {
     gamepadDetectWaiting: () => '入力を待っています…(Escでキャンセル)',
     gamepadRemoveBindingLabel: () => '削除',
     gamepadComboPlaceholder: () => '追加する入力を選択…',
-    gamepadGenericDetectBtnTitle: () => '次に押した入力を検出し、宛先(ジョイスティック行またはキー)を選んで追加します(既存の割当は消えません)',
-    gamepadGenericDetectBtn: () => '検出',
+    gamepadGenericSectionDesc: () =>
+      'パッドのボタンにキーボードのキーを割り当てます。ゲーム開始やポーズがキー操作のソフト向けです。',
+    gamepadGenericEmptyLabel: () => '割当なし',
+    gamepadGenericDetectBtnTitle: () =>
+      '押すとパッドの入力待ちになります。パッドのボタンを押すと、割り当てるキーを選ぶメニューが出ます(既存の割当は消えません)',
+    gamepadGenericDetectBtn: () => 'キーを割り当てる',
     gamepadComboKeyboardGroup: () => 'キーボード',
     gamepadComboJoystickGroup: () => 'ジョイスティック(物理入力)',
     gamepadButtonLabel: ({ index }) => `ボタン${index}`,
@@ -691,9 +699,12 @@ const STRINGS: Record<Lang, Dict> = {
     gamepadDetectWaiting: () => 'Waiting for input… (Esc to cancel)',
     gamepadRemoveBindingLabel: () => 'Remove',
     gamepadComboPlaceholder: () => 'Select an input to add…',
+    gamepadGenericSectionDesc: () =>
+      'Assigns keyboard keys to pad buttons, for games that use key presses to start or pause.',
+    gamepadGenericEmptyLabel: () => 'No assignment',
     gamepadGenericDetectBtnTitle: () =>
-      'Detects the next input, then lets you pick where to add it (joystick row or key) — existing assignments are kept',
-    gamepadGenericDetectBtn: () => 'Detect',
+      'Press this, then press a pad button — a menu to pick the key to assign will appear (existing assignments are kept)',
+    gamepadGenericDetectBtn: () => 'Assign a Key',
     gamepadComboKeyboardGroup: () => 'Keyboard',
     gamepadComboJoystickGroup: () => 'Joystick (Physical Input)',
     gamepadButtonLabel: ({ index }) => `Button ${index}`,
