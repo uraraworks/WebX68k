@@ -220,6 +220,73 @@ function sourceOptionsFor(pad: Gamepad): Array<{ source: Source; label: string }
 }
 
 /**
+ * 検出待ち状態(行の[検出(置き換え)]・キーボードの[キーを割り当てる]共通)の純粋な状態遷移。
+ * DOM操作やGamepad APIの読み取りを一切持たない、テストしやすい形にするために
+ * buildGamepadDialog() 本体から切り出した(実機で「検出待ち中もボタンが変わらない」
+ * 「押しても反応しない」を調査した際、状態遷移そのものをDOMと分離して検証できないと
+ * 再発を防げないため)。buildGamepadDialog() 側の各関数(startRowDetect等)はここの
+ * 純粋関数を呼んで次状態を作り、DOM再構築(renderEditor)はその後に副作用として行う。
+ */
+export type DetectState =
+  | { kind: 'row'; padId: string; target: JoyTarget; baseline: PadSnapshot }
+  | { kind: 'generic'; padId: string; baseline: PadSnapshot }
+  | null;
+
+export interface DetectFlowState {
+  /** 検出(押して割り当て)待ち中の状態。行/キーボードどちらか一方のみ、同時に両方は待てない。 */
+  detect: DetectState;
+  /** キーボード検出が成功し、宛先(ジョイスティック行 or キー)の選択待ちになっている状態。 */
+  pendingGeneric: { padId: string; source: Source } | null;
+}
+
+export const IDLE_DETECT_FLOW_STATE: DetectFlowState = { detect: null, pendingGeneric: null };
+
+/** 行の[検出(置き換え)]を開始する。既存の宛先選択待ち(キーボード側)は両立させず破棄する。 */
+export function startRowDetectFlow(padId: string, target: JoyTarget, baseline: PadSnapshot): DetectFlowState {
+  return { detect: { kind: 'row', padId, target, baseline }, pendingGeneric: null };
+}
+
+/** キーボードの[キーを割り当てる]を開始する。以前の宛先選択待ちは破棄する(新しい検出が優先)。 */
+export function startGenericDetectFlow(padId: string, baseline: PadSnapshot): DetectFlowState {
+  return { detect: { kind: 'generic', padId, baseline }, pendingGeneric: null };
+}
+
+/**
+ * 検出待ち中に新規入力(Source)を検出した時の遷移。
+ * kind:'row' は呼び出し側が別途 replaceTargetBinding を実行し、ここでは detect を空に戻すだけ。
+ * kind:'generic' は即座に確定させず、宛先選択待ち(pendingGeneric)へ進める
+ * (「その他の割当」は押した入力の宛先をジョイスティック行/キーボードキーから選ぶ2段階フローのため)。
+ * detect が null(検出待ちでない)ときに呼んでも何もしない(呼び出し側の型ガード漏れに対する保険)。
+ */
+export function resolveDetectFound(state: DetectFlowState, source: Source): DetectFlowState {
+  if (state.detect === null) return state;
+  if (state.detect.kind === 'row') return { detect: null, pendingGeneric: state.pendingGeneric };
+  return { detect: null, pendingGeneric: { padId: state.detect.padId, source } };
+}
+
+/** 検出待ちを中断して何もせず元に戻す(行/キーボード共通。[キャンセル]ボタン・Escから呼ぶ)。 */
+export function cancelDetectFlow(state: DetectFlowState): DetectFlowState {
+  if (state.detect === null) return state;
+  return { ...state, detect: null };
+}
+
+/**
+ * キーボード検出成功後の宛先選択待ちを中断して破棄する([キャンセル]ボタン・Escから呼ぶ)。
+ * これが無かった頃は、待機中に見た目が変わらない[キーを割り当てる]ボタンを利用者が押し直すと
+ * startGenericDetect() がこの pendingGeneric を黙って上書きしてしまい、検出できていた入力ごと
+ * 消えて「押しても反応しない」ように見えていた(実機報告の根本原因)。
+ */
+export function cancelPendingGenericFlow(state: DetectFlowState): DetectFlowState {
+  if (state.pendingGeneric === null) return state;
+  return { ...state, pendingGeneric: null };
+}
+
+/** 宛先選択(destSelect)で確定した時の遷移。呼び出し側が別途 addBinding を実行してから呼ぶ。 */
+export function resolvePendingGenericPicked(state: DetectFlowState): DetectFlowState {
+  return { ...state, pendingGeneric: null };
+}
+
+/**
  * ジョイスティック設定ダイアログを構築して container へ追加する。
  * main.ts からはボタン1つ分の配線(open()呼び出しとapplyStrings()連携)だけ行えばよい
  * (filemanager.ts の buildFileManagerDialog と同じ流儀)。
@@ -261,12 +328,12 @@ export function buildGamepadDialog(container: HTMLElement, callbacks: GamepadDia
   // (ユーザーがselect/rangeを操作中にDOMを丸ごと差し替えて操作を中断させないため)。
   let lastEditorKey = '';
 
-  type DetectState =
-    | { kind: 'row'; padId: string; target: JoyTarget; baseline: PadSnapshot }
-    | { kind: 'generic'; padId: string; baseline: PadSnapshot };
-  let detect: DetectState | null = null;
+  // 検出待ちの状態遷移そのものは純粋関数(startRowDetectFlow等、ファイル冒頭で定義・export済み)に
+  // 委譲する。ここではその結果を保持するだけ(DOM再構築の要否判断とrenderEditor呼び出しはこの
+  // ファイル内の各関数が担う)。
+  let detect: DetectState = IDLE_DETECT_FLOW_STATE.detect;
   // detect成功後、キーボード宛か確定するまで保持する一時状態(「その他の割当」フロー用)。
-  let pendingGeneric: { padId: string; source: Source } | null = null;
+  let pendingGeneric: DetectFlowState['pendingGeneric'] = IDLE_DETECT_FLOW_STATE.pendingGeneric;
 
   // renderEditor()で作った行ごとのDOM参照。detect中の案内文をフレームごとに書き換えるためだけに使う
   // (行そのものの再構築はrenderEditor()が呼ばれた時だけ)。
@@ -442,20 +509,36 @@ export function buildGamepadDialog(container: HTMLElement, callbacks: GamepadDia
     return pad;
   }
 
+  function applyFlow(next: DetectFlowState): void {
+    detect = next.detect;
+    pendingGeneric = next.pendingGeneric;
+  }
+
   function startRowDetect(pad: Gamepad, target: JoyTarget): void {
-    detect = { kind: 'row', padId: pad.id, target, baseline: snapshotPad(pad) };
+    applyFlow(startRowDetectFlow(pad.id, target, snapshotPad(pad)));
     renderEditor(connectedPads());
   }
 
   function startGenericDetect(pad: Gamepad): void {
-    pendingGeneric = null;
-    detect = { kind: 'generic', padId: pad.id, baseline: snapshotPad(pad) };
+    applyFlow(startGenericDetectFlow(pad.id, snapshotPad(pad)));
     renderEditor(connectedPads());
   }
 
   function cancelDetect(): void {
     if (detect === null) return;
-    detect = null;
+    applyFlow(cancelDetectFlow({ detect, pendingGeneric }));
+    renderEditor(connectedPads());
+  }
+
+  /**
+   * 検出成功後、宛先(ジョイスティック/キーボード)選択待ちの状態(pendingGeneric)を破棄する。
+   * この状態のとき[キーを割り当てる]ボタンは disabled にしてあるので、以前はここへの導線が
+   * 無く、押し直すと startGenericDetect() が pendingGeneric を黙って上書きしてしまっていた
+   * (検出したのに何も起きないように見える原因の一つ)。専用の[キャンセル]ボタンから呼ぶ。
+   */
+  function cancelPendingGeneric(): void {
+    if (pendingGeneric === null) return;
+    applyFlow(cancelPendingGenericFlow({ detect, pendingGeneric }));
     renderEditor(connectedPads());
   }
 
@@ -483,8 +566,7 @@ export function buildGamepadDialog(container: HTMLElement, callbacks: GamepadDia
     padSelect.value = pad.id;
     padSelect.addEventListener('change', () => {
       editingPadId = padSelect.value;
-      detect = null;
-      pendingGeneric = null;
+      applyFlow(IDLE_DETECT_FLOW_STATE);
       renderEditor(connectedPads());
     });
     padSelectLabel.append(padSelect);
@@ -517,7 +599,7 @@ export function buildGamepadDialog(container: HTMLElement, callbacks: GamepadDia
     ]);
     resetBtn.addEventListener('click', () => {
       callbacks.resetToPreset(pad);
-      detect = null;
+      applyFlow(cancelDetectFlow({ detect, pendingGeneric }));
       renderEditor(connectedPads());
     });
 
@@ -553,10 +635,19 @@ export function buildGamepadDialog(container: HTMLElement, callbacks: GamepadDia
     const statusEl = el('span', { class: 'gp-detect-status' });
     rowStatusEls.set(target, statusEl);
 
+    // 検出待ち中は[検出(置き換え)]自体を[キャンセル]に差し替える。以前はラベル・見た目が
+    // 変わらないままステータス文言(gp-detect-status)だけが変化していたため、待機中に
+    // ボタンが消えず残っているように見えた(問題1)。押せば即座に中断できるようにし、
+    // Escが使えない環境(スマホ等)でも抜けられるようにする(問題3)。
+    const isActive = detect !== null && detect.kind === 'row' && detect.target === target;
     const detectBtn = el(
       'button',
-      { type: 'button', class: 'gp-detect-btn', title: t('gamepadDetectBtnTitle') },
-      [t('gamepadDetectBtn')],
+      {
+        type: 'button',
+        class: 'gp-detect-btn',
+        title: isActive ? t('gamepadCancelBtnTitle') : t('gamepadDetectBtnTitle'),
+      },
+      [isActive ? t('gamepadCancelBtn') : t('gamepadDetectBtn')],
     );
     detectBtn.addEventListener('click', () => {
       if (detect !== null && detect.kind === 'row' && detect.target === target) {
@@ -612,11 +703,23 @@ export function buildGamepadDialog(container: HTMLElement, callbacks: GamepadDia
     const statusEl = el('span', { class: 'gp-detect-status' });
     genericStatusEl = statusEl;
 
+    const isPending = pendingGeneric !== null && pendingGeneric.padId === pad.id;
+    // 検出待ち中は[キーを割り当てる]を[キャンセル]に差し替える(問題1・3。行側と同じ理由)。
+    // 検出成功後、宛先選択待ち(pendingGeneric)の間はこのボタンを disabled にする:
+    // 以前は有効なままだったため、待機中の見た目が変わらないことに気づいた利用者が
+    // もう一度このボタンを押すと startGenericDetect() が pendingGeneric を黙って
+    // 上書きし、せっかく検出できていた入力ごと消えてしまっていた(問題2の一因)。
+    const isActive = detect !== null && detect.kind === 'generic';
     const detectBtn = el(
       'button',
-      { type: 'button', class: 'gp-detect-btn', title: t('gamepadGenericDetectBtnTitle') },
-      [t('gamepadGenericDetectBtn')],
+      {
+        type: 'button',
+        class: 'gp-detect-btn',
+        title: isActive ? t('gamepadCancelBtnTitle') : t('gamepadGenericDetectBtnTitle'),
+      },
+      [isActive ? t('gamepadCancelBtn') : t('gamepadGenericDetectBtn')],
     );
+    detectBtn.disabled = isPending;
     detectBtn.addEventListener('click', () => {
       if (detect !== null && detect.kind === 'generic') cancelDetect();
       else startGenericDetect(pad);
@@ -644,13 +747,20 @@ export function buildGamepadDialog(container: HTMLElement, callbacks: GamepadDia
         } else if (value.startsWith('key:')) {
           callbacks.addBinding(pad, source, { kind: 'key', retrok: Number(value.slice(4)) });
         }
-        pendingGeneric = null;
+        applyFlow(resolvePendingGenericPicked({ detect, pendingGeneric }));
         renderEditor(connectedPads());
       });
+      const cancelPendingBtn = el(
+        'button',
+        { type: 'button', class: 'gp-detect-btn', title: t('gamepadCancelBtnTitle') },
+        [t('gamepadCancelBtn')],
+      );
+      cancelPendingBtn.addEventListener('click', () => cancelPendingGeneric());
       row.append(
         el('span', { class: 'gp-pending-source' }, [sourceLabel(source, pad)]),
         el('span', {}, ['→']),
         destSelect,
+        cancelPendingBtn,
       );
     }
 
@@ -669,7 +779,13 @@ export function buildGamepadDialog(container: HTMLElement, callbacks: GamepadDia
       const active = detect !== null && detect.kind === 'generic';
       genericStatusEl.textContent = active ? t('gamepadDetectWaiting') : '';
     }
-    if (genericDetectBtn) genericDetectBtn.disabled = detect !== null && detect.kind !== 'generic';
+    // pendingGeneric中(宛先選択待ち)もdisabledを維持する。renderGenericSection()側の初期値を
+    // ここで上書きしないよう条件を合わせておく(合わせないと、detectがnullに戻った瞬間に
+    // このtickが disabled=false へ戻してしまい、pendingGeneric中でも押せてしまう)。
+    if (genericDetectBtn) {
+      genericDetectBtn.disabled =
+        (detect !== null && detect.kind !== 'generic') || (pendingGeneric !== null && pendingGeneric.padId === editingPadId);
+    }
 
     if (detect === null) return;
     const pad = pads.find((p) => p.id === detect!.padId);
@@ -678,15 +794,9 @@ export function buildGamepadDialog(container: HTMLElement, callbacks: GamepadDia
     const deadzone = callbacks.getDeadzone(pad);
     const found = detectNewlyActiveSource(detect.baseline, curr, deadzone);
     if (found) {
-      if (detect.kind === 'row') {
-        callbacks.replaceTargetBinding(pad, found, detect.target);
-        detect = null;
-        renderEditor(pads);
-      } else {
-        pendingGeneric = { padId: pad.id, source: found };
-        detect = null;
-        renderEditor(pads);
-      }
+      if (detect.kind === 'row') callbacks.replaceTargetBinding(pad, found, detect.target);
+      applyFlow(resolveDetectFound({ detect, pendingGeneric }, found));
+      renderEditor(pads);
       return;
     }
     // ローリング基準: 押しっぱなしのボタンを誤検出しないため、
@@ -714,8 +824,7 @@ export function buildGamepadDialog(container: HTMLElement, callbacks: GamepadDia
 
   function close(): void {
     backdrop.classList.add('hidden');
-    detect = null;
-    pendingGeneric = null;
+    applyFlow(IDLE_DETECT_FLOW_STATE);
     if (rafId !== null) {
       cancelAnimationFrame(rafId);
       rafId = null;
@@ -730,6 +839,10 @@ export function buildGamepadDialog(container: HTMLElement, callbacks: GamepadDia
     if (e.key !== 'Escape' || backdrop.classList.contains('hidden')) return;
     if (detect !== null) {
       cancelDetect();
+      return;
+    }
+    if (pendingGeneric !== null) {
+      cancelPendingGeneric();
       return;
     }
     close();

@@ -221,6 +221,14 @@ interface Dict {
   gamepadDetectBtnTitle(): string;
   /** 検出モード中の案内(次の入力待ち)。 */
   gamepadDetectWaiting(): string;
+  /**
+   * 検出待ち(行/キーボードどちらも共通)中に[検出]/[キーを割り当てる]ボタンと差し替えて出す
+   * [キャンセル]ボタンのラベル。押すと検出を中止して元に戻る。Escキーが使えない環境
+   * (スマホ等)でも中断できるようにするための導線。
+   */
+  gamepadCancelBtn(): string;
+  /** [キャンセル]ボタンのツールチップ。 */
+  gamepadCancelBtnTitle(): string;
   /** チップ(現在の割当1件)の削除ボタンのaria-label。 */
   gamepadRemoveBindingLabel(): string;
   /** コンボボックスの未選択時プレースホルダ(検出とは異なり、選ぶと既存の割当に追加される)。 */
@@ -476,6 +484,8 @@ const STRINGS: Record<Lang, Dict> = {
     gamepadDetectBtn: () => '検出(置き換え)',
     gamepadDetectBtnTitle: () => '次に押した入力をこの行の割当として設定し直します(既存の割当は解除されます)',
     gamepadDetectWaiting: () => '入力を待っています…(Escでキャンセル)',
+    gamepadCancelBtn: () => 'キャンセル',
+    gamepadCancelBtnTitle: () => '入力待ちを中止して元に戻ります',
     gamepadRemoveBindingLabel: () => '削除',
     gamepadComboPlaceholder: () => '追加する入力を選択…',
     gamepadGenericSectionDesc: () =>
@@ -708,6 +718,8 @@ const STRINGS: Record<Lang, Dict> = {
     gamepadDetectBtn: () => 'Detect (Replace)',
     gamepadDetectBtnTitle: () => 'Sets the next input you press as this row\'s assignment, replacing any existing ones',
     gamepadDetectWaiting: () => 'Waiting for input… (Esc to cancel)',
+    gamepadCancelBtn: () => 'Cancel',
+    gamepadCancelBtnTitle: () => 'Stops waiting for input and returns to normal',
     gamepadRemoveBindingLabel: () => 'Remove',
     gamepadComboPlaceholder: () => 'Select an input to add…',
     gamepadGenericSectionDesc: () =>
