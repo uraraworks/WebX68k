@@ -20,7 +20,7 @@ See [docs/DESIGN.md](docs/DESIGN.md) for design and implementation details.
 
 | Parameter | Meaning | Notes |
 |---|---|---|
-| `lang` | UI language (`ja` / `en`) | If omitted, resolved in order: `localStorage['webx68k.lang']` → the browser's `navigator.language` (`ja` if it starts with `ja`) → default `en`. Can be switched at runtime with the language toggle button on the toolbar; the choice is persisted to `localStorage` |
+| `lang` | UI language (`ja` / `en`) | If omitted, resolved in order: `localStorage['webx68k.lang']` → the browser's `navigator.language` (`ja` if it starts with `ja`) → default `en`. Can be switched at runtime with the language toggle button in the toolbar's "..." menu; the choice is persisted to `localStorage` |
 | `bridge` | `1` (or empty) to enable the MCP WebSocket bridge | Connects to `ws://127.0.0.1:3099`. See "MCP support" below |
 | `fd1` / `fd2` | URL of a disk image to load into FDD1 / FDD2 | See below |
 | `hdd` | URL of a disk image to set into the HDD slot | See below |
@@ -45,6 +45,27 @@ Notes on `fd1`/`fd2`/`hdd`:
   itself unless `run=1` is also given. While set (and before boot), you can
   still edit its contents via file transfer.
 
+### Toolbar
+
+Four buttons stay directly on the toolbar: Reset, Fullscreen, Virtual
+Keyboard, and Screenshot. Everything else lives behind the "..." (More)
+button as a two-level menu: Display (4:3 display toggle), Input (mouse
+capture/resync, gamepad settings), Disk (Disk Library, file transfer), and
+State (save/load state) groups, plus Settings, Help, and the language toggle
+listed directly below the groups. At 640px and wider, opening a group keeps
+the menu open and shows the submenu cascading to the right of it (flipping
+to the left near the screen edge); narrower screens replace the menu in
+place with a "← Back" row instead.
+
+**Reset performs a full core restart**, not just a CPU reset: it flushes any
+pending disk writes back to storage, then tears down and rebuilds the whole
+emulator core. This is needed because core options — CPU speed, RAM size,
+pad type — are only read once, on the core's first frame, so a soft reset
+wouldn't pick up changes made in Settings the way a restart does. The
+restart happens automatically as one continuous operation, though, so it
+doesn't leave the HDD slot unlocked for you to swap disks — see "Drive
+slots" below.
+
 ### Boot overlay
 
 On first load, a start overlay offers two choices:
@@ -56,8 +77,8 @@ On first load, a start overlay offers two choices:
   into FDD1, straight into Human68k
 
 Audio playback requires a click due to browser autoplay restrictions, so
-clicking anywhere on the overlay (including empty space) behaves like the
-first button.
+starting playback always begins from one of these two buttons — clicking
+elsewhere on the overlay does nothing.
 
 ### Drag & drop
 
@@ -109,7 +130,7 @@ you can re-insert them into any slot later without re-uploading.
 
 ### File transfer (file manager)
 
-The "File transfer" toolbar button opens an FTP-client-style two-pane UI for
+The "File transfer" entry in the toolbar's "..." menu (Disk group) opens an FTP-client-style two-pane UI for
 moving files between your browser and a mounted disk image (FAT12/16,
 Human68k HDD partitions, Shift_JIS filenames, ZIP/LZH extraction on import).
 The HDD can only be edited before boot — editing it saves straight back to
@@ -119,7 +140,7 @@ to while running.
 
 ### Save states
 
-The save/load toolbar buttons snapshot and restore the full emulator state
+The save/load entries in the toolbar's "..." menu (State group) snapshot and restore the full emulator state
 (CPU, RAM, video, sound, FDD/HDD controllers, etc.) to IndexedDB. Only one
 quick-save slot is kept. If the currently inserted disks don't match what
 was mounted at save time, you'll be asked to confirm before restoring.
@@ -165,20 +186,40 @@ Kana labels reflect the virtual keyboard's client-side state; if it differs from
 
 ### Mouse
 
-Click "Capture Mouse" on the toolbar, or **double right-click on the
-canvas**, to lock the pointer and start sending relative mouse movement to
-the guest. Press **Esc** (or the toolbar button again) to release. The
-"Mouse Resync" button re-anchors absolute-position tracking if the guest
-cursor and host cursor ever drift apart.
+Click "Capture Mouse" in the toolbar's "..." menu (Input group), or
+**double right-click on the canvas**, to lock the pointer and start sending
+relative mouse movement to the guest. Press **Esc** (or the same menu item
+again) to release. The "Mouse Resync" entry in the same group re-anchors
+absolute-position tracking if the guest cursor and host cursor ever drift
+apart.
+
+### Display mode (dot-for-dot / 4:3)
+
+WebX68k defaults to dot-for-dot: the core's native resolution drawn at
+square pixels, unchanged since the emulator's first release. Real X68000
+hardware, however, always fills a 4:3 monitor regardless of the active video
+mode. The "..." menu's Display group offers a **4:3 display** toggle that
+reproduces that look; the choice is saved to `localStorage`.
+
+The correction is always applied by *enlarging* one axis, never by
+shrinking — 512x512-family modes (aspect ratio below 4:3) stretch
+horizontally, 768x512-family modes (aspect ratio above 4:3) stretch
+vertically. Shrinking is deliberately avoided: the canvas uses
+`image-rendering: pixelated`, and scaling a mode like the 768x512 text
+screen down would drop 1px-wide character strokes, making text unreadable.
+Interpolation is only enabled while 4:3 mode is active — dot-for-dot stays
+crisp. The frame around the screen always reserves the 4:3-sized box, so
+toggling the mode never shifts the surrounding layout.
 
 ### Fullscreen
 
 The "Fullscreen" toolbar button makes the screen (the black stage box that
 contains the canvas) fill the display. The X68000 can switch resolution
-while running (256x256 / 512x512 / 768x512, etc.), but fullscreen keeps the
-aspect ratio and letterboxes with black bars — the same "pixel-for-pixel"
-look as the windowed view. Click the button again, or press **Esc**, to
-exit fullscreen.
+while running (256x256 / 512x512 / 768x512, etc.), but fullscreen keeps
+whichever aspect ratio is currently selected — dot-for-dot or 4:3 (see
+"Display mode" above) — and letterboxes with black bars, matching the
+windowed view's look. Click the button again, or press **Esc**, to exit
+fullscreen.
 
 If mouse capture is also active while fullscreen, pressing **Esc once
 releases both at the same time** — it does not take two presses. This is a
@@ -190,15 +231,15 @@ fullscreen — an intentional trade-off in favor of immersion.
 
 ### BIOS settings
 
-The "Settings" button opens a panel for registering your own
+The "Settings" entry in the toolbar's "..." menu opens a panel for registering your own
 `IPLROM.DAT`/`CGROM.DAT` (if you have a real, dumped one) and adjusting
 machine configuration. Settings persist in the browser and are used on
 future visits, taking priority over the bundled files.
 
 ### Language toggle
 
-The `EN`/`JA` button on the toolbar switches the UI language at runtime; the
-choice is saved and reused on your next visit.
+The `EN`/`JA` button in the toolbar's "..." menu switches the UI language at
+runtime; the choice is saved and reused on your next visit.
 
 ## Bundled ROM / disk images
 
@@ -301,9 +342,12 @@ This repository is **GPLv2** ([COPYING](COPYING)).
   mismatch check before restoring
 - Mouse support: pointer-lock relative movement plus a closed-loop absolute
   tracking mode that compensates for IOCS mouse acceleration; capture via
-  double right-click or toolbar button, release via Esc
+  double right-click or the toolbar's "..." menu, release via Esc
 - Audio-drift correction so screen-mode changes (15kHz/31kHz) don't cause
   runaway audio delay
+- 4:3 display mode: reproduces the real hardware's fixed 4:3 aspect ratio by
+  enlarging one axis (never shrinking, to keep 1px text lines intact);
+  dot-for-dot remains the default
 - MCP bridge (`?bridge=1`) for AI-agent control: screenshot, TVRAM ANK/kanji text,
   key/mouse input, disk operations
 - Japanese/English UI toggle
@@ -320,8 +364,9 @@ This repository is **GPLv2** ([COPYING](COPYING)).
 - Joypad (gamepad) input is supported. The pad type — standard 2-button or
   8-button CPSF-MD/CPSF-SFC — can be switched per port. A pad-type change takes
   effect the next time the core starts; it does not apply immediately while
-  running and is not applied by the Reset button. The Cyberstick (analog mode)
-  is not supported.
+  running, but it does take effect after pressing Reset (which now restarts
+  the core — see "Toolbar" above). The Cyberstick (analog mode) is not
+  supported.
 - No multi-disk-side swapping (`SET_DISK_CONTROL_INTERFACE` requests from
   the core are ignored).
 - Only one HDD is exposed in the UI (`Config.HDImage[0]`); px68k-libretro

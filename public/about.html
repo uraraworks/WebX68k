@@ -410,6 +410,33 @@
           </div>
         </section>
 
+        <!-- 特徴2.5: 4:3表示モード -->
+        <section class="help-card feature-card">
+          <div class="lang-ja">
+            <h2>実機同様の4:3表示モード</h2>
+            <p>
+              既定はドット等倍(コアの実解像度をそのまま正方形ピクセルで描く)表示ですが、
+              実機の X68000 は画面モードによらず常に4:3のモニタいっぱいに表示されます。
+              ツールバーの「…」メニュー(表示グループ)にある「4:3表示」で、その見え方に
+              いつでも切り替えられます(設定は保存されます)。補正は常に拡大方向のみで、
+              512x512系の画面は横に、768x512系の画面は縦に伸びます。縮小方向にしないのは、
+              テキスト画面のような1ドット幅の文字線が縮小で間引かれて読めなくなるためです。
+            </p>
+          </div>
+          <div class="lang-en">
+            <h2>4:3 display mode, just like real hardware</h2>
+            <p>
+              WebX68k defaults to dot-for-dot (the core's native resolution at square pixels), but
+              real X68000 hardware always fills a 4:3 monitor regardless of the active video mode.
+              The "4:3 display" toggle in the toolbar's "..." menu (Display group) switches to that
+              look at any time (the choice is saved). The correction is always applied by enlarging —
+              512x512-family modes stretch horizontally, 768x512-family modes stretch vertically. It's
+              never done by shrinking, since that would drop the 1px-wide strokes of text-mode
+              characters and make them unreadable.
+            </p>
+          </div>
+        </section>
+
         <!-- 特徴3: ファイル転送 -->
         <section class="help-card feature-card">
           <div class="lang-ja">
@@ -421,7 +448,7 @@
               自動では装填せず、ライブラリへフォルダとしてまとめて登録して選んでもらいます。
             </p>
             <p>
-              ツールバーの「ファイル転送」からは、FTPクライアント風の2ペインUIでホスト(ブラウザ)⇔
+              ツールバーの「…」メニュー(ディスクグループ)にある「ファイル転送」からは、FTPクライアント風の2ペインUIでホスト(ブラウザ)⇔
               ディスクイメージ間のファイル出し入れができます。Human68k のファイル名は Shift_JIS の
               長いファイル名に対応しており、日本語ファイル名も正しく表示されます。取り込んだ
               ZIP/LZH アーカイブはその場で展開できます(書き込みは ASCII の 8.3 形式のみ対応)。
@@ -437,7 +464,7 @@
               choose from.
             </p>
             <p>
-              The toolbar's "File Transfer" tool gives you an FTP-client-style two-pane UI for moving
+              The toolbar's "..." menu (Disk group) has a "File Transfer" tool that gives you an FTP-client-style two-pane UI for moving
               files between the host (your browser) and a disk image. Human68k's long, Shift_JIS
               file names are supported and display correctly, including Japanese names. ZIP/LZH
               archives you bring in can be extracted on the spot (writing back is limited to ASCII
@@ -451,7 +478,7 @@
           <div class="lang-ja">
             <h2>ステートセーブ / ロード</h2>
             <p>
-              ツールバーの2ボタンで、実行中の状態をまるごとブラウザ内(IndexedDB)へ保存・復元
+              ツールバーの「…」メニュー(ステートグループ)の2項目で、実行中の状態をまるごとブラウザ内(IndexedDB)へ保存・復元
               できます。保存データは gzip 圧縮されます。
             </p>
             <p>
@@ -466,7 +493,7 @@
           <div class="lang-en">
             <h2>Save state / load state</h2>
             <p>
-              Two toolbar buttons let you save and restore the entire running state to your browser
+              Two entries in the toolbar's "..." menu (State group) let you save and restore the entire running state to your browser
               (IndexedDB). Saved data is gzip-compressed.
             </p>
             <p>
@@ -492,7 +519,7 @@
               直接渡すことはできません。そこで WebX68k は IOCS のワークエリアを毎フレーム読んで
               ゲストカーソルの現在位置を把握し、目標との差分だけを送る閉ループで絶対位置に
               追従させています。キャプチャの解除は Esc キーのみです(キャプチャ中はカーソルが
-              ゲスト側に奪われるため、ツールバーのボタンはクリックできません)。
+              ゲスト側に奪われるため、ツールバーの「…」メニューを開くこともできません)。
             </p>
           </div>
           <div class="lang-en">
@@ -505,8 +532,8 @@
               directly. To work around that, WebX68k reads the IOCS work area every frame to learn the
               guest cursor's current position and sends only the difference from the target, forming a
               closed loop that tracks absolute position. The only way to release the capture is the
-              Esc key (while captured, the cursor belongs to the guest, so the toolbar button can't
-              be clicked).
+              Esc key (while captured, the cursor belongs to the guest, so the toolbar's "..." menu
+              can't even be opened).
             </p>
           </div>
         </section>
@@ -549,8 +576,8 @@
             <h2>ジョイスティック(ゲームパッド)対応</h2>
             <p>
               Gamepad API準拠のゲームパッドを繋ぐだけで、最大2台までポート1/2として使えます。方向入力は
-              D-padと左スティックの両方に対応し(デッドゾーン調整可)、ツールバーの「ジョイスティック設定」
-              から開くダイアログでは、接続中パッドの一覧・物理入力とX68000側入力の両方のライブ表示・
+              D-padと左スティックの両方に対応し(デッドゾーン調整可)、ツールバーの「…」メニュー(入力グループ)
+              にある「ジョイスティック設定」から開くダイアログでは、接続中パッドの一覧・物理入力とX68000側入力の両方のライブ表示・
               割当編集(検出/コンボ/削除/XInput標準へのリセット)ができます。パッド種別は標準(2ボタン)・
               CPSF-MD(8ボタン)・CPSF-SFC(8ボタン)から選べ(変更は次回起動時反映)、パッドのボタンに
               X68000キーボードのキーを割り当てることも可能です。設定はパッドごとにブラウザへ保存されます。
@@ -561,7 +588,7 @@
             <p>
               Plug in a Gamepad API-compliant controller and it works right away, up to two at once as Port
               1/2. Directional input supports both the D-pad and the left stick (with adjustable deadzone).
-              The "Joystick Settings" toolbar dialog shows the list of connected pads, a live display of both
+              The "Joystick Settings" dialog, in the toolbar's "..." menu (Input group), shows the list of connected pads, a live display of both
               physical input and what's reaching the X68000 side, and full binding editing (detect, combo add,
               remove, reset to XInput defaults). Pad type can be Default (2 buttons), CPSF-MD (8 buttons), or
               CPSF-SFC (8 buttons) — a change takes effect on the next boot — and pad buttons can also be

@@ -94,6 +94,52 @@ async function shoot(page, selector, file) {
   console.log(`  wrote ${file}`);
 }
 
+/**
+ * 複数セレクタの要素の和(バウンディングボックスの外接矩形)を1枚として撮る。
+ * #slot-popup-menu / #overflow-submenu は body 直下の絶対配置(fixed/absolute)要素なので、
+ * 要素スクリーンショット(shoot())では他要素の下に隠れて写らない。clip 指定で撮る必要がある。
+ *
+ * バウンディングボックスの和をそのままクリップ範囲にすると、要素の端(メニューの枠線)が
+ * 画像の端とぴったり一致し、枠が切れているように見えてしまう。そのため padding 分だけ
+ * 四辺を広げる。ただしページ範囲の外へはみ出すと puppeteer の screenshot がエラーになる
+ * ため、ページの実サイズ(document.documentElement.scrollWidth/Height)でクランプする。
+ */
+async function shootUnion(page, selectors, file, padding = 12) {
+  const clip = await page.evaluate(
+    (sels, pad) => {
+      let left = Infinity;
+      let top = Infinity;
+      let right = -Infinity;
+      let bottom = -Infinity;
+      for (const sel of sels) {
+        const el = document.querySelector(sel);
+        if (!el) throw new Error(`element not found: ${sel}`);
+        const rect = el.getBoundingClientRect();
+        left = Math.min(left, rect.left);
+        top = Math.min(top, rect.top);
+        right = Math.max(right, rect.right);
+        bottom = Math.max(bottom, rect.bottom);
+      }
+      const pageWidth = document.documentElement.scrollWidth;
+      const pageHeight = document.documentElement.scrollHeight;
+      const clampedLeft = Math.max(0, left - pad);
+      const clampedTop = Math.max(0, top - pad);
+      const clampedRight = Math.min(pageWidth, right + pad);
+      const clampedBottom = Math.min(pageHeight, bottom + pad);
+      return {
+        x: clampedLeft,
+        y: clampedTop,
+        width: clampedRight - clampedLeft,
+        height: clampedBottom - clampedTop,
+      };
+    },
+    selectors,
+    padding,
+  );
+  await page.screenshot({ path: join(OUT_DIR, file), clip });
+  console.log(`  wrote ${file}`);
+}
+
 async function clickToolbarButton(page, id) {
   await page.evaluate((elementId) => {
     const btn = document.getElementById(elementId);
@@ -315,6 +361,54 @@ async function run() {
       await sleep(20000);
       await waitForScreenPainted(page, 25000);
       await shoot(page, '.console-card', `overview${suffix}.png`);
+
+      // --- menu: 「…」オーバーフローメニュー(overviewで起動済みのHuman68k画面を流用)。
+      //     先頭グループ(表示)行を押し、右にカスケードしたサブメニューごと撮る。
+      //     グループ行の並び順は main.ts の OVERFLOW_GROUP_ORDER で固定されており、
+      //     「表示」は言語に関わらず必ず先頭なので、ラベル文字列に頼らず
+      //     `.library-menu-item.group` の1番目を選べば日英どちらでも同じ行を掴める。
+      //
+      // 通常のビューポート(900px幅)だと親メニューの右端が画面端に近く、実装の
+      // 「右端からはみ出す場合は左に反転する」条件に入ってサブメニューが親の左側に
+      // 開いてしまう。使い方ページの本文は「右側に開く」と説明しているため、図が
+      // 本文と矛盾しないよう、このショットの撮影中だけビューポートを広げて標準の
+      // 右開き挙動を撮る(keyboard ショットが縦だけ一時的に広げる前例に倣う)。
+      await page.setViewport({ ...VIEWPORT, width: 1280 });
+      await clickToolbarButton(page, 'btn-toolbar-overflow');
+      await sleep(300);
+      await page.evaluate(() => {
+        const row = document.querySelector('#slot-popup-menu .library-menu-item.group');
+        if (!row) throw new Error('overflow menu group row not found');
+        row.click();
+      });
+      await sleep(300);
+      // ガード: サブメニューが実際に親メニューの右側に開いていることを検証する。
+      // ここが崩れると「右に開く」と説明する本文と食い違う図が黙って出力されてしまうため、
+      // 警告ではなく例外にして撮影自体を失敗させる。
+      await page.evaluate(() => {
+        const parent = document.querySelector('#slot-popup-menu');
+        const sub = document.querySelector('#overflow-submenu');
+        if (!parent || !sub) throw new Error('menu elements not found for right-open check');
+        const parentRect = parent.getBoundingClientRect();
+        const subRect = sub.getBoundingClientRect();
+        // 実装は left を Math.round(parentRect.right) で丸めて設定するため、sub-pixel
+        // 分だけ subRect.left が parentRect.right をわずかに下回ることがある(数値誤差)。
+        // それは「左反転」ではないので、2pxの許容誤差を設けて誤検知しないようにする。
+        if (subRect.left < parentRect.right - 2) {
+          throw new Error(
+            `submenu did not open to the right of the parent menu (parent.right=${parentRect.right}, sub.left=${subRect.left}); widen the viewport`,
+          );
+        }
+      });
+      await shootUnion(
+        page,
+        ['.console-card', '#slot-popup-menu', '#overflow-submenu'],
+        `menu${suffix}.png`,
+      );
+      // メニューを閉じてから次のショット(keyboard)へ進む。
+      await page.keyboard.press('Escape');
+      await sleep(300);
+      await page.setViewport(VIEWPORT);
 
       // --- keyboard: 仮想キーボードパネル(overviewで起動済みのHuman68k画面を流用) ---
       // 仮想キーボードを開くと .console-card の縦が伸びてビューポート(700px)に収まらないため、

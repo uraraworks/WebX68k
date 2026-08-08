@@ -181,6 +181,11 @@
         width: 44px;
       }
 
+      .btn-group-cell {
+        white-space: nowrap;
+        width: 1%;
+      }
+
       .fake-icon-btn {
         display: inline-flex;
         align-items: center;
@@ -341,6 +346,49 @@
           </div>
         </section>
 
+        <!-- 2.5 画面表示(4:3表示) -->
+        <section class="help-card">
+          <div class="lang-ja">
+            <h2>画面表示（ドット等倍 / 4:3表示）</h2>
+            <p>
+              実機のX68000は、画面モードの解像度に関わらず4:3のブラウン管モニタいっぱいに
+              映像を映していました。WebX68k は既定では<strong>ドット等倍</strong>(コアの実解像度を
+              そのまま正方形ピクセルで描く、Web系エミュレータで一般的な表示)ですが、
+              「…」→「表示」→「4:3表示」で、この実機の見え方を再現するモードへ切り替えられます。
+            </p>
+            <p>
+              例えば 512x512 系の画面(テキスト画面など)は横方向に、768x512 の画面は縦方向に
+              補正されます(実解像度がどちらへ寄っているかで補正の向きが変わります)。補正は
+              常に<strong>拡大方向</strong>で行うため、ドット等倍で見えていたドットが間引かれて
+              消えることはありません。また 4:3表示のときだけ補間(にじみ)が有効になり、
+              実機CRTの見え方に近づきます。
+            </p>
+            <p>
+              切り替えた設定はブラウザに保存され、次回訪問時も引き継がれます。
+            </p>
+          </div>
+          <div class="lang-en">
+            <h2>Screen display (1:1 pixels / 4:3 display)</h2>
+            <p>
+              Real X68000 hardware always filled a 4:3 CRT monitor, regardless of the resolution of
+              the current screen mode. WebX68k defaults to <strong>1:1 pixel display</strong> (the
+              core's native resolution drawn with square pixels, the common look for web-based
+              emulators), but you can switch to a mode that reproduces the real hardware's look via
+              "…" → "Display" → "4:3 display".
+            </p>
+            <p>
+              For example, 512x512-family screens (such as text mode) stretch horizontally, while
+              768x512 screens stretch vertically — which way it corrects depends on which side the
+              native resolution leans toward. The correction always <strong>enlarges</strong>, so
+              dots that were visible at 1:1 are never dropped. Interpolation (a soft blur) is only
+              enabled while 4:3 display is on, giving a look closer to a real CRT.
+            </p>
+            <p>
+              Your choice is saved in your browser and carries over to your next visit.
+            </p>
+          </div>
+        </section>
+
         <!-- 3. ディスクイメージを読み込む -->
         <section class="help-card">
           <div class="lang-ja">
@@ -442,7 +490,7 @@
           <div class="lang-ja">
             <h2>ディスクライブラリ</h2>
             <p>
-              ツールバーの「ディスクライブラリ」ボタンから、これまでに挿入したディスクイメージの
+              「…」メニューの「ディスク」グループにある「ディスクライブラリ」から、これまでに挿入したディスクイメージの
               一覧を開けます。ブラウザ内に保存されたイメージから、挿入するドライブ
               (FDD1 / FDD2 / HDD) を選んで再挿入できます。
             </p>
@@ -471,7 +519,7 @@
           <div class="lang-en">
             <h2>Disk Library</h2>
             <p>
-              The "Disk Library" toolbar button opens the list of disk images you have inserted
+              "Disk Library" in the "…" menu's Disk group opens the list of disk images you have inserted
               so far. Choose a drive (FDD1 / FDD2 / HDD) to re-insert an image saved in your
               browser.
             </p>
@@ -503,7 +551,7 @@
           <div class="lang-ja">
             <h2>ファイル転送（このブラウザ⇔ディスクイメージ）</h2>
             <p>
-              ツールバーの「ファイル転送」ボタンから、2ペインのファイルマネージャダイアログを
+              「…」メニューの「ディスク」グループにある「ファイル転送」から、2ペインのファイルマネージャダイアログを
               開けます。片方が「ホスト(このPC)」、もう片方が「ディスクイメージ」です。
               転送するファイルはいったんステージングしてから書き込みます。
             </p>
@@ -526,7 +574,7 @@
           <div class="lang-en">
             <h2>File transfer (browser ⇔ disk image)</h2>
             <p>
-              The "File Transfer" toolbar button opens a two-pane file manager dialog. One pane is
+              "File Transfer" in the "…" menu's Disk group opens a two-pane file manager dialog. One pane is
               "Host (this PC)" and the other is the disk image. Files to transfer are staged first,
               then written.
             </p>
@@ -553,21 +601,59 @@
           <div class="lang-ja">
             <h2>ツールバーのボタン一覧</h2>
             <img src="./help/overview.png" alt="プレイヤー全体像。ツールバーのアイコンが並ぶ" />
+            <p>
+              常時表示されているのは次の4つだけです。残りはすべて「…」ボタンのメニューに
+              まとまっています。
+            </p>
             <table class="btn-table">
               <thead>
                 <tr><th></th><th>ボタン</th><th>説明</th></tr>
               </thead>
-              <tbody id="btnTableJa"></tbody>
+              <tbody id="btnTablePermJa"></tbody>
+            </table>
+            <p>
+              「…」ボタンを押すと「表示 / 入力 / ディスク / ステート」の4グループと、
+              グループに属さない「設定」「ヘルプ」「言語」が並びます。広い画面
+              (640px以上)ではグループにカーソルを合わせる(またはタップする)と右側に
+              サブメニューが開き、親メニューは開いたままになります。狭い画面では
+              メニューの中身がグループの中身に差し替わり、「← 戻る」で1つ上の階層へ
+              戻れます。
+            </p>
+            <img src="./help/menu.png" alt="「…」メニューを開き、「表示」グループのサブメニューが右側にカスケード表示されている状態" />
+            <table class="btn-table">
+              <thead>
+                <tr><th></th><th>ボタン</th><th>グループ</th><th>説明</th></tr>
+              </thead>
+              <tbody id="btnTableMenuJa"></tbody>
             </table>
           </div>
           <div class="lang-en">
             <h2>Toolbar buttons</h2>
             <img src="./help/overview-en.png" alt="Player overview with the toolbar icons" />
+            <p>
+              Only these 4 buttons are always visible. Everything else lives inside the
+              "…" button's menu.
+            </p>
             <table class="btn-table">
               <thead>
                 <tr><th></th><th>Button</th><th>Description</th></tr>
               </thead>
-              <tbody id="btnTableEn"></tbody>
+              <tbody id="btnTablePermEn"></tbody>
+            </table>
+            <p>
+              Pressing the "…" button shows 4 groups — Display / Input / Disk / State —
+              plus "Settings", "Help", and "Language", which sit outside any group. At
+              wide screen widths (640px and up), hovering (or tapping) a group opens a
+              submenu to its right while the parent menu stays open. At narrow widths,
+              the menu's contents are replaced with the group's contents instead, with a
+              "← Back" row to go up one level.
+            </p>
+            <img src="./help/menu-en.png" alt="The &quot;…&quot; menu open, with the Display group's submenu cascading to the right" />
+            <table class="btn-table">
+              <thead>
+                <tr><th></th><th>Button</th><th>Group</th><th>Description</th></tr>
+              </thead>
+              <tbody id="btnTableMenuEn"></tbody>
             </table>
           </div>
         </section>
@@ -612,8 +698,8 @@
             </p>
             <p>
               マウスをキャプチャすると、以降のマウス操作がゲスト(X68000)へ渡ります。
-              キャプチャは画面上での<strong>右ダブルクリック</strong>、またはツールバーの
-              「マウスキャプチャ」ボタンで開始できます。
+              キャプチャは画面上での<strong>右ダブルクリック</strong>、または「…」メニューの
+              「入力」グループにある「マウスキャプチャ」で開始できます。
               (右ダブルクリックは <code>contextmenu</code> イベントのタイムスタンプ差分が
               500ms以内かどうかで疑似判定しています。)
             </p>
@@ -684,8 +770,8 @@
             </p>
             <p>
               Once the mouse is captured, subsequent mouse input is passed to the guest (X68000).
-              Capture starts with a <strong>right double-click</strong> on the screen, or via the
-              "Capture Mouse" toolbar button.
+              Capture starts with a <strong>right double-click</strong> on the screen, or via
+              "Capture Mouse" in the "…" menu's Input group.
               (Right double-click is detected heuristically by checking whether the timestamp gap
               between <code>contextmenu</code> events is within 500ms.)
             </p>
@@ -733,7 +819,7 @@
             </p>
             <img src="./help/gamepad.png" alt="ジョイスティック設定ダイアログ。接続中パッド一覧・ライブ表示・割当編集エリアが並ぶ" />
             <p>
-              ツールバーの「ジョイスティック設定」ボタンから設定ダイアログを開けます。接続中のパッド一覧に加え、
+              「…」メニューの「入力」グループにある「ジョイスティック設定」から設定ダイアログを開けます。接続中のパッド一覧に加え、
               物理入力(ボタン/軸)の番号付きライブ表示と、そのパッドが現在送っているX68000側のライブ表示
               (方向/TRGボタン)が並んでいるので、割当が実際に効いているかその場で目で確認できます。
             </p>
@@ -745,7 +831,8 @@
             </p>
             <p>
               パッド種別は「標準(2ボタン)」「CPSF-MD (8ボタン)」「CPSF-SFC (8ボタン)」から選べます。
-              <strong>変更は次回のコア起動時から反映されます</strong>(リセットボタンでは反映されません)。
+              <strong>変更はリセットボタンを押すと反映されます</strong>(リセットはコアごと再起動する
+              ハードリセットのため、他のマシン構成の変更と同じタイミングで反映されます)。
             </p>
             <p>
               「その他の割当」セクションでは、パッドのボタンにX68000キーボードのキーを割り当てられます。
@@ -773,7 +860,7 @@
             </p>
             <img src="./help/gamepad-en.png" alt="Joystick Settings dialog showing the connected-pad list, live display, and binding editor" />
             <p>
-              Open the settings dialog from the "Joystick Settings" toolbar button. Alongside the list of
+              Open the settings dialog from "Joystick Settings" in the "…" menu's Input group. Alongside the list of
               connected pads, it shows a numbered live display of physical input (buttons/axes) and a live
               display of what's currently being sent to the X68000 side (directions/TRG buttons) for that
               pad, so you can see with your own eyes whether a binding is actually taking effect.
@@ -787,7 +874,9 @@
             </p>
             <p>
               Pad type can be set to "Default (2 Buttons)", "CPSF-MD (8 Buttons)", or "CPSF-SFC (8 Buttons)".
-              <strong>Changing it takes effect the next time the core starts</strong> (not on Reset).
+              <strong>Changing it takes effect once you press Reset</strong> (Reset performs a hard
+              reset that restarts the core, so it takes effect at the same point as other machine
+              configuration changes).
             </p>
             <p>
               The "Other Bindings" section lets you map a pad button to an X68000 keyboard key — handy for
@@ -811,7 +900,7 @@
           <div class="lang-ja">
             <h2>ステート保存と続きから</h2>
             <p>
-              ツールバーの「ステート保存」「ステート復元」ボタンで、実行状態をIndexedDBへ
+              「…」メニューの「ステート」グループにある「ステート保存」「ステート復元」で、実行状態をIndexedDBへ
               gzip圧縮して保存・復元できます。
             </p>
             <p>
@@ -829,7 +918,7 @@
           <div class="lang-en">
             <h2>Saving state and resuming</h2>
             <p>
-              Use the "Save State" and "Load State" toolbar buttons to save/restore the running
+              Use "Save State" and "Load State" in the "…" menu's State group to save/restore the running
               state to/from IndexedDB, gzip-compressed.
             </p>
             <p>
@@ -927,7 +1016,7 @@
             <h2>BIOS / マシン構成の設定</h2>
             <p>
               実機から吸い出した <code>iplrom.dat</code> / <code>cgrom.dat</code> をお持ちの場合、
-              ツールバーの「設定」ダイアログからアップロードできます。アップロードした
+              「…」メニューの「設定」からアップロードできます。アップロードした
               ファイルはIndexedDBに保存され、同梱のROMより優先して使用されます。
             </p>
             <div class="note-box">
@@ -943,7 +1032,7 @@
             <h2>BIOS / machine configuration</h2>
             <p>
               If you have <code>iplrom.dat</code> / <code>cgrom.dat</code> dumped from real
-              hardware, you can upload them from the "Settings" toolbar dialog. Uploaded files
+              hardware, you can upload them from "Settings" in the "…" menu. Uploaded files
               are saved to IndexedDB and take priority over the bundled ROMs.
             </p>
             <div class="note-box">
@@ -1001,7 +1090,7 @@
             <h2>トラブルシューティング</h2>
             <ul>
               <li><strong>音が遅れる/出ない</strong> — ブラウザの制限により、起動には最初のクリック操作が必要です。</li>
-              <li><strong>マウスが反応しない</strong> — マウスをキャプチャしていない可能性があります。画面を右ダブルクリックするか、ツールバーの「マウスキャプチャ」ボタンを押してください。カーソルの追従がずれた場合は「マウス再同期」ボタンで直せます。</li>
+              <li><strong>マウスが反応しない</strong> — マウスをキャプチャしていない可能性があります。画面を右ダブルクリックするか、「…」メニューの「入力」グループにある「マウスキャプチャ」を押してください。カーソルの追従がずれた場合は同じグループの「マウス再同期」で直せます。</li>
               <li><strong>ディスクが認識されない</strong> — 拡張子を確認してください(FDDは<code>.xdf,.dim,.d88,.hdm,.img,.2hd</code>、HDDは<code>.hdf,.dup</code>)。</li>
               <li><strong>ステート復元でおかしくなる</strong> — 保存時とディスク構成が異なる旨の確認ダイアログが出た場合、キャンセルすれば復元を中止できます。</li>
             </ul>
@@ -1010,7 +1099,7 @@
             <h2>Troubleshooting</h2>
             <ul>
               <li><strong>Audio is delayed or missing</strong> — Due to browser restrictions, starting requires an initial click.</li>
-              <li><strong>The mouse doesn't respond</strong> — The mouse may not be captured. Right double-click the screen, or press the "Capture Mouse" toolbar button. If the cursor drifts out of sync, use "Resync Mouse".</li>
+              <li><strong>The mouse doesn't respond</strong> — The mouse may not be captured. Right double-click the screen, or use "Capture Mouse" in the "…" menu's Input group. If the cursor drifts out of sync, use "Resync Mouse" in the same group.</li>
               <li><strong>A disk isn't recognized</strong> — Check the file extension (FDD: <code>.xdf,.dim,.d88,.hdm,.img,.2hd</code>; HDD: <code>.hdf,.dup</code>).</li>
               <li><strong>Loading a state causes odd behavior</strong> — If a confirmation dialog about a disk configuration mismatch appears, canceling it aborts the load.</li>
             </ul>
@@ -1085,27 +1174,46 @@
 
         // ツールバーのボタン一覧テーブルを生成する。
         // アイコンのpath dは index.html のツールバーボタン定義と同一。
-        var BUTTONS = [
+
+        // 常設(4個): リセット / フルスクリーン / 仮想キーボード / スクリーンショット。
+        var PERMANENT_BUTTONS = [
           {
             icon: 'M3 12a9 9 0 1 0 3-6.7M3 4v5h5',
             ja: 'リセット',
             en: 'Reset',
-            descJa: 'エミュレータをリセットして再起動します。',
-            descEn: 'Resets the emulator to restart it.',
+            descJa:
+              'エミュレータをハードリセットし、コアごと再起動します。CPU速度・RAM容量・パッド種別などの' +
+              'マシン構成の変更はこのタイミングで反映されます(ページの再読み込みは不要です)。ゲストが' +
+              'ディスクへ書き込んだ内容は再起動前に回収されるので失われません。',
+            descEn:
+              'Performs a hard reset, restarting the core itself. Changes to machine configuration' +
+              ' (CPU speed, RAM size, pad type, etc.) take effect right here — no page reload needed.' +
+              " Anything the guest wrote to disk is flushed before the restart, so it isn't lost.",
           },
           {
-            icon: 'M6 10V19H18V10 M12 3v6 M9 6l3 3 3-3',
-            ja: 'ステート保存',
-            en: 'Save State',
-            descJa: '現在の実行状態をIndexedDBへスナップショット保存します。',
-            descEn: 'Snapshots the current running state to IndexedDB.',
+            icon: 'M4 9V5a1 1 0 0 1 1-1h4 M15 4h4a1 1 0 0 1 1 1v4 M20 15v4a1 1 0 0 1-1 1h-4 M9 20H5a1 1 0 0 1-1-1v-4',
+            ja: 'フルスクリーン',
+            en: 'Fullscreen',
+            descJa:
+              '画面全体をフルスクリーン表示します(画面モード変更にも追従してアスペクト比を保ちます)。' +
+              'もう一度押すか、Escキーで解除します。マウスキャプチャ中にEscキーを押すと、キャプチャと' +
+              'フルスクリーンが同時に解除されます。',
+            descEn:
+              'Shows the screen in fullscreen, keeping the aspect ratio even when the screen mode' +
+              ' changes. Press again, or press Esc, to exit. While the mouse is captured, pressing' +
+              ' Esc releases both the capture and fullscreen at the same time.',
           },
           {
-            icon: 'M6 10V19H18V10 M12 9V3 M9 6l3-3 3 3',
-            ja: 'ステート復元',
-            en: 'Load State',
-            descJa: '保存済みのステートから実行状態を復元します。',
-            descEn: 'Restores the running state from a previously saved state.',
+            icon: 'M3 6h18v12H3z M6 9h1 M10 9h1 M14 9h1 M18 9h1 M6 12h1 M10 12h1 M14 12h1 M18 12h1 M7 15h10',
+            ja: '仮想キーボード',
+            en: 'Virtual Keyboard',
+            descJa:
+              '画面下に仮想キーボードを表示/非表示します。タッチ環境向け。物理キーボードに無い' +
+              ' XF1-5 などの X68000 固有キーもここから入力できます。',
+            descEn:
+              'Shows/hides an on-screen keyboard at the bottom of the screen, for touch devices. It' +
+              ' also lets you enter X68000-specific keys like XF1-5 that the physical keyboard has no' +
+              ' counterpart for.',
           },
           {
             icon: 'M4 8h3l2-3h6l2 3h3a1 1 0 0 1 1 1v10a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1V9a1 1 0 0 1 1-1z M12 17a3.5 3.5 0 1 0 0-7 3.5 3.5 0 0 0 0 7z',
@@ -1114,52 +1222,66 @@
             descJa: '現在の画面をPNG画像としてダウンロードします。',
             descEn: 'Downloads the current display as a PNG image.',
           },
+        ];
+
+        // 「…」メニューの中身。groupJa/groupEn が空文字の項目はグループに属さず、
+        // メニュー直下(設定/ヘルプ/言語)に並ぶもの。
+        var MENU_BUTTONS = [
+          {
+            icon: 'M2 5h20v14H2z M9 21h6 M12 19v2',
+            ja: '4:3表示',
+            en: '4:3 display',
+            groupJa: '表示',
+            groupEn: 'Display',
+            descJa:
+              '実機のX68000は解像度に関わらず4:3のモニタいっぱいに表示されていたため、その見え方を' +
+              '再現します。512x512系の画面は横に広がり、768x512の画面は縦に伸びます(補正は常に' +
+              '拡大方向で行うためドットは失われません。ONのときだけ補間がかかり、実機CRTの滲みに' +
+              '近い見え方になります)。既定はドット等倍で、切り替えた設定はブラウザに保存されます。',
+            descEn:
+              'Real X68000 hardware always fills a 4:3 monitor regardless of resolution; this' +
+              ' reproduces that look. 512x512-family screens stretch horizontally, and 768x512' +
+              ' stretches vertically (the correction always enlarges, so no dots are lost —' +
+              ' interpolation only kicks in while this is on, giving a look closer to a real CRT).' +
+              ' The default is 1:1 pixels, and your choice is saved in your browser.',
+          },
           {
             icon: 'M12 3a6 6 0 0 1 6 6v6a6 6 0 0 1-12 0V9a6 6 0 0 1 6-6z M12 3v7 M12 7v3',
             ja: 'マウスキャプチャ',
             en: 'Capture Mouse',
-            descJa: '画面をクリックロックし、マウス操作をゲストへ送ります。画面の右ダブルクリックでも開始できます。Escキーで解除します。',
-            descEn: 'Locks the pointer to the screen and passes mouse input to the guest. Right double-click the screen to start it too. Press Esc to release.',
+            groupJa: '入力',
+            groupEn: 'Input',
+            descJa:
+              '画面をクリックロックし、マウス操作をゲストへ送ります。画面の右ダブルクリックでも' +
+              '開始できます。Escキーで解除します。',
+            descEn:
+              'Locks the pointer to the screen and passes mouse input to the guest. Right' +
+              ' double-click the screen to start it too. Press Esc to release.',
           },
           {
             icon: 'M12 3v4 M12 17v4 M3 12h4 M17 12h4 M9 12a3 3 0 1 0 6 0 3 3 0 1 0 -6 0',
             ja: 'マウス再同期',
             en: 'Resync Mouse',
+            groupJa: '入力',
+            groupEn: 'Input',
             descJa: 'ホストのカーソル位置とゲスト側マウス位置の基準がズレたときに、押すと作り直せます。',
             descEn: 'Re-establishes the reference point when the host cursor and the guest mouse position drift apart.',
-          },
-          {
-            icon: 'M4 9V5a1 1 0 0 1 1-1h4 M15 4h4a1 1 0 0 1 1 1v4 M20 15v4a1 1 0 0 1-1 1h-4 M9 20H5a1 1 0 0 1-1-1v-4',
-            ja: 'フルスクリーン',
-            en: 'Fullscreen',
-            descJa: '画面全体をフルスクリーン表示します(画面モード変更にも追従してアスペクト比を保ちます)。もう一度押すか、Escキーで解除します。マウスキャプチャ中にEscキーを押すと、キャプチャとフルスクリーンが同時に解除されます。',
-            descEn: 'Shows the screen in fullscreen, keeping the aspect ratio even when the screen mode changes. Press again, or press Esc, to exit. While the mouse is captured, pressing Esc releases both the capture and fullscreen at the same time.',
-          },
-          {
-            icon: 'M3 6h18v12H3z M6 9h1 M10 9h1 M14 9h1 M18 9h1 M6 12h1 M10 12h1 M14 12h1 M18 12h1 M7 15h10',
-            ja: '仮想キーボード',
-            en: 'Virtual Keyboard',
-            descJa: '画面下に仮想キーボードを表示/非表示します。タッチ環境向け。物理キーボードに無い XF1-5 などの X68000 固有キーもここから入力できます。',
-            descEn: 'Shows/hides an on-screen keyboard at the bottom of the screen, for touch devices. It also lets you enter X68000-specific keys like XF1-5 that the physical keyboard has no counterpart for.',
           },
           {
             icon: 'M6 9h12a3 3 0 0 1 3 3l1 4a2 2 0 0 1-3.6 1.2L17 15H7l-1.4 2.2A2 2 0 0 1 2 16l1-4a3 3 0 0 1 3-3z M7 12v3 M5.5 13.5h3 M15.5 12.5h.01 M18 14.5h.01',
             ja: 'ジョイスティック設定',
             en: 'Joystick Settings',
+            groupJa: '入力',
+            groupEn: 'Input',
             descJa: '接続中のゲームパッドの割当を確認・編集するダイアログを開きます。設定はパッドごとにブラウザへ保存されます。',
             descEn: 'Opens a dialog to check and edit the bindings of connected gamepads. Settings are saved to the browser per pad.',
-          },
-          {
-            icon: 'M7 7h10v10H7z M9 9h6v6H9z M7 4v3 M12 4v3 M17 4v3 M7 17v3 M12 17v3 M17 17v3 M4 7h3 M4 12h3 M4 17h3 M17 7h3 M17 12h3 M17 17h3',
-            ja: '設定(BIOS / マシン構成)',
-            en: 'Settings (BIOS / Machine Config)',
-            descJa: 'BIOSファイル(IPLROM.DAT / CGROM.DAT)とマシン構成(CPU速度・RAM容量)を設定するダイアログを開きます。',
-            descEn: 'Opens a dialog to configure the BIOS files (IPLROM.DAT / CGROM.DAT) and machine settings (CPU speed, RAM size).',
           },
           {
             icon: 'M4 16h13l3-3V6a1 1 0 0 0-1-1H4a1 1 0 0 0-1 1v9a1 1 0 0 0 1 1z M4 20h13a3 3 0 0 0 3-3 M8 9h6v4H8z',
             ja: 'ディスクライブラリ',
             en: 'Disk Library',
+            groupJa: 'ディスク',
+            groupEn: 'Disk',
             descJa: 'これまでに保存されたディスクイメージの一覧を開き、起動・挿入・削除ができます。',
             descEn: 'Opens the list of previously saved disk images, from which you can boot, insert, or delete them.',
           },
@@ -1167,15 +1289,59 @@
             icon: 'M3 8h13 M12 4l4 4-4 4 M21 16H8 M12 20l-4-4 4-4',
             ja: 'ファイル転送',
             en: 'File Transfer',
+            groupJa: 'ディスク',
+            groupEn: 'Disk',
             descJa: '2ペインのファイルマネージャダイアログを開き、このブラウザとディスクイメージの間でファイルをやり取りします。',
             descEn: 'Opens a two-pane file manager dialog for exchanging files between this browser and a disk image.',
+          },
+          {
+            icon: 'M6 10V19H18V10 M12 3v6 M9 6l3 3 3-3',
+            ja: 'ステート保存',
+            en: 'Save State',
+            groupJa: 'ステート',
+            groupEn: 'State',
+            descJa: '現在の実行状態をIndexedDBへスナップショット保存します。',
+            descEn: 'Snapshots the current running state to IndexedDB.',
+          },
+          {
+            icon: 'M6 10V19H18V10 M12 9V3 M9 6l3-3 3 3',
+            ja: 'ステート復元',
+            en: 'Load State',
+            groupJa: 'ステート',
+            groupEn: 'State',
+            descJa: '保存済みのステートから実行状態を復元します。',
+            descEn: 'Restores the running state from a previously saved state.',
+          },
+          {
+            icon: 'M7 7h10v10H7z M9 9h6v6H9z M7 4v3 M12 4v3 M17 4v3 M7 17v3 M12 17v3 M17 17v3 M4 7h3 M4 12h3 M4 17h3 M17 7h3 M17 12h3 M17 17h3',
+            ja: '設定(BIOS / マシン構成)',
+            en: 'Settings (BIOS / Machine Config)',
+            groupJa: '',
+            groupEn: '',
+            descJa: 'BIOSファイル(IPLROM.DAT / CGROM.DAT)とマシン構成(CPU速度・RAM容量)を設定するダイアログを開きます。',
+            descEn: 'Opens a dialog to configure the BIOS files (IPLROM.DAT / CGROM.DAT) and machine settings (CPU speed, RAM size).',
           },
           {
             icon: 'M12 21a9 9 0 1 0 0-18 9 9 0 0 0 0 18z M9.6 9.2a2.4 2.4 0 1 1 3.3 2.2c-.7.3-.9.8-.9 1.6 M12 16.8h.01',
             ja: 'ヘルプ',
             en: 'Help',
+            groupJa: '',
+            groupEn: '',
             descJa: 'このページ(使い方ページ)を別タブで開きます。',
             descEn: 'Opens this Help page in a new tab.',
+          },
+          {
+            icon: 'M12 3a9 9 0 1 0 0 18 9 9 0 0 0 0-18z M3 12h18 M12 3c2.5 2.5 3.5 5.5 3.5 9s-1 6.5-3.5 9 M12 3c-2.5 2.5-3.5 5.5-3.5 9s1 6.5 3.5 9',
+            ja: '言語',
+            en: 'Language',
+            groupJa: '',
+            groupEn: '',
+            descJa:
+              '表示言語を日本語⇔Englishで切り替えます。以前はツールバーに直接置かれていましたが、' +
+              '現在は「…」メニューの中に移動しています。',
+            descEn:
+              'Switches the display language between Japanese and English. It used to sit directly' +
+              ' on the toolbar; it now lives inside the "…" menu.',
           },
         ];
 
@@ -1189,11 +1355,11 @@
           );
         }
 
-        function buildTable(tbodyId, langKey, descKey) {
+        function buildPermanentTable(tbodyId, langKey, descKey) {
           var tbody = document.getElementById(tbodyId);
           var html = '';
-          for (var i = 0; i < BUTTONS.length; i++) {
-            var b = BUTTONS[i];
+          for (var i = 0; i < PERMANENT_BUTTONS.length; i++) {
+            var b = PERMANENT_BUTTONS[i];
             html +=
               '<tr>' +
               '<td class="btn-icon-cell"><span class="fake-icon-btn">' +
@@ -1210,8 +1376,34 @@
           tbody.innerHTML = html;
         }
 
-        buildTable('btnTableJa', 'ja', 'descJa');
-        buildTable('btnTableEn', 'en', 'descEn');
+        function buildMenuTable(tbodyId, langKey, groupKey, descKey, directLabel) {
+          var tbody = document.getElementById(tbodyId);
+          var html = '';
+          for (var i = 0; i < MENU_BUTTONS.length; i++) {
+            var b = MENU_BUTTONS[i];
+            html +=
+              '<tr>' +
+              '<td class="btn-icon-cell"><span class="fake-icon-btn">' +
+              svgFor(b.icon) +
+              '</span></td>' +
+              '<td>' +
+              b[langKey] +
+              '</td>' +
+              '<td class="btn-group-cell">' +
+              (b[groupKey] || directLabel) +
+              '</td>' +
+              '<td>' +
+              b[descKey] +
+              '</td>' +
+              '</tr>';
+          }
+          tbody.innerHTML = html;
+        }
+
+        buildPermanentTable('btnTablePermJa', 'ja', 'descJa');
+        buildPermanentTable('btnTablePermEn', 'en', 'descEn');
+        buildMenuTable('btnTableMenuJa', 'ja', 'groupJa', 'descJa', '(直下)');
+        buildMenuTable('btnTableMenuEn', 'en', 'groupEn', 'descEn', '(direct)');
       })();
     </script>
   </body>
