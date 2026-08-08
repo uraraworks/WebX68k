@@ -395,7 +395,9 @@ export function buildGamepadDialog(container: HTMLElement, callbacks: GamepadDia
         // 偽パッド(テスト/ヘッドレス検証用)がbuttons/axesの形を崩していても表示だけは壊さない。
         bits = 0;
       }
-      const header = el('h4', { class: 'gp-live-title' }, [`${pad.id} (#${pad.index})`]);
+      const port = callbacks.getPort(pad.index);
+      const portLabel = port === null ? t('gamepadPortUnassigned') : t('gamepadPortAssigned', { port: port + 1 });
+      const header = el('h4', { class: 'gp-live-title' }, [t('gamepadLiveTitle', { name: pad.id, portLabel })]);
       const physical = el('div', { class: 'gp-live-col' }, [
         el('div', { class: 'gp-live-col-title' }, [t('gamepadPhysicalTitle')]),
         renderButtons(pad),

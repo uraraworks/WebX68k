@@ -197,6 +197,8 @@ interface Dict {
   gamepadPortAssigned(args: { port: number }): string;
   /** 3台目以降など、どちらのポートにも割り当てられていない場合。 */
   gamepadPortUnassigned(): string;
+  /** ライブ表示の各パッド見出し(パッド名+ポート表記)。Gamepad API index(0始まり)の生値は出さない。 */
+  gamepadLiveTitle(args: { name: string; portLabel: string }): string;
   gamepadPhysicalTitle(): string;
   gamepadX68kTitle(): string;
   gamepadTargetUp(): string;
@@ -457,6 +459,7 @@ const STRINGS: Record<Lang, Dict> = {
     gamepadConnectedTitle: () => '接続中のパッド',
     gamepadPortAssigned: ({ port }) => `ポート${port}`,
     gamepadPortUnassigned: () => '未割当',
+    gamepadLiveTitle: ({ name, portLabel }) => `${name} (${portLabel})`,
     gamepadPhysicalTitle: () => '物理入力',
     gamepadX68kTitle: () => 'X68000側入力',
     gamepadTargetUp: () => '上',
@@ -685,6 +688,7 @@ const STRINGS: Record<Lang, Dict> = {
     gamepadConnectedTitle: () => 'Connected Pads',
     gamepadPortAssigned: ({ port }) => `Port ${port}`,
     gamepadPortUnassigned: () => 'Unassigned',
+    gamepadLiveTitle: ({ name, portLabel }) => `${name} (${portLabel})`,
     gamepadPhysicalTitle: () => 'Physical Input',
     gamepadX68kTitle: () => 'X68000 Input',
     gamepadTargetUp: () => 'Up',
