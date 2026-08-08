@@ -167,6 +167,45 @@ async function injectLibrarySamples(page) {
   });
 }
 
+/**
+ * gamepad ショットの直前だけ、navigator.getGamepads() を standard mapping の偽パッド
+ * (buttons 17個・axes 4個、いくつか押下/傾け状態)に差し替える。パッドが繋がっていない
+ * 撮影環境でもジョイスティック設定ダイアログの見た目を撮れるようにするため
+ * (library ショットの直前だけ IndexedDB へサンプルを注入する既存の前例と同じ考え方)。
+ * gamepad-ui.ts のダイアログは毎フレーム navigator.getGamepads() を直接読むだけなので、
+ * gamepadconnected イベントの発火は不要。
+ */
+async function injectFakeGamepad(page) {
+  await page.evaluate(() => {
+    function makeButton(pressed) {
+      return { pressed, touched: pressed, value: pressed ? 1 : 0 };
+    }
+    const fakePad = {
+      id: 'Xbox Wireless Controller (STANDARD GAMEPAD Vendor: 045e Product: 0b13)',
+      index: 0,
+      connected: true,
+      mapping: 'standard',
+      timestamp: performance.now(),
+      // axes[1](左スティック縦)を大きく傾けておき、ライブ表示が光っている絵にする。
+      axes: [0, -0.9, 0, 0],
+      buttons: Array.from({ length: 17 }, (_, i) => makeButton(i === 0 || i === 9 || i === 12)),
+      vibrationActuator: null,
+    };
+    window.__origGetGamepads = navigator.getGamepads.bind(navigator);
+    navigator.getGamepads = () => [fakePad, null, null, null];
+  });
+}
+
+/** injectFakeGamepad() で差し替えた navigator.getGamepads を元に戻す。 */
+async function removeFakeGamepad(page) {
+  await page.evaluate(() => {
+    if (window.__origGetGamepads) {
+      navigator.getGamepads = window.__origGetGamepads;
+      delete window.__origGetGamepads;
+    }
+  });
+}
+
 /** injectLibrarySamples() で入れたレコードだけを撤去する(他ショットに写り込ませないため)。 */
 async function removeLibrarySamples(page) {
   await page.evaluate(async (keys) => {
@@ -250,6 +289,18 @@ async function run() {
       console.log(`  wrote filemanager${suffix}.png`);
       await page.keyboard.press('Escape');
       await sleep(400);
+
+      // --- gamepad: ジョイスティック設定ダイアログ(撮影直前だけ偽パッドを1台繋いだことにする) ---
+      await injectFakeGamepad(page);
+      await clickToolbarButton(page, 'btn-gamepad');
+      await sleep(800);
+      const gpModal = await page.$('#gamepad-root .gp-modal');
+      if (!gpModal) throw new Error('gamepad modal not found');
+      await gpModal.screenshot({ path: join(OUT_DIR, `gamepad${suffix}.png`) });
+      console.log(`  wrote gamepad${suffix}.png`);
+      await page.keyboard.press('Escape');
+      await sleep(400);
+      await removeFakeGamepad(page);
 
       // --- overview: 「システムディスクで起動」でHuman68kを起動した実行中の画面 ---
       await page.reload({ waitUntil: 'networkidle2' });

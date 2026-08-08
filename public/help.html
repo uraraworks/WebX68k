@@ -721,6 +721,91 @@
           </div>
         </section>
 
+        <!-- 7.5 ジョイスティック -->
+        <section class="help-card">
+          <div class="lang-ja">
+            <h2>ジョイスティックを使う（ゲームパッド対応）</h2>
+            <p>
+              USB/Bluetoothのゲームパッド(Gamepad APIのstandard mappingに準拠したもの。Xbox系コントローラーなど)を
+              接続すると、最大2台までポート1/2としてそのまま認識されます。方向入力はD-padと左スティックの両方に
+              対応しており(左スティックはデジタル量子化で読み取り、感度はデッドゾーンで調整可能)、どちらが
+              動いてもX68000側の方向として伝わります。
+            </p>
+            <img src="./help/gamepad.png" alt="ジョイスティック設定ダイアログ。接続中パッド一覧・ライブ表示・割当編集エリアが並ぶ" />
+            <p>
+              ツールバーの「ジョイスティック設定」ボタンから設定ダイアログを開けます。接続中のパッド一覧に加え、
+              物理入力(ボタン/軸)の番号付きライブ表示と、そのパッドが現在送っているX68000側のライブ表示
+              (方向/TRGボタン)が並んでいるので、割当が実際に効いているかその場で目で確認できます。
+            </p>
+            <p>
+              割当編集は、[検出(置き換え)]ボタンを押してからパッドの該当ボタンを押すとその入力に置き換わる方法、
+              コンボボックスから選んで追加する方法(1項目に複数入力を割り当てるコンボ入力も可能)、チップの
+              [×]で個別解除する方法があり、[XInput標準に戻す]でまとめてリセットもできます。デッドゾーンの
+              調整や、ポートごとに使うパッドの手動指定もここから行います。
+            </p>
+            <p>
+              パッド種別は「標準(2ボタン)」「CPSF-MD (8ボタン)」「CPSF-SFC (8ボタン)」から選べます。
+              <strong>変更は次回のコア起動時から反映されます</strong>(リセットボタンでは反映されません)。
+            </p>
+            <p>
+              「その他の割当」セクションでは、パッドのボタンにX68000キーボードのキーを割り当てられます。
+              ゲーム開始やポーズがキー操作のソフトを、パッドだけで進行させたい場合に便利です。
+            </p>
+            <p>
+              設定は接続したパッドの識別子(<code>gamepad.id</code>)ごとにブラウザへ保存されるため、抜き差し
+              しても各パッドの設定はそのまま残ります。
+            </p>
+            <div class="note-box">
+              <strong>注意:</strong> ボタン番号の表示は1始まりです。Chrome等は、パッドのボタンを一度も
+              押していないと接続を認識しません。standard mappingに準拠しないパッドは全項目が未割当の状態
+              から始まるので、[検出]で個別に設定してください。サイバースティックのアナログモードには
+              対応していません。
+            </div>
+          </div>
+          <div class="lang-en">
+            <h2>Using a joystick (gamepad support)</h2>
+            <p>
+              Connect a USB/Bluetooth gamepad that follows the Gamepad API's standard mapping (Xbox-style
+              controllers, etc.) and it's recognized right away, up to two at once as Port 1/2. Directional
+              input works from both the D-pad and the left stick (the left stick is read as digital,
+              quantized input, with adjustable deadzone sensitivity); either one moving is passed through as
+              the X68000-side direction.
+            </p>
+            <img src="./help/gamepad-en.png" alt="Joystick Settings dialog showing the connected-pad list, live display, and binding editor" />
+            <p>
+              Open the settings dialog from the "Joystick Settings" toolbar button. Alongside the list of
+              connected pads, it shows a numbered live display of physical input (buttons/axes) and a live
+              display of what's currently being sent to the X68000 side (directions/TRG buttons) for that
+              pad, so you can see with your own eyes whether a binding is actually taking effect.
+            </p>
+            <p>
+              You can edit bindings by pressing [Detect (Replace)] and then pressing the matching button on
+              the pad to replace that binding, by picking one from the dropdown to add it (a single target can
+              have multiple inputs combined), or by removing one individually with a chip's [x]. [Reset to
+              XInput Defaults] resets everything at once. Deadzone adjustment and manually pinning which pad
+              is used for each port are also done here.
+            </p>
+            <p>
+              Pad type can be set to "Default (2 Buttons)", "CPSF-MD (8 Buttons)", or "CPSF-SFC (8 Buttons)".
+              <strong>Changing it takes effect the next time the core starts</strong> (not on Reset).
+            </p>
+            <p>
+              The "Other Bindings" section lets you map a pad button to an X68000 keyboard key — handy for
+              titles where starting the game or pausing needs a key press, so you can play with the pad alone.
+            </p>
+            <p>
+              Settings are saved per connected pad, keyed by its <code>gamepad.id</code>, so each pad keeps
+              its own settings even after being unplugged and reconnected.
+            </p>
+            <div class="note-box">
+              <strong>Note:</strong> Button numbers are displayed starting from 1. Chrome and some other
+              browsers won't recognize a pad as connected until you've pressed one of its buttons at least
+              once. A pad that doesn't follow the standard mapping starts with every target unassigned, so
+              set it up individually with [Detect]. The CYBER STICK's analog mode isn't supported.
+            </div>
+          </div>
+        </section>
+
         <!-- 8. ステート保存と続きから -->
         <section class="help-card">
           <div class="lang-ja">
@@ -1056,6 +1141,13 @@
             en: 'Virtual Keyboard',
             descJa: '画面下に仮想キーボードを表示/非表示します。タッチ環境向け。物理キーボードに無い XF1-5 などの X68000 固有キーもここから入力できます。',
             descEn: 'Shows/hides an on-screen keyboard at the bottom of the screen, for touch devices. It also lets you enter X68000-specific keys like XF1-5 that the physical keyboard has no counterpart for.',
+          },
+          {
+            icon: 'M6 9h12a3 3 0 0 1 3 3l1 4a2 2 0 0 1-3.6 1.2L17 15H7l-1.4 2.2A2 2 0 0 1 2 16l1-4a3 3 0 0 1 3-3z M7 12v3 M5.5 13.5h3 M15.5 12.5h.01 M18 14.5h.01',
+            ja: 'ジョイスティック設定',
+            en: 'Joystick Settings',
+            descJa: '接続中のゲームパッドの割当を確認・編集するダイアログを開きます。設定はパッドごとにブラウザへ保存されます。',
+            descEn: 'Opens a dialog to check and edit the bindings of connected gamepads. Settings are saved to the browser per pad.',
           },
           {
             icon: 'M7 7h10v10H7z M9 9h6v6H9z M7 4v3 M12 4v3 M17 4v3 M7 17v3 M12 17v3 M17 17v3 M4 7h3 M4 12h3 M4 17h3 M17 7h3 M17 12h3 M17 17h3',
