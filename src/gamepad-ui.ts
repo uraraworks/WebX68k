@@ -98,11 +98,13 @@ export interface GamepadDialogCallbacks {
    */
   resolveBits(pad: Gamepad, padType: PadType): number;
   /**
-   * 指定軸が有効(Gamepad APIの仕様上ありうる[-1,1]の範囲内)か、静止値からの偏差で
-   * どちら向きに反応しているか(未反応はnull)。範囲外の軸(ハット軸等)は valid:false になる。
-   * bitsFor計算(resolveBits)と同じ静止値を共有するため、ライブ表示と実際の入力は必ず一致する。
+   * 指定軸が有効(Gamepad APIの仕様上ありうる[-1,1]の範囲内)か、較正済みか、静止値からの偏差で
+   * どちら向きに反応しているか(未反応/未較正はnull)を返す。範囲外の軸(ハット軸等)は valid:false
+   * になる。calibrated:false は「観測開始してから一度も動かされていない軸」を意味し、この間は
+   * active も常に null(未較正の軸は入力を生成しない。gamepad.ts の AxisCalibration 参照)。
+   * bitsFor計算(resolveBits)と同じ較正状態を共有するため、ライブ表示と実際の入力は必ず一致する。
    */
-  getAxisState(pad: Gamepad, axisIndex: number): { valid: boolean; active: 1 | -1 | null };
+  getAxisState(pad: Gamepad, axisIndex: number): { valid: boolean; calibrated: boolean; active: 1 | -1 | null };
   /** 指定パッドの現在のデッドゾーン。 */
   getDeadzone(pad: Gamepad): number;
   setDeadzone(pad: Gamepad, value: number): void;
@@ -219,8 +221,11 @@ export function sourceLabel(source: Source, pad: Gamepad): string {
  * そのパッドで選択可能な物理Source一覧(コンボボックスの選択肢生成用)。
  * 範囲外の値を返す軸(isAxisValueValid が false。ハット軸等)は無効な軸として選択肢に出さない
  * (「そんな軸がある」こと自体はライブ表示(renderAxes)側で見えるようにするが、割当対象には選べない)。
+ * 未較正の軸(観測開始してから一度も動かされていない)も選択肢に出さない: 較正が終わるまで
+ * その軸の値には意味が無く、割り当てても入力を生成しない(gamepad.ts の AxisCalibration 参照)。
+ * 「一度動かせば選べるようになる」ことは、ライブ表示側(renderAxes)の見た目で案内する。
  */
-function sourceOptionsFor(pad: Gamepad): Array<{ source: Source; label: string }> {
+function sourceOptionsFor(pad: Gamepad, callbacks: GamepadDialogCallbacks): Array<{ source: Source; label: string }> {
   const out: Array<{ source: Source; label: string }> = [];
   const buttonCount = pad.buttons?.length ?? 0;
   for (let i = 0; i < buttonCount; i++) {
@@ -229,6 +234,7 @@ function sourceOptionsFor(pad: Gamepad): Array<{ source: Source; label: string }
   const axesCount = pad.axes?.length ?? 0;
   for (let i = 0; i < axesCount; i++) {
     if (!isAxisValueValid(pad.axes[i])) continue;
+    if (!callbacks.getAxisState(pad, i).calibrated) continue;
     out.push({ source: { kind: 'axis', index: i, dir: 1 }, label: sourceLabel({ kind: 'axis', index: i, dir: 1 }, pad) });
     out.push({
       source: { kind: 'axis', index: i, dir: -1 },
@@ -451,8 +457,12 @@ export function buildGamepadDialog(container: HTMLElement, callbacks: GamepadDia
 
   /**
    * axes配列も同様に長さ・値が不定な前提。静止値からの偏差(callbacks.getAxisState、
-   * resolveBitsと同じ判定・同じ静止値)でハイライトする。範囲外の軸(ハット軸等)は
+   * resolveBitsと同じ判定・同じ較正状態)でハイライトする。範囲外の軸(ハット軸等)は
    * 無効として見た目で区別する(光らせない・「無効」の注記を出す)。
+   * 未較正の軸(観測開始してから一度も動かされていない)は、値が0(や他の見かけ上の静止値)を
+   * 示していても青く光らせない(ON判定に使っていないため)。グレー表示+注記で「一度動かせば
+   * 使えるようになる」ことを案内する(実機のトリガ軸で「押す前から光っている」ように見える
+   * 固着バグの再発防止。gamepad.ts の AxisCalibration 参照)。
    */
   function renderAxes(pad: Gamepad): HTMLElement {
     const wrap = el('div', { class: 'gp-axes' });
@@ -462,9 +472,16 @@ export function buildGamepadDialog(container: HTMLElement, callbacks: GamepadDia
       const value = typeof raw === 'number' && Number.isFinite(raw) ? raw : 0;
       const state = callbacks.getAxisState(pad, i);
       const classes = ['gp-axis'];
-      if (!state.valid) classes.push('invalid');
-      else if (state.active !== null) classes.push('active');
-      const suffix = state.valid ? '' : ` ${t('gamepadAxisInvalidSuffix')}`;
+      let suffix = '';
+      if (!state.valid) {
+        classes.push('invalid');
+        suffix = ` ${t('gamepadAxisInvalidSuffix')}`;
+      } else if (!state.calibrated) {
+        classes.push('uncalibrated');
+        suffix = ` ${t('gamepadAxisUncalibratedSuffix')}`;
+      } else if (state.active !== null) {
+        classes.push('active');
+      }
       wrap.append(el('span', { class: classes.join(' ') }, [`A${toDisplayIndex(i)}: ${value.toFixed(2)}${suffix}`]));
     }
     return wrap;
@@ -685,7 +702,7 @@ export function buildGamepadDialog(container: HTMLElement, callbacks: GamepadDia
     combo.append(new Option(t('gamepadComboPlaceholder'), ''));
     const optgroup = document.createElement('optgroup');
     optgroup.label = t('gamepadComboJoystickGroup');
-    const options = sourceOptionsFor(pad);
+    const options = sourceOptionsFor(pad, callbacks);
     options.forEach((entry, idx) => optgroup.append(new Option(entry.label, String(idx))));
     combo.append(optgroup);
     combo.addEventListener('change', () => {
@@ -815,7 +832,10 @@ export function buildGamepadDialog(container: HTMLElement, callbacks: GamepadDia
     if (!pad) return; // 検出中に抜かれた場合はそのまま待機(戻ってくれば再開できる)。
     const curr = snapshotPad(pad);
     const deadzone = callbacks.getDeadzone(pad);
-    const found = detectNewlyActiveSource(detect.baseline, curr, deadzone);
+    // 未較正の軸(観測開始してから一度も動かされていない)は検出対象から除外する。較正されるまで
+    // その軸の値には意味が無く、誤って割り当ててしまうと使い物にならない入力ができてしまうため
+    // (gamepad.ts の AxisCalibration 参照。一度動かせば較正され、次回以降は検出できるようになる)。
+    const found = detectNewlyActiveSource(detect.baseline, curr, deadzone, (axisIndex) => callbacks.getAxisState(pad, axisIndex).calibrated);
     if (found) {
       if (detect.kind === 'row') callbacks.replaceTargetBinding(pad, found, detect.target);
       applyFlow(resolveDetectFound({ detect, pendingGeneric }, found));

@@ -255,6 +255,12 @@ interface Dict {
   gamepadAxisLabel(args: { index: number; dir: string }): string;
   /** ライブ表示で範囲外の値を返す軸(ハット軸等)に付ける注記。 */
   gamepadAxisInvalidSuffix(): string;
+  /**
+   * ライブ表示で未較正の軸(観測開始してから一度も動かされていない軸)に付ける注記。
+   * 実機のトリガ軸等、一度も動かしていない間は値に意味が無く、動かすまで割当対象にも
+   * ならないことを短く案内する(gamepad.ts の AxisCalibration 参照)。
+   */
+  gamepadAxisUncalibratedSuffix(): string;
   gamepadDeadzoneLabel(): string;
   gamepadResetPresetBtn(): string;
   /** [既定に戻す]ボタンのツールチップ。接続中パッドに応じて既定値が変わる旨を明記する。 */
@@ -499,6 +505,7 @@ const STRINGS: Record<Lang, Dict> = {
     gamepadButtonLabel: ({ index }) => `ボタン${index}`,
     gamepadAxisLabel: ({ index, dir }) => `軸${index} ${dir}`,
     gamepadAxisInvalidSuffix: () => '(無効・範囲外の値)',
+    gamepadAxisUncalibratedSuffix: () => '(未較正・一度動かすと使えます)',
     gamepadDeadzoneLabel: () => 'デッドゾーン',
     gamepadResetPresetBtn: () => '既定に戻す',
     gamepadResetPresetBtnTitle: () =>
@@ -733,6 +740,7 @@ const STRINGS: Record<Lang, Dict> = {
     gamepadButtonLabel: ({ index }) => `Button ${index}`,
     gamepadAxisLabel: ({ index, dir }) => `Axis ${index} ${dir}`,
     gamepadAxisInvalidSuffix: () => '(invalid, out of range)',
+    gamepadAxisUncalibratedSuffix: () => '(not calibrated yet — move it once to use)',
     gamepadDeadzoneLabel: () => 'Deadzone',
     gamepadResetPresetBtn: () => 'Reset to Defaults',
     gamepadResetPresetBtnTitle: () =>

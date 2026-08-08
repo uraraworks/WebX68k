@@ -170,18 +170,42 @@ export const XINPUT_PRESET: ReadonlyArray<{ source: Source; binding: Binding }> 
 /** 軸の既定デッドゾーン。この値を超えた(等しいだけでは超えない)ときにその方向を「入力あり」とみなす。 */
 export const DEFAULT_DEADZONE = 0.5;
 
-// --- 軸判定(静止値からの偏差・範囲外軸の除外) ---
+// --- 軸判定(静止値からの偏差・範囲外軸の除外・較正) ---
 //
-// 実機(8BitDo M30/Micro、D-inputモード)で判明した事実(2026-08-08):
+// 実機(8BitDo M30/Micro、D-inputモード)で判明した事実(2026-08-08、実機のライブ表示観測で確定):
 // - 十字キーは axes[0]/axes[1] の軸で来る(ボタンではない)。
-// - axes[3]/axes[4] は未押下のアナログトリガの値で、常に -1.0 を返す(0が静止値ではない)。
+// - axes[3]/axes[4](アナログトリガ)は、そのパッドを観測開始してから一度もそのトリガを
+//   動かしていない間は 0.0 を報告し続け、一度でも動かす(押す/離す)と、以後は真の静止値
+//   -1.0 を報告するようになる。「軸の値には最初から意味がある」という前提そのものが誤りで、
+//   「一度も動いていない軸の値は無意味(0.0 は偽の静止値)」というのが実機の挙動。
 // - axes[9] は常に [-1,1] の範囲外の値(M30=3.29 / Micro=1.29)を返す。十字キーのハット軸が
 //   数値化されたものと見られ、実質「無効な軸」として扱うしかない。
-// 「軸の値0が静止」という暗黙の前提でデッドゾーン判定すると、未押下のトリガ軸が永久に
-// 入力ありと誤判定される(ライブ表示が光りっぱなしになり、割り当てれば固着する)ため、
-// 「軸ごとの静止値(rest)からの偏差」で判定する必要がある。以下は純粋関数として切り出し、
-// GamepadManager(継続的なビット計算)・gamepad-ui.ts(ライブ表示・検出モード)の両方から
-// 同じ判定ロジックを共有する。
+//
+// --- これまでの2回の誤った修正(同じ失敗を繰り返さないための記録) ---
+// 1回目: 初回観測値をそのまま静止値として固定する設計。押す前は0を返すため rest=0 と
+//   記録してしまい、一度押した後の真の値(-1.0)との偏差が常にデッドゾーンを超え、ON固着した。
+// 2回目: 既知パッド(M30/Micro)の axes[3]/[4] は実機の値(-1.0)を静止値として固定する設計
+//   (knownAxisRestFor、削除済み)。押す前から rest=-1.0 なのに実際の値は0のため、今度は
+//   押す前から偏差が生じてON固着した(症状が前倒しになっただけで解決していなかった)。
+// どちらも「軸の値は一度動かされるまで意味を持たない」という事実を扱えていなかったのが本質。
+//
+// 結論(今回の設計): 軸ごとに「較正済みか」の状態を持ち、未較正の間は判定に使わない(入力を
+// 一切生成しない)。観測開始時の値を baseline として記録し、それと異なる値を一度でも観測したら
+// (=一度動かされたら)、その後 AXIS_CALIBRATION_STABLE_FRAMES フレーム連続で同じ値が続いた
+// 時点をもって、その値を静止値として採用する(較正完了)。較正完了後は静止値を二度と更新しない
+// (押しっぱなしの間に静止値が追いついてOFFに戻ってしまう問題を避けるため。この方針自体は
+// 旧実装のコメントから踏襲)。baseline のまま一度も動いていない軸は、stableCount がいくら
+// 増えても hasMoved が立たないため較正されない(初期状態から動かない軸が勝手に較正されて
+// 誤ったrest(baselineそのもの)を採用してしまう事故を防ぐ)。
+//
+// 注意(既知の限界): 「一度変化してから落ち着いた値」を静止値とみなすため、較正が完了する前に
+// 長時間押し続けられると、その押されている値自体が「安定」して見えて誤って静止値に採用されうる
+// (時間・フレーム数ベースの安定判定である以上、原理的に完全には避けられない)。
+// AXIS_CALIBRATION_STABLE_FRAMES を小さく保つことで通常の「押して離す」操作では正しく
+// 離した後の値(真の静止値)で較正が完了するようにしてある。
+//
+// 以下は純粋関数として切り出し、GamepadManager(継続的なビット計算)・gamepad-ui.ts
+// (ライブ表示・検出モード)の両方から同じ判定ロジックを共有する。
 
 /**
  * 軸の値が有効(Gamepad API の仕様上ありうる [-1, 1] の範囲内の有限値)かどうか。
@@ -204,6 +228,52 @@ export function axisDeviationDir(value: number, rest: number, deadzone: number):
   if (delta <= -deadzone) return -1;
   if (delta >= deadzone) return 1;
   return null;
+}
+
+/**
+ * 軸較正が完了したとみなすために要求する「同じ値が連続した」フレーム数。
+ * 値が baseline(観測開始時点の値)から一度でも変化したあと、この回数だけ同じ値が
+ * 連続して初めてその値を静止値として確定する。小さすぎると「注意」に書いた誤較正の
+ * リスクが上がり、大きすぎると較正が完了するまでの実際の遅延が増える。押して離す、
+ * という通常操作に対して数フレームで十分収まるよう2に設定してある。
+ */
+export const AXIS_CALIBRATION_STABLE_FRAMES = 2;
+
+/**
+ * 軸1本ぶんの較正状態。
+ * - calibrated:false … まだ静止値が確定していない(入力判定には使わない)。baseline は
+ *   観測開始時点(その軸を最初に見た瞬間)の値、lastValue/stableCount は「直近何フレーム
+ *   同じ値が続いているか」、hasMoved は baseline から一度でも変化したことがあるか。
+ * - calibrated:true … 静止値(rest)が確定済み。以後 advanceAxisCalibration() は状態を
+ *   変えずにそのまま返す(二度と rest を更新しない)。
+ */
+export type AxisCalibration =
+  | { calibrated: false; baseline: number; lastValue: number; stableCount: number; hasMoved: boolean }
+  | { calibrated: true; rest: number };
+
+/** その軸を初めて観測した時点の較正状態を作る(baseline=今の値、まだ未較正)。 */
+export function initAxisCalibration(value: number): AxisCalibration {
+  return { calibrated: false, baseline: value, lastValue: value, stableCount: 1, hasMoved: false };
+}
+
+/**
+ * 軸較正状態を1フレームぶん進める純粋関数。GamepadManager(継続的な観測)と
+ * gamepad-ui.ts(必要なら同様の較正表示)の両方から同じロジックを共有するために切り出す。
+ * 較正済み(calibrated:true)であれば何も変えずそのまま返す(rest固定)。
+ * 未較正であれば、value が baseline と異なれば hasMoved を立て、value が直前フレームと
+ * 同じなら stableCount を増やす(異なればリセットして1から数え直す)。hasMoved かつ
+ * stableCount が AXIS_CALIBRATION_STABLE_FRAMES に達した時点で calibrated:true, rest:value
+ * へ遷移する。baseline のまま一度も動いていない軸は hasMoved が立たないため、
+ * stableCount がいくら増えても較正されない(初期状態が誤って静止値扱いされることを防ぐ)。
+ */
+export function advanceAxisCalibration(state: AxisCalibration, value: number): AxisCalibration {
+  if (state.calibrated) return state;
+  const stableCount = value === state.lastValue ? state.stableCount + 1 : 1;
+  const hasMoved = state.hasMoved || value !== state.baseline;
+  if (hasMoved && stableCount >= AXIS_CALIBRATION_STABLE_FRAMES) {
+    return { calibrated: true, rest: value };
+  }
+  return { calibrated: false, baseline: state.baseline, lastValue: value, stableCount, hasMoved };
 }
 
 // --- 永続化(パッドごとのプロファイル) ---
@@ -445,8 +515,9 @@ const VENDOR_PRODUCT_TO_KNOWN_PAD: Record<string, 'm30' | 'micro'> = {
 
 /**
  * gamepad.id から既知パッド種別('m30'/'micro')を判定する、唯一の情報源。
- * knownPadPresetFor()(プリセット選択)・knownAxisRestFor()(静止値の固定)の両方がこれを使う
- * (判定ロジックの二重実装を避けるため)。
+ * knownPadPresetFor()(プリセット選択)がこれを使う(判定ロジックの二重実装を避けるため)。
+ * 軸の静止値は固定値テーブルを持たず、パッド種別に関わらず動的な較正(AxisCalibration)で
+ * 決める設計に変更したため、静止値の固定はここには存在しない(2026-08-08 参照)。
  * 一致しなければ null。
  *
  * 判定は Vendor/Product ID(extractVendorProduct())を最優先する。'Micro' の部分一致で
@@ -484,39 +555,6 @@ export function knownPadPresetFor(padId: string, padType: PadType): ReadonlyArra
 }
 
 /**
- * 既知パッド(M30/Micro)の既知軸(axes[3]/axes[4]、アナログトリガ)の静止値を固定で返す。
- * 一致しなければ null(呼び出し側は「初回観測値を静止値として採用」にフォールバックする)。
- *
- * --- 2026-08-08 再調査の経緯(この関数を導入した最初の修正の前提が誤りだったため) ---
- * 最初の修正では「既知パッドの axes[3]/[4] は、OS/ブラウザがL/Rを一度も操作していない間は
- * 実測値を報告し切っておらず0を返す」という前提でこの固定値を導入した。しかし実機
- * (ゲームパッド確認サイト hardwaretester.com/gamepad)で確認したところ、L/Rを押す前から
- * axes[3]/[4] は最初から -1.0 を報告しており、この前提は誤りだった(「最初は0を返す」を
- * 模した偽パッドで再現させた検証は、そもそも仮説の検証になっていなかった)。
- *
- * そこで「初回観測値をそのまま静止値として固定し、以後更新しない」設計そのものを疑い、
- * 「同じ値がN フレーム連続するまで確定を待つ(安定判定)」という、パッド非依存の一般的な
- * 修正を試作して実機同等の手順(偽パッドでL/Rを押しっぱなしにして離す)で検証したところ、
- * 逆にこの安定判定そのものが同じ「ON固着」を再現してしまうことが分かった: 物理ボタンを
- * 押している間、軸の値は(押している間ずっと)フレームを跨いで安定している。安定判定の
- * フレーム数をどれだけ増やしても、「それより長く押し続けられたら」同じ理屈で固着する
- * ため、時間ベースの安定判定では原理的にこの問題を解決できない
- * (test/gamepad.test.ts の回帰テスト参照。実際に実装して壊れることを確認済み)。
- *
- * 結論: 「軸の真の静止値が0ではない」という事実は、動的な観測だけでは(その軸がどれだけ
- * 長く押されているか分からない以上)原理的に区別できない。実機で確定済みの値を使うほうが
- * 唯一の正しい解であり、既知パッドについてはこの固定値テーブルを残す
- * (axes[3]/[4] の真の静止値は実機測定で -1.0 と判明済み、gamepad.test.ts に回帰テストあり)。
- * knownPadKindFor() が実機のid文字列と一致しなければ効かないため、Chrome/Firefox 双方の
- * id書式に対応させてある(extractVendorProduct() 参照)。
- */
-export function knownAxisRestFor(padId: string, axisIndex: number): number | null {
-  if (axisIndex !== 3 && axisIndex !== 4) return null;
-  const kind = knownPadKindFor(padId);
-  return kind === 'm30' || kind === 'micro' ? -1.0 : null;
-}
-
-/**
  * 保存済みプロファイルが無いパッドに対する既定値を決める、唯一の情報源。
  * 1. gamepad.id が既知パッド(M30/Micro)にマッチすれば、mapping の申告に関わらずそのプリセットを使う
  *    (これらは standard 申告でない可能性が高く、mapping 頼みだと全未割当のまま始まってしまうため)。
@@ -551,8 +589,19 @@ export function snapshotPad(pad: Gamepad): PadSnapshot {
  * 「押されていなかったものが押された」Source を1つ返す(無ければ null)。
  * 押しっぱなしのボタン/既に閾値を超えていた軸は無視する(prevで既に真だったものは対象外)。
  * ボタンを軸より先に見る(同一フレームで両方遷移した場合はボタン優先、決定的な順序にするため)。
+ *
+ * isAxisEligible は「その軸を検出対象にしてよいか」を軸indexごとに判定する関数(省略時は
+ * 全軸を対象にする、既存呼び出し・テストとの後方互換のため)。呼び出し側(gamepad-ui.ts)は
+ * GamepadManager の較正状態(axisState().calibrated)を渡すこと。未較正の軸は「一度も
+ * 動かされておらず、報告値に意味がない」状態のため、検出(押して割り当て)の対象から
+ * 除外する必要がある(較正が終わるまで割当そのものができないようにする設計)。
  */
-export function detectNewlyActiveSource(prev: PadSnapshot, curr: PadSnapshot, deadzone: number): Source | null {
+export function detectNewlyActiveSource(
+  prev: PadSnapshot,
+  curr: PadSnapshot,
+  deadzone: number,
+  isAxisEligible: (index: number) => boolean = () => true,
+): Source | null {
   for (let i = 0; i < curr.buttons.length; i++) {
     const wasPressed = prev.buttons[i] === true;
     if (!wasPressed && curr.buttons[i]) return { kind: 'button', index: i };
@@ -563,6 +612,7 @@ export function detectNewlyActiveSource(prev: PadSnapshot, curr: PadSnapshot, de
   // 検出開始時点で既に「デッドゾーンを超えている」ため誤検出しかねない。
   // isAxisValueValid で範囲外の軸([-1,1]の外。ハット軸が紛れ込んだもの)も除外する。
   for (let i = 0; i < curr.axes.length; i++) {
+    if (!isAxisEligible(i)) continue;
     const prevValue = prev.axes[i] ?? 0;
     const currValue = curr.axes[i] ?? 0;
     const dir = axisDeviationDir(currValue, prevValue, deadzone);
@@ -647,12 +697,12 @@ export class GamepadManager {
   // 引き直すため。sourceKey()は不可逆な文字列化なので、元のSourceを別途持つ必要がある)。
   private readonly bindings = new Map<string, Binding[]>();
   private readonly sourcesByKey = new Map<string, Source>();
-  // 軸ごとの静止値(rest)。「そのパッドを最初に観測したときの値」を記録し、以後は更新しない
-  // (継続的なポーリングのたびに更新すると、方向を入力し続けている最中に静止値が追いついてしまい、
-  // 押しっぱなしのつもりが1フレームでOFFに戻ってしまう)。既知パッドの既知軸は
-  // knownAxisRestFor() 側のコメント参照: 動的観測に頼らない固定値を使う
-  // (時間ベースの安定判定では原理的に直せないことを実装・検証済み)。
-  private readonly axisRest = new Map<number, number>();
+  // 軸ごとの較正状態(AxisCalibration、gamepad.ts冒頭「軸判定」セクション参照)。
+  // 較正が完了するまで(calibrated:false)は入力判定に使わない(未較正の軸は常に非アクティブ)。
+  // 較正完了後(calibrated:true)は rest を固定し、二度と更新しない(継続的なポーリングのたびに
+  // 更新すると、方向を入力し続けている最中に静止値が追いついてしまい、押しっぱなしのつもりが
+  // 1フレームでOFFに戻ってしまう)。
+  private readonly axisCalib = new Map<number, AxisCalibration>();
 
   constructor(
     preset: ReadonlyArray<{ source: Source; binding: Binding }> = XINPUT_PRESET,
@@ -833,7 +883,7 @@ export class GamepadManager {
     return bits;
   }
 
-  /** 現在押されている(静止値からの偏差がデッドゾーンを超えた)物理Sourceを列挙する(bitsFor/keysForPadの共通イテレータ)。 */
+  /** 現在押されている(較正済みで、かつ静止値からの偏差がデッドゾーンを超えた)物理Sourceを列挙する(bitsFor/keysForPadの共通イテレータ)。 */
   private forEachActiveSource(pad: Gamepad, fn: (source: Source) => void): void {
     for (let index = 0; index < pad.buttons.length; index++) {
       if (!pad.buttons[index].pressed) continue;
@@ -842,86 +892,115 @@ export class GamepadManager {
     for (let index = 0; index < pad.axes.length; index++) {
       const value = pad.axes[index];
       if (!isAxisValueValid(value)) continue; // 範囲外(ハット軸等)は無効な軸として無視。
-      const rest = this.getAxisRest(pad, index, value);
-      const dir = axisDeviationDir(value, rest, this.deadzone);
+      const calib = this.observeAxis(index, value);
+      if (!calib.calibrated) continue; // 未較正: 一度も動かされていない軸は入力を生成しない。
+      const dir = axisDeviationDir(value, calib.rest, this.deadzone);
       if (dir !== null) fn({ kind: 'axis', index, dir });
     }
   }
 
   /**
-   * 指定軸の静止値。既知パッド(M30/Micro)の既知軸(axes[3]/[4])は実機で確定済みの固定値
-   * (-1.0)を使う(knownAxisRestFor 側のコメント参照。動的観測(初回観測値採用)には、
-   * 押しっぱなしの間ずっと値が「安定」して見えるため、時間ベースの安定判定を挟んでも
-   * 原理的に固着を防げないという欠陥があることを実装・検証済み)。それ以外は従来どおり、
-   * 未記録ならこの呼び出し時点の値をそのまま静止値として記録する(初回観測時採用)。
+   * 指定軸の較正状態を1フレームぶん進めて記録する(副作用あり)。
+   * advanceAxisCalibration()(純粋関数、gamepad.ts冒頭参照)へ委譲するだけで、判定ロジック
+   * そのものはそちらの1箇所にしか存在しない。未観測の軸は初回呼び出し時に
+   * initAxisCalibration() で baseline を記録する(この時点ではまだ未較正)。
    */
-  private getAxisRest(pad: Gamepad, index: number, currentValue: number): number {
-    const known = knownAxisRestFor(pad.id, index);
-    if (known !== null) return known;
-    const existing = this.axisRest.get(index);
-    if (existing !== undefined) return existing;
-    this.axisRest.set(index, currentValue);
-    return currentValue;
+  private observeAxis(index: number, value: number): AxisCalibration {
+    const existing = this.axisCalib.get(index);
+    const next = existing ? advanceAxisCalibration(existing, value) : initAxisCalibration(value);
+    this.axisCalib.set(index, next);
+    return next;
   }
 
   /**
-   * 指定軸の有効性・現在の偏差方向を返す(gamepad-ui.ts のライブ表示・割当選択肢の判定用)。
-   * bitsFor 計算と同じ静止値(axisRest)を共有するため、ライブ表示とコアへの実際の入力は常に一致する。
-   * 範囲外の軸(無効)は valid:false, active:null を返す。
+   * 指定軸の有効性・較正済みか・現在の偏差方向を返す(gamepad-ui.ts のライブ表示・割当選択肢の判定用)。
+   * bitsFor 計算と同じ較正状態(axisCalib)を共有するため、ライブ表示とコアへの実際の入力は常に一致する。
+   * 範囲外の軸(無効)は valid:false, calibrated:false, active:null を返す。
+   * 未較正の軸(一度も動かされていない)は valid:true, calibrated:false, active:null を返す
+   * (未較正の間は常に非アクティブ。呼び出し側はこの calibrated で「較正待ち」の見た目を出し分けること)。
    */
-  axisState(pad: Gamepad, index: number): { valid: boolean; active: 1 | -1 | null } {
+  axisState(pad: Gamepad, index: number): { valid: boolean; calibrated: boolean; active: 1 | -1 | null } {
     const value = pad.axes?.[index];
-    if (!isAxisValueValid(value)) return { valid: false, active: null };
-    const rest = this.getAxisRest(pad, index, value);
-    return { valid: true, active: axisDeviationDir(value, rest, this.deadzone) };
+    if (!isAxisValueValid(value)) return { valid: false, calibrated: false, active: null };
+    const calib = this.observeAxis(index, value);
+    if (!calib.calibrated) return { valid: true, calibrated: false, active: null };
+    return { valid: true, calibrated: true, active: axisDeviationDir(value, calib.rest, this.deadzone) };
   }
 
   /**
-   * 指定軸の「今使われるはずの静止値」を、axisRest への記録を発生させずに読む(getAxisRest の
-   * 観測なし版)。デバッグフック(window.__webx68kDebug.axes())専用。
-   * getAxisRest との違いはただ1点: 未記録(このセッションでまだ一度もこの軸を観測していない)の
-   * 場合に、getAxisRest のように「今の値をそのまま記録して返す」のではなく、記録せず
-   * restSource:'unrecorded' を返す。デバッグ用の覗き見自体が観測対象(静止値)を書き換えてしまうと、
-   * 「まだ記録されていない軸がどう見えるか」を後から確認できなくなるため、副作用を持たせない。
+   * 指定軸の較正状態を、axisCalib への記録を発生させずに読む(observeAxis の観測なし版)。
+   * デバッグフック(window.__webx68kDebug.axes())専用。デバッグ用の覗き見自体が観測対象
+   * (較正の進行)を書き換えてしまうと、「まだ較正されていない軸がどう見えるか」を後から
+   * 確認できなくなるため、副作用を持たせない。
    */
-  private peekAxisRest(pad: Gamepad, index: number): { rest: number | null; restSource: 'known' | 'observed' | 'unrecorded' } {
-    const known = knownAxisRestFor(pad.id, index);
-    if (known !== null) return { rest: known, restSource: 'known' };
-    const existing = this.axisRest.get(index);
-    if (existing !== undefined) return { rest: existing, restSource: 'observed' };
-    return { rest: null, restSource: 'unrecorded' };
+  private peekAxisCalibration(index: number): AxisCalibration | null {
+    return this.axisCalib.get(index) ?? null;
   }
 
   /**
-   * デバッグ用: そのパッドの全軸について、現在値・(記録を発生させずに読んだ)静止値・
-   * 静止値の由来・有効性・現在のアクティブ判定をまとめて返す。
+   * デバッグ用: そのパッドの全軸について、現在値・(記録を発生させずに読んだ)較正状態・
+   * 有効性・現在のアクティブ判定をまとめて返す。
    * window.__webx68kDebug.axes() から呼ばれる想定(実機の軸挙動を観測するためのフック。
-   * このメソッドの呼び出し自体が axisRest への記録を引き起こしてはいけない。peekAxisRest 参照)。
+   * このメソッドの呼び出し自体が axisCalib への記録を引き起こしてはいけない。peekAxisCalibration 参照)。
    */
   describeAxes(pad: Gamepad): Array<{
     index: number;
     value: number;
-    rest: number | null;
-    restSource: 'known' | 'observed' | 'unrecorded';
     valid: boolean;
+    calibrated: boolean;
+    rest: number | null;
+    baseline: number | null;
+    hasMoved: boolean;
+    stableCount: number | null;
     active: 1 | -1 | null;
   }> {
     const axes = pad.axes ?? [];
     const out: Array<{
       index: number;
       value: number;
-      rest: number | null;
-      restSource: 'known' | 'observed' | 'unrecorded';
       valid: boolean;
+      calibrated: boolean;
+      rest: number | null;
+      baseline: number | null;
+      hasMoved: boolean;
+      stableCount: number | null;
       active: 1 | -1 | null;
     }> = [];
     for (let index = 0; index < axes.length; index++) {
       const rawValue = axes[index];
       const value = typeof rawValue === 'number' ? rawValue : NaN;
       const valid = isAxisValueValid(rawValue);
-      const { rest, restSource } = this.peekAxisRest(pad, index);
-      const active = valid && rest !== null ? axisDeviationDir(value, rest, this.deadzone) : null;
-      out.push({ index, value, rest, restSource, valid, active });
+      const calib = this.peekAxisCalibration(index);
+      if (calib === null) {
+        out.push({ index, value, valid, calibrated: false, rest: null, baseline: null, hasMoved: false, stableCount: null, active: null });
+        continue;
+      }
+      if (!calib.calibrated) {
+        out.push({
+          index,
+          value,
+          valid,
+          calibrated: false,
+          rest: null,
+          baseline: calib.baseline,
+          hasMoved: calib.hasMoved,
+          stableCount: calib.stableCount,
+          active: null,
+        });
+        continue;
+      }
+      const active = valid ? axisDeviationDir(value, calib.rest, this.deadzone) : null;
+      out.push({
+        index,
+        value,
+        valid,
+        calibrated: true,
+        rest: calib.rest,
+        baseline: null,
+        hasMoved: true,
+        stableCount: null,
+        active,
+      });
     }
     return out;
   }

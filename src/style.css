@@ -1543,6 +1543,17 @@ body.pseudo-fullscreen .console-card {
   opacity: 0.7;
 }
 
+/*
+ * 未較正の軸(観測開始してから一度も動かされていない)。実機のトリガ軸は一度も動かしていない間
+ * 偽の静止値(0.00等)を報告するため、これをそのままON判定に使うと押す前から光って見える固着
+ * バグを再現してしまう。較正されるまでは常にグレーのまま表示し、青(active)には決してしない。
+ */
+.gp-axis.uncalibrated {
+  border-style: dotted;
+  color: var(--text-dim);
+  opacity: 0.6;
+}
+
 /* ポート手動選択・割当編集エリア。 */
 .gp-port-select {
   display: flex;
