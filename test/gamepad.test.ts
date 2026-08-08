@@ -67,6 +67,15 @@ function makeGamepad(
   } as Gamepad;
 }
 
+/**
+ * 静止値(rest)を1回のポーリングで確定させるヘルパー(GamepadManager.getAxisRestは
+ * 「初回観測値をそのまま静止値として記録し、以後更新しない」設計なので1回で確定する)。
+ * 「rest確定」目的の呼び出しをテストごとに手で書かなくて済むようにする。
+ */
+function settleAxisRest(mgr: GamepadManager, pad: Gamepad): void {
+  mgr.bitsForPad(pad);
+}
+
 describe('GamepadManager (XINPUT_PRESET)', () => {
   it('buttons[0](下ボタン)押下で TRG1 ビットが立つ', () => {
     const mgr = new GamepadManager();
@@ -102,14 +111,14 @@ describe('GamepadManager (XINPUT_PRESET)', () => {
   // 実際に動かした値で判定する(GamepadManagerインスタンスを使い回す)。
   it('左スティックのデッドゾーン境界: デッドゾーン以下は無反応', () => {
     const mgr = new GamepadManager();
-    mgr.poll([makeGamepad({})]); // rest確定(axes[0]の静止値=0)。
+    settleAxisRest(mgr, makeGamepad({})); // rest確定(axes[0]の静止値=0)。
     const justBelow = makeGamepad({ axes: { 0: DEFAULT_DEADZONE - 0.01 } });
     expect(mgr.poll([justBelow])[0]).toBe(0);
   });
 
   it('左スティックのデッドゾーン境界: デッドゾーンちょうど/超えは反応する(+方向 = RIGHT)', () => {
     const mgr = new GamepadManager();
-    mgr.poll([makeGamepad({})]); // rest確定。
+    settleAxisRest(mgr, makeGamepad({})); // rest確定。
     const atThreshold = makeGamepad({ axes: { 0: DEFAULT_DEADZONE } });
     expect(mgr.poll([atThreshold])[0]).toBe(1 << RETRO_RIGHT);
     const beyond = makeGamepad({ axes: { 0: 0.9 } });
@@ -118,21 +127,21 @@ describe('GamepadManager (XINPUT_PRESET)', () => {
 
   it('左スティックの負方向(axes[0] <= -デッドゾーン)は LEFT になる', () => {
     const mgr = new GamepadManager();
-    mgr.poll([makeGamepad({})]); // rest確定。
+    settleAxisRest(mgr, makeGamepad({})); // rest確定。
     const pad = makeGamepad({ axes: { 0: -0.9 } });
     expect(mgr.poll([pad])[0]).toBe(1 << RETRO_LEFT);
   });
 
   it('axes[1] は上下(負=UP/正=DOWN)に対応する', () => {
     const mgr = new GamepadManager();
-    mgr.poll([makeGamepad({})]); // rest確定。
+    settleAxisRest(mgr, makeGamepad({})); // rest確定。
     expect(mgr.poll([makeGamepad({ axes: { 1: -0.9 } })])[0]).toBe(1 << RETRO_UP);
     expect(mgr.poll([makeGamepad({ axes: { 1: 0.9 } })])[0]).toBe(1 << RETRO_DOWN);
   });
 
   it('D-Pad ボタンと左スティックは OR で合成される(同時押しでも1ビット)', () => {
     const mgr = new GamepadManager();
-    mgr.poll([makeGamepad({})]); // rest確定。
+    settleAxisRest(mgr, makeGamepad({})); // rest確定。
     const pad = makeGamepad({ buttons: { 15: true }, axes: { 0: 0.9 } });
     const [bits0] = mgr.poll([pad]);
     expect(bits0).toBe(1 << RETRO_RIGHT);
@@ -140,7 +149,7 @@ describe('GamepadManager (XINPUT_PRESET)', () => {
 
   it('D-Pad と左スティックを別方向で同時に入力すると両方のビットが立つ', () => {
     const mgr = new GamepadManager();
-    mgr.poll([makeGamepad({})]); // rest確定。
+    settleAxisRest(mgr, makeGamepad({})); // rest確定。
     const pad = makeGamepad({ buttons: { 12: true }, axes: { 0: 0.9 } });
     const [bits0] = mgr.poll([pad]);
     expect(bits0).toBe((1 << RETRO_UP) | (1 << RETRO_RIGHT));
@@ -711,7 +720,8 @@ describe('軸の静止値判定(実機トリガ軸-1.0/範囲外ハット軸3.29
   it('①相当: GamepadManager.bitsForPadでも静止値-1.0のトリガ軸バインディングは常時OFFのまま', () => {
     const mgr = new GamepadManager([], DEFAULT_DEADZONE);
     mgr.addBinding({ kind: 'axis', index: 3, dir: -1 }, { kind: 'joy', target: 'TRG1' });
-    // axes[3]が常に-1.0のパッド(未押下トリガ)を複数フレームぶんポーリングしても発火しない。
+    // axes[3]が常に-1.0のパッド(未押下トリガ)を複数フレームぶんポーリングしても発火しない
+    // (静止値の安定判定=AXIS_REST_SETTLE_FRAMES中も、確定後も、値が動いていないので常にOFF)。
     const stuckPad = makeGamepad({ axes: { 3: -1.0 } });
     expect(mgr.bitsForPad(stuckPad)).toBe(0);
     expect(mgr.bitsForPad(stuckPad)).toBe(0);
@@ -724,10 +734,10 @@ describe('軸の静止値判定(実機トリガ軸-1.0/範囲外ハット軸3.29
     expect(axisDeviationDir(-0.6, -1.0, DEFAULT_DEADZONE)).toBeNull(); // +0.4しか動いていない(デッドゾーン未満)
   });
 
-  it('②相当: GamepadManager.bitsForPadでも静止値記録後に動かせばビットが立つ', () => {
+  it('②相当: GamepadManager.bitsForPadでも静止値確定後に動かせばビットが立つ', () => {
     const mgr = new GamepadManager([], DEFAULT_DEADZONE);
     mgr.addBinding({ kind: 'axis', index: 3, dir: 1 }, { kind: 'joy', target: 'TRG1' });
-    mgr.bitsForPad(makeGamepad({ axes: { 3: -1.0 } })); // 初回観測で静止値-1.0を記録。
+    settleAxisRest(mgr, makeGamepad({ axes: { 3: -1.0 } })); // 静止値-1.0が安定判定を経て確定。
     expect(mgr.bitsForPad(makeGamepad({ axes: { 3: -1.0 } }))).toBe(0); // 静止のまま。
     expect(mgr.bitsForPad(makeGamepad({ axes: { 3: 0 } }))).toBe(1 << 0); // -1.0から+1.0動いた(正方向)。
   });
@@ -780,21 +790,34 @@ describe('軸の静止値判定(実機トリガ軸-1.0/範囲外ハット軸3.29
     mgr.addBinding({ kind: 'axis', index: 0, dir: -1 }, { kind: 'joy', target: 'LEFT' });
     mgr.addBinding({ kind: 'axis', index: 0, dir: 1 }, { kind: 'joy', target: 'RIGHT' });
     const restingPad = makeGamepad({ axes: { 0: REST } });
-    expect(mgr.bitsForPad(restingPad)).toBe(0); // 初回観測でRESTをrestとして記録。
+    settleAxisRest(mgr, restingPad); // RESTが安定判定を経てrestとして確定(常に0)。
     expect(mgr.bitsForPad(restingPad)).toBe(0); // 以後も静止したままなら常に0。
     // 実機の静止値から実際に倒すとちゃんと反応する(rest基準が生きていることの確認)。
     const movedPad = makeGamepad({ axes: { 0: -1.0 } });
     expect(mgr.bitsForPad(movedPad)).toBe(1 << 6); // LEFT = RetroPad ID 6。
   });
 
-  // 【回帰】実機8BitDo M30で確認された固着バグ(2026-08-08)。
-  // 根本原因: 「その軸を最初に観測した値」をそのまま静止値として固定する設計だと、L/R(肩ボタン)を
-  // 一度も操作していない間はOS/ブラウザがaxes[3]/[4](未押下のアナログトリガ)の実測値をまだ
-  // 報告し切っておらず(未較正のプレースホルダとして0を返す)、L/Rを初めて操作した瞬間に
-  // ようやく本来の静止値(-1.0)が報告され始める。「最初の観測値=0」を静止値として固定してしまうと、
-  // 以後ずっと真の静止値(-1.0)との偏差がデッドゾーンを超え続け、L/Rを離しても軸がONへ固着したまま
-  // 戻らない。knownAxisRestFor() で既知パッド(M30/Micro)の既知軸(axes[3]/[4])は実機で確定済みの
-  // 固定静止値(-1.0)を使うことで、初回観測タイミングの汚染を構造的に避ける。
+  // 【回帰】実機8BitDo M30で確認された固着バグの再調査(2026-08-08)。
+  // 旧仮説「L/Rを一度も操作していない間はOS/ブラウザがaxes[3]/[4]の実測値を0で返す」は、
+  // 実機(ゲームパッド確認サイト hardwaretester.com/gamepad)で確認したところ誤りだった
+  // (L/Rを押す前から axes[3]/[4] は最初から-1.0を報告している)。
+  //
+  // 再調査で分かった真の原因: GamepadManager.getAxisRest()の「最初に観測した値をそのまま
+  // 静止値として固定する」設計そのものが、初回観測のタイミングがL/R押下中(トリガ軸が動いて
+  // いる最中)と重なると、その「動いている最中の値」を静止値として固定してしまう。
+  // これはM30/Microのトリガ軸に限らず、原理的にはどのパッドのどの軸でも起こりうる。
+  //
+  // 「初回観測値をそのまま採用」ではなく「同じ値がNフレーム連続するまで確定を待つ(安定判定)」
+  // というパッド非依存の一般的な修正を試作し、この回帰テストと同じ手順(偽パッドでL/Rを
+  // 押しっぱなしにしてから離す)で検証したところ、時間ベースの安定判定では原理的にこの問題を
+  // 解決できないことが分かった: 物理ボタンを押している間、軸の値はフレームを跨いで安定して
+  // 見える(押している間ずっと同じ値)ため、安定判定のフレーム数をどれだけ増やしても
+  // 「それより長く押し続けられれば」同じ理屈で固着する。実際に実装して、この後半の手順
+  // (L/Rを押しっぱなしにしてから離す)で固着が再現することを確認した上で撤回した。
+  //
+  // 結論: 動的な観測だけでは「軸の真の静止値が0ではない」ことを区別できない
+  // (その軸がどれだけ長く押され続けているか分からないため)。実機で確定済みの値を使う
+  // knownAxisRestFor() が唯一の正しい解であり、既知パッドについては残す。
   it('⑥ 既知軸(M30/Micro の axes[3]/[4])は初回観測値に関わらず固定の静止値(-1.0)を使う', () => {
     expect(knownAxisRestFor(M30_ID, 3)).toBe(-1.0);
     expect(knownAxisRestFor(M30_ID, 4)).toBe(-1.0);
@@ -804,31 +827,24 @@ describe('軸の静止値判定(実機トリガ軸-1.0/範囲外ハット軸3.29
     expect(knownAxisRestFor('mock', 3)).toBeNull(); // 既知パッドでなければ対象外。
   });
 
-  it('⑥相当【回帰・修正前は固着した】: M30実機で初回観測値が真の静止値(-1.0)でなくても、' +
-    'L/R相当の操作後に軸が-1.0へ戻ればON状態は残らない', () => {
+  it('⑥相当: M30実機で初回観測タイミングがL/R押下中(軸が動いている最中)と重なっても、' +
+    '固定静止値のおかげでその値を静止値として固定せず、離した後もON状態は残らない', () => {
     const mgr = new GamepadManager([], DEFAULT_DEADZONE);
-    // 設定ダイアログを開いた直後: OSがまだaxes[3]/[4]の実測値を報告し切っておらず0(未較正の
-    // プレースホルダ)を返す状態を模擬。旧実装ではこの0がそのまま静止値として固定され、後段の
-    // 「-1.0へ戻る」が延々とactiveと誤判定される固着バグの発端になっていた。修正後は既知軸の
-    // 静止値を固定(-1.0)で扱うため、この時点でこそ「0はまだ真の静止値-1.0から外れている」と
-    // 正しく判定される(修正前の「たまたま0引きでOFFに見えていた」状態のほうが偶然に過ぎない)。
-    const beforeFirstTouch = makeGamepad({ id: M30_ID, buttonCount: 16, axesCount: 10, axes: { 3: 0, 4: 0 } });
-    expect(mgr.axisState(beforeFirstTouch, 3)).toEqual({ valid: true, active: 1 });
-    expect(mgr.axisState(beforeFirstTouch, 4)).toEqual({ valid: true, active: 1 });
-
-    // L/Rを押す: 実機ではここで初めてOSが本来の値を報告し始める(押下中は+1.0まで動く想定)。
-    const pressed = makeGamepad({
+    // GamepadManagerが初めてこのパッドをポーリングした瞬間が、たまたまL/R押下中(軸が
+    // 動いている最中)と重なったケースを再現する。knownAxisRestFor()の固定値を使うため、
+    // 「動いている最中の値」を静止値として固定してしまうことはない。
+    const midPress = makeGamepad({
       id: M30_ID,
       buttonCount: 16,
       axesCount: 10,
       buttons: { 8: true, 9: true },
       axes: { 3: 1.0, 4: 1.0 },
     });
-    expect(mgr.axisState(pressed, 3)).toEqual({ valid: true, active: 1 });
-    expect(mgr.axisState(pressed, 4)).toEqual({ valid: true, active: 1 });
+    expect(mgr.axisState(midPress, 3)).toEqual({ valid: true, active: 1 });
+    expect(mgr.axisState(midPress, 4)).toEqual({ valid: true, active: 1 });
 
-    // L/Rを離す: 真の静止値(-1.0)に戻る。修正前はrestが0のまま固定されていたため、
-    // delta=-1.0-0=-1.0がデッドゾーンを超え続け、ここでもactive:-1のまま固着していた。
+    // L/Rを離す: 真の静止値(-1.0)に戻る。固定静止値(-1.0)を使っているため、
+    // delta=-1.0-(-1.0)=0 で正しくOFFに戻る(初回観測タイミングに依存しない)。
     const released = makeGamepad({ id: M30_ID, buttonCount: 16, axesCount: 10, axes: { 3: -1.0, 4: -1.0 } });
     expect(mgr.axisState(released, 3)).toEqual({ valid: true, active: null });
     expect(mgr.axisState(released, 4)).toEqual({ valid: true, active: null });
@@ -856,7 +872,7 @@ describe('軸の静止値判定(実機トリガ軸-1.0/範囲外ハット軸3.29
     mgr.addBinding({ kind: 'axis', index: 3, dir: 1 }, { kind: 'joy', target: 'TRG1' });
 
     const restingPad = makeGamepad({ axes: { 3: -0.2 } });
-    expect(mgr.bitsForPad(restingPad)).toBe(0); // 初回観測でrest=-0.2を記録。
+    settleAxisRest(mgr, restingPad); // rest=-0.2が安定判定を経て確定。
 
     // gamepad-ui.ts の tickDetect() 同様、検出待ち中は毎フレーム baseline を「現在値」へ
     // ローリング更新する(このテストではDetectFlowStateそのものは使わず、同じパターンを
@@ -870,7 +886,7 @@ describe('軸の静止値判定(実機トリガ軸-1.0/範囲外ハット軸3.29
     }
 
     // baselineをどれだけ動かしても、GamepadManager.bitsForPad/axisStateが参照する静止値は
-    // 依然として初回観測値(-0.2)のまま(=別の場所に汚染が漏れていない)。
+    // 依然として確定済みの-0.2のまま(=別の場所に汚染が漏れていない)。
     expect(mgr.axisState(restingPad, 3)).toEqual({ valid: true, active: null }); // rest基準そのままなら無反応。
     const deviated = makeGamepad({ axes: { 3: 0.5 } }); // -0.2から+0.7(デッドゾーン超え)。
     expect(mgr.bitsForPad(deviated)).toBe(1 << 0); // TRG1 = RetroPad ID 0。restが-0.2のままだからこそ検出できる。
@@ -901,6 +917,18 @@ describe('extractVendorProduct(gamepad.id からのVendor/Product抽出)', () =>
   it('Vendor/Productが含まれないidはnull', () => {
     expect(extractVendorProduct('Xbox Wireless Controller')).toBeNull();
     expect(extractVendorProduct('Microsoft X-Box 360 pad')).toBeNull();
+  });
+
+  // 2026-08-08 再調査時に追加: Firefoxはgamepad.idを "vendorID-productID-name" 形式
+  // (例: "2dc8-0651-8BitDo M30 gamepad")で報告する。Chrome前提の "(Vendor: .. Product: ..)"
+  // 正規表現だけだと、Firefoxでは既知パッド判定(knownPadKindFor/knownAxisRestFor)が
+  // vendor/productを取れず、常に文字列フォールバックだけに頼ることになる
+  // (Microは'Microsoft'誤爆を避けるためvendor/product必須にしてあるため、Firefoxでは
+  // Microを一切既知パッドとして認識できなくなってしまう)。この形式にも対応させてある。
+  it('Firefox形式("vendorID-productID-name")からも vendor:product を取り出す', () => {
+    expect(extractVendorProduct('2dc8-0651-8BitDo M30 gamepad')).toBe('2dc8:0651');
+    expect(extractVendorProduct('2dc8-9020-8BitDo Micro gamepad')).toBe('2dc8:9020');
+    expect(extractVendorProduct('2DC8-0651-8BitDo M30 gamepad')).toBe('2dc8:0651'); // 大文字小文字を吸収。
   });
 });
 

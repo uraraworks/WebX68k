@@ -416,15 +416,20 @@ export const MICRO_CPSF_SFC_PRESET: ReadonlyArray<{ source: Source; binding: Bin
 /**
  * gamepad.id から USB Vendor/Product ID を抽出する純粋関数。
  *
- * Chrome 等は標準マッピングでないパッドの id に `(Vendor: 2dc8 Product: 0651)` の形で
- * ベンダー/プロダクトIDを埋め込む(表記の大文字小文字・桁数はブラウザ実装依存)。
+ * ブラウザによって gamepad.id の書式が異なるため、両方を試す:
+ * - Chrome/Edge 等: `(Vendor: 2dc8 Product: 0651)` の形でベンダー/プロダクトIDを埋め込む
+ *   (表記の大文字小文字・桁数はブラウザ実装依存)。
+ * - Firefox: `2dc8-0651-8BitDo M30 gamepad` のように、id の先頭が
+ *   `vendorID-productID-name`(4桁16進のハイフン区切り)になる。
  * ここから `vendor:product`(共に小文字16進、桁は詰めない)の文字列を取り出す。
- * 一致しない/取り出せない場合は null(呼び出し側は id 文字列によるフォールバックに委ねること)。
+ * どちらにも一致しない/取り出せない場合は null(呼び出し側は id 文字列によるフォールバックに委ねること)。
  */
 export function extractVendorProduct(padId: string): string | null {
-  const m = /vendor:\s*([0-9a-f]+)\s+product:\s*([0-9a-f]+)/i.exec(padId);
-  if (!m) return null;
-  return `${m[1].toLowerCase()}:${m[2].toLowerCase()}`;
+  const named = /vendor:\s*([0-9a-f]+)\s+product:\s*([0-9a-f]+)/i.exec(padId);
+  if (named) return `${named[1].toLowerCase()}:${named[2].toLowerCase()}`;
+  const firefoxStyle = /^([0-9a-f]{4})-([0-9a-f]{4})-/i.exec(padId);
+  if (firefoxStyle) return `${firefoxStyle[1].toLowerCase()}:${firefoxStyle[2].toLowerCase()}`;
+  return null;
 }
 
 /**
@@ -441,7 +446,8 @@ const VENDOR_PRODUCT_TO_KNOWN_PAD: Record<string, 'm30' | 'micro'> = {
 /**
  * gamepad.id から既知パッド種別('m30'/'micro')を判定する、唯一の情報源。
  * knownPadPresetFor()(プリセット選択)・knownAxisRestFor()(静止値の固定)の両方がこれを使う
- * (判定ロジックの二重実装を避けるため)。一致しなければ null。
+ * (判定ロジックの二重実装を避けるため)。
+ * 一致しなければ null。
  *
  * 判定は Vendor/Product ID(extractVendorProduct())を最優先する。'Micro' の部分一致で
  * 判定すると 'Microsoft X-Box ...' のような無関係な id まで誤爆する
@@ -478,19 +484,31 @@ export function knownPadPresetFor(padId: string, padType: PadType): ReadonlyArra
 }
 
 /**
- * 既知パッド(M30/Micro)の既知軸(axes[3]/axes[4]、未押下のアナログトリガ)の静止値を固定で返す。
- * 一致しなければ null(呼び出し側は従来どおり「初回観測値を静止値として採用」にフォールバックする)。
+ * 既知パッド(M30/Micro)の既知軸(axes[3]/axes[4]、アナログトリガ)の静止値を固定で返す。
+ * 一致しなければ null(呼び出し側は「初回観測値を静止値として採用」にフォールバックする)。
  *
- * 根本原因(2026-08-08 実機M30で確認): GamepadManager.getAxisRest() は「その軸を最初に観測した
- * 値」をそのまま静止値として採用し、以後更新しない設計。ところがM30/Microの axes[3]/[4] は、
- * L/R(肩ボタン)を一度も操作していない間はOS/ブラウザがそのアナログチャンネルの実測値を
- * まだ報告し切っておらず(未較正のプレースホルダとして0を返す実装がある)、L/Rを初めて
- * 操作した瞬間にようやく本来の静止値(-1.0)が報告され始める。「最初の観測値=0」を静止値として
- * 固定してしまうと、その後ずっと0でない真の静止値(-1.0)との偏差(delta=-1.0)がデッドゾーンを
- * 超え続け、L/Rを離しても軸が「ON」に固着したまま戻らない(実機8BitDo M30で再現・確認済み)。
+ * --- 2026-08-08 再調査の経緯(この関数を導入した最初の修正の前提が誤りだったため) ---
+ * 最初の修正では「既知パッドの axes[3]/[4] は、OS/ブラウザがL/Rを一度も操作していない間は
+ * 実測値を報告し切っておらず0を返す」という前提でこの固定値を導入した。しかし実機
+ * (ゲームパッド確認サイト hardwaretester.com/gamepad)で確認したところ、L/Rを押す前から
+ * axes[3]/[4] は最初から -1.0 を報告しており、この前提は誤りだった(「最初は0を返す」を
+ * 模した偽パッドで再現させた検証は、そもそも仮説の検証になっていなかった)。
  *
- * axes[3]/[4] の真の静止値は実機測定で -1.0 と判明済み(gamepad.test.ts に既存の回帰テストあり)
- * のため、動的観測に頼らずこの固定値を使うことで、初回観測タイミングの汚染を構造的に避ける。
+ * そこで「初回観測値をそのまま静止値として固定し、以後更新しない」設計そのものを疑い、
+ * 「同じ値がN フレーム連続するまで確定を待つ(安定判定)」という、パッド非依存の一般的な
+ * 修正を試作して実機同等の手順(偽パッドでL/Rを押しっぱなしにして離す)で検証したところ、
+ * 逆にこの安定判定そのものが同じ「ON固着」を再現してしまうことが分かった: 物理ボタンを
+ * 押している間、軸の値は(押している間ずっと)フレームを跨いで安定している。安定判定の
+ * フレーム数をどれだけ増やしても、「それより長く押し続けられたら」同じ理屈で固着する
+ * ため、時間ベースの安定判定では原理的にこの問題を解決できない
+ * (test/gamepad.test.ts の回帰テスト参照。実際に実装して壊れることを確認済み)。
+ *
+ * 結論: 「軸の真の静止値が0ではない」という事実は、動的な観測だけでは(その軸がどれだけ
+ * 長く押されているか分からない以上)原理的に区別できない。実機で確定済みの値を使うほうが
+ * 唯一の正しい解であり、既知パッドについてはこの固定値テーブルを残す
+ * (axes[3]/[4] の真の静止値は実機測定で -1.0 と判明済み、gamepad.test.ts に回帰テストあり)。
+ * knownPadKindFor() が実機のid文字列と一致しなければ効かないため、Chrome/Firefox 双方の
+ * id書式に対応させてある(extractVendorProduct() 参照)。
  */
 export function knownAxisRestFor(padId: string, axisIndex: number): number | null {
   if (axisIndex !== 3 && axisIndex !== 4) return null;
@@ -631,7 +649,9 @@ export class GamepadManager {
   private readonly sourcesByKey = new Map<string, Source>();
   // 軸ごとの静止値(rest)。「そのパッドを最初に観測したときの値」を記録し、以後は更新しない
   // (継続的なポーリングのたびに更新すると、方向を入力し続けている最中に静止値が追いついてしまい、
-  // 押しっぱなしのつもりが1フレームでOFFに戻ってしまう)。
+  // 押しっぱなしのつもりが1フレームでOFFに戻ってしまう)。既知パッドの既知軸は
+  // knownAxisRestFor() 側のコメント参照: 動的観測に頼らない固定値を使う
+  // (時間ベースの安定判定では原理的に直せないことを実装・検証済み)。
   private readonly axisRest = new Map<number, number>();
 
   constructor(
@@ -830,9 +850,10 @@ export class GamepadManager {
 
   /**
    * 指定軸の静止値。既知パッド(M30/Micro)の既知軸(axes[3]/[4])は実機で確定済みの固定値
-   * (-1.0)を使う(knownAxisRestFor 側のコメント参照。初回観測値が真の静止値とは限らないため、
-   * 動的観測に頼ると固着する)。それ以外は従来どおり、未記録ならこの呼び出し時点の値を
-   * そのまま静止値として記録する(初回観測時採用)。
+   * (-1.0)を使う(knownAxisRestFor 側のコメント参照。動的観測(初回観測値採用)には、
+   * 押しっぱなしの間ずっと値が「安定」して見えるため、時間ベースの安定判定を挟んでも
+   * 原理的に固着を防げないという欠陥があることを実装・検証済み)。それ以外は従来どおり、
+   * 未記録ならこの呼び出し時点の値をそのまま静止値として記録する(初回観測時採用)。
    */
   private getAxisRest(pad: Gamepad, index: number, currentValue: number): number {
     const known = knownAxisRestFor(pad.id, index);
