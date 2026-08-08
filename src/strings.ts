@@ -262,9 +262,9 @@ interface Dict {
    */
   gamepadAxisUncalibratedSuffix(): string;
   /**
-   * ライブ表示で較正中の軸(一度動かされて dwell ベースの較正ウィンドウが観測中)に付ける注記。
+   * ライブ表示で較正中の軸(一度動かされて、離れてから確定するまでの観測が進行中)に付ける注記。
    * 「未較正(一度も動いていない)」とは別の文言にし、押しっぱなしの最中に「もう使える」と
-   * 誤解されないようにする(gamepad.ts の AXIS_CALIBRATION_WINDOW_FRAMES 参照)。
+   * 誤解されないようにする(gamepad.ts の AXIS_CALIBRATION_SETTLE_FRAMES 参照)。
    */
   gamepadAxisCalibratingSuffix(): string;
   gamepadDeadzoneLabel(): string;

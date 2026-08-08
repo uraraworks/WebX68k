@@ -102,7 +102,7 @@ export interface GamepadDialogCallbacks {
    * 偏差でどちら向きに反応しているか(未反応/未較正はnull)を返す。範囲外の軸(ハット軸等)は
    * valid:false になる。calibrated:false かつ calibrating:false は「観測開始してから一度も
    * 動かされていない軸」、calibrated:false かつ calibrating:true は「一度動かされて較正の観測が
-   * 進行中(dwellベースの較正ウィンドウ内)」を意味する。いずれの未較正状態でも active は常に
+   * 進行中(離れてから確定するまでの観測中)」を意味する。いずれの未較正状態でも active は常に
    * null(未較正の軸は入力を生成しない。gamepad.ts の AxisCalibration 参照)。
    * bitsFor計算(resolveBits)と同じ較正状態を共有するため、ライブ表示と実際の入力は必ず一致する。
    */
@@ -465,7 +465,7 @@ export function buildGamepadDialog(container: HTMLElement, callbacks: GamepadDia
    * 示していても青く光らせない(ON判定に使っていないため)。グレー表示+注記で「一度動かせば
    * 使えるようになる」ことを案内する(実機のトリガ軸で「押す前から光っている」ように見える
    * 固着バグの再発防止。gamepad.ts の AxisCalibration 参照)。
-   * 一度動かされた後、dwellベースの較正ウィンドウが終わるまでの間(calibrating:true)は、
+   * 一度動かされた後、静止値が確定するまでの間(calibrating:true)は、
    * 未較正のうち「一度も動いていない」ものとは別の見た目(「較正中」)にする。押しっぱなしの
    * 最中に「使えるようになりました」と誤解されるのを避けるため。
    */

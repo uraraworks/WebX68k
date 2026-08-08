@@ -181,7 +181,7 @@ export const DEFAULT_DEADZONE = 0.5;
 // - axes[9] は常に [-1,1] の範囲外の値(M30=3.29 / Micro=1.29)を返す。十字キーのハット軸が
 //   数値化されたものと見られ、実質「無効な軸」として扱うしかない。
 //
-// --- これまでの3回の誤った修正(同じ失敗を繰り返さないための記録) ---
+// --- これまでの4回の誤った修正(同じ失敗を繰り返さないための記録) ---
 // 1回目: 初回観測値をそのまま静止値として固定する設計。押す前は0を返すため rest=0 と
 //   記録してしまい、一度押した後の真の値(-1.0)との偏差が常にデッドゾーンを超え、ON固着した。
 // 2回目: 既知パッド(M30/Micro)の axes[3]/[4] は実機の値(-1.0)を静止値として固定する設計
@@ -193,36 +193,53 @@ export const DEFAULT_DEADZONE = 0.5;
 //   一瞬で超えてしまうため、押している間の値(+1.0)がそのまま静止値として誤確定し、
 //   離した後の真の値(-1.0)との偏差でON固着した。「一定フレーム変化しない」を安定の
 //   証拠にする限り、押しっぱなしと本当の静止は区別できない。
+// 4回目: 「一度動かされてから固定長のウィンドウ(AXIS_CALIBRATION_WINDOW_FRAMES=240フレーム
+//   ≒4秒)ぶん、量子化した値ごとの滞在フレーム数(dwell)を数え、期間終了時点で最も長く滞在
+//   した値を採用する」dwellベースの多数決方式(advanceAxisCalibration の旧実装、削除済み)。
+//   離した後の滞在時間が押している時間より長いことを期待する設計だが、ウィンドウは「軸が
+//   最初に動いた瞬間」から機械的に締め切られるため、押している時間がウィンドウの半分
+//   (120フレーム)を超えると多数決が押下値側に傾き、離した後もそのまま誤確定する
+//   (2026-08-08、実機のライブ操作で確認)。押している時間の長さを問わず「今まだ動いている
+//   最中かもしれない値」を確定候補にしてしまう点は3回目と同根で、単に閾値を伸ばしただけ
+//   だった。
 //
-// 結論(今回の設計・dwellベース): 「どの値が一番長く続いたか」で静止値を決める。
-// 軸ごとに「較正済みか」の状態を持ち、未較正の間は判定に使わない(入力を一切生成しない)。
-// 観測開始時の値を baseline として記録し、それと異なる値を一度でも観測したら(=一度動かされたら)、
-// その時点で「それまでの滞在時間の計数」を全て破棄してリセットし、そこから
-// AXIS_CALIBRATION_WINDOW_FRAMES フレームぶん、量子化した値ごとの滞在フレーム数(dwell)を
-// 数え続ける。観測期間が終わったら、最も滞在フレーム数が多かった値を静止値として採用する
-// (較正完了)。押している時間(実機のボタン押下は長くても数十〜100フレーム程度)よりも、
-// 離した後に静止し続けている時間のほうが長いという前提で、押しっぱなしと真の静止を区別する。
-// 較正完了後は静止値を二度と更新しない(押しっぱなしの間に静止値が追いついてOFFに戻って
+// 結論(今回の設計・「離れてから確定」方式): 較正ウィンドウという「締め切り」自体を廃止する。
+// 軸ごとに「較正済みか」の状態を持ち、未較正の間は判定に使わない(入力を一切生成しない、
+// ここは従来どおり)。観測開始時の値を baseline として記録し、それと異なる値(量子化ビン)を
+// 一度でも観測したら(=一度動かされたら)、そこから「区間(segment)」の追跡を始める:
+// 値が量子化ビンで変わるたびに新しい区間として数え直し、区間番号(segments、baseline を
+// 離れて最初にいる区間が1)と、その区間に連続して滞在しているフレーム数(segmentFrames)を
+// 持つ。
+// 「baseline を離れて最初の区間(segments===1)」は、それが押している最中の値である可能性を
+// 排除できないため、どれだけ長く滞在してもそれだけでは確定しない(=旧実装のように締め切りで
+// 機械的に確定することがない。これが4回目の失敗の直接の解決)。
+// 2番目以降の区間(segments>=2、= 一度違う値へ移ってから今の値に来た区間)に
+// AXIS_CALIBRATION_SETTLE_FRAMES フレーム連続で滞在したら、そこで初めて静止値として確定する。
+// 「最初の押下(区間1)を離れて、別の値(区間2以降)に落ち着いた」ことを条件にすることで、
+// 「一度離れてから戻ってきて落ち着いた値」だけを確定候補にする(要求仕様の不変条件)。
+// 押しっぱなしがどれだけ長時間(区間1のまま)続いても確定せず、離す(区間が切り替わる)まで
+// 待つ。較正完了後は静止値を二度と更新しない(押しっぱなしの間に静止値が追いついてOFFに戻って
 // しまう問題を避けるため。この方針自体は旧実装から踏襲)。
-// baseline のまま一度も動いていない軸は hasMoved が立たず dwell の計数自体を始めないため、
+// baseline のまま一度も動いていない軸は hasMoved が立たず区間の追跡自体を始めないため、
 // 較正されない(初期状態から動かない軸が勝手に較正されて誤ったrest(baselineそのもの)を
 // 採用してしまう事故を防ぐ)。
 //
-// --- 副作用の手当て(2026-08-08): 較正完了(約4秒)までUP/DOWN/LEFT/RIGHT等の入力が
+// --- 副作用の手当て(2026-08-08): 較正完了までUP/DOWN/LEFT/RIGHT等の入力が
 // 一切効かなくなる問題 ---
-// 上記の dwell 設計は「較正が終わるまで入力を一切生成しない」ことを前提にしていたが、
+// 上記の設計は「較正が終わるまで入力を一切生成しない」ことを前提にしていたが、
 // 8BitDo M30 のように十字キーそのものが軸(axes[0]/[1])で来るパッドでは、十字キーを初めて
-// 倒した瞬間から較正が始まり、以後 AXIS_CALIBRATION_WINDOW_FRAMES(=240フレーム≒4秒)の間、
-// 方向入力が一切効かなくなってしまう(ゲーム中は致命的)。
+// 倒した瞬間から較正が始まり、区間2以降が確定するまでの間、方向入力が一切効かなくなって
+// しまう(ゲーム中は致命的)。
 // これを避けるため、GamepadManager.forEachActiveSource() は「その軸に割当があるかどうか」で
 // 較正中の扱いを分ける: 割当のある軸は較正中でも baseline(観測開始時点=まだ動いていない
 // 時点の値)を暫定の静止値として使い、較正完了を待たずに入力を生成する。通常のスティック/
 // 十字キーは静止値が最初から0付近で正しいため、これで即座に正しく動く。割当の無い軸
 // (未割当のトリガ軸等)は従来どおり較正完了まで入力を生成しない(今回の不具合はここで
 // 起きていたため、塞いだままにする)。較正が完了したら(その軸のcalibrated:trueへの遷移)
-// 暫定値(baseline)から確定値(rest)へ切り替わるが、通常は dwell の過半数が静止(baselineの
-// まま)であるため rest は baseline と一致し、押しっぱなしの入力が切り替え境界で途切れたり
-// 固着したりしない(forEachActiveSource() のコメント・test/gamepad.test.ts 参照)。
+// 暫定値(baseline)から確定値(rest)へ切り替わるが、通常は区間2(=一度動いてから戻った先)が
+// baseline と同じ値になるケースが大半であるため rest は baseline と一致し、押しっぱなしの
+// 入力が切り替え境界で途切れたり固着したりしない(forEachActiveSource() のコメント・
+// test/gamepad.test.ts 参照)。
 //
 // 以下は純粋関数として切り出し、GamepadManager(継続的なビット計算)・gamepad-ui.ts
 // (ライブ表示・検出モード)の両方から同じ判定ロジックを共有する。
@@ -251,27 +268,32 @@ export function axisDeviationDir(value: number, rest: number, deadzone: number):
 }
 
 /**
- * dwell(滞在時間)を数える際の量子化幅。
+ * 区間(segment)を数える際の量子化幅。
  * 浮動小数点の微小なブレ(実測: 通常スティックの静止値は厳密な0ではなく -0.00392 等)を
- * そのままキーにすると、本来同じ「静止している」フレーム同士が別の値として計数されてしまい、
- * 滞在時間が分散して正しい静止値を選べなくなる。0.05刻みに丸めてビン分けすることでこれを防ぐ
+ * そのままキーにすると、本来同じ「静止している」フレーム同士が別の区間として扱われてしまい、
+ * 滞在が分散して正しい静止値を選べなくなる。0.05刻みに丸めてビン分けすることでこれを防ぐ
  * (実機の主要な静止値/フルスケール値である 0 / ±1.0 はこの粒度でも丸め誤差なく厳密に載る)。
  */
 export const AXIS_CALIBRATION_QUANTUM = 0.05;
 
 /**
- * 較正のため、値が最初に変化してから観測を続けるフレーム数(観測期間=較正ウィンドウ)。
- * この間、量子化した値ごとの滞在フレーム数(dwell)を数え、期間終了時点で最も長く滞在した値を
- * 静止値として採用する(dwellベースの較正。設計の詳細はファイル冒頭のコメント参照)。
- * 「押しっぱなし」は実機のボタン押下でもせいぜい数十〜100フレーム程度で、離した後に静止して
- * いる時間のほうが長いという前提の下で押下操作と真の静止を区別するため、それより十分長い
- * ウィンドウが要る。host.onPoll はエミュレートフレームごとに呼ばれ、X68000本来のフレームレート
- * (約55.4Hz)はおよそ60fpsとみなせるので、60fps換算で3〜5秒ぶんの目安として60fps×4秒=240に設定。
- * 短すぎると長押しに負けて誤較正し(旧実装の再発)、長すぎると較正完了までの体感遅延が増える。
+ * 「離れてから確定」方式で、ある値(区間)に静止値として確定するために必要な連続滞在フレーム数。
+ * host.onPoll はエミュレートフレームごとに呼ばれ、X68000本来のフレームレート(約55.4Hz)は
+ * およそ60fpsとみなせるので、60fps換算で1.5秒ぶんの目安として60fps×1.5秒=90に設定
+ * (要求仕様の「目安1〜2秒」の中央値)。
+ *
+ * この定数が使われるのは baseline を離れて2番目以降の区間(segments>=2)だけである点が重要:
+ * 最初の区間(baseline を離れて最初にいる値、segments===1)は、この定数の値に関わらず
+ * どれだけ長く滞在しても確定しない(旧dwell実装が「押しっぱなしが長くても、離した後の滞在が
+ * それを上回れば正しく較正できる」という前提のまま、長押し(数秒〜10秒)がウィンドウの過半を
+ * 占めると誤確定していた反省から、「今まだ動いている最中かもしれない値」を確定候補にすること
+ * 自体をやめた)。そのため、この値は「一度動いてから、別の値に落ち着くまで待つ時間」の
+ * 短さ(体感の較正完了までの遅延)だけを左右し、長押しへの耐性には影響しない
+ * (advanceAxisCalibration のコメント参照)。
  */
-export const AXIS_CALIBRATION_WINDOW_FRAMES = 240;
+export const AXIS_CALIBRATION_SETTLE_FRAMES = 90;
 
-/** value を AXIS_CALIBRATION_QUANTUM 刻みのビンへ丸める(dwellのキー用)。-0 は 0 に正規化する。 */
+/** value を AXIS_CALIBRATION_QUANTUM 刻みのビンへ丸める(区間判定のキー用)。-0 は 0 に正規化する。 */
 function quantizeAxisValue(value: number): number {
   const q = Math.round(value / AXIS_CALIBRATION_QUANTUM) * AXIS_CALIBRATION_QUANTUM;
   return q === 0 ? 0 : q;
@@ -281,8 +303,9 @@ function quantizeAxisValue(value: number): number {
  * 軸1本ぶんの較正状態。
  * - calibrated:false … まだ静止値が確定していない(入力判定には使わない)。baseline は
  *   観測開始時点(その軸を最初に見た瞬間)の値。hasMoved は baseline から一度でも変化した
- *   ことがあるか(false の間は dwell を数えていない=較正未着手)。framesObserved は
- *   「最初の変化」から数えたフレーム数、dwell は量子化した値ごとの滞在フレーム数。
+ *   ことがあるか(false の間は区間の追跡を始めていない=較正未着手)。hasMoved:true の間は
+ *   segmentValue(現在の区間の量子化値)・segmentFrames(その区間に連続して滞在している
+ *   フレーム数)・segments(baseline を離れてから何番目の区間か、最初の区間が1)を持つ。
  * - calibrated:true … 静止値(rest)が確定済み。以後 advanceAxisCalibration() は状態を
  *   変えずにそのまま返す(二度と rest を更新しない)。
  */
@@ -291,27 +314,15 @@ export type AxisCalibration =
       calibrated: false;
       baseline: number;
       hasMoved: boolean;
-      framesObserved: number;
-      dwell: ReadonlyMap<number, number>;
+      segmentValue: number;
+      segmentFrames: number;
+      segments: number;
     }
   | { calibrated: true; rest: number };
 
-/** その軸を初めて観測した時点の較正状態を作る(baseline=今の値、まだ未較正・dwell計数もまだ開始しない)。 */
+/** その軸を初めて観測した時点の較正状態を作る(baseline=今の値、まだ未較正・区間の追跡もまだ開始しない)。 */
 export function initAxisCalibration(value: number): AxisCalibration {
-  return { calibrated: false, baseline: value, hasMoved: false, framesObserved: 0, dwell: new Map() };
-}
-
-/** dwell の中で最も滞在フレーム数が多かったビンを返す(同数なら先に最大に達したものを保持=決定的)。 */
-function pickRestFromDwell(dwell: ReadonlyMap<number, number>): number {
-  let bestBin = 0;
-  let bestCount = -1;
-  for (const [bin, count] of dwell) {
-    if (count > bestCount) {
-      bestCount = count;
-      bestBin = bin;
-    }
-  }
-  return bestBin;
+  return { calibrated: false, baseline: value, hasMoved: false, segmentValue: quantizeAxisValue(value), segmentFrames: 0, segments: 0 };
 }
 
 /**
@@ -320,33 +331,40 @@ function pickRestFromDwell(dwell: ReadonlyMap<number, number>): number {
  * 較正済み(calibrated:true)であれば何も変えずそのまま返す(rest固定)。
  *
  * 未較正の場合:
- * - まだ一度も動いていない(hasMoved:false)間、value が baseline のままなら dwell を
- *   数えずに何もせず返す(baseline に居続ける時間は較正に使わない。実機トリガは押す前ずっと
- *   0.0 を返すため、ここを数えると常に 0.0 が最多になってしまう)。
- * - baseline から初めて変化した瞬間(hasMoved が false→true になる瞬間)、それまでの
- *   (数えていなかった)計数を捨てて dwell を空から作り直し、この変化後の値から数え始める
- *   (これが今回の設計の要。トリガは変化前の 0.0 に長時間居るため、ここで破棄しないと
- *   0.0 が最多のまま確定してしまう。通常のスティックは変化後にまた 0.0 へ戻って長時間
- *   居続けるため、ここでリセットしても最終的に 0.0 が最多になり正しく較正される)。
- * - 既に動いたことがある間は、量子化した現在値の dwell を1増やす。framesObserved が
- *   AXIS_CALIBRATION_WINDOW_FRAMES に達したら、その時点で最も滞在フレーム数が多かった値
- *   (pickRestFromDwell)を静止値として採用し較正完了とする。
+ * - まだ一度も動いていない(hasMoved:false)間、value(を量子化した値)が baseline のままなら
+ *   何もせず返す(baseline に居続ける時間は較正に使わない。実機トリガは押す前ずっと 0.0 を
+ *   返すため、ここで区間として数え始めると 0.0 がそのまま静止値として確定してしまう)。
+ * - baseline から初めて変化した瞬間(hasMoved が false→true になる瞬間)、その値を区間1として
+ *   追跡を始める(segments=1, segmentFrames=1)。
+ * - 既に動いたことがある間、値(の量子化ビン)が今の区間と同じなら segmentFrames を1増やす。
+ *   違う値になったら区間が切り替わったとみなし、新しい区間として segmentFrames=1 から数え直し、
+ *   segments を1増やす。
+ * - 区間1(segments===1、baseline を離れて最初にいる値)は、それが「まだ押している最中の値」
+ *   である可能性を否定できないため、segmentFrames がいくつであっても確定しない。これが今回の
+ *   設計の要(4回目の失敗=固定ウィンドウの締め切りが押している最中に来ると誤確定する、への
+ *   直接の解決)。
+ * - 区間2以降(segments>=2、= 一度違う値に移ってから今の値に落ち着いた区間)は、
+ *   AXIS_CALIBRATION_SETTLE_FRAMES フレーム連続で滞在した時点で、その値を静止値として採用し
+ *   較正完了とする(「一度離れてから戻ってきて落ち着いた値」だけを確定候補にする、という
+ *   要求仕様の不変条件そのもの)。
  */
 export function advanceAxisCalibration(state: AxisCalibration, value: number): AxisCalibration {
   if (state.calibrated) return state;
-  if (!state.hasMoved) {
-    if (value === state.baseline) return state; // baselineのまま: まだ計数を始めない。
-    const dwell = new Map<number, number>([[quantizeAxisValue(value), 1]]);
-    return { calibrated: false, baseline: state.baseline, hasMoved: true, framesObserved: 1, dwell };
-  }
-  const dwell = new Map(state.dwell);
   const bin = quantizeAxisValue(value);
-  dwell.set(bin, (dwell.get(bin) ?? 0) + 1);
-  const framesObserved = state.framesObserved + 1;
-  if (framesObserved >= AXIS_CALIBRATION_WINDOW_FRAMES) {
-    return { calibrated: true, rest: pickRestFromDwell(dwell) };
+  if (!state.hasMoved) {
+    if (bin === quantizeAxisValue(state.baseline)) return state; // baselineのまま: まだ区間を始めない。
+    return { calibrated: false, baseline: state.baseline, hasMoved: true, segmentValue: bin, segmentFrames: 1, segments: 1 };
   }
-  return { calibrated: false, baseline: state.baseline, hasMoved: true, framesObserved, dwell };
+  if (bin === state.segmentValue) {
+    const segmentFrames = state.segmentFrames + 1;
+    if (state.segments >= 2 && segmentFrames >= AXIS_CALIBRATION_SETTLE_FRAMES) {
+      return { calibrated: true, rest: state.segmentValue };
+    }
+    return { calibrated: false, baseline: state.baseline, hasMoved: true, segmentValue: state.segmentValue, segmentFrames, segments: state.segments };
+  }
+  // 値が変わった: 新しい区間の1フレーム目として数え直す(区間1自体はここでは確定しえない。
+  // AXIS_CALIBRATION_SETTLE_FRAMES が2以上である限り、直後にこの分岐へ来ても即確定しない)。
+  return { calibrated: false, baseline: state.baseline, hasMoved: true, segmentValue: bin, segmentFrames: 1, segments: state.segments + 1 };
 }
 
 // --- 永続化(パッドごとのプロファイル) ---
@@ -962,12 +980,12 @@ export class GamepadManager {
    * 軸は較正状態(AxisCalibration)によって扱いが分かれる(2026-08-08 の副作用修正、詳細は
    * ファイル冒頭「軸判定」セクション参照):
    * - 較正済み(calibrated:true): 確定した静止値(rest)からの偏差で判定する(従来どおり)。
-   * - 未較正かつその軸に割当がある: 較正完了(最大 AXIS_CALIBRATION_WINDOW_FRAMES フレーム
-   *   ≒4秒)を待たずに、暫定の静止値として baseline(観測開始時点=まだ一度も動いていない
-   *   時点の値)からの偏差で入力を生成する。8BitDo M30 等、十字キーが軸(axes[0]/[1])で
-   *   来るパッドは静止値が最初から0付近で正しいため、これで較正完了前でも即座に方向入力が
-   *   効くようになる(このガードが無いと、較正が終わるまでの約4秒間、方向入力が一切
-   *   効かなくなってしまう=今回手当てした副作用)。
+   * - 未較正かつその軸に割当がある: 較正完了(区間2以降が AXIS_CALIBRATION_SETTLE_FRAMES
+   *   フレーム分確定するまで、長押しの間は無期限)を待たずに、暫定の静止値として
+   *   baseline(観測開始時点=まだ一度も動いていない時点の値)からの偏差で入力を生成する。
+   *   8BitDo M30 等、十字キーが軸(axes[0]/[1])で来るパッドは静止値が最初から0付近で
+   *   正しいため、これで較正完了前でも即座に方向入力が効くようになる(このガードが無いと、
+   *   較正が終わるまで方向入力が一切効かなくなってしまう=今回手当てした副作用)。
    * - 未較正かつその軸に割当が無い: 従来どおり入力を一切生成しない。未割当のトリガ軸
    *   (axes[3]/[4]等)が較正前に誤ってONになる不具合(このセクションのコメント参照)は
    *   割当の無い軸で起きていたため、ここは塞いだままにする。
@@ -975,7 +993,7 @@ export class GamepadManager {
    * 較正が完了する瞬間(calibrated が false→true に変わるフレーム)も、暫定判定(baseline
    * 基準)と確定判定(rest基準)は同じ observeAxis() 呼び出しが返す1つの calib から計算する
    * ため、同一フレーム内で基準がずれることはない。またそのフレームで rest が baseline と
-   * 一致していれば(dwellの過半数が静止=baselineのままだった、という通常のケース)、
+   * 一致していれば(区間2が静止=baselineのままだった、という通常のケース)、
    * 判定結果は暫定/確定のどちらでも同じになるため、押しっぱなしの入力が境界フレームで
    * 途切れたり固着したりしない。
    */
@@ -1028,7 +1046,7 @@ export class GamepadManager {
    * 範囲外の軸(無効)は valid:false, calibrated:false, calibrating:false, active:null を返す。
    * 未較正の軸は valid:true, calibrated:false, active:null を返す(未較正の間は常に非アクティブ。
    * 呼び出し側はこの calibrated で「較正待ち」の見た目を出し分けること)。
-   * calibrating は「一度動かされて較正ウィンドウの観測が進行中(dwell計数中)」を表す
+   * calibrating は「一度動かされて、区間の追跡(離れてから確定するまでの観測)が進行中」を表す
    * (calibrated:false かつ calibrating:false は「まだ一度も動かされていない」を意味し、
    * gamepad-ui.ts はこの2状態を別の見た目にできる)。
    */
@@ -1065,7 +1083,8 @@ export class GamepadManager {
     rest: number | null;
     baseline: number | null;
     hasMoved: boolean;
-    framesObserved: number | null;
+    segments: number | null;
+    segmentFrames: number | null;
     active: 1 | -1 | null;
   }> {
     const axes = pad.axes ?? [];
@@ -1078,7 +1097,8 @@ export class GamepadManager {
       rest: number | null;
       baseline: number | null;
       hasMoved: boolean;
-      framesObserved: number | null;
+      segments: number | null;
+      segmentFrames: number | null;
       active: 1 | -1 | null;
     }> = [];
     for (let index = 0; index < axes.length; index++) {
@@ -1096,7 +1116,8 @@ export class GamepadManager {
           rest: null,
           baseline: null,
           hasMoved: false,
-          framesObserved: null,
+          segments: null,
+          segmentFrames: null,
           active: null,
         });
         continue;
@@ -1111,7 +1132,8 @@ export class GamepadManager {
           rest: null,
           baseline: calib.baseline,
           hasMoved: calib.hasMoved,
-          framesObserved: calib.framesObserved,
+          segments: calib.segments,
+          segmentFrames: calib.segmentFrames,
           active: null,
         });
         continue;
@@ -1126,7 +1148,8 @@ export class GamepadManager {
         rest: calib.rest,
         baseline: null,
         hasMoved: true,
-        framesObserved: null,
+        segments: null,
+        segmentFrames: null,
         active,
       });
     }
