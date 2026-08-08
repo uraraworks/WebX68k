@@ -494,6 +494,61 @@ describe('GamepadManager プロファイル往復・編集操作', () => {
   });
 });
 
+// [検出]の置き換え動作(replaceTargetBinding)。既存の割当が残ったまま追加される不具合の修正対象。
+describe('GamepadManager.replaceTargetBinding([検出]の置き換え動作)', () => {
+  it('対象行に既存の割当があっても、検出後はその行のソースが1つだけになる', () => {
+    const mgr = new GamepadManager([], 0.5);
+    mgr.addBinding({ kind: 'button', index: 0 }, { kind: 'joy', target: 'TRG1' });
+    mgr.addBinding({ kind: 'button', index: 1 }, { kind: 'joy', target: 'TRG1' });
+    expect(mgr.bindingsForTarget('TRG1')).toEqual([
+      { kind: 'button', index: 0 },
+      { kind: 'button', index: 1 },
+    ]);
+
+    mgr.replaceTargetBinding({ kind: 'button', index: 2 }, 'TRG1');
+    expect(mgr.bindingsForTarget('TRG1')).toEqual([{ kind: 'button', index: 2 }]);
+  });
+
+  it('同じ物理入力が別の行にも割り当たっていても、その行の割当は壊れない', () => {
+    const mgr = new GamepadManager([], 0.5);
+    const shared = { kind: 'button' as const, index: 3 };
+    // button 3 が TRG1 と TRG2 の両方に割り当たっている状態を作る。
+    mgr.addBinding(shared, { kind: 'joy', target: 'TRG1' });
+    mgr.addBinding(shared, { kind: 'joy', target: 'TRG2' });
+    mgr.addBinding({ kind: 'button', index: 0 }, { kind: 'joy', target: 'TRG1' });
+
+    // TRG1 の行だけを button 3 で置き換える。
+    mgr.replaceTargetBinding(shared, 'TRG1');
+
+    expect(mgr.bindingsForTarget('TRG1')).toEqual([shared]);
+    // TRG2 側の割当(同じsourceを使っていた)は巻き添えで消えない。
+    expect(mgr.bindingsForTarget('TRG2')).toEqual([shared]);
+  });
+
+  it('同じ物理入力への kind:key バインディングは巻き込まれない', () => {
+    const mgr = new GamepadManager([], 0.5);
+    const shared = { kind: 'button' as const, index: 4 };
+    mgr.addBinding(shared, { kind: 'key', retrok: 97 });
+    mgr.addBinding({ kind: 'button', index: 0 }, { kind: 'joy', target: 'TRG1' });
+
+    mgr.replaceTargetBinding(shared, 'TRG1');
+
+    expect(mgr.bindingsForTarget('TRG1')).toEqual([shared]);
+    const keyBindings = mgr
+      .getAllBindings()
+      .filter((e) => e.binding.kind === 'key')
+      .map((e) => e.source);
+    expect(keyBindings).toEqual([shared]);
+  });
+
+  it('コンボ(addBinding)からの追加は従来どおり件数が増える', () => {
+    const mgr = new GamepadManager([], 0.5);
+    mgr.addBinding({ kind: 'button', index: 0 }, { kind: 'joy', target: 'TRG1' });
+    mgr.addBinding({ kind: 'button', index: 1 }, { kind: 'joy', target: 'TRG1' });
+    expect(mgr.bindingsForTarget('TRG1').length).toBe(2);
+  });
+});
+
 // kind:'key' バインディングの出力配線(main.ts の host.onPoll 経路が使う)。
 // joy側(bitsForPad)とは独立に「今フレーム押されている retrok の集合」を返すことを確認する。
 describe('GamepadManager.keysForPad(kind:key バインディングの出力)', () => {

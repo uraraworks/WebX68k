@@ -209,16 +209,30 @@ interface Dict {
   gamepadEditingPadLabel(): string;
   /** 割当編集テーブルの見出し。 */
   gamepadBindingsTitle(): string;
-  /** [検出]ボタン。押すと次の物理入力をその行へ割り当てる。 */
+  /**
+   * [検出]ボタン。押すと次の物理入力を「その行の唯一の割当」として設定し直す(置き換え動作。
+   * 既存のチップは全て解除される)。複数の入力を1行に足したい場合はコンボ(gamepadComboPlaceholder)
+   * を使う。
+   */
   gamepadDetectBtn(): string;
+  /** [検出]ボタンのツールチップ(title属性)。置き換え動作である旨を明記する。 */
+  gamepadDetectBtnTitle(): string;
   /** 検出モード中の案内(次の入力待ち)。 */
   gamepadDetectWaiting(): string;
   /** チップ(現在の割当1件)の削除ボタンのaria-label。 */
   gamepadRemoveBindingLabel(): string;
-  /** コンボボックスの未選択時プレースホルダ。 */
+  /** コンボボックスの未選択時プレースホルダ(検出とは異なり、選ぶと既存の割当に追加される)。 */
   gamepadComboPlaceholder(): string;
   /** コンボボックスの「キーボード」optgroupラベル(中身の出力配線は次担当が実装)。 */
   gamepadComboKeyboardGroup(): string;
+  /**
+   * 「その他の割当」セクションの[検出]ボタンのツールチップ。JoyTarget行の[検出]と違い、
+   * こちらは「新しい入力を捕まえてから宛先(ジョイスティック行 or キー)を選んで追加する」フローで、
+   * 既存の割当を置き換えるものではない旨を明記する。
+   */
+  gamepadGenericDetectBtnTitle(): string;
+  /** 「その他の割当」セクションの[検出]ボタンのラベル(置き換えではなく新規追加フローなので文言を分ける)。 */
+  gamepadGenericDetectBtn(): string;
   /** コンボボックスの「ジョイスティック(物理入力)」optgroupラベル。 */
   gamepadComboJoystickGroup(): string;
   /** standardでないパッドのボタン表記(例: 「ボタン7」)。 */
@@ -448,10 +462,13 @@ const STRINGS: Record<Lang, Dict> = {
 
     gamepadEditingPadLabel: () => '編集するパッド',
     gamepadBindingsTitle: () => '割当編集',
-    gamepadDetectBtn: () => '検出',
+    gamepadDetectBtn: () => '検出(置き換え)',
+    gamepadDetectBtnTitle: () => '次に押した入力をこの行の割当として設定し直します(既存の割当は解除されます)',
     gamepadDetectWaiting: () => '入力を待っています…(Escでキャンセル)',
     gamepadRemoveBindingLabel: () => '削除',
     gamepadComboPlaceholder: () => '追加する入力を選択…',
+    gamepadGenericDetectBtnTitle: () => '次に押した入力を検出し、宛先(ジョイスティック行またはキー)を選んで追加します(既存の割当は消えません)',
+    gamepadGenericDetectBtn: () => '検出',
     gamepadComboKeyboardGroup: () => 'キーボード',
     gamepadComboJoystickGroup: () => 'ジョイスティック(物理入力)',
     gamepadButtonLabel: ({ index }) => `ボタン${index}`,
@@ -669,10 +686,14 @@ const STRINGS: Record<Lang, Dict> = {
 
     gamepadEditingPadLabel: () => 'Editing Pad',
     gamepadBindingsTitle: () => 'Edit Assignment',
-    gamepadDetectBtn: () => 'Detect',
+    gamepadDetectBtn: () => 'Detect (Replace)',
+    gamepadDetectBtnTitle: () => 'Sets the next input you press as this row\'s assignment, replacing any existing ones',
     gamepadDetectWaiting: () => 'Waiting for input… (Esc to cancel)',
     gamepadRemoveBindingLabel: () => 'Remove',
     gamepadComboPlaceholder: () => 'Select an input to add…',
+    gamepadGenericDetectBtnTitle: () =>
+      'Detects the next input, then lets you pick where to add it (joystick row or key) — existing assignments are kept',
+    gamepadGenericDetectBtn: () => 'Detect',
     gamepadComboKeyboardGroup: () => 'Keyboard',
     gamepadComboJoystickGroup: () => 'Joystick (Physical Input)',
     gamepadButtonLabel: ({ index }) => `Button ${index}`,

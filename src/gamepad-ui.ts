@@ -106,6 +106,11 @@ export interface GamepadDialogCallbacks {
   getKeyBindings(pad: Gamepad): Array<{ source: Source; retrok: number }>;
   addBinding(pad: Gamepad, source: Source, binding: Binding): void;
   removeBinding(pad: Gamepad, source: Source, binding: Binding): void;
+  /**
+   * [検出]で拾った入力を、指定 JoyTarget の唯一のソースへ置き換える(既存の割当は全解除)。
+   * 複数割当を追加したい場合は従来どおりコンボ(addBinding)を使うこと。こちらは検出専用。
+   */
+  replaceTargetBinding(pad: Gamepad, source: Source, target: JoyTarget): void;
   /** そのパッドの割当を XInput標準へ丸ごとリセットする([XInput標準に戻す])。 */
   resetToPreset(pad: Gamepad): void;
   /** ポート0/1に手動固定中の Gamepad.id(未固定はnull)。 */
@@ -524,7 +529,11 @@ export function buildGamepadDialog(container: HTMLElement, callbacks: GamepadDia
     const statusEl = el('span', { class: 'gp-detect-status' });
     rowStatusEls.set(target, statusEl);
 
-    const detectBtn = el('button', { type: 'button', class: 'gp-detect-btn' }, [t('gamepadDetectBtn')]);
+    const detectBtn = el(
+      'button',
+      { type: 'button', class: 'gp-detect-btn', title: t('gamepadDetectBtnTitle') },
+      [t('gamepadDetectBtn')],
+    );
     detectBtn.addEventListener('click', () => {
       if (detect !== null && detect.kind === 'row' && detect.target === target) {
         cancelDetect();
@@ -534,7 +543,7 @@ export function buildGamepadDialog(container: HTMLElement, callbacks: GamepadDia
     });
     rowDetectBtns.set(target, detectBtn);
 
-    const combo = el('select', { class: 'gp-source-combo' });
+    const combo = el('select', { class: 'gp-source-combo', title: t('gamepadComboPlaceholder') });
     combo.append(new Option(t('gamepadComboPlaceholder'), ''));
     const optgroup = document.createElement('optgroup');
     optgroup.label = t('gamepadComboJoystickGroup');
@@ -578,7 +587,11 @@ export function buildGamepadDialog(container: HTMLElement, callbacks: GamepadDia
     const statusEl = el('span', { class: 'gp-detect-status' });
     genericStatusEl = statusEl;
 
-    const detectBtn = el('button', { type: 'button', class: 'gp-detect-btn' }, [t('gamepadDetectBtn')]);
+    const detectBtn = el(
+      'button',
+      { type: 'button', class: 'gp-detect-btn', title: t('gamepadGenericDetectBtnTitle') },
+      [t('gamepadGenericDetectBtn')],
+    );
     detectBtn.addEventListener('click', () => {
       if (detect !== null && detect.kind === 'generic') cancelDetect();
       else startGenericDetect(pad);
@@ -641,7 +654,7 @@ export function buildGamepadDialog(container: HTMLElement, callbacks: GamepadDia
     const found = detectNewlyActiveSource(detect.baseline, curr, deadzone);
     if (found) {
       if (detect.kind === 'row') {
-        callbacks.addBinding(pad, found, { kind: 'joy', target: detect.target });
+        callbacks.replaceTargetBinding(pad, found, detect.target);
         detect = null;
         renderEditor(pads);
       } else {

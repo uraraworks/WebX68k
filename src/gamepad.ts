@@ -467,6 +467,23 @@ export class GamepadManager {
     else this.bindings.set(key, [binding]);
   }
 
+  /**
+   * 指定 JoyTarget の kind:'joy' バインディングを、渡された1つの Source だけに置き換える
+   * (編集UIの行の[検出]用。「最後に検出した1つだけになる」という置き換え動作)。
+   * 対象は target の一致だけで選ぶ(source は問わない)ため、その行が複数Sourceの割当を
+   * 持っていても全部消してから1つだけ積み直す。他の target 向けの binding や、同じ Source に
+   * 乗っている他の target/kind:'key' の binding には触れない(sourceKey が一致しても
+   * binding.kind==='joy' && binding.target===target 以外はそのまま残す)。
+   */
+  replaceTargetBinding(source: Source, target: JoyTarget): void {
+    for (const { source: existingSource, binding } of this.getAllBindings()) {
+      if (binding.kind === 'joy' && binding.target === target) {
+        this.removeBinding(existingSource, binding);
+      }
+    }
+    this.addBinding(source, { kind: 'joy', target });
+  }
+
   /** 特定の Source から特定の Binding を1つ取り除く(チップの[削除])。一致が無ければ何もしない。 */
   removeBinding(source: Source, binding: Binding): void {
     const key = sourceKey(source);

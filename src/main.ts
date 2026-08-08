@@ -341,6 +341,11 @@ const gamepadDialog = buildGamepadDialog(gamepadRoot, {
     persistPad(pad);
     releaseGamepadKeysForPad(pad);
   },
+  replaceTargetBinding: (pad, source, target) => {
+    managerForPad(pad).replaceTargetBinding(source, target);
+    persistPad(pad);
+    releaseGamepadKeysForPad(pad);
+  },
   resetToPreset: (pad) => {
     managerForPad(pad).resetToPreset();
     persistPad(pad);
