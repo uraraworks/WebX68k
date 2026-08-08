@@ -1622,10 +1622,8 @@ function isWideOverflowMenu(): boolean {
 function renderOverflowMenu(anchorEl: HTMLButtonElement): void {
   slotPopupMenu.textContent = '';
   closeOverflowSubmenu();
-  const title = document.createElement('div');
-  title.className = 'library-menu-title';
-  title.textContent = t('toolbarMore');
-  slotPopupMenu.append(title);
+  // 第1階層は「…」ボタンを押して開いたことが自明なため、見出し「その他」は出さない
+  // (第2階層 renderOverflowGroupMenu() は親メニューが消えて階層が分からなくなるので見出しを残す)。
 
   const wide = isWideOverflowMenu();
   for (const groupId of OVERFLOW_GROUP_ORDER) {
@@ -3072,10 +3070,10 @@ async function startFromOverlay(withSystemDisk: boolean): Promise<void> {
 
 btnBootPlain.addEventListener('click', () => void startFromOverlay(false));
 btnBootSystem.addEventListener('click', () => void startFromOverlay(true));
-// オーバーレイの空白部分(ボタン以外)をクリックしても「そのまま起動」と同じ扱いにする(WebNP2準拠)。
-bootOverlay.addEventListener('click', (e) => {
-  if (e.target === bootOverlay) void startFromOverlay(false);
-});
+// かつてはオーバーレイの空白部分(ボタン以外)クリックも「そのまま起動」扱いにしていた(WebNP2準拠)。
+// しかしボタンを狙ったつもりで少し外れると意図せず「そのまま起動」が走ってしまう誤爆があるため撤廃。
+// 起動はボタン(btn-boot-plain / btn-boot-system)を押した場合のみに限定する。
+// 同じ理由で将来また足されることのないよう、この経緯をここに残しておく。
 
 // リセットボタン: ソフトリセット(_retro_reset())ではなく restartCore() でコアを丸ごと
 // 作り直すハードリセットにしている。CPU速度/RAM/パッド種別等のコアオプションは
