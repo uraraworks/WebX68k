@@ -1,5 +1,5 @@
 import { beforeAll, describe, expect, it } from 'vitest';
-import type { PadSnapshot, Source } from '../src/gamepad.ts';
+import { DEFAULT_DEADZONE, detectNewlyActiveSource, snapshotPad, type PadSnapshot, type Source } from '../src/gamepad.ts';
 
 // strings.ts はモジュール初期化時に resolveLang() → location.search を参照するため、
 // Node環境(vitest environment: 'node')には無い location をここで用意してから
@@ -14,6 +14,7 @@ let resolveDetectFound: (typeof import('../src/gamepad-ui.ts'))['resolveDetectFo
 let cancelDetectFlow: (typeof import('../src/gamepad-ui.ts'))['cancelDetectFlow'];
 let cancelPendingGenericFlow: (typeof import('../src/gamepad-ui.ts'))['cancelPendingGenericFlow'];
 let resolvePendingGenericPicked: (typeof import('../src/gamepad-ui.ts'))['resolvePendingGenericPicked'];
+let freshPadFor: (typeof import('../src/gamepad-ui.ts'))['freshPadFor'];
 
 beforeAll(async () => {
   if (typeof (globalThis as { location?: unknown }).location === 'undefined') {
@@ -29,6 +30,7 @@ beforeAll(async () => {
     cancelDetectFlow,
     cancelPendingGenericFlow,
     resolvePendingGenericPicked,
+    freshPadFor,
   } = await import('../src/gamepad-ui.ts'));
   // 実行環境のnavigator.languageに依存せず文言を固定するため、明示的に日本語へ設定する。
   const { setLang } = await import('../src/strings.ts');
@@ -39,11 +41,19 @@ const BASELINE: PadSnapshot = { buttons: [false, false], axes: [0, 0] };
 const BUTTON0_SOURCE: Source = { kind: 'button', index: 0 };
 
 // テスト用の最小 Gamepad モック(sourceLabel はボタン/軸の押下状態を見ないため中身は空でよい)。
-function makeGamepad(opts: { mapping?: '' | 'standard'; buttonCount?: number } = {}): Gamepad {
+// id/pressed は freshPadFor の回帰テスト(古いpad参照 vs 最新pads配列)のために追加。
+function makeGamepad(
+  opts: { id?: string; mapping?: '' | 'standard'; buttonCount?: number; pressed?: readonly number[] } = {},
+): Gamepad {
   const buttonCount = opts.buttonCount ?? 17;
-  const buttons = Array.from({ length: buttonCount }, () => ({ pressed: false, touched: false, value: 0 }));
+  const pressedSet = new Set(opts.pressed ?? []);
+  const buttons = Array.from({ length: buttonCount }, (_, i) => ({
+    pressed: pressedSet.has(i),
+    touched: pressedSet.has(i),
+    value: pressedSet.has(i) ? 1 : 0,
+  }));
   return {
-    id: 'mock',
+    id: opts.id ?? 'mock',
     index: 0,
     connected: true,
     timestamp: 0,
@@ -155,5 +165,71 @@ describe('検出待ち状態の遷移(DOM非依存の純粋ロジック)', () =>
 
   it('detectがnullの時にresolveDetectFoundを呼んでも何もしない(型ガード漏れの保険)', () => {
     expect(resolveDetectFound(IDLE_DETECT_FLOW_STATE, BUTTON0_SOURCE)).toEqual(IDLE_DETECT_FLOW_STATE);
+  });
+});
+
+// 実機報告(2026-08-08): ページを開いた直後(パッド構成が一度も変わっていない状態)でのみ、
+// 検出(キーボード側[キーを割り当てる]・行側[検出(置き換え)]の両方)がパッドの押下を
+// 一切拾わなくなる不具合。
+//
+// 根本原因: renderBindingRow/renderGenericSection のクリックハンドラに閉じ込められた pad は
+// 「最後に renderEditor() が走った時点」の Gamepad オブジェクト(=ダイアログを開いた瞬間の
+// navigator.getGamepads() スナップショット)で、その後 navigator.getGamepads() を呼び直すまで
+// 値が更新される保証が無い(MDNも「古い Gamepad 参照を使い回さず毎回取得し直す」よう注意している)。
+// renderEditor() はパッド構成が変わった時だけ再実行されるため、開いてから一度もパッド構成が
+// 変わっていなければ、この pad はダイアログを開いた瞬間の値のまま凍結され続ける。
+// startRowDetect/startGenericDetect がこの凍結された pad をそのまま snapshotPad() に渡して
+// baseline を作っていたため、baseline が「検出を始めた本当の瞬間」ではなく「ダイアログを
+// 開いた瞬間」の状態になってしまい、以後の押下判定が実際の押下タイミングとズレて機能しなくなる。
+// 修正: freshPadFor() で「今の pads 配列にある同じ id の pad」を都度取り直してから
+// snapshotPad() に渡すようにした(src/gamepad-ui.ts の startRowDetect/startGenericDetect)。
+describe('freshPadFor(検出開始時に古いpad参照ではなく最新スナップショットを使う, 実機報告の根本原因への対策)', () => {
+  it('pads配列に同じidのpadがあれば、そちらを返す(渡されたpadが古くても最新を優先する)', () => {
+    const stale = makeGamepad({ id: 'pad-1', pressed: [] });
+    const fresh = makeGamepad({ id: 'pad-1', pressed: [6] });
+    expect(freshPadFor([fresh], stale)).toBe(fresh);
+  });
+
+  it('該当パッドが見つからない(切断済み等)場合は、渡されたpadをそのまま返す', () => {
+    const stale = makeGamepad({ id: 'pad-1' });
+    expect(freshPadFor([], stale)).toBe(stale);
+  });
+
+  it('【回帰】検出開始直後の1フレーム目: 開始時点で既に押されている入力はbaselineに正しく反映され、' +
+    '押しっぱなし扱いになる(=誤って「新規押下」として検出されない)', () => {
+    // ダイアログを開いた瞬間(まだ何も押されていない)のpad参照。
+    const atOpenTime = makeGamepad({ id: 'pad-1', pressed: [] });
+    // ユーザーが[キーを割り当てる]を押す直前、実際には既にボタン6を押し込んでいた
+    // (=検出を開始する「本当の瞬間」の状態)。pads配列は毎フレームnavigator.getGamepads()から
+    // 取り直すため、この最新状態を持っている。
+    const atClickTime = makeGamepad({ id: 'pad-1', pressed: [6] });
+    const pads = [atClickTime];
+
+    // 修正後: freshPadForで最新のpadを取り直してからbaselineを作る。
+    const baseline = snapshotPad(freshPadFor(pads, atOpenTime));
+    // 検出開始直後の1フレーム目、まだ何も状態変化が無い(押しっぱなしのまま)。
+    const curr = snapshotPad(atClickTime);
+    expect(detectNewlyActiveSource(baseline, curr, DEFAULT_DEADZONE)).toBeNull();
+  });
+
+  it('【回帰・修正前の再現】古いpad参照をそのままbaselineに使うと、検出開始前から押されていた' +
+    'ボタンが「新規押下」に誤検出されてしまう(freshPadForを外すと再発することを保証する)', () => {
+    const atOpenTime = makeGamepad({ id: 'pad-1', pressed: [] });
+    const atClickTime = makeGamepad({ id: 'pad-1', pressed: [6] });
+
+    // 修正前の実装を再現: freshPadForを挟まず、閉じ込められた古いpadをそのままsnapshotPadへ。
+    const staleBaseline = snapshotPad(atOpenTime);
+    const curr = snapshotPad(atClickTime);
+    // baselineが古いため「押されていなかった→押された」に見えてしまう(誤検出)。
+    expect(detectNewlyActiveSource(staleBaseline, curr, DEFAULT_DEADZONE)).toEqual({ kind: 'button', index: 6 });
+  });
+
+  it('検出開始直後の1フレーム目でも、そのフレームで新たに押されたボタンは取りこぼさず検出する', () => {
+    const atStart = makeGamepad({ id: 'pad-1', pressed: [] });
+    const pads = [atStart];
+    const baseline = snapshotPad(freshPadFor(pads, atStart));
+    // 開始した直後(1フレーム目)にボタン6が押された。
+    const curr = snapshotPad(makeGamepad({ id: 'pad-1', pressed: [6] }));
+    expect(detectNewlyActiveSource(baseline, curr, DEFAULT_DEADZONE)).toEqual({ kind: 'button', index: 6 });
   });
 });

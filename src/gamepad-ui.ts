@@ -186,6 +186,25 @@ export function toDisplayIndex(index: number): number {
   return index + 1;
 }
 
+/**
+ * 検出開始(行の[検出(置き換え)]・キーボードの[キーを割り当てる])で baseline を作る直前に、
+ * 渡された pad を「今の pads 配列にある同じ id の pad」へ差し替える。
+ *
+ * 根本原因: renderBindingRow/renderGenericSection のクリックハンドラが閉じ込めている pad は
+ * 「最後に renderEditor() が走った時点」の Gamepad オブジェクトで、その後 navigator.getGamepads()
+ * を呼び直すまで値が更新される保証が無い(MDNも同種の注意書きあり)。renderEditor() は接続パッド
+ * の集合が変わった時だけ呼ばれる=ダイアログを開いてから一度もパッド構成が変わっていなければ、
+ * ボタン/軸の状態は open() 時点のまま凍結されている。この凍結された pad をそのまま snapshotPad()
+ * に渡すと、baseline が「検出を始めた本当の瞬間」の状態ではなく「ダイアログを開いた瞬間」の状態に
+ * なり、その間に何か押されていた/離されていたりすると押しっぱなし判定がズレる。
+ * 呼び出し側は必ず connectedPads() のような最新の pads 配列をここへ渡すこと。
+ * 該当パッドが見つからない(切断済み等)場合は渡された pad をそのまま返す(呼び出し側の
+ * padId/検出対象は変えず、次のtickで pad が戻ってくれば再開できる従来の挙動を壊さない)。
+ */
+export function freshPadFor(pads: readonly Gamepad[], pad: Gamepad): Gamepad {
+  return pads.find((p) => p.id === pad.id) ?? pad;
+}
+
 /** ボタン/軸の物理入力を人間可読なラベルへ。standard mapping なら位置ベースの名前、それ以外はindex表記。 */
 export function sourceLabel(source: Source, pad: Gamepad): string {
   if (source.kind === 'button') {
@@ -515,12 +534,16 @@ export function buildGamepadDialog(container: HTMLElement, callbacks: GamepadDia
   }
 
   function startRowDetect(pad: Gamepad, target: JoyTarget): void {
-    applyFlow(startRowDetectFlow(pad.id, target, snapshotPad(pad)));
+    // pad はボタン行のクリックハンドラに閉じ込められた、古くなっているかもしれない参照
+    // (freshPadFor のコメント参照)。baseline は必ず今この瞬間の状態から作る。
+    const fresh = freshPadFor(connectedPads(), pad);
+    applyFlow(startRowDetectFlow(fresh.id, target, snapshotPad(fresh)));
     renderEditor(connectedPads());
   }
 
   function startGenericDetect(pad: Gamepad): void {
-    applyFlow(startGenericDetectFlow(pad.id, snapshotPad(pad)));
+    const fresh = freshPadFor(connectedPads(), pad);
+    applyFlow(startGenericDetectFlow(fresh.id, snapshotPad(fresh)));
     renderEditor(connectedPads());
   }
 
