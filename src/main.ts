@@ -2620,6 +2620,23 @@ if (import.meta.env.DEV) {
     // TVRAM の文字画面をテキストで読む(ゲームパッドのキー割当検証等、末端(ゲスト側の受信結果)を
     // 実測するためのフック。?bridge=1 のMCPブリッジと同じ host.readTextScreen() を使う)。
     screenText: () => host?.readTextScreen() ?? null,
+    // 軸の静止値(axisRest)を実機で観測するためのフック。8BitDo M30 実機で
+    // 「L/Rを離してもトリガ軸(axes[3]/[4])のON判定が固着する」報告の原因調査用
+    // (2026-08-08。既存の2仮説はいずれも合成パッドで再現せず、実機の生値がまだ取れていない)。
+    // 呼び出し自体が観測(axisRestへの記録)を引き起こさないよう、GamepadManager側の
+    // describeAxes()(peekAxisRest 経由の非破壊読み取り)をそのまま返すだけにしてある。
+    // port省略時は0。該当ポートにパッドが無ければ null。
+    axes: (port: 0 | 1 = 0) => {
+      const pad = gamepadsByPort()[port];
+      if (!pad) return null;
+      return {
+        id: pad.id,
+        mapping: pad.mapping,
+        buttonsLength: pad.buttons.length,
+        axesLength: pad.axes.length,
+        axes: managerForPad(pad).describeAxes(pad),
+      };
+    },
   };
 }
 

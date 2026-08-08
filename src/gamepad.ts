@@ -876,6 +876,56 @@ export class GamepadManager {
     return { valid: true, active: axisDeviationDir(value, rest, this.deadzone) };
   }
 
+  /**
+   * 指定軸の「今使われるはずの静止値」を、axisRest への記録を発生させずに読む(getAxisRest の
+   * 観測なし版)。デバッグフック(window.__webx68kDebug.axes())専用。
+   * getAxisRest との違いはただ1点: 未記録(このセッションでまだ一度もこの軸を観測していない)の
+   * 場合に、getAxisRest のように「今の値をそのまま記録して返す」のではなく、記録せず
+   * restSource:'unrecorded' を返す。デバッグ用の覗き見自体が観測対象(静止値)を書き換えてしまうと、
+   * 「まだ記録されていない軸がどう見えるか」を後から確認できなくなるため、副作用を持たせない。
+   */
+  private peekAxisRest(pad: Gamepad, index: number): { rest: number | null; restSource: 'known' | 'observed' | 'unrecorded' } {
+    const known = knownAxisRestFor(pad.id, index);
+    if (known !== null) return { rest: known, restSource: 'known' };
+    const existing = this.axisRest.get(index);
+    if (existing !== undefined) return { rest: existing, restSource: 'observed' };
+    return { rest: null, restSource: 'unrecorded' };
+  }
+
+  /**
+   * デバッグ用: そのパッドの全軸について、現在値・(記録を発生させずに読んだ)静止値・
+   * 静止値の由来・有効性・現在のアクティブ判定をまとめて返す。
+   * window.__webx68kDebug.axes() から呼ばれる想定(実機の軸挙動を観測するためのフック。
+   * このメソッドの呼び出し自体が axisRest への記録を引き起こしてはいけない。peekAxisRest 参照)。
+   */
+  describeAxes(pad: Gamepad): Array<{
+    index: number;
+    value: number;
+    rest: number | null;
+    restSource: 'known' | 'observed' | 'unrecorded';
+    valid: boolean;
+    active: 1 | -1 | null;
+  }> {
+    const axes = pad.axes ?? [];
+    const out: Array<{
+      index: number;
+      value: number;
+      rest: number | null;
+      restSource: 'known' | 'observed' | 'unrecorded';
+      valid: boolean;
+      active: 1 | -1 | null;
+    }> = [];
+    for (let index = 0; index < axes.length; index++) {
+      const rawValue = axes[index];
+      const value = typeof rawValue === 'number' ? rawValue : NaN;
+      const valid = isAxisValueValid(rawValue);
+      const { rest, restSource } = this.peekAxisRest(pad, index);
+      const active = valid && rest !== null ? axisDeviationDir(value, rest, this.deadzone) : null;
+      out.push({ index, value, rest, restSource, valid, active });
+    }
+    return out;
+  }
+
   private bitsFor(source: Source, padType: PadType): number {
     const list = this.bindings.get(sourceKey(source));
     if (!list) return 0;

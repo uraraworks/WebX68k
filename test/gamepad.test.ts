@@ -891,6 +891,64 @@ describe('軸の静止値判定(実機トリガ軸-1.0/範囲外ハット軸3.29
     const deviated = makeGamepad({ axes: { 3: 0.5 } }); // -0.2から+0.7(デッドゾーン超え)。
     expect(mgr.bitsForPad(deviated)).toBe(1 << 0); // TRG1 = RetroPad ID 0。restが-0.2のままだからこそ検出できる。
   });
+
+  // window.__webx68kDebug.axes()(実機の軸静止値を観測するためのデバッグフック、main.ts)が
+  // 使う GamepadManager.describeAxes() の回帰テスト。原因調査用の計測手段であり、このフック自体が
+  // 観測対象(axisRest)を変えてしまっては測定にならないため、非破壊であることを最優先で担保する。
+  it('⑦ describeAxes(): 未記録の軸は記録を発生させずに restSource:"unrecorded" を返す', () => {
+    const mgr = new GamepadManager([], DEFAULT_DEADZONE);
+    const pad = makeGamepad({ axes: { 0: 0.3, 1: -1.0 } });
+
+    const before = mgr.describeAxes(pad);
+    expect(before).toEqual([
+      { index: 0, value: 0.3, rest: null, restSource: 'unrecorded', valid: true, active: null },
+      { index: 1, value: -1.0, rest: null, restSource: 'unrecorded', valid: true, active: null },
+      { index: 2, value: 0, rest: null, restSource: 'unrecorded', valid: true, active: null },
+      { index: 3, value: 0, rest: null, restSource: 'unrecorded', valid: true, active: null },
+    ]);
+
+    // 呼び出し自体が axisRest への記録を引き起こしていないこと(何度呼んでも結果が変わらない)。
+    expect(mgr.describeAxes(pad)).toEqual(before);
+
+    // describeAxes() の呼び出しでは記録されていないことを、実際に軸を使う axisState() で確認する:
+    // axisState() が「まだ未記録だったので今の値(0.3)をそのまま静止値として記録する」経路を
+    // 通るなら、直後の active は null(0.3からの偏差=0)になるはず。describeAxes() が先に
+    // 0.3を記録してしまっていたら、この結果自体は変わらず見えてしまうため、別軸(index 1、
+    // 値-1.0)で「まだ記録されていない値と一致するか」を見て検証する。
+    expect(mgr.axisState(pad, 1)).toEqual({ valid: true, active: null }); // rest=-1.0(今の値)として初回記録。
+  });
+
+  it('⑦ describeAxes(): 既知パッド(M30)の既知軸(axes[3]/[4])は動的観測を経ずに固定静止値(known)を返す', () => {
+    const mgr = new GamepadManager([], DEFAULT_DEADZONE);
+    const pad = makeGamepad({ id: M30_ID, buttonCount: 16, axesCount: 10, axes: { 3: 1.0, 4: -1.0 } });
+
+    const result = mgr.describeAxes(pad);
+    expect(result[3]).toEqual({ index: 3, value: 1.0, rest: -1.0, restSource: 'known', valid: true, active: 1 });
+    expect(result[4]).toEqual({ index: 4, value: -1.0, rest: -1.0, restSource: 'known', valid: true, active: null });
+    // 既知軸以外(axes[0])は従来どおり未記録扱い。
+    expect(result[0]).toEqual({ index: 0, value: 0, rest: null, restSource: 'unrecorded', valid: true, active: null });
+  });
+
+  it('⑦ describeAxes(): 既に動的観測で確定済みの軸は restSource:"observed" とその値を返す(記録を変えない)', () => {
+    const mgr = new GamepadManager([], DEFAULT_DEADZONE);
+    const first = makeGamepad({ axes: { 0: -0.2 } });
+    settleAxisRest(mgr, first); // rest=-0.2が安定判定を経て確定(既存の動的観測経路)。
+
+    const moved = makeGamepad({ axes: { 0: 0.6 } });
+    const result = mgr.describeAxes(moved);
+    expect(result[0]).toEqual({ index: 0, value: 0.6, rest: -0.2, restSource: 'observed', valid: true, active: 1 });
+
+    // 覗いただけで rest が動かされていないこと(再度呼んでも同じ-0.2のまま)。
+    expect(mgr.describeAxes(moved)[0].rest).toBe(-0.2);
+    expect(mgr.axisState(moved, 0)).toEqual({ valid: true, active: 1 }); // 通常経路と結果が一致。
+  });
+
+  it('⑦ describeAxes(): 範囲外(ハット軸混入等)の軸は valid:false, active:null を返す', () => {
+    const mgr = new GamepadManager([], DEFAULT_DEADZONE);
+    const pad = makeGamepad({ axes: { 0: 3.29 } }); // isAxisValueValid の範囲外([-1,1]外)。
+    const result = mgr.describeAxes(pad);
+    expect(result[0]).toEqual({ index: 0, value: 3.29, rest: null, restSource: 'unrecorded', valid: false, active: null });
+  });
 });
 
 // 8BitDo M30/Micro 用プリセット(Vendor/Product ID一致で選ばれる既定バインディング)。
