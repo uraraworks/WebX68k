@@ -201,6 +201,30 @@ int webx68k_peek8(unsigned int addr)
 }
 
 /*
+ * マシン構成の RAM 設定が、実際にゲストのマシン構造(SRAM)まで反映されたかを
+ * 検証する結合テスト用。
+ * px68k-libretro の WinX68k_Exec()(libretro.c 内、retro_run から毎フレーム呼ばれる)は
+ *   if (!(cpu_readmem24_dword(0xed0008) == Config.ram_size))
+ *     cpu_writemem24_dword(0xed0008, Config.ram_size);
+ * という形で、コアオプションから決まった Config.ram_size を SRAM の 0xed0008 に書き込む。
+ * ここは X68000 の IPL/Human68k が搭載メモリ量を読み取る場所そのものであり、
+ * 「ホストが値を渡したか」ではなく「値がマシンの構造まで届いたか」を裏取りするため、
+ * SRAM 配列を直接覗くのではなく、コアが書き込みに使ったのと同じ経路
+ * (cpu_readmem24_dword、x68k/x68kmemory.h で宣言)で読み戻す。
+ * SRAM 配列を直接触るとバイトオーダーの解釈を自前で推測することになり、
+ * 実装と食い違っても気づけないため、経路を合わせることが本質。
+ * 0xed0008 固定の専用関数とし、任意アドレスを読める汎用リーダーにはしない
+ * (I/O 領域を読むと副作用が出る恐れがあるため)。
+ */
+extern unsigned int cpu_readmem24_dword(unsigned int addr);
+
+__attribute__((used))
+unsigned int webx68k_configured_ram_size(void)
+{
+  return cpu_readmem24_dword(0xed0008);
+}
+
+/*
  * 仮想キーボードの結合テスト用。
  * libretro の入力状態から生成された X68000 スキャンコードを、コア内部の
  * リングバッファから直接観測する。読み出し側が範囲外のインデックスを渡しても
