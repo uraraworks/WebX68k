@@ -1536,6 +1536,13 @@ body.pseudo-fullscreen .console-card {
   color: #ffffff;
 }
 
+/* 範囲外の値を返す軸(ハット軸等)。「そんな軸がある」ことは見せるが、押下状態のようには光らせない。 */
+.gp-axis.invalid {
+  border-style: dashed;
+  color: var(--text-dim);
+  opacity: 0.7;
+}
+
 /* ポート手動選択・割当編集エリア。 */
 .gp-port-select {
   display: flex;

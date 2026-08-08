@@ -245,6 +245,8 @@ interface Dict {
   gamepadButtonLabel(args: { index: number }): string;
   /** standardでないパッドの軸表記(例: 「軸0 +」)。 */
   gamepadAxisLabel(args: { index: number; dir: string }): string;
+  /** ライブ表示で範囲外の値を返す軸(ハット軸等)に付ける注記。 */
+  gamepadAxisInvalidSuffix(): string;
   gamepadDeadzoneLabel(): string;
   gamepadResetPresetBtn(): string;
   /** ポートごとの使用パッド選択セレクトのラベル。 */
@@ -484,6 +486,7 @@ const STRINGS: Record<Lang, Dict> = {
     gamepadComboJoystickGroup: () => 'ジョイスティック(物理入力)',
     gamepadButtonLabel: ({ index }) => `ボタン${index}`,
     gamepadAxisLabel: ({ index, dir }) => `軸${index} ${dir}`,
+    gamepadAxisInvalidSuffix: () => '(無効・範囲外の値)',
     gamepadDeadzoneLabel: () => 'デッドゾーン',
     gamepadResetPresetBtn: () => 'XInput標準に戻す',
     gamepadPortDeviceLabel: ({ port }) => `ポート${port}のパッド`,
@@ -713,6 +716,7 @@ const STRINGS: Record<Lang, Dict> = {
     gamepadComboJoystickGroup: () => 'Joystick (Physical Input)',
     gamepadButtonLabel: ({ index }) => `Button ${index}`,
     gamepadAxisLabel: ({ index, dir }) => `Axis ${index} ${dir}`,
+    gamepadAxisInvalidSuffix: () => '(invalid, out of range)',
     gamepadDeadzoneLabel: () => 'Deadzone',
     gamepadResetPresetBtn: () => 'Reset to XInput Defaults',
     gamepadPortDeviceLabel: ({ port }) => `Port ${port} Pad`,

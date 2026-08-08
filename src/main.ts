@@ -318,6 +318,7 @@ function syncGamepadKeys(pads: readonly (Gamepad | null)[]): void {
 const gamepadDialog = buildGamepadDialog(gamepadRoot, {
   getPort: (gamepadIndex) => assignPorts(navigator.getGamepads(), gamepadStore.portPads).get(gamepadIndex) ?? null,
   resolveBits: (pad, padType) => managerForPad(pad).bitsForPad(pad, padType),
+  getAxisState: (pad, axisIndex) => managerForPad(pad).axisState(pad, axisIndex),
   getDeadzone: (pad) => managerForPad(pad).getDeadzone(),
   setDeadzone: (pad, value) => {
     managerForPad(pad).setDeadzone(value);

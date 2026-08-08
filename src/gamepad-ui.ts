@@ -22,8 +22,8 @@
 
 import {
   type Binding,
-  DEFAULT_DEADZONE,
   detectNewlyActiveSource,
+  isAxisValueValid,
   joyTargetsForPadType,
   type JoyTarget,
   PAD_TYPES,
@@ -97,6 +97,12 @@ export interface GamepadDialogCallbacks {
    * 現在の種別(getPadType()の戻り値)を渡すこと。
    */
   resolveBits(pad: Gamepad, padType: PadType): number;
+  /**
+   * 指定軸が有効(Gamepad APIの仕様上ありうる[-1,1]の範囲内)か、静止値からの偏差で
+   * どちら向きに反応しているか(未反応はnull)。範囲外の軸(ハット軸等)は valid:false になる。
+   * bitsFor計算(resolveBits)と同じ静止値を共有するため、ライブ表示と実際の入力は必ず一致する。
+   */
+  getAxisState(pad: Gamepad, axisIndex: number): { valid: boolean; active: 1 | -1 | null };
   /** 指定パッドの現在のデッドゾーン。 */
   getDeadzone(pad: Gamepad): number;
   setDeadzone(pad: Gamepad, value: number): void;
@@ -190,7 +196,11 @@ export function sourceLabel(source: Source, pad: Gamepad): string {
   return t('gamepadAxisLabel', { index: toDisplayIndex(source.index), dir: source.dir > 0 ? '+' : '-' });
 }
 
-/** そのパッドで選択可能な物理Source一覧(コンボボックスの選択肢生成用)。 */
+/**
+ * そのパッドで選択可能な物理Source一覧(コンボボックスの選択肢生成用)。
+ * 範囲外の値を返す軸(isAxisValueValid が false。ハット軸等)は無効な軸として選択肢に出さない
+ * (「そんな軸がある」こと自体はライブ表示(renderAxes)側で見えるようにするが、割当対象には選べない)。
+ */
 function sourceOptionsFor(pad: Gamepad): Array<{ source: Source; label: string }> {
   const out: Array<{ source: Source; label: string }> = [];
   const buttonCount = pad.buttons?.length ?? 0;
@@ -199,6 +209,7 @@ function sourceOptionsFor(pad: Gamepad): Array<{ source: Source; label: string }
   }
   const axesCount = pad.axes?.length ?? 0;
   for (let i = 0; i < axesCount; i++) {
+    if (!isAxisValueValid(pad.axes[i])) continue;
     out.push({ source: { kind: 'axis', index: i, dir: 1 }, label: sourceLabel({ kind: 'axis', index: i, dir: 1 }, pad) });
     out.push({
       source: { kind: 'axis', index: i, dir: -1 },
@@ -352,15 +363,23 @@ export function buildGamepadDialog(container: HTMLElement, callbacks: GamepadDia
     return wrap;
   }
 
-  /** axes配列も同様に長さ・値が不定な前提(異常値はデッドゾーン判定で自然に無視される)。 */
+  /**
+   * axes配列も同様に長さ・値が不定な前提。静止値からの偏差(callbacks.getAxisState、
+   * resolveBitsと同じ判定・同じ静止値)でハイライトする。範囲外の軸(ハット軸等)は
+   * 無効として見た目で区別する(光らせない・「無効」の注記を出す)。
+   */
   function renderAxes(pad: Gamepad): HTMLElement {
     const wrap = el('div', { class: 'gp-axes' });
     const axes = pad.axes ?? [];
     for (let i = 0; i < axes.length; i++) {
       const raw = axes[i];
       const value = typeof raw === 'number' && Number.isFinite(raw) ? raw : 0;
-      const active = Math.abs(value) > DEFAULT_DEADZONE;
-      wrap.append(el('span', { class: active ? 'gp-axis active' : 'gp-axis' }, [`A${toDisplayIndex(i)}: ${value.toFixed(2)}`]));
+      const state = callbacks.getAxisState(pad, i);
+      const classes = ['gp-axis'];
+      if (!state.valid) classes.push('invalid');
+      else if (state.active !== null) classes.push('active');
+      const suffix = state.valid ? '' : ` ${t('gamepadAxisInvalidSuffix')}`;
+      wrap.append(el('span', { class: classes.join(' ') }, [`A${toDisplayIndex(i)}: ${value.toFixed(2)}${suffix}`]));
     }
     return wrap;
   }

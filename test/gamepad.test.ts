@@ -78,14 +78,19 @@ describe('GamepadManager (XINPUT_PRESET)', () => {
     expect(bits0).toBe(0);
   });
 
+  // 軸は「静止値(rest、そのパッドを最初に観測したときの値)からの偏差」で判定するため、
+  // 以降のテストはまず axes 全て0(静止)の状態で1回 poll() して rest=0 を確定させてから、
+  // 実際に動かした値で判定する(GamepadManagerインスタンスを使い回す)。
   it('左スティックのデッドゾーン境界: デッドゾーン以下は無反応', () => {
     const mgr = new GamepadManager();
+    mgr.poll([makeGamepad({})]); // rest確定(axes[0]の静止値=0)。
     const justBelow = makeGamepad({ axes: { 0: DEFAULT_DEADZONE - 0.01 } });
     expect(mgr.poll([justBelow])[0]).toBe(0);
   });
 
   it('左スティックのデッドゾーン境界: デッドゾーンちょうど/超えは反応する(+方向 = RIGHT)', () => {
     const mgr = new GamepadManager();
+    mgr.poll([makeGamepad({})]); // rest確定。
     const atThreshold = makeGamepad({ axes: { 0: DEFAULT_DEADZONE } });
     expect(mgr.poll([atThreshold])[0]).toBe(1 << RETRO_RIGHT);
     const beyond = makeGamepad({ axes: { 0: 0.9 } });
@@ -94,18 +99,21 @@ describe('GamepadManager (XINPUT_PRESET)', () => {
 
   it('左スティックの負方向(axes[0] <= -デッドゾーン)は LEFT になる', () => {
     const mgr = new GamepadManager();
+    mgr.poll([makeGamepad({})]); // rest確定。
     const pad = makeGamepad({ axes: { 0: -0.9 } });
     expect(mgr.poll([pad])[0]).toBe(1 << RETRO_LEFT);
   });
 
   it('axes[1] は上下(負=UP/正=DOWN)に対応する', () => {
     const mgr = new GamepadManager();
+    mgr.poll([makeGamepad({})]); // rest確定。
     expect(mgr.poll([makeGamepad({ axes: { 1: -0.9 } })])[0]).toBe(1 << RETRO_UP);
     expect(mgr.poll([makeGamepad({ axes: { 1: 0.9 } })])[0]).toBe(1 << RETRO_DOWN);
   });
 
   it('D-Pad ボタンと左スティックは OR で合成される(同時押しでも1ビット)', () => {
     const mgr = new GamepadManager();
+    mgr.poll([makeGamepad({})]); // rest確定。
     const pad = makeGamepad({ buttons: { 15: true }, axes: { 0: 0.9 } });
     const [bits0] = mgr.poll([pad]);
     expect(bits0).toBe(1 << RETRO_RIGHT);
@@ -113,6 +121,7 @@ describe('GamepadManager (XINPUT_PRESET)', () => {
 
   it('D-Pad と左スティックを別方向で同時に入力すると両方のビットが立つ', () => {
     const mgr = new GamepadManager();
+    mgr.poll([makeGamepad({})]); // rest確定。
     const pad = makeGamepad({ buttons: { 12: true }, axes: { 0: 0.9 } });
     const [bits0] = mgr.poll([pad]);
     expect(bits0).toBe((1 << RETRO_UP) | (1 << RETRO_RIGHT));

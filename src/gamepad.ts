@@ -170,6 +170,42 @@ export const XINPUT_PRESET: ReadonlyArray<{ source: Source; binding: Binding }> 
 /** 軸の既定デッドゾーン。この値を超えた(等しいだけでは超えない)ときにその方向を「入力あり」とみなす。 */
 export const DEFAULT_DEADZONE = 0.5;
 
+// --- 軸判定(静止値からの偏差・範囲外軸の除外) ---
+//
+// 実機(8BitDo M30/Micro、D-inputモード)で判明した事実(2026-08-08):
+// - 十字キーは axes[0]/axes[1] の軸で来る(ボタンではない)。
+// - axes[3]/axes[4] は未押下のアナログトリガの値で、常に -1.0 を返す(0が静止値ではない)。
+// - axes[9] は常に [-1,1] の範囲外の値(M30=3.29 / Micro=1.29)を返す。十字キーのハット軸が
+//   数値化されたものと見られ、実質「無効な軸」として扱うしかない。
+// 「軸の値0が静止」という暗黙の前提でデッドゾーン判定すると、未押下のトリガ軸が永久に
+// 入力ありと誤判定される(ライブ表示が光りっぱなしになり、割り当てれば固着する)ため、
+// 「軸ごとの静止値(rest)からの偏差」で判定する必要がある。以下は純粋関数として切り出し、
+// GamepadManager(継続的なビット計算)・gamepad-ui.ts(ライブ表示・検出モード)の両方から
+// 同じ判定ロジックを共有する。
+
+/**
+ * 軸の値が有効(Gamepad API の仕様上ありうる [-1, 1] の範囲内の有限値)かどうか。
+ * 範囲外はハット軸などが数値化されて紛れ込んだものとみなし、無効な軸として扱う
+ * (bitsFor/ライブ表示/検出モード/割当選択肢のいずれからも除外する)。
+ */
+export function isAxisValueValid(value: unknown): value is number {
+  return typeof value === 'number' && Number.isFinite(value) && value >= -1 && value <= 1;
+}
+
+/**
+ * 軸の現在値(value)が静止値(rest)からデッドゾーンを超えて偏差しているか、その方向を返す純粋関数。
+ * value/rest のいずれかが無効な軸の値(isAxisValueValid が false)なら常に null(無効な軸として扱う)。
+ * 静止値そのものからの偏差で見るため、rest が 0 でない軸(例: 未押下トリガの -1.0)でも
+ * 「動いていなければ null」になる。
+ */
+export function axisDeviationDir(value: number, rest: number, deadzone: number): 1 | -1 | null {
+  if (!isAxisValueValid(value) || !isAxisValueValid(rest)) return null;
+  const delta = value - rest;
+  if (delta <= -deadzone) return -1;
+  if (delta >= deadzone) return 1;
+  return null;
+}
+
 // --- 永続化(パッドごとのプロファイル) ---
 
 /** 1つの Gamepad.id ぶんの設定。deadzone とバインディングの実体(配列表現)。 */
@@ -344,13 +380,16 @@ export function detectNewlyActiveSource(prev: PadSnapshot, curr: PadSnapshot, de
     const wasPressed = prev.buttons[i] === true;
     if (!wasPressed && curr.buttons[i]) return { kind: 'button', index: i };
   }
+  // 軸は「静止 → 動いた」の変化を要求する: prev(検出開始時点、または直前フレーム)を
+  // その軸の静止値(rest)とみなし、そこからの偏差がデッドゾーンを超えたときだけ拾う。
+  // 0を静止値とみなす旧実装だと、未押下で-1.0を返すトリガ軸(8BitDo M30/Micro実機で確認)が
+  // 検出開始時点で既に「デッドゾーンを超えている」ため誤検出しかねない。
+  // isAxisValueValid で範囲外の軸([-1,1]の外。ハット軸が紛れ込んだもの)も除外する。
   for (let i = 0; i < curr.axes.length; i++) {
     const prevValue = prev.axes[i] ?? 0;
     const currValue = curr.axes[i] ?? 0;
-    const wasPos = prevValue >= deadzone;
-    const wasNeg = prevValue <= -deadzone;
-    if (!wasPos && currValue >= deadzone) return { kind: 'axis', index: i, dir: 1 };
-    if (!wasNeg && currValue <= -deadzone) return { kind: 'axis', index: i, dir: -1 };
+    const dir = axisDeviationDir(currValue, prevValue, deadzone);
+    if (dir !== null) return { kind: 'axis', index: i, dir };
   }
   return null;
 }
@@ -431,6 +470,10 @@ export class GamepadManager {
   // 引き直すため。sourceKey()は不可逆な文字列化なので、元のSourceを別途持つ必要がある)。
   private readonly bindings = new Map<string, Binding[]>();
   private readonly sourcesByKey = new Map<string, Source>();
+  // 軸ごとの静止値(rest)。「そのパッドを最初に観測したときの値」を記録し、以後は更新しない
+  // (継続的なポーリングのたびに更新すると、方向を入力し続けている最中に静止値が追いついてしまい、
+  // 押しっぱなしのつもりが1フレームでOFFに戻ってしまう)。
+  private readonly axisRest = new Map<number, number>();
 
   constructor(
     preset: ReadonlyArray<{ source: Source; binding: Binding }> = XINPUT_PRESET,
@@ -606,7 +649,7 @@ export class GamepadManager {
     return bits;
   }
 
-  /** 現在押されている(デッドゾーンを超えた)物理Sourceを列挙する(bitsFor/keysForPadの共通イテレータ)。 */
+  /** 現在押されている(静止値からの偏差がデッドゾーンを超えた)物理Sourceを列挙する(bitsFor/keysForPadの共通イテレータ)。 */
   private forEachActiveSource(pad: Gamepad, fn: (source: Source) => void): void {
     for (let index = 0; index < pad.buttons.length; index++) {
       if (!pad.buttons[index].pressed) continue;
@@ -614,9 +657,31 @@ export class GamepadManager {
     }
     for (let index = 0; index < pad.axes.length; index++) {
       const value = pad.axes[index];
-      if (value <= -this.deadzone) fn({ kind: 'axis', index, dir: -1 });
-      if (value >= this.deadzone) fn({ kind: 'axis', index, dir: 1 });
+      if (!isAxisValueValid(value)) continue; // 範囲外(ハット軸等)は無効な軸として無視。
+      const rest = this.getAxisRest(index, value);
+      const dir = axisDeviationDir(value, rest, this.deadzone);
+      if (dir !== null) fn({ kind: 'axis', index, dir });
     }
+  }
+
+  /** 指定軸の静止値。未記録ならこの呼び出し時点の値をそのまま静止値として記録する(初回観測時採用)。 */
+  private getAxisRest(index: number, currentValue: number): number {
+    const existing = this.axisRest.get(index);
+    if (existing !== undefined) return existing;
+    this.axisRest.set(index, currentValue);
+    return currentValue;
+  }
+
+  /**
+   * 指定軸の有効性・現在の偏差方向を返す(gamepad-ui.ts のライブ表示・割当選択肢の判定用)。
+   * bitsFor 計算と同じ静止値(axisRest)を共有するため、ライブ表示とコアへの実際の入力は常に一致する。
+   * 範囲外の軸(無効)は valid:false, active:null を返す。
+   */
+  axisState(pad: Gamepad, index: number): { valid: boolean; active: 1 | -1 | null } {
+    const value = pad.axes?.[index];
+    if (!isAxisValueValid(value)) return { valid: false, active: null };
+    const rest = this.getAxisRest(index, value);
+    return { valid: true, active: axisDeviationDir(value, rest, this.deadzone) };
   }
 
   private bitsFor(source: Source, padType: PadType): number {
