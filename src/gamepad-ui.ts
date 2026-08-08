@@ -191,6 +191,17 @@ export function toDisplayIndex(index: number): number {
 }
 
 /**
+ * 軸の生値を表示用に小数2桁へ丸める。判定(有効/較正/ON)には使わず表示のみに使う。
+ * -0.00392 のような「丸めると0になる負値」を toFixed(2) だけで整形すると "-0.00" という
+ * 見た目上マイナスに見えてしまう(実際には静止しているだけ)ため、丸めた結果が0になる場合は
+ * 符号を落として "0.00" にする。
+ */
+export function formatAxisValue(value: number): string {
+  const rounded = value.toFixed(2);
+  return rounded === '-0.00' ? '0.00' : rounded;
+}
+
+/**
  * 検出開始(行の[検出(置き換え)]・キーボードの[キーを割り当てる])で baseline を作る直前に、
  * 渡された pad を「今の pads 配列にある同じ id の pad」へ差し替える。
  *
@@ -490,7 +501,7 @@ export function buildGamepadDialog(container: HTMLElement, callbacks: GamepadDia
       } else if (state.active !== null) {
         classes.push('active');
       }
-      wrap.append(el('span', { class: classes.join(' ') }, [`A${toDisplayIndex(i)}: ${value.toFixed(2)}${suffix}`]));
+      wrap.append(el('span', { class: classes.join(' ') }, [`A${toDisplayIndex(i)}: ${formatAxisValue(value)}${suffix}`]));
     }
     return wrap;
   }

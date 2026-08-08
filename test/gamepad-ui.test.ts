@@ -6,6 +6,7 @@ import { DEFAULT_DEADZONE, detectNewlyActiveSource, snapshotPad, type PadSnapsho
 // dynamic import する(fat-not-formatted.test.ts と同じ流儀)。gamepad-ui.ts は strings.ts を
 // 静的importしているため、gamepad-ui.ts 自体も dynamic import にする必要がある。
 let toDisplayIndex: (typeof import('../src/gamepad-ui.ts'))['toDisplayIndex'];
+let formatAxisValue: (typeof import('../src/gamepad-ui.ts'))['formatAxisValue'];
 let sourceLabel: (typeof import('../src/gamepad-ui.ts'))['sourceLabel'];
 let IDLE_DETECT_FLOW_STATE: (typeof import('../src/gamepad-ui.ts'))['IDLE_DETECT_FLOW_STATE'];
 let startRowDetectFlow: (typeof import('../src/gamepad-ui.ts'))['startRowDetectFlow'];
@@ -22,6 +23,7 @@ beforeAll(async () => {
   }
   ({
     toDisplayIndex,
+    formatAxisValue,
     sourceLabel,
     IDLE_DETECT_FLOW_STATE,
     startRowDetectFlow,
@@ -70,6 +72,21 @@ describe('toDisplayIndex', () => {
     expect(toDisplayIndex(0)).toBe(1);
     expect(toDisplayIndex(1)).toBe(2);
     expect(toDisplayIndex(15)).toBe(16);
+  });
+});
+
+describe('formatAxisValue(丸めて0になる負値は"-0.00"ではなく"0.00"にする)', () => {
+  it('丸めるとゼロになる微小な負値は符号を落とす', () => {
+    expect(formatAxisValue(-0.00392)).toBe('0.00');
+    expect(formatAxisValue(-0.004)).toBe('0.00');
+  });
+  it('丸めても非ゼロが残る負値は符号を保つ', () => {
+    expect(formatAxisValue(-0.02)).toBe('-0.02');
+    expect(formatAxisValue(-1)).toBe('-1.00');
+  });
+  it('ちょうど0とプラス値はそのまま', () => {
+    expect(formatAxisValue(0)).toBe('0.00');
+    expect(formatAxisValue(3.28571)).toBe('3.29');
   });
 });
 
