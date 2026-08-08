@@ -840,20 +840,27 @@ describe('軸較正(AxisCalibration・dwellベース): 実機トリガ軸の「�
   });
 
   // (a): これが今回の肝。実機で確定した挙動(押しっぱなし相当を含む)をそのまま再現する。
+  // 2026-08-08 追記: この軸(3)には binding があるため、較正完了(4秒)を待たずに暫定の
+  // 静止値(baseline=観測開始時点の0.0)から入力を生成する(今回手当てした副作用の主対象)。
+  // +1.0の間はTRG1(dir:1)がアクティブになり続け、-1.0側(dir:-1、無割当)は較正完了まで
+  // 常に非アクティブのまま。静止値が最終的に-1.0へ確定した後も、-1.0そのものは
+  // rest(-1.0)から見て偏差なし(非アクティブ)であり続ける、という結末は従来どおり。
   it('(a) GamepadManager: 実機シナリオ(0.0観測開始→+1.0を押しっぱなし相当30フレーム→-1.0で長時間静止)で' +
-    '静止値が-1.0に確定し、静止状態は非アクティブへ収束する', () => {
+    '静止値が-1.0に確定し、静止状態は非アクティブへ収束する(割当のある+1.0方向は較正中も暫定値で即アクティブ)', () => {
     const mgr = new GamepadManager([], DEFAULT_DEADZONE);
     mgr.addBinding({ kind: 'axis', index: 3, dir: 1 }, { kind: 'joy', target: 'TRG1' });
 
-    // 観測開始: 0.0(未押下、未較正)。ON判定になってはいけない。
+    // 観測開始: 0.0(未押下、未較正)。baselineと同値なのでON判定になってはいけない。
     expect(mgr.bitsForPad(makeGamepad({ axes: { 3: 0.0 } }))).toBe(0);
 
-    // 押しっぱなし相当: +1.0を30フレーム。この間ずっと未較正(入力を生成しない)。
+    // 押しっぱなし相当: +1.0を30フレーム。dir:1(TRG1)には割当があるため、較正完了前でも
+    // 暫定の静止値(baseline=0.0)からの偏差でずっとアクティブになる(今回の手当ての本体)。
     for (let i = 0; i < 30; i++) {
-      expect(mgr.bitsForPad(makeGamepad({ axes: { 3: 1.0 } }))).toBe(0);
+      expect(mgr.bitsForPad(makeGamepad({ axes: { 3: 1.0 } }))).toBe(1 << 0); // TRG1
     }
 
-    // 解放: -1.0へ変化。較正ウィンドウが終わるまでは未較正のまま(bitsは常に0)。
+    // 解放: -1.0へ変化。dir:-1には割当が無いため、較正ウィンドウが終わるまでbitsは常に0のまま
+    // (今回の不具合=未割当のトリガ軸が較正前に誤ってONになる、はこちらの経路で起きていた)。
     for (let i = 1; i < AXIS_CALIBRATION_WINDOW_FRAMES; i++) {
       expect(mgr.bitsForPad(makeGamepad({ axes: { 3: -1.0 } }))).toBe(0);
     }
@@ -867,12 +874,14 @@ describe('軸較正(AxisCalibration・dwellベース): 実機トリガ軸の「�
     expect(mgr.bitsForPad(makeGamepad({ axes: { 3: -1.0 } }))).toBe(0);
   });
 
-  it('(b) GamepadManager: 押しっぱなしが60フレームを超えても、離した後の静止に負けてrest=-1.0になる', () => {
+  it('(b) GamepadManager: 押しっぱなしが60フレームを超えても、離した後の静止に負けてrest=-1.0になる' +
+    '(割当のある+1.0方向は較正中も暫定値でアクティブになり続ける)', () => {
     const mgr = new GamepadManager([], DEFAULT_DEADZONE);
     mgr.addBinding({ kind: 'axis', index: 3, dir: 1 }, { kind: 'joy', target: 'TRG1' });
     expect(mgr.bitsForPad(makeGamepad({ axes: { 3: 0.0 } }))).toBe(0);
     for (let i = 0; i < 65; i++) {
-      expect(mgr.bitsForPad(makeGamepad({ axes: { 3: 1.0 } }))).toBe(0); // 押しっぱなし65フレーム。
+      // 押しっぱなし65フレーム: 割当のある方向は暫定の静止値(baseline=0.0)基準でアクティブ。
+      expect(mgr.bitsForPad(makeGamepad({ axes: { 3: 1.0 } }))).toBe(1 << 0); // TRG1
     }
     for (let i = 1; i < AXIS_CALIBRATION_WINDOW_FRAMES; i++) {
       mgr.bitsForPad(makeGamepad({ axes: { 3: -1.0 } }));
@@ -939,6 +948,78 @@ describe('軸較正(AxisCalibration・dwellベース): 実機トリガ軸の「�
       calibrated: false,
       calibrating: true, // 「一度も動いていない」ではなく「較正中」。
       active: null,
+    });
+  });
+
+  describe('較正中の暫定入力(2026-08-08 副作用手当て): 割当のある軸は較正完了前でもbaseline基準で入力を生成する', () => {
+    it('割当のある軸は較正中でも入力を生成する(暫定静止値=初期観測値からの偏差で判定)', () => {
+      const mgr = new GamepadManager([], DEFAULT_DEADZONE);
+      mgr.addBinding({ kind: 'axis', index: 1, dir: -1 }, { kind: 'joy', target: 'UP' });
+      // 観測開始: baseline=0.0として記録されるだけで、この時点ではまだ較正されない。
+      expect(mgr.bitsForPad(makeGamepad({ axes: { 1: 0.0 } }))).toBe(0);
+      expect(mgr.axisState(makeGamepad({ axes: { 1: 0.0 } }), 1).calibrated).toBe(false);
+      // 十字キー相当を倒す(-1.0): 較正完了(4秒)を待たず、baseline(0.0)からの偏差で
+      // 即座にUPがアクティブになる(=今回手当てした主目的そのもの)。
+      const pressed = makeGamepad({ axes: { 1: -1.0 } });
+      expect(mgr.bitsForPad(pressed)).toBe(1 << RETRO_UP);
+      // axisState()(ライブ表示用)は暫定判定を反映しない: 較正中は従来どおり active:null を返し、
+      // 見た目は「較正中」のまま維持する(暫定値を使うのは実際の入力生成(bitsForPad)側だけ)。
+      expect(mgr.axisState(pressed, 1)).toEqual({ valid: true, calibrated: false, calibrating: true, active: null });
+    });
+
+    it('割当のない軸は較正完了まで入力を生成しない(暫定値を使わない)', () => {
+      const mgr = new GamepadManager([], DEFAULT_DEADZONE); // 何も割り当てない。
+      expect(mgr.bitsForPad(makeGamepad({ axes: { 4: 0.0 } }))).toBe(0);
+      // 動かしても(=hasMoved:trueになっても)割当が無いのでbitsは0のまま。
+      for (let i = 0; i < 10; i++) {
+        expect(mgr.bitsForPad(makeGamepad({ axes: { 4: -1.0 } }))).toBe(0);
+      }
+    });
+
+    it('実機トリガのシナリオ(0.0長時間→+1.0を60フレーム以上→-1.0長時間)で、割当が無い場合は一度もアクティブにならない', () => {
+      const mgr = new GamepadManager([], DEFAULT_DEADZONE); // トリガ軸(4)には何も割り当てない。
+      for (let i = 0; i < 80; i++) {
+        expect(mgr.bitsForPad(makeGamepad({ axes: { 4: 0.0 } }))).toBe(0); // 押す前: 長時間0.0。
+      }
+      for (let i = 0; i < 65; i++) {
+        expect(mgr.bitsForPad(makeGamepad({ axes: { 4: 1.0 } }))).toBe(0); // 押しっぱなし65フレーム(60超)。
+      }
+      for (let i = 0; i < AXIS_CALIBRATION_WINDOW_FRAMES + 50; i++) {
+        expect(mgr.bitsForPad(makeGamepad({ axes: { 4: -1.0 } }))).toBe(0); // 離した後、較正完了後も長時間0。
+      }
+      // 較正自体はbindingと無関係に進む(dwellベースの計算はaxisごとに独立)。値のみの確認。
+      expect(mgr.axisState(makeGamepad({ axes: { 4: -1.0 } }), 4).calibrated).toBe(true);
+    });
+
+    it('暫定→確定の切り替え時に、押しっぱなしの状態(bits)が途切れたり固着したりしない', () => {
+      const mgr = new GamepadManager([], DEFAULT_DEADZONE);
+      mgr.addBinding({ kind: 'axis', index: 3, dir: 1 }, { kind: 'joy', target: 'TRG1' });
+      // baseline確立。
+      expect(mgr.bitsForPad(makeGamepad({ axes: { 3: 0.0 } }))).toBe(0);
+      // 短い押下(1フレーム: hasMoved化)。dwellの過半数を「静止(0.0)」にするため、
+      // ここでは押下自体は短く、直後に長く0.0へ戻す。
+      mgr.bitsForPad(makeGamepad({ axes: { 3: 1.0 } })); // framesObserved=1, dwell{1.0:1}
+      for (let i = 0; i < 200; i++) {
+        mgr.bitsForPad(makeGamepad({ axes: { 3: 0.0 } })); // framesObserved=201, dwell{1.0:1, 0.0:200}
+      }
+      // ここから、較正完了(framesObserved>=240)をまたいで押しっぱなしにする。
+      // 現在framesObserved=201なので、あと39回で240に到達する(=39回目で較正完了)。
+      // 押しっぱなしのdwell増分(1+50=51)は静止のdwell(200)を上回らないため、
+      // 最終的な静止値(rest)はbaseline(0.0)と一致する=境界での基準のずれが無い。
+      const bitsDuringHold: number[] = [];
+      let calibratedAt = -1;
+      for (let i = 0; i < 50; i++) {
+        const pad = makeGamepad({ axes: { 3: 1.0 } });
+        bitsDuringHold.push(mgr.bitsForPad(pad));
+        if (calibratedAt < 0 && mgr.axisState(pad, 3).calibrated) calibratedAt = i;
+      }
+      // 押しっぱなしの50フレーム中、境界(較正完了)をまたいでいることを確認したうえで、
+      // その全フレームでビットがアクティブのまま途切れていない(0を挟まない)ことを確認する。
+      expect(calibratedAt).toBeGreaterThan(0);
+      expect(calibratedAt).toBeLessThan(49);
+      expect(bitsDuringHold.every((b) => b === (1 << 0))).toBe(true);
+      // 較正完了後の静止値はbaselineどおり0(押しっぱなしが最終的なrestを乗っ取っていない)。
+      expect(mgr.axisState(makeGamepad({ axes: { 3: 0.0 } }), 3).active).toBeNull();
     });
   });
 

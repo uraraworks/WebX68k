@@ -208,6 +208,22 @@ export const DEFAULT_DEADZONE = 0.5;
 // 較正されない(初期状態から動かない軸が勝手に較正されて誤ったrest(baselineそのもの)を
 // 採用してしまう事故を防ぐ)。
 //
+// --- 副作用の手当て(2026-08-08): 較正完了(約4秒)までUP/DOWN/LEFT/RIGHT等の入力が
+// 一切効かなくなる問題 ---
+// 上記の dwell 設計は「較正が終わるまで入力を一切生成しない」ことを前提にしていたが、
+// 8BitDo M30 のように十字キーそのものが軸(axes[0]/[1])で来るパッドでは、十字キーを初めて
+// 倒した瞬間から較正が始まり、以後 AXIS_CALIBRATION_WINDOW_FRAMES(=240フレーム≒4秒)の間、
+// 方向入力が一切効かなくなってしまう(ゲーム中は致命的)。
+// これを避けるため、GamepadManager.forEachActiveSource() は「その軸に割当があるかどうか」で
+// 較正中の扱いを分ける: 割当のある軸は較正中でも baseline(観測開始時点=まだ動いていない
+// 時点の値)を暫定の静止値として使い、較正完了を待たずに入力を生成する。通常のスティック/
+// 十字キーは静止値が最初から0付近で正しいため、これで即座に正しく動く。割当の無い軸
+// (未割当のトリガ軸等)は従来どおり較正完了まで入力を生成しない(今回の不具合はここで
+// 起きていたため、塞いだままにする)。較正が完了したら(その軸のcalibrated:trueへの遷移)
+// 暫定値(baseline)から確定値(rest)へ切り替わるが、通常は dwell の過半数が静止(baselineの
+// まま)であるため rest は baseline と一致し、押しっぱなしの入力が切り替え境界で途切れたり
+// 固着したりしない(forEachActiveSource() のコメント・test/gamepad.test.ts 参照)。
+//
 // 以下は純粋関数として切り出し、GamepadManager(継続的なビット計算)・gamepad-ui.ts
 // (ライブ表示・検出モード)の両方から同じ判定ロジックを共有する。
 
@@ -940,7 +956,29 @@ export class GamepadManager {
     return bits;
   }
 
-  /** 現在押されている(較正済みで、かつ静止値からの偏差がデッドゾーンを超えた)物理Sourceを列挙する(bitsFor/keysForPadの共通イテレータ)。 */
+  /**
+   * 現在押されている物理Sourceを列挙する(bitsFor/keysForPadの共通イテレータ)。
+   *
+   * 軸は較正状態(AxisCalibration)によって扱いが分かれる(2026-08-08 の副作用修正、詳細は
+   * ファイル冒頭「軸判定」セクション参照):
+   * - 較正済み(calibrated:true): 確定した静止値(rest)からの偏差で判定する(従来どおり)。
+   * - 未較正かつその軸に割当がある: 較正完了(最大 AXIS_CALIBRATION_WINDOW_FRAMES フレーム
+   *   ≒4秒)を待たずに、暫定の静止値として baseline(観測開始時点=まだ一度も動いていない
+   *   時点の値)からの偏差で入力を生成する。8BitDo M30 等、十字キーが軸(axes[0]/[1])で
+   *   来るパッドは静止値が最初から0付近で正しいため、これで較正完了前でも即座に方向入力が
+   *   効くようになる(このガードが無いと、較正が終わるまでの約4秒間、方向入力が一切
+   *   効かなくなってしまう=今回手当てした副作用)。
+   * - 未較正かつその軸に割当が無い: 従来どおり入力を一切生成しない。未割当のトリガ軸
+   *   (axes[3]/[4]等)が較正前に誤ってONになる不具合(このセクションのコメント参照)は
+   *   割当の無い軸で起きていたため、ここは塞いだままにする。
+   *
+   * 較正が完了する瞬間(calibrated が false→true に変わるフレーム)も、暫定判定(baseline
+   * 基準)と確定判定(rest基準)は同じ observeAxis() 呼び出しが返す1つの calib から計算する
+   * ため、同一フレーム内で基準がずれることはない。またそのフレームで rest が baseline と
+   * 一致していれば(dwellの過半数が静止=baselineのままだった、という通常のケース)、
+   * 判定結果は暫定/確定のどちらでも同じになるため、押しっぱなしの入力が境界フレームで
+   * 途切れたり固着したりしない。
+   */
   private forEachActiveSource(pad: Gamepad, fn: (source: Source) => void): void {
     for (let index = 0; index < pad.buttons.length; index++) {
       if (!pad.buttons[index].pressed) continue;
@@ -950,10 +988,24 @@ export class GamepadManager {
       const value = pad.axes[index];
       if (!isAxisValueValid(value)) continue; // 範囲外(ハット軸等)は無効な軸として無視。
       const calib = this.observeAxis(index, value);
-      if (!calib.calibrated) continue; // 未較正: 一度も動かされていない軸は入力を生成しない。
-      const dir = axisDeviationDir(value, calib.rest, this.deadzone);
+      if (calib.calibrated) {
+        const dir = axisDeviationDir(value, calib.rest, this.deadzone);
+        if (dir !== null) fn({ kind: 'axis', index, dir });
+        continue;
+      }
+      if (!this.axisHasBinding(index)) continue; // 未較正・未割当: 較正完了まで入力を生成しない。
+      // 未較正・割当あり: 暫定の静止値(baseline)からの偏差で判定する。
+      const dir = axisDeviationDir(value, calib.baseline, this.deadzone);
       if (dir !== null) fn({ kind: 'axis', index, dir });
     }
+  }
+
+  /** 指定軸(index)の+方向/-方向のどちらかに1つでも kind:'joy' or 'key' の割当があるか。 */
+  private axisHasBinding(index: number): boolean {
+    return (
+      this.bindings.has(sourceKey({ kind: 'axis', index, dir: 1 })) ||
+      this.bindings.has(sourceKey({ kind: 'axis', index, dir: -1 }))
+    );
   }
 
   /**
