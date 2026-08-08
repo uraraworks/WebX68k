@@ -130,6 +130,28 @@ main {
     0 4px 14px rgba(0, 0, 0, 0.25);
 }
 
+/*
+ * stage-frame: .stage(黒背景の箱)を囲む透明な領域確保用ラッパ。
+ * main.ts の rescale() が、現在のモードに関わらず常に「4:3時のサイズ」分の
+ * width/height をここへインラインで指定する(getTargetSize('4:3', ...) 基準)。
+ * これにより 4:3 ⇔ 等倍 の切り替えでこの枠自体のサイズは変わらず、下の
+ * ツールバー等が押し下げられない。背景は付けない(=.console-card の背景がそのまま
+ * 透けて見える)ので、.stage より内側にしか無かった黒を外側まで広げてしまうことはない。
+ * 中の .stage は現在のモードなりの実サイズのまま、この枠の中央に寄せて表示する。
+ */
+.stage-frame {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  max-width: 100%;
+  /*
+   * .console-card 側は align-items 未指定(=stretch)だが、rescale() がこの要素に
+   * インラインで width を指定して幅を確定させてしまうため stretch が効かず、
+   * cross軸の先頭(左端)に置かれてしまう。明示的に中央寄せする。
+   */
+  align-self: center;
+}
+
 .stage {
   position: relative;
   background: #000;
@@ -235,6 +257,34 @@ main {
   max-width: 100%;
   max-height: 100%;
   object-fit: contain;
+}
+
+/*
+ * 4:3表示モード(main.ts の aspectMode / updateAspectControl() 参照)がフルスクリーン中に
+ * 有効な場合の上書きルール。object-fit:contain は canvas の"固有"比率(width/height属性=
+ * コアの実解像度)をそのまま使うため、そこに4:3を効かせることはできない。
+ * 代わりに表示ボックス自体を「ビューポートに収まる最大の4:3矩形」に固定し(width/heightを
+ * min()で計算。aspect-ratioプロパティは width/height が両方とも明示値だと無視されるため
+ * 使えない)、その箱いっぱいに中身を伸縮させる object-fit:fill に切り替える。
+ */
+.stage.aspect-4-3:fullscreen #screen,
+.stage.aspect-4-3:-webkit-full-screen #screen {
+  width: min(100vw, calc(100vh * 4 / 3));
+  height: min(100vh, calc(100vw * 3 / 4));
+  object-fit: fill;
+}
+
+/*
+ * 4:3モードは非整数倍の拡大(例: 768x512→768x576 は縦1.125倍)になるため、
+ * pixelated(最近傍)のままだと8行に1行だけが2行に複製され「特定の1ラインだけ太い」
+ * 見え方になる。実機のCRTは走査線が連続的に滲むため、補間ありのほうが実機の見え方に
+ * 近い。ドット等倍モードでは引き続きドットを保ちたいので pixelated を維持し、
+ * 4:3のときだけウィンドウ表示・フルスクリーンの両方で auto(補間あり)に上書きする
+ * (このセレクタは #screen 単体より詳細度が高く、-moz-crisp-edges の指定も含めて
+ * 上書きされる)。
+ */
+.stage.aspect-4-3 #screen {
+  image-rendering: auto;
 }
 
 /* X68000仮想キーボード(画面とツールバーの間)。 */
@@ -459,6 +509,14 @@ main {
 .library-menu-item:hover .library-menu-extra,
 .library-menu-item:focus .library-menu-extra {
   color: #ffffff;
+}
+
+/* アイコン無し行(グループ見出し・戻る等)でもラベルの書き出しx座標をアイコン付き行に揃えるための
+   空プレースホルダ(main.ts の menuRow() options.iconSlot)。.btn-icon と同じ幅を確保するだけ。 */
+.library-menu-icon-placeholder {
+  width: 16px;
+  height: 16px;
+  flex: 0 0 auto;
 }
 
 .library-menu-label {
@@ -1009,14 +1067,25 @@ main {
   margin-left: 5px;
 }
 
-/* スロットの「ライブラリから挿入」メニューでフォルダ行はサブメニューへ潜ることを三角で示す */
-.library-menu-item.group .library-menu-label::after {
-  content: ' ▸';
+/* フォルダ/グループ行はサブメニューへ潜ることを▸で示す。Windowsのカスケードメニューと同じく
+   ラベル直後ではなく行の右端に置きたいので、疑似要素はラベル(flex:1)ではなく行(.library-menu-item)側に
+   付ける。label が残り幅を全部取るため、他の兄弟(extra span 等)と同様に自然と右端に押し出される。 */
+.library-menu-item.group::after {
+  content: '▸';
+  flex: 0 0 auto;
   color: inherit;
 }
 
 .library-menu-item.back {
   color: var(--text-dim);
+}
+
+/* オーバーフローメニュー行(main.ts の overflowActionRow())が起動前などで使えないボタンを
+   ミラーする際の無効表示。押しても何も起きないよう pointer-events も切る。 */
+.library-menu-item.disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+  pointer-events: none;
 }
 
 /* ページ最下部の全幅グレー帯 */

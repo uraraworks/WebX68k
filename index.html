@@ -20,36 +20,60 @@
   <div id="app">
     <main>
       <div class="console-card">
-        <div class="stage">
-          <canvas id="screen" width="768" height="512"></canvas>
-          <!-- ステート保存/復元などの一時通知(数秒で自動的に消える) -->
-          <div id="toast" class="toast hidden" role="status" aria-live="polite"></div>
-          <!-- 起動前オーバーレイ。WebNP2 の「そのまま起動」/「システムディスクで起動」2択を踏襲。 -->
-          <div id="boot-overlay" class="overlay">
-            <div class="overlay-choices">
-              <button id="btn-boot-plain" type="button" class="start-btn">そのまま起動</button>
-              <button id="btn-boot-system" type="button" class="start-btn start-btn-system">システムディスクで起動</button>
-            </div>
-            <div class="overlay-note">
-              <span id="overlay-note-1">音声再生の制限上、クリック操作で起動します。</span><br />
-              <span id="overlay-note-2">ディスクはツールバーのライブラリ、または下のドライブ行から追加できます。</span>
+        <!-- stage-frame: 4:3表示切替でレイアウトが動かないよう、常に「4:3時のサイズ」分の
+             領域を確保する透明な枠。中の .stage(黒背景の箱)は現在のモードなりの
+             サイズのまま中央寄せされる。詳細は main.ts の rescale() コメント参照。 -->
+        <div class="stage-frame">
+          <div class="stage">
+            <canvas id="screen" width="768" height="512"></canvas>
+            <!-- ステート保存/復元などの一時通知(数秒で自動的に消える) -->
+            <div id="toast" class="toast hidden" role="status" aria-live="polite"></div>
+            <!-- 起動前オーバーレイ。WebNP2 の「そのまま起動」/「システムディスクで起動」2択を踏襲。 -->
+            <div id="boot-overlay" class="overlay">
+              <div class="overlay-choices">
+                <button id="btn-boot-plain" type="button" class="start-btn">そのまま起動</button>
+                <button id="btn-boot-system" type="button" class="start-btn start-btn-system">システムディスクで起動</button>
+              </div>
+              <div class="overlay-note">
+                <span id="overlay-note-1">音声再生の制限上、クリック操作で起動します。</span><br />
+                <span id="overlay-note-2">ディスクはツールバーのライブラリ、または下のドライブ行から追加できます。</span>
+              </div>
             </div>
           </div>
         </div>
         <div id="virtual-keyboard" class="virtual-keyboard hidden" aria-label="X68000 仮想キーボード"></div>
         <div class="console-footer">
           <div class="toolbar">
+            <!-- 常設4種(リセット/フルスクリーン/仮想キーボード/スクリーンショット)+「…」オーバーフロー。
+                 元は14個のアイコンが横一列で分かりにくかったため、使用頻度の低いものは
+                 「…」ボタン配下の階層メニュー(#slot-popup-menu を共用、main.ts の
+                 renderOverflowMenu() 系参照)へ畳んだ。 -->
             <button id="btn-reset" type="button" class="icon-btn" title="リセット" aria-label="リセット" disabled>
               <svg class="btn-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M3 12a9 9 0 1 0 3-6.7M3 4v5h5"/></svg>
             </button>
+            <button id="btn-fullscreen" type="button" class="icon-btn" title="フルスクリーン" aria-label="フルスクリーン" disabled>
+              <svg class="btn-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 9V5a1 1 0 0 1 1-1h4 M15 4h4a1 1 0 0 1 1 1v4 M20 15v4a1 1 0 0 1-1 1h-4 M9 20H5a1 1 0 0 1-1-1v-4"/></svg>
+            </button>
+            <button id="btn-virtual-keyboard" type="button" class="icon-btn" title="仮想キーボード" aria-label="仮想キーボード" aria-pressed="false" disabled>
+              <svg class="btn-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M3 6h18v12H3z M6 9h1 M10 9h1 M14 9h1 M18 9h1 M6 12h1 M10 12h1 M14 12h1 M18 12h1 M7 15h10"/></svg>
+            </button>
+            <button id="btn-screenshot" type="button" class="icon-btn" title="スクリーンショット" aria-label="スクリーンショット" disabled>
+              <svg class="btn-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 8h3l2-3h6l2 3h3a1 1 0 0 1 1 1v10a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1V9a1 1 0 0 1 1-1z M12 17a3.5 3.5 0 1 0 0-7 3.5 3.5 0 0 0 0 7z"/></svg>
+            </button>
+            <button id="btn-toolbar-overflow" type="button" class="icon-btn" title="その他" aria-label="その他" aria-haspopup="menu">
+              <svg class="btn-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M5 12h.01 M12 12h.01 M19 12h.01"/></svg>
+            </button>
+          </div>
+          <!-- 「…」オーバーフローメニューが呼び出す実体ボタン群。id とクリックハンドラは main.ts 側で
+               従来どおり個別に配線したまま(二重実装を避けるため)、表示上だけここへ移して隠す。
+               メニューの各行は各ボタンの現在のラベル(title)/disabled/active状態をここから読み取り、
+               行クリック時は対応ボタンの click() を呼ぶだけ。 -->
+          <div id="toolbar-overflow-sources" hidden>
             <button id="btn-save-state" type="button" class="icon-btn" title="ステート保存" aria-label="ステート保存" disabled>
               <svg class="btn-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M6 10V19H18V10 M12 3v6 M9 6l3 3 3-3"/></svg>
             </button>
             <button id="btn-load-state" type="button" class="icon-btn" title="ステート復元" aria-label="ステート復元" disabled>
               <svg class="btn-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M6 10V19H18V10 M12 9V3 M9 6l3-3 3 3"/></svg>
-            </button>
-            <button id="btn-screenshot" type="button" class="icon-btn" title="スクリーンショット" aria-label="スクリーンショット" disabled>
-              <svg class="btn-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 8h3l2-3h6l2 3h3a1 1 0 0 1 1 1v10a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1V9a1 1 0 0 1 1-1z M12 17a3.5 3.5 0 1 0 0-7 3.5 3.5 0 0 0 0 7z"/></svg>
             </button>
             <button id="btn-mouse-capture" type="button" class="icon-btn" title="マウスキャプチャ" aria-label="マウスキャプチャ" disabled>
               <svg class="btn-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3a6 6 0 0 1 6 6v6a6 6 0 0 1-12 0V9a6 6 0 0 1 6-6z M12 3v7 M12 7v3"/></svg>
@@ -57,11 +81,8 @@
             <button id="btn-mouse-resync" type="button" class="icon-btn" title="マウス再同期" aria-label="マウス再同期" disabled>
               <svg class="btn-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3v4 M12 17v4 M3 12h4 M17 12h4 M9 12a3 3 0 1 0 6 0 3 3 0 1 0 -6 0"/></svg>
             </button>
-            <button id="btn-fullscreen" type="button" class="icon-btn" title="フルスクリーン" aria-label="フルスクリーン" disabled>
-              <svg class="btn-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 9V5a1 1 0 0 1 1-1h4 M15 4h4a1 1 0 0 1 1 1v4 M20 15v4a1 1 0 0 1-1 1h-4 M9 20H5a1 1 0 0 1-1-1v-4"/></svg>
-            </button>
-            <button id="btn-virtual-keyboard" type="button" class="icon-btn" title="仮想キーボード" aria-label="仮想キーボード" aria-pressed="false" disabled>
-              <svg class="btn-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M3 6h18v12H3z M6 9h1 M10 9h1 M14 9h1 M18 9h1 M6 12h1 M10 12h1 M14 12h1 M18 12h1 M7 15h10"/></svg>
+            <button id="btn-aspect" type="button" class="icon-btn" title="4:3表示" aria-label="4:3表示" aria-pressed="false">
+              <svg class="btn-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M2 5h20v14H2z M9 21h6 M12 19v2"/></svg>
             </button>
             <button id="btn-gamepad" type="button" class="icon-btn" title="ジョイスティック設定" aria-label="ジョイスティック設定">
               <svg class="btn-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M6 9h12a3 3 0 0 1 3 3l1 4a2 2 0 0 1-3.6 1.2L17 15H7l-1.4 2.2A2 2 0 0 1 2 16l1-4a3 3 0 0 1 3-3z M7 12v3 M5.5 13.5h3 M15.5 12.5h.01 M18 14.5h.01"/></svg>
@@ -78,7 +99,10 @@
             <button id="btn-help" type="button" class="icon-btn" title="ヘルプ" aria-label="ヘルプ">
               <svg class="btn-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 21a9 9 0 1 0 0-18 9 9 0 0 0 0 18z M9.6 9.2a2.4 2.4 0 1 1 3.3 2.2c-.7.3-.9.8-.9 1.6 M12 16.8h.01"/></svg>
             </button>
-            <button id="btn-lang" type="button" class="lang-toggle">EN</button>
+            <button id="btn-lang" type="button" class="lang-toggle">
+              <svg class="btn-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3a9 9 0 1 0 0 18 9 9 0 0 0 0-18z M3 12h18 M12 3c2.5 2.5 3.5 5.5 3.5 9s-1 6.5-3.5 9 M12 3c-2.5 2.5-3.5 5.5-3.5 9s1 6.5 3.5 9"/></svg>
+              <span id="btn-lang-text">EN</span>
+            </button>
           </div>
           <div class="fd-slots">
             <div id="slot-fdd0" class="fd-slot">
@@ -232,6 +256,12 @@
 
   <!-- スロットボタン(ライブラリ挿入/ブランク作成)用のポップアップメニュー。WebNP2 の library-menu を踏襲。 -->
   <div id="slot-popup-menu" class="library-menu hidden" role="menu"></div>
+
+  <!-- ツールバー「…」オーバーフローメニュー専用のカスケードサブメニュー(広い画面のみ使用)。
+       #slot-popup-menu は親のまま開いたままにし、グループ行の右側にこちらを別要素として重ねる。
+       スロットの「ライブラリから挿入」側は従来どおり #slot-popup-menu を差し替えるだけで、
+       この要素には触れない。 -->
+  <div id="overflow-submenu" class="library-menu hidden" role="menu"></div>
 
   <!-- ファイルマネージャ(FTPクライアント風2ペイン)ダイアログのマウント先。中身はfilemanager.tsが動的に構築する。 -->
   <div id="file-manager-root"></div>

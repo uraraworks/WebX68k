@@ -62,7 +62,8 @@ import {
   saveState as putState,
   type StateDiskConfig,
 } from './state-store';
-import { describeError, getLang, setLang, t } from './strings';
+import { describeError, getLang, langSelfName, setLang, t } from './strings';
+import { getTargetSize, resolveAspectMode, type AspectMode } from './aspect';
 
 const canvas = document.getElementById('screen') as HTMLCanvasElement;
 const bootOverlay = document.getElementById('boot-overlay') as HTMLDivElement;
@@ -74,8 +75,13 @@ const btnMouseCapture = document.getElementById('btn-mouse-capture') as HTMLButt
 const btnMouseResync = document.getElementById('btn-mouse-resync') as HTMLButtonElement;
 const btnFullscreen = document.getElementById('btn-fullscreen') as HTMLButtonElement;
 const btnVirtualKeyboard = document.getElementById('btn-virtual-keyboard') as HTMLButtonElement;
+const btnAspect = document.getElementById('btn-aspect') as HTMLButtonElement;
+const btnToolbarOverflow = document.getElementById('btn-toolbar-overflow') as HTMLButtonElement;
 const virtualKeyboardPanel = document.getElementById('virtual-keyboard') as HTMLDivElement;
 const stageEl = document.querySelector('.stage') as HTMLDivElement;
+// .stage を囲む領域確保用ラッパ(style.css の .stage-frame 参照)。4:3切替でレイアウトが
+// 動かないよう、rescale() が常に「4:3時のサイズ」をここへインラインで指定する。
+const stageFrameEl = document.querySelector('.stage-frame') as HTMLDivElement;
 // ウィンドウ表示時のリスケール(後述の rescale())で高さ計算に使う周辺要素。
 const mainEl = document.querySelector('main') as HTMLElement;
 const consoleCardEl = document.querySelector('.console-card') as HTMLElement;
@@ -103,6 +109,8 @@ const libraryList = document.getElementById('library-list') as HTMLDivElement;
 const libraryDescriptionEl = document.getElementById('library-description') as HTMLParagraphElement;
 const libraryCloseBtn = document.getElementById('library-close') as HTMLButtonElement;
 const slotPopupMenu = document.getElementById('slot-popup-menu') as HTMLDivElement;
+// ツールバー「…」オーバーフローメニュー専用のカスケードサブメニュー要素。詳細は renderOverflowMenu() 群を参照。
+const overflowSubmenu = document.getElementById('overflow-submenu') as HTMLDivElement;
 const cfgCpuSpeed = document.getElementById('cfg-cpuspeed') as HTMLSelectElement;
 const cfgRamSize = document.getElementById('cfg-ramsize') as HTMLSelectElement;
 
@@ -1333,23 +1341,57 @@ window.addEventListener('keydown', (e) => {
 // 「ライブラリから挿入」「ブランク作成」の2種類でこの単一メニュー要素を使い回す。
 // 「ライブラリから挿入」はフォルダ(アーカイブ由来グループ)行をクリックすると、
 // ライブラリダイアログを開かずにこのメニューのまま中身(サブメニュー)へ切り替わる。
+// 同じ #slot-popup-menu 要素・同じ menuRow/positionSlotPopupMenu/closeSlotPopupMenu の仕組みを、
+// 後述のツールバー「…」オーバーフローメニュー(renderOverflowMenu() 系)とも共用する。
+// 常に片方しか開かない前提(開く前に必ず textContent をクリアする)なので単一要素で問題ない。
+
+/** トグル項目(4:3表示・マウスキャプチャ等)がONのときメニュー行に添えるチェックマーク。 */
+const MENU_CHECK_MARK = '✓';
 
 function closeSlotPopupMenu(): void {
   slotPopupMenu.classList.add('hidden');
   slotPopupMenu.textContent = '';
+  // overflowSubmenu はオーバーフローメニュー(この関数が閉じる親)にしか従属し得ないので、
+  // 呼び出し元を選ばず常に一緒に閉じてよい(スロットのライブラリメニュー側では最初から空のまま)。
+  closeOverflowSubmenu();
 }
 
 /**
  * @param options.splitName ディスク名(displayName)を表示する行のとき true。head/tail に分割し中間省略する。
  * @param options.title 行全体につけるツールチップ(完全な名前を常に見られるようにする)。
+ * @param options.icon 行頭に添えるアイコン(既存ツールバーボタンの `.btn-icon` SVGを流用する想定。
+ *   内部で複製するので呼び出し側で clone しなくてよい)。
+ * @param options.iconSlot icon が無い行でも、アイコン1つ分の幅を空けてからラベルを書き出す
+ *   (同じメニュー内でアイコン付き行とアイコン無し行が混在するとき、ラベルの書き出しx座標を
+ *   揃えるため。オーバーフローメニューのグループ見出し行・戻る行で使う)。icon 指定時は無視される。
+ * @param options.disabled true のとき行を無効表示にし、クリック/キー操作を受け付けなくする
+ *   (起動前で使えないトグル系メニュー項目を再現するため。オーバーフローメニュー参照)。
+ * @param options.checked トグル項目(4:3表示・マウスキャプチャ等)の現在状態。指定すると
+ *   role が menuitemcheckbox になり、行右端(library-menu-extra)にチェックマークを出す。
  */
 function menuRow(
   label: string,
   extra?: string,
   cls = '',
-  options?: { splitName?: boolean; title?: string },
+  options?: {
+    splitName?: boolean;
+    title?: string;
+    icon?: SVGElement | null;
+    iconSlot?: boolean;
+    disabled?: boolean;
+    checked?: boolean;
+  },
 ): HTMLElement {
   const children: Array<Node | string> = [];
+  if (options?.icon) {
+    const iconEl = options.icon.cloneNode(true) as SVGElement;
+    children.push(iconEl);
+  } else if (options?.iconSlot) {
+    const placeholder = document.createElement('span');
+    placeholder.className = 'library-menu-icon-placeholder';
+    placeholder.setAttribute('aria-hidden', 'true');
+    children.push(placeholder);
+  }
   const labelEl = document.createElement('span');
   labelEl.className = 'library-menu-label';
   if (options?.splitName) {
@@ -1358,16 +1400,24 @@ function menuRow(
     labelEl.textContent = label;
   }
   children.push(labelEl);
-  if (extra) {
+  const extraText = options?.checked ? `${MENU_CHECK_MARK}${extra ? ` ${extra}` : ''}` : extra;
+  if (extraText) {
     const extraEl = document.createElement('span');
     extraEl.className = 'library-menu-extra';
-    extraEl.textContent = extra;
+    extraEl.textContent = extraText;
     children.push(extraEl);
   }
+  const disabled = options?.disabled ?? false;
   const row = document.createElement('div');
-  row.className = `library-menu-item ${cls}`.trim();
-  row.setAttribute('role', 'menuitem');
-  row.tabIndex = 0;
+  row.className = `library-menu-item ${cls} ${disabled ? 'disabled' : ''}`.trim();
+  row.setAttribute('role', options?.checked === undefined ? 'menuitem' : 'menuitemcheckbox');
+  if (options?.checked !== undefined) row.setAttribute('aria-checked', options.checked ? 'true' : 'false');
+  if (disabled) {
+    row.setAttribute('aria-disabled', 'true');
+    row.tabIndex = -1;
+  } else {
+    row.tabIndex = 0;
+  }
   if (options?.title) row.title = options.title;
   row.append(...children);
   return row;
@@ -1489,6 +1539,191 @@ async function openSlotLibraryMenu(slot: SlotId, anchorEl: HTMLButtonElement): P
   renderSlotLibraryMenu(slot, anchorEl, nodes);
 }
 
+// --- ツールバー「…」オーバーフローメニュー ---
+// 上の #slot-popup-menu / menuRow() / positionSlotPopupMenu() / closeSlotPopupMenu() をそのまま
+// 再利用し、階層は「グループ一覧(第1階層)→ グループ内の項目(第2階層、← 戻るで戻れる)」の
+// 2段のみ。各行は「toolbar-overflow-sources」(index.html、非表示)にある元のツールバーボタンを
+// そのままミラーする: ラベルはボタンの title、状態は disabled/active を読み、クリック時は
+// そのボタンの click() を呼ぶだけでハンドラを二重化しない。
+//
+// ただしトグル行(aria-pressed を持つボタン由来の行)は例外: ツールバーボタンの title は
+// 「切替先」を表す文言(例: 4:3表示中なら「ドット等倍表示にする」)で、ホバー時のツールチップ
+// としては正しい。しかしメニュー行はチェックマークで ON/OFF を示す流儀なので、切替先の文言を
+// そのまま流用すると「ドット等倍表示にする ✓」のように意味が逆に読める矛盾した表示になる。
+// そのためトグル行だけは OVERFLOW_MENU_LABEL_OVERRIDES に登録した「状態名」の固定文言を使う。
+const OVERFLOW_MENU_LABEL_OVERRIDES = new Map<HTMLButtonElement, () => string>([
+  [btnAspect, () => t('toolbarMenuAspect43')],
+  [btnMouseCapture, () => t('toolbarMenuMouseCapture')],
+  [btnLang, () => t('toolbarLanguage')],
+]);
+
+/**
+ * 行右端(library-menu-extra)に添える補足文言の上書き。他の行と同じ「ラベル=状態名、右端=状態」の
+ * 流儀に揃えるため、言語切替行だけ現在の言語名(その言語自身の表記)をここで返す。
+ */
+const OVERFLOW_MENU_EXTRA_OVERRIDES = new Map<HTMLButtonElement, () => string>([
+  [btnLang, () => langSelfName(getLang())],
+]);
+
+type OverflowGroupId = 'display' | 'input' | 'disk' | 'state';
+
+interface OverflowGroup {
+  title: () => string;
+  actions: HTMLButtonElement[];
+}
+
+const OVERFLOW_GROUP_ORDER: OverflowGroupId[] = ['display', 'input', 'disk', 'state'];
+
+const OVERFLOW_GROUPS: Record<OverflowGroupId, OverflowGroup> = {
+  display: { title: () => t('toolbarGroupDisplay'), actions: [btnAspect] },
+  input: { title: () => t('toolbarGroupInput'), actions: [btnMouseCapture, btnMouseResync, btnGamepad] },
+  disk: { title: () => t('toolbarGroupDisk'), actions: [btnDiskLibrary, btnFileManager] },
+  state: { title: () => t('toolbarGroupState'), actions: [btnSaveState, btnLoadState] },
+};
+
+/** グループに属さず直接メニューに並ぶ項目(設定/ヘルプ/言語切替)。 */
+const OVERFLOW_DIRECT_ACTIONS: HTMLButtonElement[] = [btnSettings, btnHelp, btnLang];
+
+/**
+ * 元のツールバーボタン(現在は非表示)を1行に変換する。ラベル/disabled/トグル状態は
+ * すべてそのボタンの現在値をそのまま読むので、呼び出し側で個別に文言や状態を持つ必要がない。
+ */
+function overflowActionRow(btn: HTMLButtonElement): HTMLElement {
+  const icon = btn.querySelector<SVGElement>('.btn-icon') ?? null;
+  const label = OVERFLOW_MENU_LABEL_OVERRIDES.get(btn)?.() ?? (btn.title || btn.textContent?.trim() || '');
+  const extra = OVERFLOW_MENU_EXTRA_OVERRIDES.get(btn)?.();
+  const isToggle = btn.classList.contains('icon-btn') && btn.hasAttribute('aria-pressed');
+  const row = menuRow(label, extra, '', {
+    icon,
+    iconSlot: true,
+    disabled: btn.disabled,
+    checked: isToggle ? btn.classList.contains('active') : undefined,
+  });
+  if (!btn.disabled) {
+    onActivate(row, () => {
+      closeSlotPopupMenu();
+      btn.click();
+    });
+  }
+  return row;
+}
+
+/**
+ * 広い画面かどうか。style.css の「スマホ幅」ブレークポイント(`@media (width < 640px)`)と揃える。
+ * カスケード(グループ行の右にサブメニューを別要素で出す)は横に余白が要るため、この閾値未満では
+ * 従来通り「同じメニュー内で差し替え + ← 戻る」に留める(狭い画面では右に出す余地がなく、
+ * 左右反転を重ねてもタップしづらいだけなので分岐する)。
+ */
+function isWideOverflowMenu(): boolean {
+  return !window.matchMedia('(width < 640px)').matches;
+}
+
+/** 第1階層: グループ4種 + グループ無しの直置き項目(設定/ヘルプ/言語切替)。 */
+function renderOverflowMenu(anchorEl: HTMLButtonElement): void {
+  slotPopupMenu.textContent = '';
+  closeOverflowSubmenu();
+  const title = document.createElement('div');
+  title.className = 'library-menu-title';
+  title.textContent = t('toolbarMore');
+  slotPopupMenu.append(title);
+
+  const wide = isWideOverflowMenu();
+  for (const groupId of OVERFLOW_GROUP_ORDER) {
+    const group = OVERFLOW_GROUPS[groupId];
+    const row = menuRow(group.title(), undefined, 'group', { iconSlot: true });
+    if (wide) {
+      // カスケード: 差し替え式だと押した項目が画面上で消え、次に押したい項目が
+      // カーソルから遠い位置に来てしまう(=マウス移動量が大きい)ため、親は開いたまま
+      // 行の右側に別要素でサブメニューを重ねる(Windowsのメニューと同じ挙動)。
+      onActivate(row, () => openOverflowSubmenu(row, groupId));
+    } else {
+      onActivate(row, () => renderOverflowGroupMenu(anchorEl, groupId));
+    }
+    slotPopupMenu.append(row);
+  }
+  for (const btn of OVERFLOW_DIRECT_ACTIONS) {
+    slotPopupMenu.append(overflowActionRow(btn));
+  }
+  positionSlotPopupMenu(anchorEl);
+}
+
+/** 第2階層(狭い画面用): 単一グループの中身。「← 戻る」で renderOverflowMenu() に戻る(スロットメニューと同じ流儀)。 */
+function renderOverflowGroupMenu(anchorEl: HTMLButtonElement, groupId: OverflowGroupId): void {
+  const group = OVERFLOW_GROUPS[groupId];
+  slotPopupMenu.textContent = '';
+  const back = menuRow(t('libraryMenuBack'), undefined, 'back', { iconSlot: true });
+  onActivate(back, () => renderOverflowMenu(anchorEl));
+  slotPopupMenu.append(back);
+  const title = document.createElement('div');
+  title.className = 'library-menu-title';
+  title.textContent = group.title();
+  slotPopupMenu.append(title);
+  for (const btn of group.actions) {
+    slotPopupMenu.append(overflowActionRow(btn));
+  }
+  positionSlotPopupMenu(anchorEl);
+}
+
+/** カスケードサブメニューを閉じる(中身をクリアし #overflow-submenu を隠すだけ。親の #slot-popup-menu は触らない)。 */
+function closeOverflowSubmenu(): void {
+  overflowSubmenu.classList.add('hidden');
+  overflowSubmenu.textContent = '';
+}
+
+/**
+ * 第2階層(広い画面用、カスケード): 親メニュー(#slot-popup-menu)は開いたまま、押したグループ行の
+ * 右側に #overflow-submenu を重ねて出す。別のグループ行を押した場合もこの関数が呼ばれ、
+ * 同じ要素の中身を作り直して位置も再計算するので「前のサブメニューを閉じて新しい方を開く」を
+ * 自然に満たす。「← 戻る」行は親が開いたままなので不要(親の行を直接押し直せる)。
+ */
+function openOverflowSubmenu(rowEl: HTMLElement, groupId: OverflowGroupId): void {
+  const group = OVERFLOW_GROUPS[groupId];
+  overflowSubmenu.textContent = '';
+  // カスケードは親メニューの行(グループ名)が見えたまま隣に出るため見出しは不要。
+  // (差し替え式の renderOverflowGroupMenu() は親メニューが消えるので見出しを残す)
+  for (const btn of group.actions) {
+    overflowSubmenu.append(overflowActionRow(btn));
+  }
+  positionOverflowSubmenu(rowEl);
+}
+
+/**
+ * サブメニューの位置決め。上端はクリックした行の上端、左端は親メニューの右端に接する位置が基本だが、
+ * 画面右端に収まらない場合は親メニューの左側へ反転し、画面下端に収まらない場合は上方向にずらす。
+ */
+function positionOverflowSubmenu(rowEl: HTMLElement): void {
+  overflowSubmenu.style.left = '0px';
+  overflowSubmenu.style.top = '0px';
+  overflowSubmenu.classList.remove('hidden');
+  const parentRect = slotPopupMenu.getBoundingClientRect();
+  const rowRect = rowEl.getBoundingClientRect();
+  const subRect = overflowSubmenu.getBoundingClientRect();
+
+  let left = parentRect.right;
+  if (left + subRect.width > window.innerWidth - 4) {
+    left = parentRect.left - subRect.width;
+  }
+  left = Math.max(4, Math.min(left, window.innerWidth - subRect.width - 4));
+
+  let top = rowRect.top;
+  if (top + subRect.height > window.innerHeight - 4) {
+    top = window.innerHeight - subRect.height - 4;
+  }
+  top = Math.max(4, top);
+
+  overflowSubmenu.style.left = `${Math.round(left)}px`;
+  overflowSubmenu.style.top = `${Math.round(top)}px`;
+}
+
+btnToolbarOverflow.addEventListener('click', (e) => {
+  e.stopPropagation();
+  if (!slotPopupMenu.classList.contains('hidden')) {
+    closeSlotPopupMenu();
+    return;
+  }
+  renderOverflowMenu(btnToolbarOverflow);
+});
+
 /*
  * ブランクディスクは 2HD 1232KB(XDF標準)のみ作れる。中身はFAT12フォーマット済み
  * (createFormattedFd())で生成する。
@@ -1547,8 +1782,11 @@ async function handleCreateBlankHdd(): Promise<void> {
 }
 
 slotPopupMenu.addEventListener('click', (e) => e.stopPropagation());
+// カスケードサブメニューの上でのクリックも(項目実行以外は)閉じてはいけないので同様に止める。
+// 項目実行時は overflowActionRow() が closeSlotPopupMenu() を呼び、そちらが親子とも閉じる。
+overflowSubmenu.addEventListener('click', (e) => e.stopPropagation());
 document.addEventListener('click', () => {
-  if (slotPopupMenu.classList.contains('hidden')) return;
+  if (slotPopupMenu.classList.contains('hidden') && overflowSubmenu.classList.contains('hidden')) return;
   closeSlotPopupMenu();
 });
 document.addEventListener('keydown', (e) => {
@@ -1813,6 +2051,7 @@ function applyDocumentStrings(): void {
   updateFullscreenControl();
   btnVirtualKeyboard.title = virtualKeyboard.isVisible() ? t('toolbarVirtualKeyboardHide') : t('toolbarVirtualKeyboard');
   btnVirtualKeyboard.setAttribute('aria-label', btnVirtualKeyboard.title);
+  updateAspectControl();
   btnSaveState.title = t('toolbarSaveState');
   btnSaveState.setAttribute('aria-label', t('toolbarSaveState'));
   btnLoadState.title = t('toolbarLoadState');
@@ -1828,7 +2067,9 @@ function applyDocumentStrings(): void {
   btnFileManager.setAttribute('aria-label', t('toolbarFileManager'));
   btnHelp.title = t('toolbarHelp');
   btnHelp.setAttribute('aria-label', t('toolbarHelp'));
-  btnLang.textContent = t('langToggle');
+  document.getElementById('btn-lang-text')!.textContent = t('langToggle');
+  btnToolbarOverflow.title = t('toolbarMore');
+  btnToolbarOverflow.setAttribute('aria-label', t('toolbarMore'));
 
   for (const slot of SLOT_IDS) {
     const els = slotElements[slot];
@@ -2123,8 +2364,11 @@ canvas.addEventListener('mousemove', (e) => {
   if (!host || !running) return;
   if (isMouseCaptured()) {
     // movementX/Y は CSS ピクセル単位。canvas は拡大表示されるので、ゲスト側の1ドットへ換算する。
-    const scale = canvas.clientWidth > 0 ? canvas.width / canvas.clientWidth : 1;
-    host.addMouseDelta(e.movementX * scale * mouseSensitivity, e.movementY * scale * mouseSensitivity);
+    // 4:3表示モードでは表示上の縦横比とcanvasの実解像度比が食い違うため、X/Yを別々の倍率で
+    // 換算する必要がある(等倍/整数倍のドット等倍モードではscaleX===scaleYになるので実質同じ)。
+    const scaleX = canvas.clientWidth > 0 ? canvas.width / canvas.clientWidth : 1;
+    const scaleY = canvas.clientHeight > 0 ? canvas.height / canvas.clientHeight : 1;
+    host.addMouseDelta(e.movementX * scaleX * mouseSensitivity, e.movementY * scaleY * mouseSensitivity);
     return;
   }
   // 追従モード: canvas 内の相対位置(0..1)だけ記録し、実際の送信は stepMouseTracking に任せる
@@ -2270,6 +2514,38 @@ const MAX_SCALE = 2;
 const FALLBACK_NATIVE_WIDTH = 768;
 const FALLBACK_NATIVE_HEIGHT = 512;
 
+// 4:3表示モードの判定・目標サイズ計算(getTargetSize())は src/aspect.ts へ切り出し済み。
+// 縮小禁止方針の設計コメントもそちらに移してある。
+const ASPECT_MODE_KEY = 'webx68k.aspectMode';
+
+// 既定値の判定(resolveAspectMode)は src/aspect.ts へ切り出し済み。理由もそちらに記載。
+function loadAspectMode(): AspectMode {
+  return resolveAspectMode(localStorage.getItem(ASPECT_MODE_KEY));
+}
+
+let aspectMode: AspectMode = loadAspectMode();
+
+/** アスペクト比ボタンの見た目(トグル状態)を現在のモードに合わせる。フルスクリーンボタンと同じ流儀。 */
+function updateAspectControl(): void {
+  const is43 = aspectMode === '4:3';
+  btnAspect.classList.toggle('active', is43);
+  btnAspect.setAttribute('aria-pressed', is43 ? 'true' : 'false');
+  btnAspect.title = is43 ? t('toolbarAspect43') : t('toolbarAspectNative');
+  btnAspect.setAttribute('aria-label', btnAspect.title);
+  // ネイティブフルスクリーンは JS を経由せず CSS (.stage.aspect-4-3:fullscreen #screen、
+  // style.css 参照) だけで4:3化するため、モードを stage 要素にクラスとして反映しておく。
+  stageEl.classList.toggle('aspect-4-3', is43);
+}
+
+btnAspect.addEventListener('click', () => {
+  aspectMode = aspectMode === '4:3' ? 'native' : '4:3';
+  localStorage.setItem(ASPECT_MODE_KEY, aspectMode);
+  updateAspectControl();
+  rescale();
+});
+
+updateAspectControl();
+
 /**
  * canvas の表示倍率(等倍〜整数倍、収まらない場合は端数の縮小)を実測して決める。
  * フルスクリーン中は CSS 側(.stage:fullscreen #screen の object-fit:contain、
@@ -2295,6 +2571,17 @@ function rescale(): void {
 
   const nativeWidth = canvas.width || FALLBACK_NATIVE_WIDTH;
   const nativeHeight = canvas.height || FALLBACK_NATIVE_HEIGHT;
+  // 4:3モードでは実解像度(nativeWidth x nativeHeight)そのものではなく、そこから導いた
+  // 4:3の目標サイズを基準にフィット計算する(getTargetSize() のコメント参照)。canvas の
+  // ピクセルバッファ(width/height属性)自体は実解像度のままなので、目標サイズと縦横比が
+  // 違えばこの後 w/h として与えるインラインスタイルが自動的に中身を伸縮させる。
+  const target = getTargetSize(aspectMode, nativeWidth, nativeHeight);
+  // .stage-frame(領域確保用ラッパ)の目標サイズは、現在の aspectMode に関わらず常に
+  // 「4:3時のサイズ」で固定する。これにより等倍⇔4:3の切り替えでも枠自体のサイズが
+  // 変わらず、下のツールバー等が押し下げられない(このファイル冒頭のタスク趣旨参照)。
+  // fit/scale もこの4:3基準のサイズで計算することで、等倍モードでも4:3時と同じ倍率が
+  // 選ばれるようにする(切り替えで画面の大きさが跳ねるのを防ぐ)。
+  const reserveTarget = getTargetSize('4:3', nativeWidth, nativeHeight);
 
   const mainStyle = getComputedStyle(mainEl);
   const mainPaddingH = parseLengthOrZero(mainStyle.paddingLeft) + parseLengthOrZero(mainStyle.paddingRight);
@@ -2320,7 +2607,7 @@ function rescale(): void {
   // 実測誤差(サブピクセル丸め・スクロールバー分など)の余白として少し余裕を持たせる。
   const availHeight = Math.max(1, window.innerHeight - reservedHeight - 4);
 
-  const fit = Math.min(availWidth / nativeWidth, availHeight / nativeHeight);
+  const fit = Math.min(availWidth / reserveTarget.width, availHeight / reserveTarget.height);
   // 実機検証の結果、1倍未満への縮小を禁止すると狭い画面(スマホ等)で画面下のツールバー/
   // ドライブ行がビューポート外へ押し出されて操作できなくなることが判明したため、
   // 等倍未満への縮小を復活させた。fit は幅・高さ両方から求めた最小値であり、
@@ -2343,16 +2630,34 @@ function rescale(): void {
       ? Math.min(MAX_SCALE, Math.floor(fit))
       : Math.max(0.3, Math.min(1, fit));
 
-  const w = Math.round(nativeWidth * scale);
-  const h = Math.round(nativeHeight * scale);
+  const w = Math.round(target.width * scale);
+  const h = Math.round(target.height * scale);
+  // .stage-frame は常に4:3基準のサイズを確保する(このファイル冒頭のコメント参照)。
+  // aspectMode が 'native' でも同じ scale で計算するため、切り替えで枠のサイズが
+  // 変わらない。
+  const frameW = Math.round(reserveTarget.width * scale);
+  const frameH = Math.round(reserveTarget.height * scale);
   // 上流の getComputedStyle() 由来の値が(NaN ガードをすり抜けるような想定外の経路で)
   // 有限値でなかった場合、"NaNpx" のような無効値をインラインへ書き込むとブラウザはそれを
   // 黙って無視する(=canvas.style.width が未設定のまま残り続ける)。無効な計算結果を
   // そのまま突っ込むより、ここで諦めて CSS 側のフォールバック(width/height:auto)に
   // 任せたほうが安全なので、書き換えずに抜ける。
-  if (!Number.isFinite(w) || !Number.isFinite(h) || w <= 0 || h <= 0) return;
+  if (
+    !Number.isFinite(w) ||
+    !Number.isFinite(h) ||
+    w <= 0 ||
+    h <= 0 ||
+    !Number.isFinite(frameW) ||
+    !Number.isFinite(frameH) ||
+    frameW <= 0 ||
+    frameH <= 0
+  ) {
+    return;
+  }
   canvas.style.width = `${w}px`;
   canvas.style.height = `${h}px`;
+  stageFrameEl.style.width = `${frameW}px`;
+  stageFrameEl.style.height = `${frameH}px`;
 }
 
 // visualViewport の resize は購読しない: ピンチズーム操作でも発火するため、ここで再フィット

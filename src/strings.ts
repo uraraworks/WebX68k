@@ -46,11 +46,26 @@ interface Dict {
   toolbarFullscreenExitPseudo(): string;
   toolbarVirtualKeyboard(): string;
   toolbarVirtualKeyboardHide(): string;
+  toolbarAspectNative(): string;
+  toolbarAspect43(): string;
+  /** オーバーフローメニューのマウスキャプチャ行専用ラベル(状態名。ON/OFFはチェックマークで示す)。 */
+  toolbarMenuMouseCapture(): string;
+  /** オーバーフローメニューの4:3表示行専用ラベル(状態名。ON/OFFはチェックマークで示す)。 */
+  toolbarMenuAspect43(): string;
+  /** ツールバーの「…」オーバーフローボタンのツールチップ/メニュー見出し。 */
+  toolbarMore(): string;
+  /** オーバーフローメニュー内のグループ見出し(表示/入力/ディスク/ステート)。 */
+  toolbarGroupDisplay(): string;
+  toolbarGroupInput(): string;
+  toolbarGroupDisk(): string;
+  toolbarGroupState(): string;
   stateDiskMismatch(args: { saved: string; current: string }): string;
   toolbarDiskLibrary(): string;
   toolbarFileManager(): string;
   /** ツールバーの言語トグルボタンに表示するラベル(＝切替先の言語名)。 */
   langToggle(): string;
+  /** オーバーフローメニューの言語切替行のラベル(状態名。現在の言語名は library-menu-extra に出す)。 */
+  toolbarLanguage(): string;
   fdSlotLabel(args: { drive: number }): string;
   hddSlotLabel(): string;
   fdEmpty(): string;
@@ -352,11 +367,22 @@ const STRINGS: Record<Lang, Dict> = {
     toolbarFullscreenExitPseudo: () => 'フルスクリーンを解除',
     toolbarVirtualKeyboard: () => '仮想キーボードを表示',
     toolbarVirtualKeyboardHide: () => '仮想キーボードを隠す',
+    // トグルなので現在の状態でなく「切替先」を表示する(仮想キーボードボタンと同じ流儀)。
+    toolbarAspectNative: () => '4:3表示にする',
+    toolbarAspect43: () => 'ドット等倍表示にする',
+    toolbarMenuMouseCapture: () => 'マウスキャプチャ',
+    toolbarMenuAspect43: () => '4:3表示',
+    toolbarMore: () => 'その他',
+    toolbarGroupDisplay: () => '表示',
+    toolbarGroupInput: () => '入力',
+    toolbarGroupDisk: () => 'ディスク',
+    toolbarGroupState: () => 'ステート',
     stateDiskMismatch: ({ saved, current }) =>
       `保存時とディスク構成が異なります。\n保存時: ${saved}\n現在: ${current}\nこのまま復元すると誤動作する可能性があります。続けますか?`,
     toolbarDiskLibrary: () => 'ディスクライブラリ',
     toolbarFileManager: () => 'ファイル転送',
     langToggle: () => 'EN',
+    toolbarLanguage: () => '言語',
     fdSlotLabel: ({ drive }) => `FDD${drive}`,
     hddSlotLabel: () => 'HDD',
     fdEmpty: () => '未挿入',
@@ -588,11 +614,21 @@ const STRINGS: Record<Lang, Dict> = {
     toolbarFullscreenExitPseudo: () => 'Exit fullscreen',
     toolbarVirtualKeyboard: () => 'Show virtual keyboard',
     toolbarVirtualKeyboardHide: () => 'Hide virtual keyboard',
+    toolbarAspectNative: () => 'Switch to 4:3 display',
+    toolbarAspect43: () => 'Switch to 1:1 pixel display',
+    toolbarMenuMouseCapture: () => 'Mouse capture',
+    toolbarMenuAspect43: () => '4:3 display',
+    toolbarMore: () => 'More',
+    toolbarGroupDisplay: () => 'Display',
+    toolbarGroupInput: () => 'Input',
+    toolbarGroupDisk: () => 'Disk',
+    toolbarGroupState: () => 'State',
     stateDiskMismatch: ({ saved, current }) =>
       `The mounted disks differ from when the state was saved.\nSaved: ${saved}\nCurrent: ${current}\nLoading anyway may cause the guest to misbehave. Continue?`,
     toolbarDiskLibrary: () => 'Disk Library',
     toolbarFileManager: () => 'File Transfer',
     langToggle: () => '日本語',
+    toolbarLanguage: () => 'Language',
     fdSlotLabel: ({ drive }) => `FDD${drive}`,
     hddSlotLabel: () => 'HDD',
     fdEmpty: () => 'empty',
@@ -818,6 +854,14 @@ export function setLang(lang: Lang): void {
   } catch {
     // localStorage が使えない環境ではメモリ上の切替のみ有効。
   }
+}
+
+/**
+ * 言語名をその言語自身の表記で返す(UI表示言語に関わらず一定。「日本語」「English」は自言語表記が慣例)。
+ * オーバーフローメニューの言語切替行の右端(現在の言語名)に使う。
+ */
+export function langSelfName(lang: Lang): string {
+  return lang === 'ja' ? '日本語' : 'English';
 }
 
 export type StringKey = keyof Dict;
