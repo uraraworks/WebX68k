@@ -10,8 +10,9 @@
 /**
  * X68000 側の入力先。
  * UP/DOWN/LEFT/RIGHT は方向、TRG1/TRG2 が標準 2 ボタンパッドのボタン。
- * TRG3..TRG8 は px68k-libretro が対応する多ボタンパッド(CPSF 等)向けの枠で、
- * Phase 1 では未使用(型だけ用意して後で埋める)。
+ * TRG3..TRG8 は px68k-libretro が対応する CPSF-MD/CPSF-SFC(8ボタン)パッド向け。
+ * どの RetroPad ID がどの TRGn になるかは padType(px68k_joytype1/2 コアオプション)によって
+ * 変わるため、対応表は retroIdFor()/RETRO_ID_MAPS を参照すること(このコメントでは決め打ちしない)。
  */
 export type JoyTarget =
   | 'UP'
@@ -27,29 +28,112 @@ export type JoyTarget =
   | 'TRG7'
   | 'TRG8';
 
+/** isBinding() の検証用に全 JoyTarget を列挙したもの(値そのものには意味を持たせない)。 */
+const ALL_JOY_TARGETS: readonly JoyTarget[] = [
+  'UP',
+  'DOWN',
+  'LEFT',
+  'RIGHT',
+  'TRG1',
+  'TRG2',
+  'TRG3',
+  'TRG4',
+  'TRG5',
+  'TRG6',
+  'TRG7',
+  'TRG8',
+];
+
+/**
+ * px68k-libretro のパッド種別(px68k_joytype1/2 コアオプション)。
+ * サイバースティックは対象外(アナログモード非対応・ポート2に選択肢自体が無い)。
+ * 値は libretro_core_options.h の選択肢文字列と1:1(PAD_TYPE_CORE_OPTION_VALUE で変換する)。
+ */
+export type PadType = 'default' | 'cpsf-md' | 'cpsf-sfc';
+
+export const PAD_TYPES: readonly PadType[] = ['default', 'cpsf-md', 'cpsf-sfc'];
+
+/**
+ * PadType -> px68k_joytype1/2 コアオプションの値文字列。
+ * px68k-libretro/libretro_core_options.h の px68k_joytype1/2 の選択肢表記と完全一致させること
+ * (update_variables() が strcmp で照合しており、1文字でもずれると PAD_2BUTTON にフォールバックする)。
+ */
+export const PAD_TYPE_CORE_OPTION_VALUE: Record<PadType, string> = {
+  default: 'Default (2 Buttons)',
+  'cpsf-md': 'CPSF-MD (8 Buttons)',
+  'cpsf-sfc': 'CPSF-SFC (8 Buttons)',
+};
+
+/** その padType で編集/表示すべき JoyTarget 一覧(表示順)。2ボタンは TRG1/TRG2 のみ、8ボタンは TRG1..TRG8。 */
+export function joyTargetsForPadType(padType: PadType): readonly JoyTarget[] {
+  const base: JoyTarget[] = ['UP', 'DOWN', 'LEFT', 'RIGHT', 'TRG1', 'TRG2'];
+  if (padType === 'default') return base;
+  return [...base, 'TRG3', 'TRG4', 'TRG5', 'TRG6', 'TRG7', 'TRG8'];
+}
+
+// UP/DOWN/LEFT/RIGHT は px68k-libretro/libretro/joystick.c の D-Pad 判定(RETRO_DEVICE_ID_JOYPAD_UP=4 等、
+// Joystick_Update() 235行目付近)に合わせてある。padType に関わらず共通。
+const DIRECTION_RETRO_IDS = { UP: 4, DOWN: 5, LEFT: 6, RIGHT: 7 } as const;
+
 /**
  * JoyTarget -> RetroPad ID(inputStateCb の id 引数、= libretro の RETRO_DEVICE_ID_JOYPAD_*)対応表。
+ * padType ごとに異なる(px68k-libretro/libretro/joystick.c の Joystick_Update() が padType(=
+ * Config.JOY_TYPE[port])に応じて別の分岐でボタンを解釈するため)。値は同ファイルの実装から
+ * 確定させたもので、推測は含まない。
  *
- * TRG1/TRG2 は px68k-libretro/libretro/joystick.c の Joystick_Update() に合わせてある
- * (Config.VbtnSwap 既定 false のとき、RetroPad B(id=0) -> JOY_TRG1, RetroPad A(id=8) -> JOY_TRG2)。
- * UP/DOWN/LEFT/RIGHT は同ファイルの D-Pad 判定(RETRO_DEVICE_ID_JOYPAD_UP=4 等)に合わせてある。
- * TRG3..TRG8 は現状 PAD_2BUTTON 固定では参照されない。将来 CPSF 等の多ボタン対応をする際に
- * 割り当て直す前提で、空いている RetroPad ボタン ID を仮に割り振ってあるだけの枠。
+ * - default(PAD_2BUTTON, 250行目付近): Config.VbtnSwap 既定 false のとき、
+ *   RetroPad B(id=0) -> JOY_TRG1, RetroPad A(id=8) -> JOY_TRG2。
+ * - cpsf-md(PAD_CPSF_MD, 279〜312行目): A(id=8)->TRG1(Low-Kick), B(id=0)->TRG2(Mid-Kick),
+ *   Y(id=1)->TRG3(Mid-Punch), X(id=9)->TRG4(Low-Punch), L(id=10)->TRG5(High-Punch),
+ *   Start(id=3)->TRG6, Select(id=2)->TRG7, R(id=11)->TRG8(High-Kick)。
+ * - cpsf-sfc(PAD_CPSF_SFC, 314〜342行目): B(id=0)->TRG1, A(id=8)->TRG2, X(id=9)->TRG3,
+ *   Y(id=1)->TRG4, R(id=11)->TRG5, Start(id=3)->TRG6, Select(id=2)->TRG7, L(id=10)->TRG8。
  */
-export const TARGET_TO_RETRO_ID: Record<JoyTarget, number> = {
-  UP: 4,
-  DOWN: 5,
-  LEFT: 6,
-  RIGHT: 7,
-  TRG1: 0, // RetroPad B
-  TRG2: 8, // RetroPad A
-  TRG3: 1, // RetroPad Y (未使用の枠)
-  TRG4: 9, // RetroPad X (未使用の枠)
-  TRG5: 10, // RetroPad L (未使用の枠)
-  TRG6: 11, // RetroPad R (未使用の枠)
-  TRG7: 12, // RetroPad L2 (未使用の枠)
-  TRG8: 13, // RetroPad R2 (未使用の枠)
+const RETRO_ID_MAPS: Record<PadType, Record<JoyTarget, number>> = {
+  default: {
+    ...DIRECTION_RETRO_IDS,
+    TRG1: 0, // RetroPad B
+    TRG2: 8, // RetroPad A
+    // TRG3..TRG8 は default(2ボタン)では参照されない。default の入れ物として cpsf-md と同じ値を
+    // 置いているだけで、実際に使われるのは padType が cpsf-md/cpsf-sfc のときだけ。
+    TRG3: 1,
+    TRG4: 9,
+    TRG5: 10,
+    TRG6: 3,
+    TRG7: 2,
+    TRG8: 11,
+  },
+  'cpsf-md': {
+    ...DIRECTION_RETRO_IDS,
+    TRG1: 8, // RetroPad A (Low-Kick)
+    TRG2: 0, // RetroPad B (Mid-Kick)
+    TRG3: 1, // RetroPad Y (Mid-Punch)
+    TRG4: 9, // RetroPad X (Low-Punch)
+    TRG5: 10, // RetroPad L (High-Punch)
+    TRG6: 3, // RetroPad Start
+    TRG7: 2, // RetroPad Select (Mode)
+    TRG8: 11, // RetroPad R (High-Kick)
+  },
+  'cpsf-sfc': {
+    ...DIRECTION_RETRO_IDS,
+    TRG1: 0, // RetroPad B
+    TRG2: 8, // RetroPad A
+    TRG3: 9, // RetroPad X
+    TRG4: 1, // RetroPad Y
+    TRG5: 11, // RetroPad R
+    TRG6: 3, // RetroPad Start
+    TRG7: 2, // RetroPad Select
+    TRG8: 10, // RetroPad L
+  },
 };
+
+/** JoyTarget -> RetroPad ID を padType に応じて引く。padType省略時は default(2ボタン)。 */
+export function retroIdFor(target: JoyTarget, padType: PadType = 'default'): number {
+  return RETRO_ID_MAPS[padType][target];
+}
+
+/** 後方互換のため残す default(2ボタン)固定の対応表。isBinding() の検証にのみ使う。 */
+export const TARGET_TO_RETRO_ID: Record<JoyTarget, number> = RETRO_ID_MAPS.default;
 
 /**
  * 1つの物理入力(Source)に対する割当先。
@@ -94,19 +178,36 @@ export interface GamepadProfile {
   bindings: ReadonlyArray<{ source: Source; binding: Binding }>;
 }
 
-/** localStorage に保存する形。バージョンを持たせ、壊れた/未知バージョンのデータは既定へフォールバックする。 */
+/**
+ * localStorage に保存する形。バージョンを持たせ、壊れた/未知バージョンのデータは既定へフォールバックする。
+ *
+ * v2 で joyType(ポートごとのパッド種別)を追加した。v1 のデータ(joyType を持たない)は
+ * isGamepadStoreV1() + migrateV1ToV2() で「既存の pads/portPads は活かしたまま joyType だけ
+ * 既定値で補う」形にマイグレーションする。v1 保存データを isGamepadStoreV2 でそのまま弾いて
+ * 空ストアへ全消しすると、割当編集(pads)やポート固定(portPads)を保存済みのユーザーの設定が
+ * 一括で消えてしまうため、必ずこの経路を通すこと。
+ */
 export interface GamepadStore {
-  version: 1;
+  version: 2;
   /** Gamepad.id -> プロファイル。挿し替えても両方残るよう、キーはポート番号ではなくidにする。 */
   pads: Record<string, GamepadProfile>;
   /** ポート0/1に手動で固定したい Gamepad.id。null は「自動割当のまま」。 */
+  portPads: [string | null, string | null];
+  /** ポート0/1(表示上はポート1/2)のパッド種別(px68k_joytype1/2 コアオプションに対応)。 */
+  joyType: [PadType, PadType];
+}
+
+/** v1(joyType 追加前)のストア形。マイグレーション専用で外へは出さない。 */
+interface GamepadStoreV1 {
+  version: 1;
+  pads: Record<string, GamepadProfile>;
   portPads: [string | null, string | null];
 }
 
 const GAMEPAD_STORAGE_KEY = 'webx68k.gamepad';
 
 function emptyStore(): GamepadStore {
-  return { version: 1, pads: {}, portPads: [null, null] };
+  return { version: 2, pads: {}, portPads: [null, null], joyType: ['default', 'default'] };
 }
 
 function isSource(v: unknown): v is Source {
@@ -120,7 +221,7 @@ function isSource(v: unknown): v is Source {
 function isBinding(v: unknown): v is Binding {
   if (typeof v !== 'object' || v === null) return false;
   const o = v as Record<string, unknown>;
-  if (o.kind === 'joy') return typeof o.target === 'string' && o.target in TARGET_TO_RETRO_ID;
+  if (o.kind === 'joy') return typeof o.target === 'string' && (ALL_JOY_TARGETS as readonly string[]).includes(o.target);
   if (o.kind === 'key') return typeof o.retrok === 'number';
   return false;
 }
@@ -139,33 +240,56 @@ function isGamepadProfile(v: unknown): v is GamepadProfile {
   );
 }
 
-/** 保存データの構造検証。1箇所でも型が崩れていれば false を返し、呼び出し側は既定へフォールバックする。 */
-function isGamepadStore(v: unknown): v is GamepadStore {
+function isPadsRecord(v: unknown): v is Record<string, GamepadProfile> {
+  if (typeof v !== 'object' || v === null) return false;
+  return Object.values(v as Record<string, unknown>).every(isGamepadProfile);
+}
+
+function isPortPads(v: unknown): v is [string | null, string | null] {
+  if (!Array.isArray(v) || v.length !== 2) return false;
+  return v.every((p) => p === null || typeof p === 'string');
+}
+
+function isPadType(v: unknown): v is PadType {
+  return v === 'default' || v === 'cpsf-md' || v === 'cpsf-sfc';
+}
+
+/** 保存データ(v2)の構造検証。1箇所でも型が崩れていれば false を返す。 */
+function isGamepadStoreV2(v: unknown): v is GamepadStore {
+  if (typeof v !== 'object' || v === null) return false;
+  const o = v as Record<string, unknown>;
+  if (o.version !== 2) return false;
+  if (!isPadsRecord(o.pads)) return false;
+  if (!isPortPads(o.portPads)) return false;
+  if (!Array.isArray(o.joyType) || o.joyType.length !== 2) return false;
+  return o.joyType.every(isPadType);
+}
+
+/** 保存データ(v1、joyType 無し)の構造検証。マイグレーション対象か判定するために使う。 */
+function isGamepadStoreV1(v: unknown): v is GamepadStoreV1 {
   if (typeof v !== 'object' || v === null) return false;
   const o = v as Record<string, unknown>;
   if (o.version !== 1) return false;
-  if (typeof o.pads !== 'object' || o.pads === null) return false;
-  for (const profile of Object.values(o.pads as Record<string, unknown>)) {
-    if (!isGamepadProfile(profile)) return false;
-  }
-  if (!Array.isArray(o.portPads) || o.portPads.length !== 2) return false;
-  for (const p of o.portPads) {
-    if (p !== null && typeof p !== 'string') return false;
-  }
-  return true;
+  if (!isPadsRecord(o.pads)) return false;
+  return isPortPads(o.portPads);
+}
+
+function migrateV1ToV2(v1: GamepadStoreV1): GamepadStore {
+  return { version: 2, pads: v1.pads, portPads: v1.portPads, joyType: ['default', 'default'] };
 }
 
 /**
- * localStorage から読み込む。存在しない/JSON破損/構造不正/未知バージョンのいずれでも
- * 例外を投げず既定値(空ストア)へフォールバックする。
+ * localStorage から読み込む。存在しない/JSON破損/構造不正のいずれでも例外を投げず既定値
+ * (空ストア)へフォールバックする。v1 データは pads/portPads を保ったまま v2 へ移行する。
  */
 export function loadGamepadStore(storage: Pick<Storage, 'getItem'> = localStorage): GamepadStore {
   const raw = storage.getItem(GAMEPAD_STORAGE_KEY);
   if (!raw) return emptyStore();
   try {
     const parsed: unknown = JSON.parse(raw);
-    if (!isGamepadStore(parsed)) return emptyStore();
-    return parsed;
+    if (isGamepadStoreV2(parsed)) return parsed;
+    if (isGamepadStoreV1(parsed)) return migrateV1ToV2(parsed);
+    return emptyStore();
   } catch {
     return emptyStore();
   }
@@ -383,22 +507,27 @@ export class GamepadManager {
     for (const { source, binding } of XINPUT_PRESET) this.addBinding(source, binding);
   }
 
-  /** 単一の Gamepad についてビットマスクを計算する(パッドごとに GamepadManager を分けて持つ設計向け)。 */
-  bitsForPad(pad: Gamepad): number {
-    return this.computeBits(pad);
+  /**
+   * 単一の Gamepad についてビットマスクを計算する(パッドごとに GamepadManager を分けて持つ設計向け)。
+   * padType は「このパッドが今送り先にしているポートの px68k_joytype」を渡すこと(省略時は default =
+   * 2ボタン。TRG3..TRG8 のバインディングがあっても default では退避先が無いのでビットは立たない)。
+   */
+  bitsForPad(pad: Gamepad, padType: PadType = 'default'): number {
+    return this.computeBits(pad, padType);
   }
 
   /**
    * 配列のインデックスがそのままポート番号として詰められた Gamepad 配列
    * (呼び出し側が既にポート割当を済ませたもの。要素数2、未接続ポートは null)から、
    * port 0/1 ぶんの RetroPad ID ビットマスクを計算して返す。
+   * padTypes はポート0/1それぞれの px68k_joytype(省略時は両方 default)。
    */
-  poll(gamepads: readonly (Gamepad | null)[]): [number, number] {
+  poll(gamepads: readonly (Gamepad | null)[], padTypes: readonly [PadType, PadType] = ['default', 'default']): [number, number] {
     const result: [number, number] = [0, 0];
     for (let port = 0; port < 2; port++) {
       const pad = gamepads[port];
       if (!pad) continue;
-      result[port] = this.computeBits(pad);
+      result[port] = this.computeBits(pad, padTypes[port]);
     }
     return result;
   }
@@ -409,7 +538,10 @@ export class GamepadManager {
    * 「割当をどう決めるか」の唯一の情報源は assignPorts() であることを保証するため、
    * 呼び出し側(main.ts の host.onPoll、gamepad-ui.ts のライブ表示)はこちらを使うこと。
    */
-  pollByPort(gamepads: readonly (Gamepad | null)[]): [number, number] {
+  pollByPort(
+    gamepads: readonly (Gamepad | null)[],
+    padTypes: readonly [PadType, PadType] = ['default', 'default'],
+  ): [number, number] {
     const ports = assignPorts(gamepads);
     const byPort: [Gamepad | null, Gamepad | null] = [null, null];
     for (const pad of gamepads) {
@@ -417,7 +549,7 @@ export class GamepadManager {
       const port = ports.get(pad.index);
       if (port === 0 || port === 1) byPort[port] = pad;
     }
-    return this.poll(byPort);
+    return this.poll(byPort, padTypes);
   }
 
   /**
@@ -440,10 +572,10 @@ export class GamepadManager {
     return keys;
   }
 
-  private computeBits(pad: Gamepad): number {
+  private computeBits(pad: Gamepad, padType: PadType): number {
     let bits = 0;
     this.forEachActiveSource(pad, (source) => {
-      bits |= this.bitsFor(source);
+      bits |= this.bitsFor(source, padType);
     });
     return bits;
   }
@@ -461,12 +593,12 @@ export class GamepadManager {
     }
   }
 
-  private bitsFor(source: Source): number {
+  private bitsFor(source: Source, padType: PadType): number {
     const list = this.bindings.get(sourceKey(source));
     if (!list) return 0;
     let bits = 0;
     for (const binding of list) {
-      if (binding.kind === 'joy') bits |= 1 << TARGET_TO_RETRO_ID[binding.target];
+      if (binding.kind === 'joy') bits |= 1 << retroIdFor(binding.target, padType);
     }
     return bits;
   }

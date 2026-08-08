@@ -24,17 +24,17 @@ import {
   type Binding,
   DEFAULT_DEADZONE,
   detectNewlyActiveSource,
+  joyTargetsForPadType,
   type JoyTarget,
+  PAD_TYPES,
   type PadSnapshot,
+  type PadType,
+  retroIdFor,
   snapshotPad,
   type Source,
-  TARGET_TO_RETRO_ID,
 } from './gamepad';
 import { t } from './strings';
 import { KBD_ROWS, KEYPAD_ROWS } from './virtual-keyboard';
-
-/** X68000側(標準2ボタンパッド)として表示する対象と表示順。TRG3以降は現状未使用のため出さない。 */
-const DISPLAY_TARGETS: readonly JoyTarget[] = ['UP', 'DOWN', 'LEFT', 'RIGHT', 'TRG1', 'TRG2'];
 
 /**
  * Gamepad API の standard mapping における物理ボタンの「位置」表記。
@@ -93,8 +93,10 @@ export interface GamepadDialogCallbacks {
   /**
    * その Gamepad の入力を、現在の割当で解決した RetroPad ID ビットマスクへ変換する。
    * main.ts 側の GamepadManager.bitsForPad() をそのまま使ってもらう想定(割当ロジックの二重実装を避ける)。
+   * padType は表示対象の行と RetroPad ID の対応を決めるため、そのパッドが繋がっているポートの
+   * 現在の種別(getPadType()の戻り値)を渡すこと。
    */
-  resolveBits(pad: Gamepad): number;
+  resolveBits(pad: Gamepad, padType: PadType): number;
   /** 指定パッドの現在のデッドゾーン。 */
   getDeadzone(pad: Gamepad): number;
   setDeadzone(pad: Gamepad, value: number): void;
@@ -104,11 +106,17 @@ export interface GamepadDialogCallbacks {
   getKeyBindings(pad: Gamepad): Array<{ source: Source; retrok: number }>;
   addBinding(pad: Gamepad, source: Source, binding: Binding): void;
   removeBinding(pad: Gamepad, source: Source, binding: Binding): void;
-  /** そのパッドの割当を XINPUT_PRESET へ丸ごとリセットする([XInput標準に戻す])。 */
+  /** そのパッドの割当を XInput標準へ丸ごとリセットする([XInput標準に戻す])。 */
   resetToPreset(pad: Gamepad): void;
   /** ポート0/1に手動固定中の Gamepad.id(未固定はnull)。 */
   getPortSelection(): readonly [string | null, string | null];
   setPortSelection(port: 0 | 1, padId: string | null): void;
+  /** ポート0/1(表示上はポート1/2)の現在のパッド種別(px68k_joytype1/2)。 */
+  getPadType(port: 0 | 1): PadType;
+  /** パッド種別を変更する。localStorage への永続化は callbacks 側の責務。 */
+  setPadType(port: 0 | 1, padType: PadType): void;
+  /** コアが現在実行中か。パッド種別変更が即時反映されない旨の案内を出し分けるために使う。 */
+  isCoreRunning(): boolean;
 }
 
 export interface GamepadDialog {
@@ -142,8 +150,19 @@ function targetLabel(target: JoyTarget): string {
     case 'RIGHT':
       return t('gamepadTargetRight');
     default:
-      // TRG1/TRG2 はそのままの表記(ja/enどちらでも同じ)。
+      // TRG1..TRG8 はそのままの表記(ja/enどちらでも同じ)。
       return target;
+  }
+}
+
+function padTypeLabel(padType: PadType): string {
+  switch (padType) {
+    case 'default':
+      return t('gamepadPadTypeDefault');
+    case 'cpsf-md':
+      return t('gamepadPadTypeCpsfMd');
+    case 'cpsf-sfc':
+      return t('gamepadPadTypeCpsfSfc');
   }
 }
 
@@ -195,6 +214,8 @@ export function buildGamepadDialog(container: HTMLElement, callbacks: GamepadDia
   const listTitleEl = el('h3', { class: 'rom-modal-section-title' }, [t('gamepadConnectedTitle')]);
   const padListEl = el('div', { class: 'gp-pad-list' });
   const portSelectEl = el('div', { class: 'gp-port-select' });
+  const padTypeTitleEl = el('h3', { class: 'rom-modal-section-title' }, [t('gamepadPadTypeTitle')]);
+  const padTypeSelectEl = el('div', { class: 'gp-padtype-select' });
   const liveContainerEl = el('div', { class: 'gp-live-container' });
   const editorTitleEl = el('h3', { class: 'rom-modal-section-title' }, [t('gamepadBindingsTitle')]);
   const editorPadSelectEl = el('div', { class: 'gp-edit-pad-select' });
@@ -206,6 +227,8 @@ export function buildGamepadDialog(container: HTMLElement, callbacks: GamepadDia
     listTitleEl,
     padListEl,
     portSelectEl,
+    padTypeTitleEl,
+    padTypeSelectEl,
     liveContainerEl,
     editorTitleEl,
     editorPadSelectEl,
@@ -257,12 +280,38 @@ export function buildGamepadDialog(container: HTMLElement, callbacks: GamepadDia
       const portLabel = port === null ? t('gamepadPortUnassigned') : t('gamepadPortAssigned', { port: port + 1 });
       padListEl.append(
         el('div', { class: 'gp-pad-row' }, [
-          el('span', { class: 'gp-pad-index' }, [`#${pad.index}`]),
           el('span', { class: 'gp-pad-id' }, [pad.id]),
           el('span', { class: 'gp-pad-mapping' }, [pad.mapping || '(no mapping)']),
           el('span', { class: 'gp-pad-port' }, [portLabel]),
         ]),
       );
+    }
+  }
+
+  /**
+   * ポート0/1(表示上はポート1/2)のパッド種別セレクト。px68k_joytype1/2 に対応する。
+   * 変更は次回のコア起動時から反映される(GET_VARIABLE_UPDATE 未実装のため実行中には効かない、
+   * main.ts の bootCore()/コアオプション反映タイミングのコメント参照)。実行中の変更時だけ、
+   * その旨の案内を選択直下に出す。
+   */
+  function renderPadTypeSelect(): void {
+    padTypeSelectEl.textContent = '';
+    for (const port of [0, 1] as const) {
+      const label = el('label', { class: 'gp-padtype-select-row' }, [t('gamepadPadTypeDeviceLabel', { port: port + 1 })]);
+      const select = el('select', { class: 'gp-padtype-select-input' });
+      for (const padType of PAD_TYPES) select.append(new Option(padTypeLabel(padType), padType));
+      select.value = callbacks.getPadType(port);
+      const hintEl = el('span', { class: 'gp-padtype-restart-hint hidden' }, [t('gamepadPadTypeRestartHint')]);
+      select.addEventListener('change', () => {
+        callbacks.setPadType(port, select.value as PadType);
+        hintEl.classList.toggle('hidden', !callbacks.isCoreRunning());
+        // TRG3..TRG8 の表示有無・RetroPad ID対応が変わるため、ライブ表示・編集エリアを作り直す。
+        lastEditorKey = '__force__';
+        renderPortSelect(connectedPads());
+        renderEditor(connectedPads());
+      });
+      label.append(select);
+      padTypeSelectEl.append(label, hintEl);
     }
   }
 
@@ -311,21 +360,32 @@ export function buildGamepadDialog(container: HTMLElement, callbacks: GamepadDia
     return wrap;
   }
 
-  function renderTargets(bits: number): HTMLElement {
+  function renderTargets(bits: number, padType: PadType): HTMLElement {
     const wrap = el('div', { class: 'gp-targets' });
-    for (const target of DISPLAY_TARGETS) {
-      const active = (bits & (1 << TARGET_TO_RETRO_ID[target])) !== 0;
+    for (const target of joyTargetsForPadType(padType)) {
+      const active = (bits & (1 << retroIdFor(target, padType))) !== 0;
       wrap.append(el('span', { class: active ? 'gp-target active' : 'gp-target' }, [targetLabel(target)]));
     }
     return wrap;
   }
 
+  /**
+   * そのパッドが現在割り当たっているポートのパッド種別。3台目以降など未割当のパッドは
+   * どのpx68k_joytypeにも属さない(bitsForPad()も未接続ポート扱いで呼ばれず意味を持たない)ため、
+   * 表示だけ default(2ボタン)にフォールバックする。
+   */
+  function padTypeForPad(pad: Gamepad): PadType {
+    const port = callbacks.getPort(pad.index);
+    return port === 0 || port === 1 ? callbacks.getPadType(port) : 'default';
+  }
+
   function renderLive(pads: Gamepad[]): void {
     liveContainerEl.textContent = '';
     for (const pad of pads) {
+      const padType = padTypeForPad(pad);
       let bits = 0;
       try {
-        bits = callbacks.resolveBits(pad);
+        bits = callbacks.resolveBits(pad, padType);
       } catch {
         // 偽パッド(テスト/ヘッドレス検証用)がbuttons/axesの形を崩していても表示だけは壊さない。
         bits = 0;
@@ -338,7 +398,7 @@ export function buildGamepadDialog(container: HTMLElement, callbacks: GamepadDia
       ]);
       const x68k = el('div', { class: 'gp-live-col' }, [
         el('div', { class: 'gp-live-col-title' }, [t('gamepadX68kTitle')]),
-        renderTargets(bits),
+        renderTargets(bits, padType),
       ]);
       liveContainerEl.append(
         el('div', { class: 'gp-live-block' }, [header, el('div', { class: 'gp-live-row' }, [physical, x68k])]),
@@ -434,15 +494,16 @@ export function buildGamepadDialog(container: HTMLElement, callbacks: GamepadDia
 
     editorEl.append(deadzoneRow, resetBtn);
 
-    // 6行のバインディング表。
+    // バインディング表(2ボタン=6行、CPSF-MD/SFC=12行。行数はそのパッドが繋がっているポートの
+    // パッド種別で決まる。未割当パッドは default=6行のまま編集できる)。
     const table = el('div', { class: 'gp-bind-table' });
-    for (const target of DISPLAY_TARGETS) {
+    for (const target of joyTargetsForPadType(padTypeForPad(pad))) {
       table.append(renderBindingRow(pad, target));
     }
     editorEl.append(table);
 
     // その他の割当(キーボード枠)。今回は選べるだけで出力配線は次担当が行う。
-    editorEl.append(renderGenericSection(pad));
+    editorEl.append(renderGenericSection(pad, padTypeForPad(pad)));
   }
 
   function renderBindingRow(pad: Gamepad, target: JoyTarget): HTMLElement {
@@ -497,7 +558,7 @@ export function buildGamepadDialog(container: HTMLElement, callbacks: GamepadDia
   }
 
   /** 「その他の割当(キーボード)」セクション。検出→宛先(ジョイスティック/キーボード)選択→追加、の2段階フロー。 */
-  function renderGenericSection(pad: Gamepad): HTMLElement {
+  function renderGenericSection(pad: Gamepad, padType: PadType): HTMLElement {
     const title = el('h4', { class: 'gp-generic-title' }, [t('gamepadComboKeyboardGroup')]);
 
     const chipsEl = el('div', { class: 'gp-chip-list' });
@@ -532,7 +593,7 @@ export function buildGamepadDialog(container: HTMLElement, callbacks: GamepadDia
       destSelect.append(new Option(t('gamepadComboPlaceholder'), ''));
       const joyGroup = document.createElement('optgroup');
       joyGroup.label = t('gamepadComboJoystickGroup');
-      DISPLAY_TARGETS.forEach((tgt) => joyGroup.append(new Option(targetLabel(tgt), `joy:${tgt}`)));
+      joyTargetsForPadType(padType).forEach((tgt) => joyGroup.append(new Option(targetLabel(tgt), `joy:${tgt}`)));
       const keyGroup = document.createElement('optgroup');
       keyGroup.label = t('gamepadComboKeyboardGroup');
       KEYBOARD_OPTIONS.forEach((k) => keyGroup.append(new Option(k.label, `key:${k.retrok}`)));
@@ -639,6 +700,7 @@ export function buildGamepadDialog(container: HTMLElement, callbacks: GamepadDia
   function open(): void {
     backdrop.classList.remove('hidden');
     lastEditorKey = '__force__'; // 開くたびにパッド選択・編集表を作り直す。
+    renderPadTypeSelect();
     render();
     if (rafId === null) rafId = requestAnimationFrame(tick);
   }
@@ -649,10 +711,12 @@ export function buildGamepadDialog(container: HTMLElement, callbacks: GamepadDia
       titleEl.textContent = t('gamepadDialogTitle');
       descEl.textContent = t('gamepadDialogDescription');
       listTitleEl.textContent = t('gamepadConnectedTitle');
+      padTypeTitleEl.textContent = t('gamepadPadTypeTitle');
       editorTitleEl.textContent = t('gamepadBindingsTitle');
       closeBtn.textContent = t('gamepadDialogClose');
       if (!backdrop.classList.contains('hidden')) {
         lastEditorKey = '__force__';
+        renderPadTypeSelect();
         render();
       }
     },

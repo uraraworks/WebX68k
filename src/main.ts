@@ -46,6 +46,7 @@ import {
   defaultProfileFor,
   GamepadManager,
   loadGamepadStore,
+  PAD_TYPE_CORE_OPTION_VALUE,
   saveGamepadStore,
   type Binding,
   type GamepadStore,
@@ -244,12 +245,16 @@ function gamepadsByPort(): [Gamepad | null, Gamepad | null] {
   return byPort;
 }
 
-/** port0/1ぶんのRetroPadビットマスクを、各パッド固有のGamepadManagerで計算する。 */
+/**
+ * port0/1ぶんのRetroPadビットマスクを、各パッド固有のGamepadManagerで計算する。
+ * TRG3..TRG8 が正しい RetroPad ID に化けるかは、そのポートの現在のパッド種別
+ * (gamepadStore.joyType、px68k_joytype1/2)に依存するため、必ずここで渡す。
+ */
 function pollBitsByPort(pads: readonly (Gamepad | null)[]): [number, number] {
   const result: [number, number] = [0, 0];
   for (let port = 0; port < 2; port++) {
     const pad = pads[port];
-    if (pad) result[port] = managerForPad(pad).bitsForPad(pad);
+    if (pad) result[port] = managerForPad(pad).bitsForPad(pad, gamepadStore.joyType[port]);
   }
   return result;
 }
@@ -312,7 +317,7 @@ function syncGamepadKeys(pads: readonly (Gamepad | null)[]): void {
 // 読み書きの操作だけをコールバックで渡す(gamepad-ui.ts はロジックを持たず表示と仲介に徹する)。
 const gamepadDialog = buildGamepadDialog(gamepadRoot, {
   getPort: (gamepadIndex) => assignPorts(navigator.getGamepads(), gamepadStore.portPads).get(gamepadIndex) ?? null,
-  resolveBits: (pad) => managerForPad(pad).bitsForPad(pad),
+  resolveBits: (pad, padType) => managerForPad(pad).bitsForPad(pad, padType),
   getDeadzone: (pad) => managerForPad(pad).getDeadzone(),
   setDeadzone: (pad, value) => {
     managerForPad(pad).setDeadzone(value);
@@ -348,6 +353,16 @@ const gamepadDialog = buildGamepadDialog(gamepadRoot, {
     // ポート割当が変わると `gamepad:0`/`gamepad:1` とパッドの対応がずれるため、両方解放する。
     releaseAllGamepadKeys();
   },
+  getPadType: (port) => gamepadStore.joyType[port],
+  // px68k_joytype1/2 は起動時(bootCore())にしか反映されない(コアが
+  // RETRO_ENVIRONMENT_GET_VARIABLE_UPDATE を実装しておらず、libretro-host.ts もこの環境コマンドを
+  // 未対応にしてあるため、実行中に setCoreOption() を呼んでも次フレームで再読込されない)。
+  // ここでは永続化のみ行い、実行中の反映有無は isCoreRunning() を見た gamepad-ui.ts 側が案内する。
+  setPadType: (port, padType) => {
+    gamepadStore.joyType[port] = padType;
+    saveGamepadStore(gamepadStore);
+  },
+  isCoreRunning: () => running,
 });
 btnGamepad.addEventListener('click', () => gamepadDialog.open());
 // 押しっぱなし固着の予防(仮想キーボードの releaseAll と同じ思想)。
@@ -1573,10 +1588,13 @@ async function bootCore(): Promise<void> {
   // マウスを有効化する。px68k は MouseSW が立っていないと Mouse_Event() を丸ごと無視するため、
   // このオプション("Mouse")が Mouse_StartCapture(1) を呼ぶまでマウス入力は一切通らない。
   host.setCoreOption('px68k_joy_mouse', 'Mouse');
-  // ジョイスティックは Phase 1 では既定マッピング固定の2ボタンパッド前提で動かす
-  // (Config.JOY_TYPE を PAD_2BUTTON にしておかないと Joystick_Update の TRG1/TRG2 判定と噛み合わない)。
-  host.setCoreOption('px68k_joytype1', 'Default (2 Buttons)');
-  host.setCoreOption('px68k_joytype2', 'Default (2 Buttons)');
+  // ジョイスティックのパッド種別(2ボタン/CPSF-MD/CPSF-SFC)。gamepadStore.joyType(設定ダイアログの
+  // パッド種別セレクタ、localStorage永続化)がそのまま唯一の情報源。この設定は update_variables()
+  // が firstcall(起動直後の1回目のretro_run)でしか読まないため、変更を反映するには
+  // このbootCore()をやり直す(=コアを再起動する)必要がある。実行中にgamepadStore.joyTypeだけ
+  // 書き換えても次に読み込まれるのは次回起動時。
+  host.setCoreOption('px68k_joytype1', PAD_TYPE_CORE_OPTION_VALUE[gamepadStore.joyType[0]]);
+  host.setCoreOption('px68k_joytype2', PAD_TYPE_CORE_OPTION_VALUE[gamepadStore.joyType[1]]);
   await host.init(biosIplBytes!, biosCgBytes!);
   host.onPoll = () => {
     const pads = gamepadsByPort();

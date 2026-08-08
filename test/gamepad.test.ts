@@ -5,15 +5,18 @@ import {
   DEFAULT_DEADZONE,
   detectNewlyActiveSource,
   GamepadManager,
+  joyTargetsForPadType,
   loadGamepadStore,
+  type PadType,
   presetProfile,
+  retroIdFor,
   saveGamepadStore,
   snapshotPad,
   type GamepadStore,
 } from '../src/gamepad';
 import { SharedKeyInput } from '../src/virtual-keyboard';
 
-// libretro.h の RETRO_DEVICE_ID_JOYPAD_* / TARGET_TO_RETRO_ID(gamepad.ts)と対応する。
+// libretro.h の RETRO_DEVICE_ID_JOYPAD_* / retroIdFor()(gamepad.ts、default=2ボタン)と対応する。
 const RETRO_B = 0; // TRG1
 const RETRO_A = 8; // TRG2
 const RETRO_UP = 4;
@@ -212,9 +215,10 @@ describe('gamepad永続化(loadGamepadStore/saveGamepadStore)', () => {
   it('保存→読込のラウンドトリップ', () => {
     const storage = new FakeStorage();
     const store: GamepadStore = {
-      version: 1,
+      version: 2,
       pads: { 'pad-a': presetProfile(0.3) },
       portPads: ['pad-a', null],
+      joyType: ['default', 'default'],
     };
     saveGamepadStore(store, storage);
     const loaded = loadGamepadStore(storage);
@@ -224,48 +228,192 @@ describe('gamepad永続化(loadGamepadStore/saveGamepadStore)', () => {
   it('未保存(初回)は空ストアを返す', () => {
     const storage = new FakeStorage();
     const loaded = loadGamepadStore(storage);
-    expect(loaded).toEqual({ version: 1, pads: {}, portPads: [null, null] });
+    expect(loaded).toEqual({ version: 2, pads: {}, portPads: [null, null], joyType: ['default', 'default'] });
   });
 
   it('壊れたJSONで例外を投げず既定へフォールバックする', () => {
     const storage = new FakeStorage();
     storage.setItem('webx68k.gamepad', '{not valid json');
     const loaded = loadGamepadStore(storage);
-    expect(loaded).toEqual({ version: 1, pads: {}, portPads: [null, null] });
+    expect(loaded).toEqual({ version: 2, pads: {}, portPads: [null, null], joyType: ['default', 'default'] });
   });
 
   it('未知バージョンのデータは既定へフォールバックする', () => {
     const storage = new FakeStorage();
     storage.setItem('webx68k.gamepad', JSON.stringify({ version: 99, pads: {}, portPads: [null, null] }));
     const loaded = loadGamepadStore(storage);
-    expect(loaded).toEqual({ version: 1, pads: {}, portPads: [null, null] });
+    expect(loaded).toEqual({ version: 2, pads: {}, portPads: [null, null], joyType: ['default', 'default'] });
   });
 
   it('構造が不正な保存データ(bindingsが配列でない等)でも既定へフォールバックする', () => {
     const storage = new FakeStorage();
     storage.setItem(
       'webx68k.gamepad',
-      JSON.stringify({ version: 1, pads: { 'pad-a': { deadzone: 0.5, bindings: 'oops' } }, portPads: [null, null] }),
+      JSON.stringify({
+        version: 2,
+        pads: { 'pad-a': { deadzone: 0.5, bindings: 'oops' } },
+        portPads: [null, null],
+        joyType: ['default', 'default'],
+      }),
     );
     const loaded = loadGamepadStore(storage);
-    expect(loaded).toEqual({ version: 1, pads: {}, portPads: [null, null] });
+    expect(loaded).toEqual({ version: 2, pads: {}, portPads: [null, null], joyType: ['default', 'default'] });
   });
 
   it('複数パッドのプロファイルが共存する(挿し替えても両方残る)', () => {
     const storage = new FakeStorage();
     const store: GamepadStore = {
-      version: 1,
+      version: 2,
       pads: {
         'pad-a': presetProfile(0.5),
         'pad-b': { deadzone: 0.4, bindings: [{ source: { kind: 'button', index: 3 }, binding: { kind: 'joy', target: 'TRG1' } }] },
       },
       portPads: [null, null],
+      joyType: ['default', 'default'],
     };
     saveGamepadStore(store, storage);
     const loaded = loadGamepadStore(storage);
     expect(Object.keys(loaded.pads).sort()).toEqual(['pad-a', 'pad-b']);
     expect(loaded.pads['pad-a']).toEqual(presetProfile(0.5));
     expect(loaded.pads['pad-b'].bindings).toHaveLength(1);
+  });
+
+  // v1(joyType追加前)保存データのマイグレーション回帰テスト。
+  // 「未知バージョンは空ストアへ」の実装をそのまま流用すると、joyTypeを追加しただけのv1データまで
+  // 一括で消してしまう(既存ユーザーの割当編集・ポート固定が消滅する)。v1は必ずpads/portPadsを
+  // 保ったままv2へ移行すること。
+  describe('v1(joyType追加前)からのマイグレーション', () => {
+    it('v1データはpads/portPadsを保ったままjoyType(既定=default両方)を補ってv2として読み込まれる', () => {
+      const storage = new FakeStorage();
+      const v1 = {
+        version: 1,
+        pads: { 'pad-a': presetProfile(0.4) },
+        portPads: ['pad-a', null],
+      };
+      storage.setItem('webx68k.gamepad', JSON.stringify(v1));
+      const loaded = loadGamepadStore(storage);
+      expect(loaded).toEqual({
+        version: 2,
+        pads: { 'pad-a': presetProfile(0.4) },
+        portPads: ['pad-a', null],
+        joyType: ['default', 'default'],
+      });
+    });
+
+    it('v1データのpadsが構造不正なら(v2同様)空ストアへフォールバックする', () => {
+      const storage = new FakeStorage();
+      storage.setItem(
+        'webx68k.gamepad',
+        JSON.stringify({ version: 1, pads: { 'pad-a': { deadzone: 0.5, bindings: 'oops' } }, portPads: [null, null] }),
+      );
+      const loaded = loadGamepadStore(storage);
+      expect(loaded).toEqual({ version: 2, pads: {}, portPads: [null, null], joyType: ['default', 'default'] });
+    });
+  });
+
+  describe('joyType(パッド種別)の永続化ラウンドトリップ', () => {
+    it('cpsf-md/cpsf-sfc を含む joyType を保存→読込できる', () => {
+      const storage = new FakeStorage();
+      const store: GamepadStore = {
+        version: 2,
+        pads: {},
+        portPads: [null, null],
+        joyType: ['cpsf-md', 'cpsf-sfc'],
+      };
+      saveGamepadStore(store, storage);
+      expect(loadGamepadStore(storage)).toEqual(store);
+    });
+
+    it('joyTypeに不正な値が入っていれば全体を既定へフォールバックする', () => {
+      const storage = new FakeStorage();
+      storage.setItem(
+        'webx68k.gamepad',
+        JSON.stringify({ version: 2, pads: {}, portPads: [null, null], joyType: ['default', 'not-a-padtype'] }),
+      );
+      const loaded = loadGamepadStore(storage);
+      expect(loaded).toEqual({ version: 2, pads: {}, portPads: [null, null], joyType: ['default', 'default'] });
+    });
+  });
+});
+
+describe('joyTargetsForPadType(パッド種別ごとの表示対象)', () => {
+  it('default(2ボタン)はUP/DOWN/LEFT/RIGHT/TRG1/TRG2の6項目', () => {
+    expect(joyTargetsForPadType('default')).toEqual(['UP', 'DOWN', 'LEFT', 'RIGHT', 'TRG1', 'TRG2']);
+  });
+
+  it('cpsf-md/cpsf-sfc(8ボタン)はTRG1..TRG8まで含む12項目', () => {
+    const expected = ['UP', 'DOWN', 'LEFT', 'RIGHT', 'TRG1', 'TRG2', 'TRG3', 'TRG4', 'TRG5', 'TRG6', 'TRG7', 'TRG8'];
+    expect(joyTargetsForPadType('cpsf-md')).toEqual(expected);
+    expect(joyTargetsForPadType('cpsf-sfc')).toEqual(expected);
+  });
+});
+
+// TRG3..TRG8 と RetroPad ID の対応は px68k-libretro/libretro/joystick.c の Joystick_Update() から
+// 確定させた値(推測ではない)。CPSF-MD は279〜312行目付近、CPSF-SFCは314〜342行目付近。
+// RetroPad ID (libretro.h の retro_device_id_joypad): B=0, Y=1, SELECT=2, START=3, UP=4, DOWN=5,
+// LEFT=6, RIGHT=7, A=8, X=9, L=10, R=11。
+describe('retroIdFor(TRG3..TRG8 と RetroPad ID の対応、joystick.c 由来)', () => {
+  it('cpsf-md: A(8)->TRG1, B(0)->TRG2, Y(1)->TRG3, X(9)->TRG4, L(10)->TRG5, Start(3)->TRG6, Select(2)->TRG7, R(11)->TRG8', () => {
+    const padType: PadType = 'cpsf-md';
+    expect(retroIdFor('TRG1', padType)).toBe(8);
+    expect(retroIdFor('TRG2', padType)).toBe(0);
+    expect(retroIdFor('TRG3', padType)).toBe(1);
+    expect(retroIdFor('TRG4', padType)).toBe(9);
+    expect(retroIdFor('TRG5', padType)).toBe(10);
+    expect(retroIdFor('TRG6', padType)).toBe(3);
+    expect(retroIdFor('TRG7', padType)).toBe(2);
+    expect(retroIdFor('TRG8', padType)).toBe(11);
+  });
+
+  it('cpsf-sfc: B(0)->TRG1, A(8)->TRG2, X(9)->TRG3, Y(1)->TRG4, R(11)->TRG5, Start(3)->TRG6, Select(2)->TRG7, L(10)->TRG8', () => {
+    const padType: PadType = 'cpsf-sfc';
+    expect(retroIdFor('TRG1', padType)).toBe(0);
+    expect(retroIdFor('TRG2', padType)).toBe(8);
+    expect(retroIdFor('TRG3', padType)).toBe(9);
+    expect(retroIdFor('TRG4', padType)).toBe(1);
+    expect(retroIdFor('TRG5', padType)).toBe(11);
+    expect(retroIdFor('TRG6', padType)).toBe(3);
+    expect(retroIdFor('TRG7', padType)).toBe(2);
+    expect(retroIdFor('TRG8', padType)).toBe(10);
+  });
+
+  it('default(2ボタン)はTRG1/TRG2のみ px68k-libretro が参照する(B(0)->TRG1, A(8)->TRG2)', () => {
+    expect(retroIdFor('TRG1')).toBe(0);
+    expect(retroIdFor('TRG2')).toBe(8);
+  });
+
+  it('UP/DOWN/LEFT/RIGHTはpadTypeによらず共通(D-Pad判定はPAD種別分岐の外)', () => {
+    for (const padType of ['default', 'cpsf-md', 'cpsf-sfc'] as const) {
+      expect(retroIdFor('UP', padType)).toBe(4);
+      expect(retroIdFor('DOWN', padType)).toBe(5);
+      expect(retroIdFor('LEFT', padType)).toBe(6);
+      expect(retroIdFor('RIGHT', padType)).toBe(7);
+    }
+  });
+});
+
+describe('GamepadManager.bitsForPad(padType引数、CPSF-MD/SFCのTRG3..TRG8配線)', () => {
+  it('cpsf-mdでTRG3(RetroPad Y=id1)に割り当てたボタンを押すと、TRG3のRetroPad ID(1)のビットが立つ', () => {
+    const mgr = new GamepadManager([], 0.5);
+    mgr.addBinding({ kind: 'button', index: 5 }, { kind: 'joy', target: 'TRG3' });
+    const pad = makeGamepad({ buttons: { 5: true } });
+    expect(mgr.bitsForPad(pad, 'cpsf-md')).toBe(1 << 1);
+  });
+
+  it('cpsf-mdとdefaultで同じTRG1バインディングでも異なるRetroPad IDになる(TRG1: cpsf-md=8, default=0)', () => {
+    const mgr = new GamepadManager([], 0.5);
+    mgr.addBinding({ kind: 'button', index: 0 }, { kind: 'joy', target: 'TRG1' });
+    const pad = makeGamepad({ buttons: { 0: true } });
+    expect(mgr.bitsForPad(pad, 'default')).toBe(1 << 0);
+    expect(mgr.bitsForPad(pad, 'cpsf-md')).toBe(1 << 8);
+  });
+
+  it('poll()/pollByPort()もpadTypesを port ごとに渡せる', () => {
+    const mgr = new GamepadManager([], 0.5);
+    mgr.addBinding({ kind: 'button', index: 0 }, { kind: 'joy', target: 'TRG8' });
+    const pad = makeGamepad({ buttons: { 0: true } });
+    const [bits0] = mgr.poll([pad, null], ['cpsf-sfc', 'default']);
+    expect(bits0).toBe(1 << 10); // cpsf-sfc: TRG8 -> RetroPad L(id10)
   });
 });
 

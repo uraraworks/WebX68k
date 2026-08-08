@@ -1437,11 +1437,6 @@ body.pseudo-fullscreen .console-card {
   background: var(--bg);
 }
 
-.gp-pad-index {
-  color: var(--text-dim);
-  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
-}
-
 .gp-pad-id {
   flex: 1 1 auto;
   overflow: hidden;
@@ -1556,7 +1551,32 @@ body.pseudo-fullscreen .console-card {
   gap: 6px;
 }
 
+/* パッド種別(px68k_joytype1/2)選択エリア。 */
+.gp-padtype-select {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font-size: 12px;
+}
+
+.gp-padtype-select-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.gp-padtype-restart-hint {
+  font-size: 11px;
+  color: var(--text-dim);
+  margin: -2px 0 4px;
+}
+
+.gp-padtype-restart-hint.hidden {
+  display: none;
+}
+
 .gp-port-select-input,
+.gp-padtype-select-input,
 .gp-edit-pad-input,
 .gp-source-combo,
 .gp-dest-combo {

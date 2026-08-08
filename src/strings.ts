@@ -232,6 +232,16 @@ interface Dict {
   /** ポート選択の「自動(接続順)」オプション。 */
   gamepadPortAutoOption(): string;
 
+  // --- ジョイスティックのパッド種別(px68k_joytype1/2。2ボタン/CPSF-MD/CPSF-SFC) ---
+  gamepadPadTypeTitle(): string;
+  /** ポートごとのパッド種別セレクトのラベル。 */
+  gamepadPadTypeDeviceLabel(args: { port: number }): string;
+  gamepadPadTypeDefault(): string;
+  gamepadPadTypeCpsfMd(): string;
+  gamepadPadTypeCpsfSfc(): string;
+  /** パッド種別を実行中に変更した場合の案内(GET_VARIABLE_UPDATE未実装のため次回起動まで反映されない)。 */
+  gamepadPadTypeRestartHint(): string;
+
   // --- ジョイスティック位置ベースのボタン表記(RetroPad命名(B/A/Y/X)は実機印刷と食い違うため) ---
   /** standardマッピングのボタン表記。indexを主表記にし、位置名を添える(例: 「#0 (下)」)。 */
   gamepadPositionalButtonLabel(args: { index: number; position: string }): string;
@@ -450,6 +460,12 @@ const STRINGS: Record<Lang, Dict> = {
     gamepadResetPresetBtn: () => 'XInput標準に戻す',
     gamepadPortDeviceLabel: ({ port }) => `ポート${port}のパッド`,
     gamepadPortAutoOption: () => '自動(接続順)',
+    gamepadPadTypeTitle: () => 'パッド種別',
+    gamepadPadTypeDeviceLabel: ({ port }) => `ポート${port}のパッド種別`,
+    gamepadPadTypeDefault: () => '標準(2ボタン)',
+    gamepadPadTypeCpsfMd: () => 'CPSF-MD (8ボタン)',
+    gamepadPadTypeCpsfSfc: () => 'CPSF-SFC (8ボタン)',
+    gamepadPadTypeRestartHint: () => '変更は次回のコア起動時から反映されます(リセットボタンでは反映されません)。',
 
     gamepadPositionalButtonLabel: ({ index, position }) => `#${index} (${position})`,
     gamepadPosDown: () => '下',
@@ -665,6 +681,12 @@ const STRINGS: Record<Lang, Dict> = {
     gamepadResetPresetBtn: () => 'Reset to XInput Defaults',
     gamepadPortDeviceLabel: ({ port }) => `Port ${port} Pad`,
     gamepadPortAutoOption: () => 'Automatic (connection order)',
+    gamepadPadTypeTitle: () => 'Pad Type',
+    gamepadPadTypeDeviceLabel: ({ port }) => `Port ${port} Pad Type`,
+    gamepadPadTypeDefault: () => 'Default (2 Buttons)',
+    gamepadPadTypeCpsfMd: () => 'CPSF-MD (8 Buttons)',
+    gamepadPadTypeCpsfSfc: () => 'CPSF-SFC (8 Buttons)',
+    gamepadPadTypeRestartHint: () => 'This takes effect the next time the core starts (not on Reset).',
 
     gamepadPositionalButtonLabel: ({ index, position }) => `#${index} (${position})`,
     gamepadPosDown: () => 'Down',
