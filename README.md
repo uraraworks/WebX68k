@@ -307,12 +307,21 @@ This repository is **GPLv2** ([COPYING](COPYING)).
 - MCP bridge (`?bridge=1`) for AI-agent control: screenshot, TVRAM ANK/kanji text,
   key/mouse input, disk operations
 - Japanese/English UI toggle
+- Gamepad support (Gamepad API): per-port selection between the standard 2-button
+  pad and 8-button CPSF-MD/CPSF-SFC-equivalent pads. Button/axis assignment editing
+  (detect mode, combo-box selection, deadzone adjustment), assigning keyboard keys
+  to pad buttons/axes, per-pad port pinning, and all settings persisted to the
+  browser's localStorage. A settings dialog covers ports/pad type/assignments
 - Own-BIOS loading (IPLROM.DAT/CGROM.DAT) via the Settings panel, persisted
   to IndexedDB and prioritized over the bundled files
 
 ## Known limitations
 
-- No joypad support (`RETRO_DEVICE_JOYPAD` always reports nothing pressed).
+- Joypad (gamepad) input is supported. The pad type — standard 2-button or
+  8-button CPSF-MD/CPSF-SFC — can be switched per port. A pad-type change takes
+  effect the next time the core starts; it does not apply immediately while
+  running and is not applied by the Reset button. The Cyberstick (analog mode)
+  is not supported.
 - No multi-disk-side swapping (`SET_DISK_CONTROL_INTERFACE` requests from
   the core are ignored).
 - Only one HDD is exposed in the UI (`Config.HDImage[0]`); px68k-libretro

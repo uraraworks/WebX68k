@@ -358,6 +358,95 @@ Pointer Lock を経由せずに入力を注入できる（将来の MCP ブリ�
 ポーリングしており、累積デルタは即座に吸われて次のポーリングで 0 に上書きされる。
 `requestAnimationFrame` ごとに読むこと。
 
+## ゲームパッド入力
+
+Gamepad API(`navigator.getGamepads()`)を px68k-libretro の RetroPad 入力(`RETRO_DEVICE_JOYPAD`)
+経由でジョイスティックポート0/1へつなぎ込む。実体は `src/gamepad.ts`(配線ロジック・永続化)
+と `src/gamepad-ui.ts`(設定ダイアログ、表示と編集操作の仲介のみ)に分離してある。
+
+### コアは無改変で足りる
+
+px68k-libretro 側は元から `RETRO_DEVICE_JOYPAD` を読める作りになっており、こちら側の C コード
+(`libretro.c` / `libretro/joystick.c` / `core-shim.c`)には一切手を入れていない。理由は2つ:
+
+- `libretro.c` の `retro_run()` は毎フレーム無条件に `Joystick_Update(0, -1, 0)` /
+  `Joystick_Update(0, -1, 1)`(port0/1ぶん)を呼んでいる(2422〜2423行目)。呼び出しは
+  `Config.joypad1`/`joypad2` フラグの値に関わらず行われる — このフラグは
+  `RETRO_ENVIRONMENT_SET_CONTROLLER_INFO` で登録した入力descriptor(フロントエンドのマッピング
+  UI向けの表示用メタデータ)の有無を示すだけで、`Joystick_Update()` が実際に入力を読むかどうかとは
+  無関係。つまり `RETRO_ENVIRONMENT_SET_INPUT_DESCRIPTORS`/`SET_CONTROLLER_INFO`
+  を正しく実装していなくても(`libretro-host.ts` は両方とも「call自体は受け付けるが内容は無視」
+  という最小実装のまま)、`inputStateCb` さえ正しい値を返せば入力は届く。
+- `Joystick_Update()` はパッド種別(`Config.JOY_TYPE[port]`、px68k_joytype1/2 コアオプション)
+  に応じて RetroPad ID を X68000 側の `JOY_TRGn` ビットへ変換するだけで、この変換テーブル自体は
+  コア組み込み。ホスト側は「どの RetroPad ID を押下として返すか」だけを制御すればよい。
+
+### RetroPad ID ↔ JoyTarget の対応はパッド種別で変わる
+
+`src/gamepad.ts` の `JoyTarget`(`UP`/`DOWN`/`LEFT`/`RIGHT`/`TRG1`..`TRG8`)は X68000 側の入力先で、
+`retroIdFor(target, padType)` で RetroPad ID(`inputStateCb` の `id` 引数)へ変換してから
+`LibretroHost.setJoyState()` へ渡す。この対応表(`RETRO_ID_MAPS`)は px68k-libretro
+`libretro/joystick.c` の `Joystick_Update()` の `PAD_2BUTTON`/`PAD_CPSF_MD`/`PAD_CPSF_SFC` 各分岐
+から実装を読んで確定させたもので、**推測では書いていない**(例: CPSF-MD は RetroPad A(id=8)が
+Low-Kick=`JOY_TRG1`、RetroPad Y(id=1)が Mid-Punch=`JOY_TRG3`、等)。UP/DOWN/LEFT/RIGHT はどの
+padType でも共通(D-Pad判定はパッド種別分岐の外側にある)。
+
+TRG3..TRG8 を使うには CPSF-MD/CPSF-SFC(8ボタン)への切り替えが必要で、`px68k_joytype1`/
+`px68k_joytype2` コアオプション(設定ダイアログのパッド種別セレクタ、ポートごとに選択・
+`gamepadStore.joyType` として localStorage永続化)で制御する。サイバースティック(アナログ)は
+px68k-libretro 側がアナログスティック値を要求する別プロトコルで、Gamepad API のデジタル
+ボタン/軸入力とは設計が噛み合わないため対象外にした。
+
+### コアオプションの反映は起動時のみ(GET_VARIABLE_UPDATE 未実装)
+
+`px68k_joytype1`/`2` は `update_variables()` から読まれるが、`libretro.c` の `retro_run()` は
+firstcall(起動直後の1回だけ)に加えて、`environ_cb(RETRO_ENVIRONMENT_GET_VARIABLE_UPDATE, &updated)`
+が真を返したフレームでしか再読込しない。`libretro-host.ts` の `environCb` はこの環境コマンドを
+実装しておらず(未対応コマンドは `0`=false を返す)、`updated` は常に偽のまま — つまり
+**実行中に `setCoreOption()` を呼んでも次フレームには反映されない**。パッド種別の変更は
+コアの再起動(`bootCore()` のやり直し)まで効かないため、設定ダイアログはコア実行中の変更時に
+「次回起動時から反映されます」という案内(`gamepadPadTypeRestartHint`)を出すに留め、変更自体は
+即座に自動再起動しない(ディスク挿入中のFDD/HDD状態を巻き込んで再起動するのは過剰な副作用に
+なるため)。GET_VARIABLE_UPDATE を実装すれば実行中の即時反映も可能だが、コアオプション全般
+(CPU速度・RAMサイズ等)がどれも同じ「次回起動まで反映されない」制約を共有しているため、
+ジョイスティックだけ特別扱いはしていない。
+
+### Node の結合テストでは `px68k_no_wait_mode` が必須
+
+`test/core-joystick-integration.test.ts` はコンパイル済み wasm コア(`public/core/px68k_libretro.js`)
+を Node 上で直接動かし、`Joystick_Read()` を core-shim 経由で呼んで実測する。px68k-libretro の
+`Joystick_Update()` / `WinX68k_Exec()` は `libretro/timer.c` の `Timer_GetCount()`(実時間ベースの
+55.6fps ペーシング)が真を返したフレームでしか呼ばれない。Node でループ実行するとほぼ毎フレーム
+実時間が経過せず false のままになり、ジョイスティック状態がいつまでも更新されない(観測済み)。
+コアオプション `px68k_no_wait_mode` を `"enabled"` にして `Config.NoWaitMode` を立て、この
+ペーシングを無効化することで結合テストを決定的にしている。
+
+### X68000のジョイポートは負論理
+
+`JOY_UP`/`JOY_TRG1` 等のビットは押下で **0**、未押下で **1**。`Joystick_Read()` の戻り値をそのまま
+テストでアサートする際はこの向きを間違えないこと(`test/core-joystick-integration.test.ts` は
+「未押下時は該当ビットが立っている(1)」を先に確認してから押下時に0になることを見ている)。
+
+### ポート割当は「ポーリング結果だけから決まる純粋関数」に一本化
+
+`assignPorts()`(`gamepad.ts`)は `navigator.getGamepads()` の毎回の結果(と手動固定設定)だけから
+port0/1を決める純粋関数で、`gamepadconnected`/`gamepaddisconnected` イベントの発火有無に依存しない。
+設定ダイアログのライブ表示・コアへの入力送信(`main.ts` の `host.onPoll`)のどちらも必ずこの
+関数を経由させている。以前は「表示側は独自にポートを推測し、コアへの送信は別ロジックで
+ポートを決める」という二重化があり、**設定画面ではライブ表示のX68k側インジケータが正しく
+光るのに、実際のゲストには入力が届かない**というバグを踏んだ(イベントを経ずに
+`navigator.getGamepads()` へ現れたパッドを一方が拾い、他方が取りこぼすケースがあった)。
+情報源を1つの純粋関数に統合したことで、この種の「表示は動くのに実体は動かない」を構造的に
+再発させない。
+
+### 表示は1始まり、内部は0始まり
+
+Gamepad API の `buttons`/`axes` の index、ポート番号は内部的にはすべて0始まり(`Gamepad.index`、
+`buttons[0]`、`assignPorts()` が返す `0|1` 等)。UI表示だけ `toDisplayIndex()`(`gamepad-ui.ts`)で
++1 し、Windows の「ゲームコントローラーの設定」の表記(ボタン1、ポート1 等)に合わせている。
+localStorage の保存値・`window.__webx68kDebug.joy()` の生値は0始まりのまま扱うこと(表示専用の
+変換をここでしか行わないのが唯一の情報源)。
+
 ## ステートセーブ / ロード
 
 ツールバーの2ボタン（保存/復元）で、実行中の状態をまるごと保存・復元できる（WebNP2 と同じ
@@ -626,7 +715,8 @@ WebNP2 と同様、コアが実行中のHDD挿抜に未対応なのは変わら�
 
 ## 未検証・既知の注意点
 
-- ジョイパッド入力は未実装です（`RETRO_DEVICE_JOYPAD` は常に 0 を返します）。
+- ジョイパッド入力は対応済みです(詳細は「ゲームパッド入力」節)。サイバースティック
+  (アナログモード)のみ非対応です。
 - ディスクの多面差し替え（`SET_DISK_CONTROL_INTERFACE`）はコア側からの要求を無視しており未対応です。
 - HDD は `Config.HDImage[0]`（1台分）のみ UI から扱えます。px68k-libretro 自体は16台まで
   保持できますが、WebX68k の HDD スロットは1行のみです。
