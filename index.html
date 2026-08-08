@@ -202,9 +202,13 @@
         <span id="bios-cg-status" class="status-ng">未設定</span>
       </div>
 
-      <h3 class="rom-modal-section-title">
-        <span id="settings-machine-title">マシン構成</span> <small id="settings-machine-note" class="rom-modal-section-note">(既定: X68000 XVI 相当 = 16MHz / 2MB)</small>
-      </h3>
+      <!-- 見出しと注記を1つに包み、.rom-modal の flex gap がこの2つの間に入らないようにする -->
+      <div class="settings-machine-heading">
+        <h3 class="rom-modal-section-title">
+          <span id="settings-machine-title">マシン構成</span> <small id="settings-machine-note" class="rom-modal-section-note">(既定: X68000 XVI 相当 = 16MHz / 2MB)</small>
+        </h3>
+        <p id="settings-machine-reset-note" class="status-bundled">変更を反映するにはリセットが必要です。</p>
+      </div>
       <div class="field-row">
         <label id="settings-cpuspeed-label" for="cfg-cpuspeed">CPU速度</label>
         <select id="cfg-cpuspeed">

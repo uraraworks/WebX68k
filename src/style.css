@@ -882,6 +882,11 @@ main {
   color: var(--status-bundled);
 }
 
+#settings-machine-reset-note {
+  margin: 2px 0 8px;
+  font-size: 12px;
+}
+
 .field-row select {
   flex: 1;
   font-size: 12px;

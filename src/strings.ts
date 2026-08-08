@@ -88,12 +88,15 @@ interface Dict {
   libraryMenuEmpty(): string;
   alertBiosMissing(): string;
   alertBootFailed(args: { message: string }): string;
+  toastResetting(): string;
+  alertResetFailed(args: { message: string }): string;
   alertDownloadNoImage(): string;
   settingsTitle(): string;
   settingsDescription(): string;
   settingsBiosSectionTitle(): string;
   settingsMachineSectionTitle(): string;
   settingsMachineSectionNote(): string;
+  settingsMachineResetNote(): string;
   settingsCpuSpeedLabel(): string;
   settingsRamSizeLabel(): string;
   settingsClose(): string;
@@ -400,6 +403,9 @@ const STRINGS: Record<Lang, Dict> = {
     libraryMenuEmpty: () => '保存済みのディスクイメージはありません。',
     alertBiosMissing: () => 'BIOS ファイル (IPLROM.DAT / CGROM.DAT) を設定してください。',
     alertBootFailed: ({ message }) => `起動に失敗しました: ${message}`,
+    toastResetting: () => 'リセット中…',
+    alertResetFailed: ({ message }) =>
+      `リセットに失敗しました: ${message}\nページを再読み込みしてください。`,
     alertDownloadNoImage: () => 'このドライブにはディスクが挿入されていません。',
     settingsTitle: () => '設定',
     settingsDescription: () =>
@@ -407,6 +413,7 @@ const STRINGS: Record<Lang, Dict> = {
     settingsBiosSectionTitle: () => 'BIOS 設定',
     settingsMachineSectionTitle: () => 'マシン構成',
     settingsMachineSectionNote: () => '(既定: X68000 XVI 相当 = 16MHz / 2MB)',
+    settingsMachineResetNote: () => '変更を反映するにはリセットが必要です。',
     settingsCpuSpeedLabel: () => 'CPU速度',
     settingsRamSizeLabel: () => 'RAM',
     settingsClose: () => '閉じる',
@@ -550,7 +557,7 @@ const STRINGS: Record<Lang, Dict> = {
     gamepadPadTypeDefault: () => '標準(2ボタン)',
     gamepadPadTypeCpsfMd: () => 'CPSF-MD (8ボタン)',
     gamepadPadTypeCpsfSfc: () => 'CPSF-SFC (8ボタン)',
-    gamepadPadTypeRestartHint: () => '変更は次回のコア起動時から反映されます(リセットボタンでは反映されません)。',
+    gamepadPadTypeRestartHint: () => '変更はコアの再起動(リセットボタン)から反映されます。',
 
     gamepadPositionalButtonLabel: ({ index, position }) => `#${index} (${position})`,
     gamepadPosDown: () => '下',
@@ -646,6 +653,9 @@ const STRINGS: Record<Lang, Dict> = {
     libraryMenuEmpty: () => 'No saved disk images yet.',
     alertBiosMissing: () => 'Please set the BIOS files (IPLROM.DAT / CGROM.DAT).',
     alertBootFailed: ({ message }) => `Failed to start: ${message}`,
+    toastResetting: () => 'Resetting…',
+    alertResetFailed: ({ message }) =>
+      `Reset failed: ${message}\nPlease reload the page.`,
     alertDownloadNoImage: () => 'No disk is inserted in this drive.',
     settingsTitle: () => 'Settings',
     settingsDescription: () =>
@@ -653,6 +663,7 @@ const STRINGS: Record<Lang, Dict> = {
     settingsBiosSectionTitle: () => 'BIOS Settings',
     settingsMachineSectionTitle: () => 'Machine Configuration',
     settingsMachineSectionNote: () => '(default: X68000 XVI equivalent = 16MHz / 2MB)',
+    settingsMachineResetNote: () => 'Reset is required for changes to take effect.',
     settingsCpuSpeedLabel: () => 'CPU Speed',
     settingsRamSizeLabel: () => 'RAM',
     settingsClose: () => 'Close',
@@ -796,7 +807,7 @@ const STRINGS: Record<Lang, Dict> = {
     gamepadPadTypeDefault: () => 'Default (2 Buttons)',
     gamepadPadTypeCpsfMd: () => 'CPSF-MD (8 Buttons)',
     gamepadPadTypeCpsfSfc: () => 'CPSF-SFC (8 Buttons)',
-    gamepadPadTypeRestartHint: () => 'This takes effect the next time the core starts (not on Reset).',
+    gamepadPadTypeRestartHint: () => 'This takes effect when the core restarts (via the Reset button).',
 
     gamepadPositionalButtonLabel: ({ index, position }) => `#${index} (${position})`,
     gamepadPosDown: () => 'Down',

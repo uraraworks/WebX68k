@@ -2106,6 +2106,7 @@ function applyDocumentStrings(): void {
   document.getElementById('settings-bios-title')!.textContent = t('settingsBiosSectionTitle');
   document.getElementById('settings-machine-title')!.textContent = t('settingsMachineSectionTitle');
   document.getElementById('settings-machine-note')!.textContent = t('settingsMachineSectionNote');
+  document.getElementById('settings-machine-reset-note')!.textContent = t('settingsMachineResetNote');
   document.getElementById('settings-cpuspeed-label')!.textContent = t('settingsCpuSpeedLabel');
   document.getElementById('settings-ramsize-label')!.textContent = t('settingsRamSizeLabel');
   settingsCloseBtn.textContent = t('settingsClose');
@@ -3076,8 +3077,27 @@ bootOverlay.addEventListener('click', (e) => {
   if (e.target === bootOverlay) void startFromOverlay(false);
 });
 
+// リセットボタン: ソフトリセット(_retro_reset())ではなく restartCore() でコアを丸ごと
+// 作り直すハードリセットにしている。CPU速度/RAM/パッド種別等のコアオプションは
+// update_variables() が起動直後の1回目の retro_run(firstcall)でしか読まないため、
+// ソフトリセットでは設定ダイアログでの変更が反映されない(従来はページのリロードが必要だった)。
+// restartCore() は非同期でゲストの書き込み回収(flushAllSlots)を伴うため、多重起動を防ぐ
+// 目的で処理中はボタンを disabled にする。失敗時はコアが破棄されたまま無言で操作不能になるのを
+// 避けるため、startFromOverlay() と同じ流儀でエラーを通知する(ここではリロードを促す)。
 btnReset.addEventListener('click', () => {
-  host?.reset();
+  if (btnReset.disabled) return;
+  btnReset.disabled = true;
+  showToast(t('toastResetting'), null);
+  restartCore()
+    .then(() => {
+      btnReset.disabled = false;
+      hideToast();
+    })
+    .catch((err) => {
+      console.error(err);
+      alert(t('alertResetFailed', { message: describeError(err) }));
+      // host が null のまま(コア破棄後に再構築失敗)なので、操作不能を隠さずボタンは無効のままにする。
+    });
 });
 
 /**
