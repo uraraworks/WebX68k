@@ -439,32 +439,63 @@ const VENDOR_PRODUCT_TO_KNOWN_PAD: Record<string, 'm30' | 'micro'> = {
 };
 
 /**
- * gamepad.id から既知パッド用の既定プリセットを1つ選ぶ、唯一の情報源。一致するパッドが
- * 無ければ null(呼び出し側は従来どおり mapping==='standard' か否かでフォールバックすること)。
+ * gamepad.id から既知パッド種別('m30'/'micro')を判定する、唯一の情報源。
+ * knownPadPresetFor()(プリセット選択)・knownAxisRestFor()(静止値の固定)の両方がこれを使う
+ * (判定ロジックの二重実装を避けるため)。一致しなければ null。
  *
  * 判定は Vendor/Product ID(extractVendorProduct())を最優先する。'Micro' の部分一致で
  * 判定すると 'Microsoft X-Box ...' のような無関係な id まで誤爆する
  * (2026-08-08 発覚。'Micro' は 'Microsoft' の部分文字列)ため、文字列パターンマッチは
  * 誤爆しない 'm30' のみをフォールバックとして残し、'micro' 系は vendor/product が
  * 取れた場合に限定する。
+ */
+function knownPadKindFor(padId: string): 'm30' | 'micro' | null {
+  const vendorProduct = extractVendorProduct(padId);
+  const known = vendorProduct ? VENDOR_PRODUCT_TO_KNOWN_PAD[vendorProduct] : undefined;
+  if (known !== undefined) return known ?? null; // vendor/productは取れたが未知のペア: 誤爆を避けるため文字列フォールバックに落とさない。
+
+  // vendor/product が取れない(ブラウザ実装差で id に埋め込まれていない)場合のみ、id文字列で
+  // フォールバックする。'm30' は他の実在パッド名との衝突が知られていないため許容するが、
+  // 'micro' は 'Microsoft' 等を誤爆するため vendor/product 経由でしか判定しない。
+  const id = padId.toLowerCase();
+  if (id.includes('m30')) return 'm30';
+  return null;
+}
+
+/**
+ * gamepad.id から既知パッド用の既定プリセットを1つ選ぶ、唯一の情報源。一致するパッドが
+ * 無ければ null(呼び出し側は従来どおり mapping==='standard' か否かでフォールバックすること)。
  *
  * padType が「そのパッドの8ボタン仕様」と一致しない場合(例: M30 で CPSF-SFC を選んでいる等)は、
  * 8ボタン側のバインディング(パッド固有のTRG3..TRG8割当)は該当しないため、2ボタン側の
  * プリセットにフォールバックする(方向 + TRG1/TRG2 は両パターンとも壊さない)。
  */
 export function knownPadPresetFor(padId: string, padType: PadType): ReadonlyArray<{ source: Source; binding: Binding }> | null {
-  const vendorProduct = extractVendorProduct(padId);
-  const known = vendorProduct ? VENDOR_PRODUCT_TO_KNOWN_PAD[vendorProduct] : undefined;
-  if (known === 'm30') return padType === 'cpsf-md' ? M30_CPSF_MD_PRESET : M30_STANDARD_PRESET;
-  if (known === 'micro') return padType === 'cpsf-sfc' ? MICRO_CPSF_SFC_PRESET : MICRO_STANDARD_PRESET;
-  if (known !== undefined) return null; // vendor/productは取れたが未知のペア: 誤爆を避けるため文字列フォールバックに落とさない。
-
-  // vendor/product が取れない(ブラウザ実装差で id に埋め込まれていない)場合のみ、id文字列で
-  // フォールバックする。'm30' は他の実在パッド名との衝突が知られていないため許容するが、
-  // 'micro' は 'Microsoft' 等を誤爆するため vendor/product 経由でしか判定しない。
-  const id = padId.toLowerCase();
-  if (id.includes('m30')) return padType === 'cpsf-md' ? M30_CPSF_MD_PRESET : M30_STANDARD_PRESET;
+  const kind = knownPadKindFor(padId);
+  if (kind === 'm30') return padType === 'cpsf-md' ? M30_CPSF_MD_PRESET : M30_STANDARD_PRESET;
+  if (kind === 'micro') return padType === 'cpsf-sfc' ? MICRO_CPSF_SFC_PRESET : MICRO_STANDARD_PRESET;
   return null;
+}
+
+/**
+ * 既知パッド(M30/Micro)の既知軸(axes[3]/axes[4]、未押下のアナログトリガ)の静止値を固定で返す。
+ * 一致しなければ null(呼び出し側は従来どおり「初回観測値を静止値として採用」にフォールバックする)。
+ *
+ * 根本原因(2026-08-08 実機M30で確認): GamepadManager.getAxisRest() は「その軸を最初に観測した
+ * 値」をそのまま静止値として採用し、以後更新しない設計。ところがM30/Microの axes[3]/[4] は、
+ * L/R(肩ボタン)を一度も操作していない間はOS/ブラウザがそのアナログチャンネルの実測値を
+ * まだ報告し切っておらず(未較正のプレースホルダとして0を返す実装がある)、L/Rを初めて
+ * 操作した瞬間にようやく本来の静止値(-1.0)が報告され始める。「最初の観測値=0」を静止値として
+ * 固定してしまうと、その後ずっと0でない真の静止値(-1.0)との偏差(delta=-1.0)がデッドゾーンを
+ * 超え続け、L/Rを離しても軸が「ON」に固着したまま戻らない(実機8BitDo M30で再現・確認済み)。
+ *
+ * axes[3]/[4] の真の静止値は実機測定で -1.0 と判明済み(gamepad.test.ts に既存の回帰テストあり)
+ * のため、動的観測に頼らずこの固定値を使うことで、初回観測タイミングの汚染を構造的に避ける。
+ */
+export function knownAxisRestFor(padId: string, axisIndex: number): number | null {
+  if (axisIndex !== 3 && axisIndex !== 4) return null;
+  const kind = knownPadKindFor(padId);
+  return kind === 'm30' || kind === 'micro' ? -1.0 : null;
 }
 
 /**
@@ -791,14 +822,21 @@ export class GamepadManager {
     for (let index = 0; index < pad.axes.length; index++) {
       const value = pad.axes[index];
       if (!isAxisValueValid(value)) continue; // 範囲外(ハット軸等)は無効な軸として無視。
-      const rest = this.getAxisRest(index, value);
+      const rest = this.getAxisRest(pad, index, value);
       const dir = axisDeviationDir(value, rest, this.deadzone);
       if (dir !== null) fn({ kind: 'axis', index, dir });
     }
   }
 
-  /** 指定軸の静止値。未記録ならこの呼び出し時点の値をそのまま静止値として記録する(初回観測時採用)。 */
-  private getAxisRest(index: number, currentValue: number): number {
+  /**
+   * 指定軸の静止値。既知パッド(M30/Micro)の既知軸(axes[3]/[4])は実機で確定済みの固定値
+   * (-1.0)を使う(knownAxisRestFor 側のコメント参照。初回観測値が真の静止値とは限らないため、
+   * 動的観測に頼ると固着する)。それ以外は従来どおり、未記録ならこの呼び出し時点の値を
+   * そのまま静止値として記録する(初回観測時採用)。
+   */
+  private getAxisRest(pad: Gamepad, index: number, currentValue: number): number {
+    const known = knownAxisRestFor(pad.id, index);
+    if (known !== null) return known;
     const existing = this.axisRest.get(index);
     if (existing !== undefined) return existing;
     this.axisRest.set(index, currentValue);
@@ -813,7 +851,7 @@ export class GamepadManager {
   axisState(pad: Gamepad, index: number): { valid: boolean; active: 1 | -1 | null } {
     const value = pad.axes?.[index];
     if (!isAxisValueValid(value)) return { valid: false, active: null };
-    const rest = this.getAxisRest(index, value);
+    const rest = this.getAxisRest(pad, index, value);
     return { valid: true, active: axisDeviationDir(value, rest, this.deadzone) };
   }
 

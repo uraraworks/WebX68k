@@ -9,6 +9,7 @@ import {
   GamepadManager,
   isAxisValueValid,
   joyTargetsForPadType,
+  knownAxisRestFor,
   knownPadPresetFor,
   loadGamepadStore,
   M30_CPSF_MD_PRESET,
@@ -784,6 +785,95 @@ describe('軸の静止値判定(実機トリガ軸-1.0/範囲外ハット軸3.29
     // 実機の静止値から実際に倒すとちゃんと反応する(rest基準が生きていることの確認)。
     const movedPad = makeGamepad({ axes: { 0: -1.0 } });
     expect(mgr.bitsForPad(movedPad)).toBe(1 << 6); // LEFT = RetroPad ID 6。
+  });
+
+  // 【回帰】実機8BitDo M30で確認された固着バグ(2026-08-08)。
+  // 根本原因: 「その軸を最初に観測した値」をそのまま静止値として固定する設計だと、L/R(肩ボタン)を
+  // 一度も操作していない間はOS/ブラウザがaxes[3]/[4](未押下のアナログトリガ)の実測値をまだ
+  // 報告し切っておらず(未較正のプレースホルダとして0を返す)、L/Rを初めて操作した瞬間に
+  // ようやく本来の静止値(-1.0)が報告され始める。「最初の観測値=0」を静止値として固定してしまうと、
+  // 以後ずっと真の静止値(-1.0)との偏差がデッドゾーンを超え続け、L/Rを離しても軸がONへ固着したまま
+  // 戻らない。knownAxisRestFor() で既知パッド(M30/Micro)の既知軸(axes[3]/[4])は実機で確定済みの
+  // 固定静止値(-1.0)を使うことで、初回観測タイミングの汚染を構造的に避ける。
+  it('⑥ 既知軸(M30/Micro の axes[3]/[4])は初回観測値に関わらず固定の静止値(-1.0)を使う', () => {
+    expect(knownAxisRestFor(M30_ID, 3)).toBe(-1.0);
+    expect(knownAxisRestFor(M30_ID, 4)).toBe(-1.0);
+    expect(knownAxisRestFor(MICRO_ID, 3)).toBe(-1.0);
+    expect(knownAxisRestFor(MICRO_ID, 4)).toBe(-1.0);
+    expect(knownAxisRestFor(M30_ID, 0)).toBeNull(); // 既知軸以外は対象外(従来どおり動的観測)。
+    expect(knownAxisRestFor('mock', 3)).toBeNull(); // 既知パッドでなければ対象外。
+  });
+
+  it('⑥相当【回帰・修正前は固着した】: M30実機で初回観測値が真の静止値(-1.0)でなくても、' +
+    'L/R相当の操作後に軸が-1.0へ戻ればON状態は残らない', () => {
+    const mgr = new GamepadManager([], DEFAULT_DEADZONE);
+    // 設定ダイアログを開いた直後: OSがまだaxes[3]/[4]の実測値を報告し切っておらず0(未較正の
+    // プレースホルダ)を返す状態を模擬。旧実装ではこの0がそのまま静止値として固定され、後段の
+    // 「-1.0へ戻る」が延々とactiveと誤判定される固着バグの発端になっていた。修正後は既知軸の
+    // 静止値を固定(-1.0)で扱うため、この時点でこそ「0はまだ真の静止値-1.0から外れている」と
+    // 正しく判定される(修正前の「たまたま0引きでOFFに見えていた」状態のほうが偶然に過ぎない)。
+    const beforeFirstTouch = makeGamepad({ id: M30_ID, buttonCount: 16, axesCount: 10, axes: { 3: 0, 4: 0 } });
+    expect(mgr.axisState(beforeFirstTouch, 3)).toEqual({ valid: true, active: 1 });
+    expect(mgr.axisState(beforeFirstTouch, 4)).toEqual({ valid: true, active: 1 });
+
+    // L/Rを押す: 実機ではここで初めてOSが本来の値を報告し始める(押下中は+1.0まで動く想定)。
+    const pressed = makeGamepad({
+      id: M30_ID,
+      buttonCount: 16,
+      axesCount: 10,
+      buttons: { 8: true, 9: true },
+      axes: { 3: 1.0, 4: 1.0 },
+    });
+    expect(mgr.axisState(pressed, 3)).toEqual({ valid: true, active: 1 });
+    expect(mgr.axisState(pressed, 4)).toEqual({ valid: true, active: 1 });
+
+    // L/Rを離す: 真の静止値(-1.0)に戻る。修正前はrestが0のまま固定されていたため、
+    // delta=-1.0-0=-1.0がデッドゾーンを超え続け、ここでもactive:-1のまま固着していた。
+    const released = makeGamepad({ id: M30_ID, buttonCount: 16, axesCount: 10, axes: { 3: -1.0, 4: -1.0 } });
+    expect(mgr.axisState(released, 3)).toEqual({ valid: true, active: null });
+    expect(mgr.axisState(released, 4)).toEqual({ valid: true, active: null });
+    expect(mgr.bitsForPad(released, 'cpsf-md')).toBe(0);
+  });
+
+  it('⑥相当: 既知パッドでない一般のパッドは従来どおり初回観測値がそのまま静止値になる' +
+    '(既知軸の固定静止値化が一般パッドの挙動を変えていないことの確認)', () => {
+    const mgr = new GamepadManager([], DEFAULT_DEADZONE);
+    // 'mock' id は既知パッドではないため、初回観測値(0、旧来どおりの挙動)がrestとして残る。
+    const first = makeGamepad({ axes: { 3: 0 } });
+    expect(mgr.axisState(first, 3)).toEqual({ valid: true, active: null });
+    const stillZero = makeGamepad({ axes: { 3: 0 } });
+    expect(mgr.axisState(stillZero, 3)).toEqual({ valid: true, active: null });
+    const moved = makeGamepad({ axes: { 3: -1.0 } });
+    expect(mgr.axisState(moved, 3)).toEqual({ valid: true, active: -1 }); // rest=0からの偏差として正しく検出。
+  });
+
+  // 検出モード(gamepad-ui.tsのtickDetect)の「ローリング基準」は DetectFlowState.baseline という
+  // 別の変数で、GamepadManager.axisRest(この静止値)とは完全に独立している(共有マップではない)。
+  // 検出待ち中に何度もbaselineを更新しても、GamepadManager側の静止値記録には一切影響しないことを
+  // 確認する(2つの仕組みを混同して片方の修正がもう片方を汚染していないかの回帰テスト)。
+  it('⑥相当: 検出モードのローリング基準(baseline)を回しても、GamepadManagerの静止値記録は汚染されない', () => {
+    const mgr = new GamepadManager([], DEFAULT_DEADZONE);
+    mgr.addBinding({ kind: 'axis', index: 3, dir: 1 }, { kind: 'joy', target: 'TRG1' });
+
+    const restingPad = makeGamepad({ axes: { 3: -0.2 } });
+    expect(mgr.bitsForPad(restingPad)).toBe(0); // 初回観測でrest=-0.2を記録。
+
+    // gamepad-ui.ts の tickDetect() 同様、検出待ち中は毎フレーム baseline を「現在値」へ
+    // ローリング更新する(このテストではDetectFlowStateそのものは使わず、同じパターンを
+    // GamepadManagerとは無関係なローカル変数で再現する)。
+    let baseline = snapshotPad(restingPad);
+    for (const v of [-0.1, 0.0, 0.15, -0.3, 0.4]) {
+      const framePad = makeGamepad({ axes: { 3: v } });
+      const curr = snapshotPad(framePad);
+      detectNewlyActiveSource(baseline, curr, DEFAULT_DEADZONE); // 戻り値は使わず、副作用の有無だけ見る。
+      baseline = curr; // ローリング基準の更新(tickDetectの「detect = {...detect, baseline: curr}」相当)。
+    }
+
+    // baselineをどれだけ動かしても、GamepadManager.bitsForPad/axisStateが参照する静止値は
+    // 依然として初回観測値(-0.2)のまま(=別の場所に汚染が漏れていない)。
+    expect(mgr.axisState(restingPad, 3)).toEqual({ valid: true, active: null }); // rest基準そのままなら無反応。
+    const deviated = makeGamepad({ axes: { 3: 0.5 } }); // -0.2から+0.7(デッドゾーン超え)。
+    expect(mgr.bitsForPad(deviated)).toBe(1 << 0); // TRG1 = RetroPad ID 0。restが-0.2のままだからこそ検出できる。
   });
 });
 
