@@ -345,12 +345,102 @@ export function blankProfile(deadzone: number = DEFAULT_DEADZONE): GamepadProfil
   return { deadzone, bindings: [] };
 }
 
+// --- 8BitDo M30 / Micro 用の既知プリセット ---
+//
+// 実機(D-inputモード)で判明したボタン/軸の対応(内部index、0始まり)。表示は1始まりだが、
+// ここでの値は内部indexそのもの。gamepad.id に 'M30'/'Micro' を含むかどうか(大文字小文字無視)で
+// 判定する。standard 申告でない可能性が高いパッドのため、mapping==='standard' かどうかに関わらず
+// このプリセットを優先して適用する(knownPadPresetFor が null を返す場合だけ、従来の
+// mapping==='standard' ? XINPUT_PRESET : 全未割当、へフォールバックする)。
+
+/** 十字キーは両パッド共通で axes[0]/axes[1] の軸で来る(ボタンではない)。padType に依存しない。 */
+const DPAD_AXIS_BINDINGS: ReadonlyArray<{ source: Source; binding: Binding }> = [
+  { source: { kind: 'axis', index: 0, dir: -1 }, binding: { kind: 'joy', target: 'LEFT' } },
+  { source: { kind: 'axis', index: 0, dir: 1 }, binding: { kind: 'joy', target: 'RIGHT' } },
+  { source: { kind: 'axis', index: 1, dir: -1 }, binding: { kind: 'joy', target: 'UP' } },
+  { source: { kind: 'axis', index: 1, dir: 1 }, binding: { kind: 'joy', target: 'DOWN' } },
+];
+
+function joyBtn(index: number, target: JoyTarget): { source: Source; binding: Binding } {
+  return { source: { kind: 'button', index }, binding: { kind: 'joy', target } };
+}
+
+/** 8BitDo M30 のボタン index(内部0始まり)。index 2/5 は空き。 */
+const M30_BTN = { A: 0, B: 1, X: 3, Y: 4, Z: 6, C: 7, L: 8, R: 9, MINUS: 10, PLUS: 11 } as const;
+/** 8BitDo Micro のボタン index(内部0始まり)。 */
+const MICRO_BTN = { A: 0, B: 1, X: 3, Y: 4, L: 6, R: 7, L2: 8, R2: 9, MINUS: 10, PLUS: 11 } as const;
+
+/** M30・標準(2ボタン): A→TRG1, B→TRG2。 */
+export const M30_STANDARD_PRESET: ReadonlyArray<{ source: Source; binding: Binding }> = [
+  ...DPAD_AXIS_BINDINGS,
+  joyBtn(M30_BTN.A, 'TRG1'),
+  joyBtn(M30_BTN.B, 'TRG2'),
+];
+
+/**
+ * M30・CPSF-MD(8ボタン)。px68k-libretro の PAD_CPSF_MD では RetroPad L/R が MDパッドの Z/C の
+ * 代役になっているため、パンチ3種(X/Y/Z)・キック3種(A/B/C)がこの対応で揃う。
+ */
+export const M30_CPSF_MD_PRESET: ReadonlyArray<{ source: Source; binding: Binding }> = [
+  ...DPAD_AXIS_BINDINGS,
+  joyBtn(M30_BTN.A, 'TRG1'),
+  joyBtn(M30_BTN.B, 'TRG2'),
+  joyBtn(M30_BTN.Y, 'TRG3'),
+  joyBtn(M30_BTN.X, 'TRG4'),
+  joyBtn(M30_BTN.Z, 'TRG5'),
+  joyBtn(M30_BTN.PLUS, 'TRG6'),
+  joyBtn(M30_BTN.MINUS, 'TRG7'),
+  joyBtn(M30_BTN.C, 'TRG8'),
+];
+
+/** Micro・標準(2ボタン): A→TRG1, B→TRG2。 */
+export const MICRO_STANDARD_PRESET: ReadonlyArray<{ source: Source; binding: Binding }> = [
+  ...DPAD_AXIS_BINDINGS,
+  joyBtn(MICRO_BTN.A, 'TRG1'),
+  joyBtn(MICRO_BTN.B, 'TRG2'),
+];
+
+/** Micro・CPSF-SFC(8ボタン)。SFCパッドのラベルと同名のボタンに対応させてある。 */
+export const MICRO_CPSF_SFC_PRESET: ReadonlyArray<{ source: Source; binding: Binding }> = [
+  ...DPAD_AXIS_BINDINGS,
+  joyBtn(MICRO_BTN.B, 'TRG1'),
+  joyBtn(MICRO_BTN.A, 'TRG2'),
+  joyBtn(MICRO_BTN.X, 'TRG3'),
+  joyBtn(MICRO_BTN.Y, 'TRG4'),
+  joyBtn(MICRO_BTN.R, 'TRG5'),
+  joyBtn(MICRO_BTN.PLUS, 'TRG6'),
+  joyBtn(MICRO_BTN.MINUS, 'TRG7'),
+  joyBtn(MICRO_BTN.L, 'TRG8'),
+];
+
+/**
+ * gamepad.id のパターンマッチ(大文字小文字無視)と現在の padType から、既知パッド用の
+ * 既定プリセットを1つ選ぶ、唯一の情報源。一致するパッドが無ければ null(呼び出し側は
+ * 従来どおり mapping==='standard' か否かでフォールバックすること)。
+ *
+ * padType が「そのパッドの8ボタン仕様」と一致しない場合(例: M30 で CPSF-SFC を選んでいる等)は、
+ * 8ボタン側のバインディング(パッド固有のTRG3..TRG8割当)は該当しないため、2ボタン側の
+ * プリセットにフォールバックする(方向 + TRG1/TRG2 は両パターンとも壊さない)。
+ */
+export function knownPadPresetFor(padId: string, padType: PadType): ReadonlyArray<{ source: Source; binding: Binding }> | null {
+  const id = padId.toLowerCase();
+  if (id.includes('m30')) return padType === 'cpsf-md' ? M30_CPSF_MD_PRESET : M30_STANDARD_PRESET;
+  if (id.includes('micro')) return padType === 'cpsf-sfc' ? MICRO_CPSF_SFC_PRESET : MICRO_STANDARD_PRESET;
+  return null;
+}
+
 /**
  * 保存済みプロファイルが無いパッドに対する既定値を決める、唯一の情報源。
- * mapping === 'standard' のときだけ XINPUT_PRESET を既定にし、そうでなければ全未割当で始める
- * (index の意味がパッドごとに違うため、推測で埋めない)。
+ * 1. gamepad.id が既知パッド(M30/Micro)にマッチすれば、mapping の申告に関わらずそのプリセットを使う
+ *    (これらは standard 申告でない可能性が高く、mapping 頼みだと全未割当のまま始まってしまうため)。
+ * 2. マッチしなければ従来どおり: mapping === 'standard' のときだけ XINPUT_PRESET、
+ *    そうでなければ全未割当で始める(index の意味がパッドごとに違うため、推測で埋めない)。
+ *
+ * padType省略時は 'default'(2ボタン)。id を渡さない呼び出し(既存テスト等)は常に2を通る。
  */
-export function defaultProfileFor(pad: Pick<Gamepad, 'mapping'>): GamepadProfile {
+export function defaultProfileFor(pad: Pick<Gamepad, 'mapping'> & { id?: string }, padType: PadType = 'default'): GamepadProfile {
+  const known = pad.id ? knownPadPresetFor(pad.id, padType) : null;
+  if (known) return { deadzone: DEFAULT_DEADZONE, bindings: known.map((e) => ({ source: e.source, binding: e.binding })) };
   return pad.mapping === 'standard' ? presetProfile() : blankProfile();
 }
 
@@ -569,11 +659,16 @@ export class GamepadManager {
     return out;
   }
 
-  /** 全バインディングを消してから XINPUT_PRESET を積み直す([XInput標準に戻す]ボタン用)。 */
-  resetToPreset(): void {
+  /**
+   * 全バインディングを消してから指定プリセットを積み直す([既定に戻す]ボタン用)。
+   * 引数省略時は従来どおり XINPUT_PRESET(standard mapping 向け)。呼び出し側(main.ts)は
+   * 接続中パッドの id/padType から knownPadPresetFor() で選んだプリセットを渡すこと
+   * (8BitDo M30/Micro 等、パッドごとに既定が異なるため)。
+   */
+  resetToPreset(preset: ReadonlyArray<{ source: Source; binding: Binding }> = XINPUT_PRESET): void {
     this.bindings.clear();
     this.sourcesByKey.clear();
-    for (const { source, binding } of XINPUT_PRESET) this.addBinding(source, binding);
+    for (const { source, binding } of preset) this.addBinding(source, binding);
   }
 
   /**

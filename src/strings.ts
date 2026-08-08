@@ -249,6 +249,8 @@ interface Dict {
   gamepadAxisInvalidSuffix(): string;
   gamepadDeadzoneLabel(): string;
   gamepadResetPresetBtn(): string;
+  /** [既定に戻す]ボタンのツールチップ。接続中パッドに応じて既定値が変わる旨を明記する。 */
+  gamepadResetPresetBtnTitle(): string;
   /** ポートごとの使用パッド選択セレクトのラベル。 */
   gamepadPortDeviceLabel(args: { port: number }): string;
   /** ポート選択の「自動(接続順)」オプション。 */
@@ -488,7 +490,9 @@ const STRINGS: Record<Lang, Dict> = {
     gamepadAxisLabel: ({ index, dir }) => `軸${index} ${dir}`,
     gamepadAxisInvalidSuffix: () => '(無効・範囲外の値)',
     gamepadDeadzoneLabel: () => 'デッドゾーン',
-    gamepadResetPresetBtn: () => 'XInput標準に戻す',
+    gamepadResetPresetBtn: () => '既定に戻す',
+    gamepadResetPresetBtnTitle: () =>
+      '接続中のパッドに合わせた既定の割当に戻します(8BitDo M30/Micro等は専用プリセット、それ以外はXInput標準または全未割当)',
     gamepadPortDeviceLabel: ({ port }) => `ポート${port}のパッド`,
     gamepadPortAutoOption: () => '自動(接続順)',
     gamepadPadTypeTitle: () => 'パッド種別',
@@ -718,7 +722,9 @@ const STRINGS: Record<Lang, Dict> = {
     gamepadAxisLabel: ({ index, dir }) => `Axis ${index} ${dir}`,
     gamepadAxisInvalidSuffix: () => '(invalid, out of range)',
     gamepadDeadzoneLabel: () => 'Deadzone',
-    gamepadResetPresetBtn: () => 'Reset to XInput Defaults',
+    gamepadResetPresetBtn: () => 'Reset to Defaults',
+    gamepadResetPresetBtnTitle: () =>
+      'Resets to the defaults for the connected pad (8BitDo M30/Micro get a dedicated preset; others get XInput defaults or blank)',
     gamepadPortDeviceLabel: ({ port }) => `Port ${port} Pad`,
     gamepadPortAutoOption: () => 'Automatic (connection order)',
     gamepadPadTypeTitle: () => 'Pad Type',

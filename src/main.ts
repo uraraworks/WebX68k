@@ -45,9 +45,12 @@ import {
   assignPorts,
   defaultProfileFor,
   GamepadManager,
+  knownPadPresetFor,
   loadGamepadStore,
   PAD_TYPE_CORE_OPTION_VALUE,
+  type PadType,
   saveGamepadStore,
+  XINPUT_PRESET,
   type Binding,
   type GamepadStore,
   type Source,
@@ -211,11 +214,21 @@ let bootStarted = false;
 const gamepadStore: GamepadStore = loadGamepadStore();
 const gamepadManagers = new Map<string, GamepadManager>();
 
+/**
+ * そのパッドが現在割り当たっているポートの px68k_joytype(パッド種別)。未割当のパッドは
+ * どのポートにも属さないため 'default'(2ボタン)にフォールバックする(gamepad-ui.ts の
+ * padTypeForPad() と同じ考え方。GamepadManager単位の判断に使うためmain.ts側にも持つ)。
+ */
+function padTypeForPad(pad: Gamepad): PadType {
+  const port = assignPorts(navigator.getGamepads(), gamepadStore.portPads).get(pad.index);
+  return port === 0 || port === 1 ? gamepadStore.joyType[port] : 'default';
+}
+
 /** Gamepad.id に対応する GamepadManager を返す(無ければ保存済み/既定プロファイルから作る)。 */
 function managerForPad(pad: Gamepad): GamepadManager {
   let mgr = gamepadManagers.get(pad.id);
   if (!mgr) {
-    const profile = gamepadStore.pads[pad.id] ?? defaultProfileFor(pad);
+    const profile = gamepadStore.pads[pad.id] ?? defaultProfileFor(pad, padTypeForPad(pad));
     if (!gamepadStore.pads[pad.id]) {
       gamepadStore.pads[pad.id] = profile;
       saveGamepadStore(gamepadStore);
@@ -347,8 +360,12 @@ const gamepadDialog = buildGamepadDialog(gamepadRoot, {
     persistPad(pad);
     releaseGamepadKeysForPad(pad);
   },
+  // 「既定に戻す」: そのパッドの id/現在の padType に合う既知プリセット(8BitDo M30/Micro等)が
+  // あればそれを、無ければ従来どおり mapping==='standard' か否かで XInput標準/全未割当に戻す。
   resetToPreset: (pad) => {
-    managerForPad(pad).resetToPreset();
+    const known = knownPadPresetFor(pad.id, padTypeForPad(pad));
+    const fallback = pad.mapping === 'standard' ? XINPUT_PRESET : [];
+    managerForPad(pad).resetToPreset(known ?? fallback);
     persistPad(pad);
     releaseGamepadKeysForPad(pad);
   },

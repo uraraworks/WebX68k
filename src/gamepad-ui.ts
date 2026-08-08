@@ -340,7 +340,7 @@ export function buildGamepadDialog(container: HTMLElement, callbacks: GamepadDia
       const select = el('select', { class: 'gp-port-select-input' });
       select.append(new Option(t('gamepadPortAutoOption'), ''));
       for (const pad of pads) {
-        select.append(new Option(`${pad.id} (#${pad.index})`, pad.id));
+        select.append(new Option(`${pad.id} (#${toDisplayIndex(pad.index)})`, pad.id));
       }
       select.value = selection[port] ?? '';
       select.addEventListener('change', () => {
@@ -479,7 +479,7 @@ export function buildGamepadDialog(container: HTMLElement, callbacks: GamepadDia
     // 編集対象パッド選択。
     const padSelectLabel = el('label', { class: 'gp-edit-pad-row' }, [t('gamepadEditingPadLabel')]);
     const padSelect = el('select', { class: 'gp-edit-pad-input' });
-    for (const p of pads) padSelect.append(new Option(`${p.id} (#${p.index})`, p.id));
+    for (const p of pads) padSelect.append(new Option(`${p.id} (#${toDisplayIndex(p.index)})`, p.id));
     padSelect.value = pad.id;
     padSelect.addEventListener('change', () => {
       editingPadId = padSelect.value;
@@ -510,8 +510,11 @@ export function buildGamepadDialog(container: HTMLElement, callbacks: GamepadDia
     });
     deadzoneRow.append(deadzoneLabel, deadzoneInput, deadzoneValue);
 
-    // XInput標準へリセット。
-    const resetBtn = el('button', { type: 'button', class: 'gp-reset-btn' }, [t('gamepadResetPresetBtn')]);
+    // 既定へリセット(接続中パッドのid/種別に合う既定値。8BitDo M30/Micro等は専用プリセット、
+    // それ以外は standard mapping なら XInput標準、そうでなければ全未割当)。
+    const resetBtn = el('button', { type: 'button', class: 'gp-reset-btn', title: t('gamepadResetPresetBtnTitle') }, [
+      t('gamepadResetPresetBtn'),
+    ]);
     resetBtn.addEventListener('click', () => {
       callbacks.resetToPreset(pad);
       detect = null;
