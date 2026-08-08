@@ -414,18 +414,56 @@ export const MICRO_CPSF_SFC_PRESET: ReadonlyArray<{ source: Source; binding: Bin
 ];
 
 /**
- * gamepad.id のパターンマッチ(大文字小文字無視)と現在の padType から、既知パッド用の
- * 既定プリセットを1つ選ぶ、唯一の情報源。一致するパッドが無ければ null(呼び出し側は
- * 従来どおり mapping==='standard' か否かでフォールバックすること)。
+ * gamepad.id から USB Vendor/Product ID を抽出する純粋関数。
+ *
+ * Chrome 等は標準マッピングでないパッドの id に `(Vendor: 2dc8 Product: 0651)` の形で
+ * ベンダー/プロダクトIDを埋め込む(表記の大文字小文字・桁数はブラウザ実装依存)。
+ * ここから `vendor:product`(共に小文字16進、桁は詰めない)の文字列を取り出す。
+ * 一致しない/取り出せない場合は null(呼び出し側は id 文字列によるフォールバックに委ねること)。
+ */
+export function extractVendorProduct(padId: string): string | null {
+  const m = /vendor:\s*([0-9a-f]+)\s+product:\s*([0-9a-f]+)/i.exec(padId);
+  if (!m) return null;
+  return `${m[1].toLowerCase()}:${m[2].toLowerCase()}`;
+}
+
+/**
+ * Vendor:Product(小文字16進) -> 既知パッド種別。
+ * 実機(ゲームパッドチェックサイトで実測、2026-08-08)で確定させた値:
+ * - 8BitDo M30 gamepad: Vendor 2dc8 / Product 0651
+ * - 8BitDo Micro gamepad: Vendor 2dc8 / Product 9020
+ */
+const VENDOR_PRODUCT_TO_KNOWN_PAD: Record<string, 'm30' | 'micro'> = {
+  '2dc8:0651': 'm30',
+  '2dc8:9020': 'micro',
+};
+
+/**
+ * gamepad.id から既知パッド用の既定プリセットを1つ選ぶ、唯一の情報源。一致するパッドが
+ * 無ければ null(呼び出し側は従来どおり mapping==='standard' か否かでフォールバックすること)。
+ *
+ * 判定は Vendor/Product ID(extractVendorProduct())を最優先する。'Micro' の部分一致で
+ * 判定すると 'Microsoft X-Box ...' のような無関係な id まで誤爆する
+ * (2026-08-08 発覚。'Micro' は 'Microsoft' の部分文字列)ため、文字列パターンマッチは
+ * 誤爆しない 'm30' のみをフォールバックとして残し、'micro' 系は vendor/product が
+ * 取れた場合に限定する。
  *
  * padType が「そのパッドの8ボタン仕様」と一致しない場合(例: M30 で CPSF-SFC を選んでいる等)は、
  * 8ボタン側のバインディング(パッド固有のTRG3..TRG8割当)は該当しないため、2ボタン側の
  * プリセットにフォールバックする(方向 + TRG1/TRG2 は両パターンとも壊さない)。
  */
 export function knownPadPresetFor(padId: string, padType: PadType): ReadonlyArray<{ source: Source; binding: Binding }> | null {
+  const vendorProduct = extractVendorProduct(padId);
+  const known = vendorProduct ? VENDOR_PRODUCT_TO_KNOWN_PAD[vendorProduct] : undefined;
+  if (known === 'm30') return padType === 'cpsf-md' ? M30_CPSF_MD_PRESET : M30_STANDARD_PRESET;
+  if (known === 'micro') return padType === 'cpsf-sfc' ? MICRO_CPSF_SFC_PRESET : MICRO_STANDARD_PRESET;
+  if (known !== undefined) return null; // vendor/productは取れたが未知のペア: 誤爆を避けるため文字列フォールバックに落とさない。
+
+  // vendor/product が取れない(ブラウザ実装差で id に埋め込まれていない)場合のみ、id文字列で
+  // フォールバックする。'm30' は他の実在パッド名との衝突が知られていないため許容するが、
+  // 'micro' は 'Microsoft' 等を誤爆するため vendor/product 経由でしか判定しない。
   const id = padId.toLowerCase();
   if (id.includes('m30')) return padType === 'cpsf-md' ? M30_CPSF_MD_PRESET : M30_STANDARD_PRESET;
-  if (id.includes('micro')) return padType === 'cpsf-sfc' ? MICRO_CPSF_SFC_PRESET : MICRO_STANDARD_PRESET;
   return null;
 }
 

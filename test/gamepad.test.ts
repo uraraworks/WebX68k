@@ -5,6 +5,7 @@ import {
   defaultProfileFor,
   DEFAULT_DEADZONE,
   detectNewlyActiveSource,
+  extractVendorProduct,
   GamepadManager,
   isAxisValueValid,
   joyTargetsForPadType,
@@ -31,23 +32,33 @@ const RETRO_DOWN = 5;
 const RETRO_LEFT = 6;
 const RETRO_RIGHT = 7;
 
-/** テスト用の最小 Gamepad モック(標準マッピング準拠、17ボタン/4軸)。 */
+/** テスト用の最小 Gamepad モック(既定は標準マッピング準拠、17ボタン/4軸)。 */
 function makeGamepad(
-  opts: { buttons?: Record<number, boolean>; axes?: Record<number, number>; index?: number } = {},
+  opts: {
+    buttons?: Record<number, boolean>;
+    axes?: Record<number, number>;
+    index?: number;
+    id?: string;
+    mapping?: string;
+    buttonCount?: number;
+    axesCount?: number;
+  } = {},
 ): Gamepad {
-  const buttons = Array.from({ length: 17 }, (_, i) => ({
+  const buttonCount = opts.buttonCount ?? 17;
+  const axesCount = opts.axesCount ?? 4;
+  const buttons = Array.from({ length: buttonCount }, (_, i) => ({
     pressed: opts.buttons?.[i] ?? false,
     touched: false,
     value: opts.buttons?.[i] ? 1 : 0,
   }));
-  const axes = [0, 0, 0, 0];
+  const axes = Array.from({ length: axesCount }, () => 0);
   for (const [k, v] of Object.entries(opts.axes ?? {})) axes[Number(k)] = v;
   return {
-    id: 'mock',
+    id: opts.id ?? 'mock',
     index: opts.index ?? 0,
     connected: true,
     timestamp: 0,
-    mapping: 'standard',
+    mapping: (opts.mapping ?? 'standard') as GamepadMappingType,
     buttons: buttons as unknown as readonly GamepadButton[],
     axes,
     hapticActuators: [],
@@ -756,18 +767,65 @@ describe('軸の静止値判定(実機トリガ軸-1.0/範囲外ハット軸3.29
     const stillOutOfRange = snapshotPad(makeGamepad({ axes: { 9: 3.29 } }));
     expect(detectNewlyActiveSource(baseline, stillOutOfRange, DEFAULT_DEADZONE)).toBeNull();
   });
+
+  // 実機M30(D-inputモード)の静止値は厳密な0ではなく-0.00392(axes[0]/[1]/[2]/[5])。
+  // 「0が静止値」という暗黙の前提が残っていないか(rest記録の仕組みが本当に効いているか)を、
+  // その実測値そのもので確認する。
+  it('⑤ 実機の静止値-0.00392(0ちょうどではない)でも静止したままなら「入力なし」と判定される', () => {
+    const REST = -0.00392;
+    expect(axisDeviationDir(REST, REST, DEFAULT_DEADZONE)).toBeNull();
+
+    const mgr = new GamepadManager([], DEFAULT_DEADZONE);
+    mgr.addBinding({ kind: 'axis', index: 0, dir: -1 }, { kind: 'joy', target: 'LEFT' });
+    mgr.addBinding({ kind: 'axis', index: 0, dir: 1 }, { kind: 'joy', target: 'RIGHT' });
+    const restingPad = makeGamepad({ axes: { 0: REST } });
+    expect(mgr.bitsForPad(restingPad)).toBe(0); // 初回観測でRESTをrestとして記録。
+    expect(mgr.bitsForPad(restingPad)).toBe(0); // 以後も静止したままなら常に0。
+    // 実機の静止値から実際に倒すとちゃんと反応する(rest基準が生きていることの確認)。
+    const movedPad = makeGamepad({ axes: { 0: -1.0 } });
+    expect(mgr.bitsForPad(movedPad)).toBe(1 << 6); // LEFT = RetroPad ID 6。
+  });
 });
 
-// 8BitDo M30/Micro 用プリセット(id一致で選ばれる既定バインディング)。
+// 8BitDo M30/Micro 用プリセット(Vendor/Product ID一致で選ばれる既定バインディング)。
 // 値は実機で確認済みのボタンindex(内部0始まり)対応表そのもの(推測ではない)。
-describe('knownPadPresetFor(8BitDo M30/Microのidパターンマッチプリセット)', () => {
-  it('⑤ idに"M30"を含むパッドはpadType===defaultでM30_STANDARD_PRESETが選ばれる(A→TRG1,B→TRG2)', () => {
-    expect(knownPadPresetFor('8BitDo M30 gamepad', 'default')).toBe(M30_STANDARD_PRESET);
-    expect(knownPadPresetFor('8BITDO M30 GAMEPAD', 'default')).toBe(M30_STANDARD_PRESET); // 大文字小文字無視。
+//
+// 誤爆対策(2026-08-08発覚): 旧実装は gamepad.id に'Micro'を含むかどうか(大文字小文字無視)で
+// 判定していたが、'Micro'は'Microsoft'の部分文字列のため 'Microsoft X-Box 360 pad' のような
+// Xboxコントローラのidでも誤爆してMicro用プリセットが選ばれてしまっていた。
+// 現在は Vendor/Product ID(gamepad.idに埋め込まれる `(Vendor: xxxx Product: yyyy)`)を
+// 最優先で見る。実機値: M30=2dc8:0651, Micro=2dc8:9020(ゲームパッドチェックサイトで実測)。
+const M30_ID = '8BitDo M30 gamepad (Vendor: 2dc8 Product: 0651)';
+const MICRO_ID = '8BitDo Micro gamepad (Vendor: 2dc8 Product: 9020)';
+
+describe('extractVendorProduct(gamepad.id からのVendor/Product抽出)', () => {
+  it('Chromeが埋め込む "(Vendor: xxxx Product: yyyy)" 形式から小文字の vendor:product を取り出す', () => {
+    expect(extractVendorProduct(M30_ID)).toBe('2dc8:0651');
+    expect(extractVendorProduct(MICRO_ID)).toBe('2dc8:9020');
   });
 
-  it('⑤ idに"M30"を含むパッドはpadType===cpsf-mdでM30_CPSF_MD_PRESETが選ばれる', () => {
-    const preset = knownPadPresetFor('8BitDo M30 gamepad', 'cpsf-md');
+  it('大文字小文字/桁の揺れを吸収する', () => {
+    expect(extractVendorProduct('pad (VENDOR: 2DC8 PRODUCT: 0651)')).toBe('2dc8:0651');
+  });
+
+  it('Vendor/Productが含まれないidはnull', () => {
+    expect(extractVendorProduct('Xbox Wireless Controller')).toBeNull();
+    expect(extractVendorProduct('Microsoft X-Box 360 pad')).toBeNull();
+  });
+});
+
+describe('knownPadPresetFor(8BitDo M30/MicroのVendor/Product一致プリセット)', () => {
+  it('⑤ Vendor/Product一致するM30パッドはpadType===defaultでM30_STANDARD_PRESETが選ばれる(A→TRG1,B→TRG2)', () => {
+    expect(knownPadPresetFor(M30_ID, 'default')).toBe(M30_STANDARD_PRESET);
+  });
+
+  it('⑤ idの大文字小文字は問わない(フォールバック文字列マッチ相当)', () => {
+    expect(knownPadPresetFor('8BitDo M30 gamepad', 'default')).toBe(M30_STANDARD_PRESET); // Vendor/Product無し、'm30'部分一致フォールバック。
+    expect(knownPadPresetFor('8BITDO M30 GAMEPAD', 'default')).toBe(M30_STANDARD_PRESET);
+  });
+
+  it('⑤ Vendor/Product一致するM30パッドはpadType===cpsf-mdでM30_CPSF_MD_PRESETが選ばれる', () => {
+    const preset = knownPadPresetFor(M30_ID, 'cpsf-md');
     expect(preset).toBe(M30_CPSF_MD_PRESET);
     // 方向: axes[0]-/+→左右, axes[1]-/+→上下(両パッド共通)。
     expect(preset).toContainEqual({ source: { kind: 'axis', index: 0, dir: -1 }, binding: { kind: 'joy', target: 'LEFT' } });
@@ -783,13 +841,13 @@ describe('knownPadPresetFor(8BitDo M30/Microのidパターンマッチプリセ�
     expect(preset).toContainEqual({ source: { kind: 'button', index: 7 }, binding: { kind: 'joy', target: 'TRG8' } });
   });
 
-  it('⑤ idに"Micro"を含むパッドはpadType===defaultでMICRO_STANDARD_PRESETが選ばれる(A→TRG1,B→TRG2)', () => {
-    expect(knownPadPresetFor('8BitDo Micro gamepad', 'default')).toBe(MICRO_STANDARD_PRESET);
-    expect(knownPadPresetFor('8BITDO MICRO', 'default')).toBe(MICRO_STANDARD_PRESET);
+  it('⑤ Vendor/Product一致するMicroパッドはpadType===defaultでMICRO_STANDARD_PRESETが選ばれる(A→TRG1,B→TRG2)', () => {
+    expect(knownPadPresetFor(MICRO_ID, 'default')).toBe(MICRO_STANDARD_PRESET);
+    expect(knownPadPresetFor(MICRO_ID.toUpperCase(), 'default')).toBe(MICRO_STANDARD_PRESET); // 大文字小文字無視。
   });
 
-  it('⑤ idに"Micro"を含むパッドはpadType===cpsf-sfcでMICRO_CPSF_SFC_PRESETが選ばれる', () => {
-    const preset = knownPadPresetFor('8BitDo Micro gamepad', 'cpsf-sfc');
+  it('⑤ Vendor/Product一致するMicroパッドはpadType===cpsf-sfcでMICRO_CPSF_SFC_PRESETが選ばれる', () => {
+    const preset = knownPadPresetFor(MICRO_ID, 'cpsf-sfc');
     expect(preset).toBe(MICRO_CPSF_SFC_PRESET);
     // B(1)→TRG1, A(0)→TRG2, X(3)→TRG3, Y(4)→TRG4, R(7)→TRG5, +(11)→TRG6, -(10)→TRG7, L(6)→TRG8。
     expect(preset).toContainEqual({ source: { kind: 'button', index: 1 }, binding: { kind: 'joy', target: 'TRG1' } });
@@ -805,6 +863,20 @@ describe('knownPadPresetFor(8BitDo M30/Microのidパターンマッチプリセ�
   it('未知のパッドidはnull(呼び出し側がmapping===standardか否かでフォールバックする)', () => {
     expect(knownPadPresetFor('Xbox Wireless Controller', 'default')).toBeNull();
     expect(knownPadPresetFor('Xbox Wireless Controller', 'cpsf-md')).toBeNull();
+  });
+
+  // 誤爆回帰テスト(2026-08-08): 'Micro'は'Microsoft'の部分文字列のため、旧実装(部分一致judge)は
+  // Xboxコントローラ等のidでMicro用プリセットを誤って選んでいた。Vendor/Product不一致であれば
+  // 'Micro'という文字列が含まれていても選ばれてはならない。
+  it('⑥ "Microsoft X-Box 360 pad" のようなidはMicroプリセットを誤爆しない(Vendor/Product不一致)', () => {
+    expect(knownPadPresetFor('Microsoft X-Box 360 pad (Vendor: 045e Product: 028e)', 'default')).toBeNull();
+    expect(knownPadPresetFor('Microsoft X-Box 360 pad (Vendor: 045e Product: 028e)', 'cpsf-sfc')).toBeNull();
+    expect(knownPadPresetFor('Microsoft X-Box 360 pad', 'default')).toBeNull(); // Vendor/Product無しでも'micro'部分一致は使わない。
+  });
+
+  it('⑥ Vendor/Productが未知のペアなら文字列フォールバックへ落とさない(誤爆防止を優先)', () => {
+    // 'micro'を含むが実機のVendor/Productと異なる架空のidは、フォールバックで拾わずnullのまま。
+    expect(knownPadPresetFor('Some Micro Pad (Vendor: 1234 Product: 5678)', 'default')).toBeNull();
   });
 
   it('defaultProfileFor: id一致すればmapping===standardでなくても既知プリセットが適用される', () => {
@@ -855,5 +927,26 @@ describe('手編集済みプロファイルの保護(main.tsのmanagerForPad相�
     mgr.addBinding({ kind: 'button', index: 5 }, { kind: 'joy', target: 'TRG1' }); // 手編集。
     mgr.resetToPreset(M30_STANDARD_PRESET); // ユーザーが明示的に[既定に戻す]を押した想定。
     expect(mgr.bindingsForTarget('TRG1')).toEqual([{ kind: 'button', index: 0 }]); // M30のA(0)。
+  });
+});
+
+// 実機M30(buttons 16個/axes 10個)はこれまでのテストの前提(17ボタン/4軸)と異なる。
+// M30_CPSF_MD_PRESETはTRG3..TRG8にbuttons index 6/7/10/11を、TRG1/TRG2にDPAD_AXIS_BINDINGS経由で
+// axes 0/1を参照するため、実機と同じ本数(16ボタン/10軸)でも参照indexが配列長を超えて
+// 例外を投げたり誤動作したりしないことを確認する。
+describe('実機と同じボタン/軸本数(16ボタン/10軸)での安定動作', () => {
+  it('16ボタン/10軸のGamepadでもbitsForPad/pollが例外を投げず正しく動く(M30_CPSF_MD_PRESET)', () => {
+    const mgr = new GamepadManager(M30_CPSF_MD_PRESET, DEFAULT_DEADZONE);
+    const pad = makeGamepad({ id: M30_ID, buttonCount: 16, axesCount: 10, buttons: { 0: true } }); // A→TRG1
+    expect(() => mgr.bitsForPad(pad, 'cpsf-md')).not.toThrow();
+    expect(mgr.bitsForPad(pad, 'cpsf-md')).toBe(1 << 8); // TRG1(cpsf-md)= RetroPad A(id8)。
+    expect(() => mgr.poll([pad])).not.toThrow();
+  });
+
+  it('16ボタン/10軸のGamepadでもXINPUT_PRESET(既定)のbitsForPadが例外を投げない(未押下なら0)', () => {
+    const mgr = new GamepadManager(); // 既定=XINPUT_PRESET(buttons[12..15]等を参照)。
+    const pad = makeGamepad({ buttonCount: 16, axesCount: 10 });
+    expect(() => mgr.bitsForPad(pad)).not.toThrow();
+    expect(mgr.bitsForPad(pad)).toBe(0);
   });
 });
