@@ -181,28 +181,32 @@ export const DEFAULT_DEADZONE = 0.5;
 // - axes[9] は常に [-1,1] の範囲外の値(M30=3.29 / Micro=1.29)を返す。十字キーのハット軸が
 //   数値化されたものと見られ、実質「無効な軸」として扱うしかない。
 //
-// --- これまでの2回の誤った修正(同じ失敗を繰り返さないための記録) ---
+// --- これまでの3回の誤った修正(同じ失敗を繰り返さないための記録) ---
 // 1回目: 初回観測値をそのまま静止値として固定する設計。押す前は0を返すため rest=0 と
 //   記録してしまい、一度押した後の真の値(-1.0)との偏差が常にデッドゾーンを超え、ON固着した。
 // 2回目: 既知パッド(M30/Micro)の axes[3]/[4] は実機の値(-1.0)を静止値として固定する設計
 //   (knownAxisRestFor、削除済み)。押す前から rest=-1.0 なのに実際の値は0のため、今度は
 //   押す前から偏差が生じてON固着した(症状が前倒しになっただけで解決していなかった)。
-// どちらも「軸の値は一度動かされるまで意味を持たない」という事実を扱えていなかったのが本質。
+// 3回目: 「一度変化してから数フレーム(AXIS_CALIBRATION_STABLE_FRAMES=2)同じ値が続いたら
+//   静止値として確定する」安定検出方式(advanceAxisCalibration の旧実装、削除済み)。
+//   これは「安定して見えるか」だけを見ており、実機で L を押せば2フレーム(約33ms)など
+//   一瞬で超えてしまうため、押している間の値(+1.0)がそのまま静止値として誤確定し、
+//   離した後の真の値(-1.0)との偏差でON固着した。「一定フレーム変化しない」を安定の
+//   証拠にする限り、押しっぱなしと本当の静止は区別できない。
 //
-// 結論(今回の設計): 軸ごとに「較正済みか」の状態を持ち、未較正の間は判定に使わない(入力を
-// 一切生成しない)。観測開始時の値を baseline として記録し、それと異なる値を一度でも観測したら
-// (=一度動かされたら)、その後 AXIS_CALIBRATION_STABLE_FRAMES フレーム連続で同じ値が続いた
-// 時点をもって、その値を静止値として採用する(較正完了)。較正完了後は静止値を二度と更新しない
-// (押しっぱなしの間に静止値が追いついてOFFに戻ってしまう問題を避けるため。この方針自体は
-// 旧実装のコメントから踏襲)。baseline のまま一度も動いていない軸は、stableCount がいくら
-// 増えても hasMoved が立たないため較正されない(初期状態から動かない軸が勝手に較正されて
-// 誤ったrest(baselineそのもの)を採用してしまう事故を防ぐ)。
-//
-// 注意(既知の限界): 「一度変化してから落ち着いた値」を静止値とみなすため、較正が完了する前に
-// 長時間押し続けられると、その押されている値自体が「安定」して見えて誤って静止値に採用されうる
-// (時間・フレーム数ベースの安定判定である以上、原理的に完全には避けられない)。
-// AXIS_CALIBRATION_STABLE_FRAMES を小さく保つことで通常の「押して離す」操作では正しく
-// 離した後の値(真の静止値)で較正が完了するようにしてある。
+// 結論(今回の設計・dwellベース): 「どの値が一番長く続いたか」で静止値を決める。
+// 軸ごとに「較正済みか」の状態を持ち、未較正の間は判定に使わない(入力を一切生成しない)。
+// 観測開始時の値を baseline として記録し、それと異なる値を一度でも観測したら(=一度動かされたら)、
+// その時点で「それまでの滞在時間の計数」を全て破棄してリセットし、そこから
+// AXIS_CALIBRATION_WINDOW_FRAMES フレームぶん、量子化した値ごとの滞在フレーム数(dwell)を
+// 数え続ける。観測期間が終わったら、最も滞在フレーム数が多かった値を静止値として採用する
+// (較正完了)。押している時間(実機のボタン押下は長くても数十〜100フレーム程度)よりも、
+// 離した後に静止し続けている時間のほうが長いという前提で、押しっぱなしと真の静止を区別する。
+// 較正完了後は静止値を二度と更新しない(押しっぱなしの間に静止値が追いついてOFFに戻って
+// しまう問題を避けるため。この方針自体は旧実装から踏襲)。
+// baseline のまま一度も動いていない軸は hasMoved が立たず dwell の計数自体を始めないため、
+// 較正されない(初期状態から動かない軸が勝手に較正されて誤ったrest(baselineそのもの)を
+// 採用してしまう事故を防ぐ)。
 //
 // 以下は純粋関数として切り出し、GamepadManager(継続的なビット計算)・gamepad-ui.ts
 // (ライブ表示・検出モード)の両方から同じ判定ロジックを共有する。
@@ -231,49 +235,102 @@ export function axisDeviationDir(value: number, rest: number, deadzone: number):
 }
 
 /**
- * 軸較正が完了したとみなすために要求する「同じ値が連続した」フレーム数。
- * 値が baseline(観測開始時点の値)から一度でも変化したあと、この回数だけ同じ値が
- * 連続して初めてその値を静止値として確定する。小さすぎると「注意」に書いた誤較正の
- * リスクが上がり、大きすぎると較正が完了するまでの実際の遅延が増える。押して離す、
- * という通常操作に対して数フレームで十分収まるよう2に設定してある。
+ * dwell(滞在時間)を数える際の量子化幅。
+ * 浮動小数点の微小なブレ(実測: 通常スティックの静止値は厳密な0ではなく -0.00392 等)を
+ * そのままキーにすると、本来同じ「静止している」フレーム同士が別の値として計数されてしまい、
+ * 滞在時間が分散して正しい静止値を選べなくなる。0.05刻みに丸めてビン分けすることでこれを防ぐ
+ * (実機の主要な静止値/フルスケール値である 0 / ±1.0 はこの粒度でも丸め誤差なく厳密に載る)。
  */
-export const AXIS_CALIBRATION_STABLE_FRAMES = 2;
+export const AXIS_CALIBRATION_QUANTUM = 0.05;
+
+/**
+ * 較正のため、値が最初に変化してから観測を続けるフレーム数(観測期間=較正ウィンドウ)。
+ * この間、量子化した値ごとの滞在フレーム数(dwell)を数え、期間終了時点で最も長く滞在した値を
+ * 静止値として採用する(dwellベースの較正。設計の詳細はファイル冒頭のコメント参照)。
+ * 「押しっぱなし」は実機のボタン押下でもせいぜい数十〜100フレーム程度で、離した後に静止して
+ * いる時間のほうが長いという前提の下で押下操作と真の静止を区別するため、それより十分長い
+ * ウィンドウが要る。host.onPoll はエミュレートフレームごとに呼ばれ、X68000本来のフレームレート
+ * (約55.4Hz)はおよそ60fpsとみなせるので、60fps換算で3〜5秒ぶんの目安として60fps×4秒=240に設定。
+ * 短すぎると長押しに負けて誤較正し(旧実装の再発)、長すぎると較正完了までの体感遅延が増える。
+ */
+export const AXIS_CALIBRATION_WINDOW_FRAMES = 240;
+
+/** value を AXIS_CALIBRATION_QUANTUM 刻みのビンへ丸める(dwellのキー用)。-0 は 0 に正規化する。 */
+function quantizeAxisValue(value: number): number {
+  const q = Math.round(value / AXIS_CALIBRATION_QUANTUM) * AXIS_CALIBRATION_QUANTUM;
+  return q === 0 ? 0 : q;
+}
 
 /**
  * 軸1本ぶんの較正状態。
  * - calibrated:false … まだ静止値が確定していない(入力判定には使わない)。baseline は
- *   観測開始時点(その軸を最初に見た瞬間)の値、lastValue/stableCount は「直近何フレーム
- *   同じ値が続いているか」、hasMoved は baseline から一度でも変化したことがあるか。
+ *   観測開始時点(その軸を最初に見た瞬間)の値。hasMoved は baseline から一度でも変化した
+ *   ことがあるか(false の間は dwell を数えていない=較正未着手)。framesObserved は
+ *   「最初の変化」から数えたフレーム数、dwell は量子化した値ごとの滞在フレーム数。
  * - calibrated:true … 静止値(rest)が確定済み。以後 advanceAxisCalibration() は状態を
  *   変えずにそのまま返す(二度と rest を更新しない)。
  */
 export type AxisCalibration =
-  | { calibrated: false; baseline: number; lastValue: number; stableCount: number; hasMoved: boolean }
+  | {
+      calibrated: false;
+      baseline: number;
+      hasMoved: boolean;
+      framesObserved: number;
+      dwell: ReadonlyMap<number, number>;
+    }
   | { calibrated: true; rest: number };
 
-/** その軸を初めて観測した時点の較正状態を作る(baseline=今の値、まだ未較正)。 */
+/** その軸を初めて観測した時点の較正状態を作る(baseline=今の値、まだ未較正・dwell計数もまだ開始しない)。 */
 export function initAxisCalibration(value: number): AxisCalibration {
-  return { calibrated: false, baseline: value, lastValue: value, stableCount: 1, hasMoved: false };
+  return { calibrated: false, baseline: value, hasMoved: false, framesObserved: 0, dwell: new Map() };
+}
+
+/** dwell の中で最も滞在フレーム数が多かったビンを返す(同数なら先に最大に達したものを保持=決定的)。 */
+function pickRestFromDwell(dwell: ReadonlyMap<number, number>): number {
+  let bestBin = 0;
+  let bestCount = -1;
+  for (const [bin, count] of dwell) {
+    if (count > bestCount) {
+      bestCount = count;
+      bestBin = bin;
+    }
+  }
+  return bestBin;
 }
 
 /**
  * 軸較正状態を1フレームぶん進める純粋関数。GamepadManager(継続的な観測)と
- * gamepad-ui.ts(必要なら同様の較正表示)の両方から同じロジックを共有するために切り出す。
+ * gamepad-ui.ts(較正中の表示)の両方から同じロジックを共有するために切り出す。
  * 較正済み(calibrated:true)であれば何も変えずそのまま返す(rest固定)。
- * 未較正であれば、value が baseline と異なれば hasMoved を立て、value が直前フレームと
- * 同じなら stableCount を増やす(異なればリセットして1から数え直す)。hasMoved かつ
- * stableCount が AXIS_CALIBRATION_STABLE_FRAMES に達した時点で calibrated:true, rest:value
- * へ遷移する。baseline のまま一度も動いていない軸は hasMoved が立たないため、
- * stableCount がいくら増えても較正されない(初期状態が誤って静止値扱いされることを防ぐ)。
+ *
+ * 未較正の場合:
+ * - まだ一度も動いていない(hasMoved:false)間、value が baseline のままなら dwell を
+ *   数えずに何もせず返す(baseline に居続ける時間は較正に使わない。実機トリガは押す前ずっと
+ *   0.0 を返すため、ここを数えると常に 0.0 が最多になってしまう)。
+ * - baseline から初めて変化した瞬間(hasMoved が false→true になる瞬間)、それまでの
+ *   (数えていなかった)計数を捨てて dwell を空から作り直し、この変化後の値から数え始める
+ *   (これが今回の設計の要。トリガは変化前の 0.0 に長時間居るため、ここで破棄しないと
+ *   0.0 が最多のまま確定してしまう。通常のスティックは変化後にまた 0.0 へ戻って長時間
+ *   居続けるため、ここでリセットしても最終的に 0.0 が最多になり正しく較正される)。
+ * - 既に動いたことがある間は、量子化した現在値の dwell を1増やす。framesObserved が
+ *   AXIS_CALIBRATION_WINDOW_FRAMES に達したら、その時点で最も滞在フレーム数が多かった値
+ *   (pickRestFromDwell)を静止値として採用し較正完了とする。
  */
 export function advanceAxisCalibration(state: AxisCalibration, value: number): AxisCalibration {
   if (state.calibrated) return state;
-  const stableCount = value === state.lastValue ? state.stableCount + 1 : 1;
-  const hasMoved = state.hasMoved || value !== state.baseline;
-  if (hasMoved && stableCount >= AXIS_CALIBRATION_STABLE_FRAMES) {
-    return { calibrated: true, rest: value };
+  if (!state.hasMoved) {
+    if (value === state.baseline) return state; // baselineのまま: まだ計数を始めない。
+    const dwell = new Map<number, number>([[quantizeAxisValue(value), 1]]);
+    return { calibrated: false, baseline: state.baseline, hasMoved: true, framesObserved: 1, dwell };
   }
-  return { calibrated: false, baseline: state.baseline, lastValue: value, stableCount, hasMoved };
+  const dwell = new Map(state.dwell);
+  const bin = quantizeAxisValue(value);
+  dwell.set(bin, (dwell.get(bin) ?? 0) + 1);
+  const framesObserved = state.framesObserved + 1;
+  if (framesObserved >= AXIS_CALIBRATION_WINDOW_FRAMES) {
+    return { calibrated: true, rest: pickRestFromDwell(dwell) };
+  }
+  return { calibrated: false, baseline: state.baseline, hasMoved: true, framesObserved, dwell };
 }
 
 // --- 永続化(パッドごとのプロファイル) ---
@@ -913,18 +970,22 @@ export class GamepadManager {
   }
 
   /**
-   * 指定軸の有効性・較正済みか・現在の偏差方向を返す(gamepad-ui.ts のライブ表示・割当選択肢の判定用)。
+   * 指定軸の有効性・較正済みか・(較正中かどうか)・現在の偏差方向を返す
+   * (gamepad-ui.ts のライブ表示・割当選択肢の判定用)。
    * bitsFor 計算と同じ較正状態(axisCalib)を共有するため、ライブ表示とコアへの実際の入力は常に一致する。
-   * 範囲外の軸(無効)は valid:false, calibrated:false, active:null を返す。
-   * 未較正の軸(一度も動かされていない)は valid:true, calibrated:false, active:null を返す
-   * (未較正の間は常に非アクティブ。呼び出し側はこの calibrated で「較正待ち」の見た目を出し分けること)。
+   * 範囲外の軸(無効)は valid:false, calibrated:false, calibrating:false, active:null を返す。
+   * 未較正の軸は valid:true, calibrated:false, active:null を返す(未較正の間は常に非アクティブ。
+   * 呼び出し側はこの calibrated で「較正待ち」の見た目を出し分けること)。
+   * calibrating は「一度動かされて較正ウィンドウの観測が進行中(dwell計数中)」を表す
+   * (calibrated:false かつ calibrating:false は「まだ一度も動かされていない」を意味し、
+   * gamepad-ui.ts はこの2状態を別の見た目にできる)。
    */
-  axisState(pad: Gamepad, index: number): { valid: boolean; calibrated: boolean; active: 1 | -1 | null } {
+  axisState(pad: Gamepad, index: number): { valid: boolean; calibrated: boolean; calibrating: boolean; active: 1 | -1 | null } {
     const value = pad.axes?.[index];
-    if (!isAxisValueValid(value)) return { valid: false, calibrated: false, active: null };
+    if (!isAxisValueValid(value)) return { valid: false, calibrated: false, calibrating: false, active: null };
     const calib = this.observeAxis(index, value);
-    if (!calib.calibrated) return { valid: true, calibrated: false, active: null };
-    return { valid: true, calibrated: true, active: axisDeviationDir(value, calib.rest, this.deadzone) };
+    if (!calib.calibrated) return { valid: true, calibrated: false, calibrating: calib.hasMoved, active: null };
+    return { valid: true, calibrated: true, calibrating: false, active: axisDeviationDir(value, calib.rest, this.deadzone) };
   }
 
   /**
@@ -948,10 +1009,11 @@ export class GamepadManager {
     value: number;
     valid: boolean;
     calibrated: boolean;
+    calibrating: boolean;
     rest: number | null;
     baseline: number | null;
     hasMoved: boolean;
-    stableCount: number | null;
+    framesObserved: number | null;
     active: 1 | -1 | null;
   }> {
     const axes = pad.axes ?? [];
@@ -960,10 +1022,11 @@ export class GamepadManager {
       value: number;
       valid: boolean;
       calibrated: boolean;
+      calibrating: boolean;
       rest: number | null;
       baseline: number | null;
       hasMoved: boolean;
-      stableCount: number | null;
+      framesObserved: number | null;
       active: 1 | -1 | null;
     }> = [];
     for (let index = 0; index < axes.length; index++) {
@@ -972,7 +1035,18 @@ export class GamepadManager {
       const valid = isAxisValueValid(rawValue);
       const calib = this.peekAxisCalibration(index);
       if (calib === null) {
-        out.push({ index, value, valid, calibrated: false, rest: null, baseline: null, hasMoved: false, stableCount: null, active: null });
+        out.push({
+          index,
+          value,
+          valid,
+          calibrated: false,
+          calibrating: false,
+          rest: null,
+          baseline: null,
+          hasMoved: false,
+          framesObserved: null,
+          active: null,
+        });
         continue;
       }
       if (!calib.calibrated) {
@@ -981,10 +1055,11 @@ export class GamepadManager {
           value,
           valid,
           calibrated: false,
+          calibrating: calib.hasMoved,
           rest: null,
           baseline: calib.baseline,
           hasMoved: calib.hasMoved,
-          stableCount: calib.stableCount,
+          framesObserved: calib.framesObserved,
           active: null,
         });
         continue;
@@ -995,10 +1070,11 @@ export class GamepadManager {
         value,
         valid,
         calibrated: true,
+        calibrating: false,
         rest: calib.rest,
         baseline: null,
         hasMoved: true,
-        stableCount: null,
+        framesObserved: null,
         active,
       });
     }

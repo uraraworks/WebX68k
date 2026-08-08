@@ -98,13 +98,15 @@ export interface GamepadDialogCallbacks {
    */
   resolveBits(pad: Gamepad, padType: PadType): number;
   /**
-   * 指定軸が有効(Gamepad APIの仕様上ありうる[-1,1]の範囲内)か、較正済みか、静止値からの偏差で
-   * どちら向きに反応しているか(未反応/未較正はnull)を返す。範囲外の軸(ハット軸等)は valid:false
-   * になる。calibrated:false は「観測開始してから一度も動かされていない軸」を意味し、この間は
-   * active も常に null(未較正の軸は入力を生成しない。gamepad.ts の AxisCalibration 参照)。
+   * 指定軸が有効(Gamepad APIの仕様上ありうる[-1,1]の範囲内)か、較正済みか、較正中か、静止値からの
+   * 偏差でどちら向きに反応しているか(未反応/未較正はnull)を返す。範囲外の軸(ハット軸等)は
+   * valid:false になる。calibrated:false かつ calibrating:false は「観測開始してから一度も
+   * 動かされていない軸」、calibrated:false かつ calibrating:true は「一度動かされて較正の観測が
+   * 進行中(dwellベースの較正ウィンドウ内)」を意味する。いずれの未較正状態でも active は常に
+   * null(未較正の軸は入力を生成しない。gamepad.ts の AxisCalibration 参照)。
    * bitsFor計算(resolveBits)と同じ較正状態を共有するため、ライブ表示と実際の入力は必ず一致する。
    */
-  getAxisState(pad: Gamepad, axisIndex: number): { valid: boolean; calibrated: boolean; active: 1 | -1 | null };
+  getAxisState(pad: Gamepad, axisIndex: number): { valid: boolean; calibrated: boolean; calibrating: boolean; active: 1 | -1 | null };
   /** 指定パッドの現在のデッドゾーン。 */
   getDeadzone(pad: Gamepad): number;
   setDeadzone(pad: Gamepad, value: number): void;
@@ -463,6 +465,9 @@ export function buildGamepadDialog(container: HTMLElement, callbacks: GamepadDia
    * 示していても青く光らせない(ON判定に使っていないため)。グレー表示+注記で「一度動かせば
    * 使えるようになる」ことを案内する(実機のトリガ軸で「押す前から光っている」ように見える
    * 固着バグの再発防止。gamepad.ts の AxisCalibration 参照)。
+   * 一度動かされた後、dwellベースの較正ウィンドウが終わるまでの間(calibrating:true)は、
+   * 未較正のうち「一度も動いていない」ものとは別の見た目(「較正中」)にする。押しっぱなしの
+   * 最中に「使えるようになりました」と誤解されるのを避けるため。
    */
   function renderAxes(pad: Gamepad): HTMLElement {
     const wrap = el('div', { class: 'gp-axes' });
@@ -476,6 +481,9 @@ export function buildGamepadDialog(container: HTMLElement, callbacks: GamepadDia
       if (!state.valid) {
         classes.push('invalid');
         suffix = ` ${t('gamepadAxisInvalidSuffix')}`;
+      } else if (state.calibrating) {
+        classes.push('calibrating');
+        suffix = ` ${t('gamepadAxisCalibratingSuffix')}`;
       } else if (!state.calibrated) {
         classes.push('uncalibrated');
         suffix = ` ${t('gamepadAxisUncalibratedSuffix')}`;

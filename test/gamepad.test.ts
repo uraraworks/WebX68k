@@ -3,7 +3,7 @@ import {
   advanceAxisCalibration,
   assignPorts,
   axisDeviationDir,
-  AXIS_CALIBRATION_STABLE_FRAMES,
+  AXIS_CALIBRATION_WINDOW_FRAMES,
   defaultProfileFor,
   DEFAULT_DEADZONE,
   detectNewlyActiveSource,
@@ -70,14 +70,16 @@ function makeGamepad(
 }
 
 /**
- * 軸の較正(AxisCalibration)を「一度動かして戻す」実機と同じ手順で完了させ、静止値を
- * restValue に確定させるテスト用ヘルパー。
- * GamepadManager は「baseline(観測開始時点の値)から一度でも変化し、そのあと
- * AXIS_CALIBRATION_STABLE_FRAMES 回連続で同じ値が続いた」時点で較正完了とみなす設計
- * (gamepad.ts の advanceAxisCalibration 参照)なので、
- *   1. baseline を restValue で観測(まだ未較正)
- *   2. restValue と異なる値へ一度動かす(hasMoved を立てる)
- *   3. restValue へ戻し、AXIS_CALIBRATION_STABLE_FRAMES 回連続で観測して確定させる
+ * 軸の較正(AxisCalibration、dwellベース)を実機と同じ手順で完了させ、静止値を restValue に
+ * 確定させるテスト用ヘルパー。GamepadManager は「baseline(観測開始時点の値)から一度でも
+ * 変化した時点で、それまでの滞在計数を破棄してリセットし、そこから
+ * AXIS_CALIBRATION_WINDOW_FRAMES フレームぶん、量子化した値ごとの滞在フレーム数(dwell)を
+ * 数えて、最後に最も長く滞在した値を採用する」設計(gamepad.ts の advanceAxisCalibration 参照)
+ * なので、
+ *   1. baseline を restValue で観測(まだ計数を始めない)
+ *   2. restValue と異なる値へ一度動かす(これでリセットされ、計数が始まる。1フレーム目)
+ *   3. 残り(AXIS_CALIBRATION_WINDOW_FRAMES - 1)フレーム restValue へ戻して滞在させ、
+ *      restValue の滞在時間を圧倒的多数にして確定させる
  * という手順をそのまま踏む。
  */
 function calibrateAxis(
@@ -88,9 +90,9 @@ function calibrateAxis(
 ): void {
   mgr.bitsForPad(makeGamepad({ ...padOpts, axes: { [axisIndex]: restValue } })); // 1. baseline。
   const transient = restValue === 0 ? 1 : 0; // restValueと確実に異なる値。
-  mgr.bitsForPad(makeGamepad({ ...padOpts, axes: { [axisIndex]: transient } })); // 2. 一度動かす。
-  for (let i = 0; i < AXIS_CALIBRATION_STABLE_FRAMES; i++) {
-    mgr.bitsForPad(makeGamepad({ ...padOpts, axes: { [axisIndex]: restValue } })); // 3. 戻して安定させる。
+  mgr.bitsForPad(makeGamepad({ ...padOpts, axes: { [axisIndex]: transient } })); // 2. 一度動かす(dwellリセット、1フレーム目)。
+  for (let i = 1; i < AXIS_CALIBRATION_WINDOW_FRAMES; i++) {
+    mgr.bitsForPad(makeGamepad({ ...padOpts, axes: { [axisIndex]: restValue } })); // 3. 戻して滞在させる。
   }
 }
 
@@ -103,8 +105,8 @@ function calibrateAllAxesAtZero(mgr: GamepadManager, axesCount = 4): void {
   const zero = makeGamepad({ axesCount });
   mgr.bitsForPad(zero); // 1. baseline(全軸0)。
   const moved = makeGamepad({ axesCount, axes: Object.fromEntries(Array.from({ length: axesCount }, (_, i) => [i, 1])) });
-  mgr.bitsForPad(moved); // 2. 一度全軸を動かす。
-  for (let i = 0; i < AXIS_CALIBRATION_STABLE_FRAMES; i++) mgr.bitsForPad(zero); // 3. 戻して安定させる。
+  mgr.bitsForPad(moved); // 2. 一度全軸を動かす(dwellリセット、1フレーム目)。
+  for (let i = 1; i < AXIS_CALIBRATION_WINDOW_FRAMES; i++) mgr.bitsForPad(zero); // 3. 戻して滞在させる。
 }
 
 describe('GamepadManager (XINPUT_PRESET)', () => {
@@ -744,41 +746,85 @@ describe('ゲームパッドkey割当のSharedKeyInput配線(main.tsのsyncGamep
 // 「軸の値には最初から意味がある」という前提そのものが誤りで、「一度も動いていない軸の
 // 値は無意味」というのが実機の挙動。
 //
-// これまでの2回の誤った修正(gamepad.ts 冒頭のコメント参照):
+// これまでの3回の誤った修正(gamepad.ts 冒頭のコメント参照):
 // 1回目=初回観測値をそのまま静止値に固定(押す前0→押した後の真の値-1.0との偏差でON固着)、
 // 2回目=既知パッドの静止値を-1.0に固定(knownAxisRestFor、削除済み。今度は押す前から
-// 偏差が生じてON固着、症状が前倒しになっただけ)。
-// どちらも「軸の値は一度動かされるまで意味を持たない」という事実を扱えていなかった。
+// 偏差が生じてON固着、症状が前倒しになっただけ)、
+// 3回目=「一度変化してから数フレーム(2フレーム=約33ms)同じ値が続いたら確定」という
+// 安定検出方式(advanceAxisCalibration旧実装、削除済み)。実機でLを押せば2フレームなど
+// 一瞬で超えるため、押している間の値がそのまま静止値として誤確定しON固着した。
+// 「安定して見えるか」だけでは、押しっぱなしと本当の静止を区別できない。
 //
-// 今回の設計: 軸ごとに「較正済みか」を持ち、未較正の間は判定に一切使わない(常に非アクティブ)。
-// baselineから一度でも値が変化し、そのあと数フレーム同じ値が続いた時点でその値を静止値として
-// 採用する(AxisCalibration、gamepad.ts参照)。
-describe('軸較正(AxisCalibration): 実機トリガ軸の「一度動かすまで静止値が確定しない」挙動への対応', () => {
-  it('advanceAxisCalibration(純粋関数): baselineのまま値が変化しない間はいくら経っても較正されない', () => {
-    let state = initAxisCalibration(0.0);
-    expect(state).toEqual({ calibrated: false, baseline: 0.0, lastValue: 0.0, stableCount: 1, hasMoved: false });
-    for (let i = 0; i < 10; i++) state = advanceAxisCalibration(state, 0.0);
-    expect(state.calibrated).toBe(false);
-  });
+// 今回の設計(dwellベース): 軸ごとに「較正済みか」を持ち、未較正の間は判定に一切使わない
+// (常に非アクティブ)。baselineから一度でも値が変化した時点で、量子化した値ごとの滞在
+// フレーム数(dwell)の計数を開始し、AXIS_CALIBRATION_WINDOW_FRAMES フレームぶん観測した
+// 時点で最も長く滞在した値を静止値として採用する(AxisCalibration、gamepad.ts参照)。
+// 押している時間より離した後に静止している時間のほうが長いという前提で、
+// 押しっぱなしと真の静止を区別する。
+describe('軸較正(AxisCalibration・dwellベース): 実機トリガ軸の「一度動かすまで静止値が確定しない」挙動への対応', () => {
+  /** フレーム列(values)を initial からの状態へ順に適用し、最終状態を返す(純粋関数テスト用ヘルパー)。 */
+  function runFrames(initial: ReturnType<typeof initAxisCalibration>, values: number[]): ReturnType<typeof initAxisCalibration> {
+    return values.reduce((state, v) => advanceAxisCalibration(state, v), initial);
+  }
 
-  it('advanceAxisCalibration(純粋関数): 実機シナリオ(0.0→+1.0→-1.0で安定)どおりに較正され、静止値が-1.0になる', () => {
-    let state = initAxisCalibration(0.0); // 観測開始(未押下トリガ、baseline=0.0)。
-    state = advanceAxisCalibration(state, 0.0); // まだ動いていない: 較正されない。
-    expect(state.calibrated).toBe(false);
-    state = advanceAxisCalibration(state, 1.0); // 押下: baselineから変化(hasMoved)。まだ1フレーム目。
-    expect(state.calibrated).toBe(false);
-    state = advanceAxisCalibration(state, -1.0); // 解放: 直前(1.0)と異なるので stableCount は1から。
-    expect(state.calibrated).toBe(false);
-    state = advanceAxisCalibration(state, -1.0); // 同じ値が2フレーム目(AXIS_CALIBRATION_STABLE_FRAMES)続いた: 較正完了。
-    expect(state).toEqual({ calibrated: true, rest: -1.0 });
-    // 較正後は何を渡しても状態が変わらない(再較正しない)。
-    expect(advanceAxisCalibration(state, 1.0)).toEqual({ calibrated: true, rest: -1.0 });
-  });
+  describe('advanceAxisCalibration(純粋関数): フレーム列を与えて較正結果を検証する', () => {
+    it('baselineのまま値が変化しない間はいくら経っても較正されない(dwellも計数されない)', () => {
+      let state = initAxisCalibration(0.0);
+      expect(state).toEqual({ calibrated: false, baseline: 0.0, hasMoved: false, framesObserved: 0, dwell: new Map() });
+      state = runFrames(state, Array(10).fill(0.0));
+      expect(state).toEqual({ calibrated: false, baseline: 0.0, hasMoved: false, framesObserved: 0, dwell: new Map() });
+    });
 
-  it('advanceAxisCalibration(純粋関数): 較正済みなら二度と rest を更新しない(押しっぱなしでも同じ)', () => {
-    const calibrated = { calibrated: true as const, rest: 0 };
-    expect(advanceAxisCalibration(calibrated, 0.9)).toBe(calibrated);
-    expect(advanceAxisCalibration(calibrated, 0.9)).toBe(calibrated);
+    it('(a) 実機トリガのシナリオ: 0.0長時間 → +1.0多数フレーム(押しっぱなし相当) → -1.0長時間、で rest=-1.0に確定する', () => {
+      let state = initAxisCalibration(0.0);
+      state = runFrames(state, Array(50).fill(0.0)); // 押す前: 長時間0.0(未較正、計数もされない)。
+      expect(state.calibrated).toBe(false);
+      state = runFrames(state, Array(30).fill(1.0)); // 押しっぱなし相当: +1.0が30フレーム続く。
+      expect(state.calibrated).toBe(false); // まだ較正ウィンドウの途中。
+      // 離した後、ウィンドウが終わるまで-1.0に居続ける(余分に回しても較正後は状態不変)。
+      state = runFrames(state, Array(AXIS_CALIBRATION_WINDOW_FRAMES).fill(-1.0));
+      expect(state).toEqual({ calibrated: true, rest: -1.0 });
+      // 静止値ちょうどの値は偏差なし(=非アクティブ)。
+      expect(axisDeviationDir(-1.0, (state as { rest: number }).rest, DEFAULT_DEADZONE)).toBeNull();
+    });
+
+    it('(b) 押しっぱなしが60フレーム以上と長くても、離した後の滞在がそれを上回れば rest=-1.0になる', () => {
+      let state = initAxisCalibration(0.0);
+      state = runFrames(state, Array(50).fill(0.0));
+      state = runFrames(state, Array(70).fill(1.0)); // (a)より長い押しっぱなし(70フレーム)。
+      expect(state.calibrated).toBe(false); // 旧実装ならここで(2フレーム後に)誤確定していた。
+      state = runFrames(state, Array(AXIS_CALIBRATION_WINDOW_FRAMES).fill(-1.0));
+      expect(state).toEqual({ calibrated: true, rest: -1.0 }); // 70フレームの押下より-1.0の滞在の方が長いため。
+    });
+
+    it('(c) 通常のスティック: 0.0長時間 → +1.0を数十フレーム → 0.0へ戻る、で rest=0(近傍)に確定する', () => {
+      let state = initAxisCalibration(0.0);
+      state = runFrames(state, Array(50).fill(0.0));
+      state = runFrames(state, Array(40).fill(1.0)); // スティックを倒す(数十フレーム)。
+      state = runFrames(state, Array(AXIS_CALIBRATION_WINDOW_FRAMES).fill(0.0)); // 中央へ戻して長時間静止。
+      expect(state).toEqual({ calibrated: true, rest: 0 });
+      expect(axisDeviationDir(0.0, (state as { rest: number }).rest, DEFAULT_DEADZONE)).toBeNull(); // 静止で非アクティブ。
+    });
+
+    it('(c追加) 通常のスティックの実測に近い静止値(厳密な0ではない -0.00392)でも量子化により rest=0へ丸まる', () => {
+      let state = initAxisCalibration(-0.00392);
+      state = runFrames(state, Array(50).fill(-0.00392));
+      state = runFrames(state, Array(40).fill(1.0));
+      state = runFrames(state, Array(AXIS_CALIBRATION_WINDOW_FRAMES).fill(-0.00392));
+      expect(state).toEqual({ calibrated: true, rest: 0 });
+    });
+
+    it('(d) 較正済みなら二度と rest を更新しない(押しっぱなしを渡しても状態自体が変わらない)', () => {
+      const calibrated = { calibrated: true as const, rest: 0 };
+      expect(advanceAxisCalibration(calibrated, 0.9)).toBe(calibrated);
+      expect(advanceAxisCalibration(calibrated, 0.9)).toBe(calibrated);
+    });
+
+    it('(e) 一度も動かない軸はいくらフレームが経っても較正されない(baselineをrestとして誤採用しない)', () => {
+      let state = initAxisCalibration(0.0);
+      state = runFrames(state, Array(1000).fill(0.0));
+      expect(state.calibrated).toBe(false);
+    });
   });
 
   it('GamepadManager: 値が0.0を返し続ける間(未押下トリガ)は非アクティブ(未較正)のまま', () => {
@@ -786,42 +832,56 @@ describe('軸較正(AxisCalibration): 実機トリガ軸の「一度動かすま
     mgr.addBinding({ kind: 'axis', index: 3, dir: -1 }, { kind: 'joy', target: 'TRG1' });
     const untouched = makeGamepad({ axes: { 3: 0.0 } });
     expect(mgr.bitsForPad(untouched)).toBe(0);
-    expect(mgr.axisState(untouched, 3)).toEqual({ valid: true, calibrated: false, active: null });
+    expect(mgr.axisState(untouched, 3)).toEqual({ valid: true, calibrated: false, calibrating: false, active: null });
     // 何度ポーリングしても(=時間が経っても)勝手には較正されない(一度も動いていないため)。
     expect(mgr.bitsForPad(untouched)).toBe(0);
     expect(mgr.bitsForPad(untouched)).toBe(0);
-    expect(mgr.axisState(untouched, 3)).toEqual({ valid: true, calibrated: false, active: null });
+    expect(mgr.axisState(untouched, 3)).toEqual({ valid: true, calibrated: false, calibrating: false, active: null });
   });
 
-  // これが今回の肝: 実機で確定した挙動そのものをそのまま再現する。
-  it('実機シナリオ: 0.0(観測開始)→+1.0(押下)→-1.0(解放、以後この値が静止値)と推移すると、' +
-    '最終的に非アクティブへ収束し、静止値が-1.0になる', () => {
+  // (a): これが今回の肝。実機で確定した挙動(押しっぱなし相当を含む)をそのまま再現する。
+  it('(a) GamepadManager: 実機シナリオ(0.0観測開始→+1.0を押しっぱなし相当30フレーム→-1.0で長時間静止)で' +
+    '静止値が-1.0に確定し、静止状態は非アクティブへ収束する', () => {
     const mgr = new GamepadManager([], DEFAULT_DEADZONE);
     mgr.addBinding({ kind: 'axis', index: 3, dir: 1 }, { kind: 'joy', target: 'TRG1' });
 
     // 観測開始: 0.0(未押下、未較正)。ON判定になってはいけない。
     expect(mgr.bitsForPad(makeGamepad({ axes: { 3: 0.0 } }))).toBe(0);
 
-    // 押下: +1.0へ変化(較正はまだ完了しない。安定フレーム数に達していないため)。
-    // 注: bitsForPad と axisState はどちらも軸を「観測」する(較正を1フレーム進める)ため、
-    // 同じ論理フレームのつもりで両方呼ぶと二重に観測してしまう。フレーム数を正確に制御するため、
-    // 較正完了までは bitsForPad だけを使う(axisState は較正済みになった後だけ安全に呼べる。
-    // 較正済み状態は再較正しないため、何度呼んでも副作用が無い)。
-    expect(mgr.bitsForPad(makeGamepad({ axes: { 3: 1.0 } }))).toBe(0);
+    // 押しっぱなし相当: +1.0を30フレーム。この間ずっと未較正(入力を生成しない)。
+    for (let i = 0; i < 30; i++) {
+      expect(mgr.bitsForPad(makeGamepad({ axes: { 3: 1.0 } }))).toBe(0);
+    }
 
-    // 解放: -1.0へ変化。AXIS_CALIBRATION_STABLE_FRAMES回連続で観測されて初めて較正完了する。
-    // 最後の1フレーム手前までは較正未完了(bitsは常に0)。
-    for (let i = 0; i < AXIS_CALIBRATION_STABLE_FRAMES - 1; i++) {
+    // 解放: -1.0へ変化。較正ウィンドウが終わるまでは未較正のまま(bitsは常に0)。
+    for (let i = 1; i < AXIS_CALIBRATION_WINDOW_FRAMES; i++) {
       expect(mgr.bitsForPad(makeGamepad({ axes: { 3: -1.0 } }))).toBe(0);
     }
-    // 最後の1回で較正完了。静止値が-1.0として確定し、非アクティブへ収束する(=ON固着しない)。
+    // ウィンドウが終わった時点で較正完了。静止値が-1.0として確定し、非アクティブへ収束する(=ON固着しない)。
     const settled = makeGamepad({ axes: { 3: -1.0 } });
     expect(mgr.bitsForPad(settled)).toBe(0);
-    expect(mgr.axisState(settled, 3)).toEqual({ valid: true, calibrated: true, active: null }); // 較正済みなので安全に呼べる。
+    expect(mgr.axisState(settled, 3)).toEqual({ valid: true, calibrated: true, calibrating: false, active: null });
 
     // 較正後、-1.0のまま何フレーム経っても固着しない(静止値が-1.0で固定されているため)。
     expect(mgr.bitsForPad(makeGamepad({ axes: { 3: -1.0 } }))).toBe(0);
     expect(mgr.bitsForPad(makeGamepad({ axes: { 3: -1.0 } }))).toBe(0);
+  });
+
+  it('(b) GamepadManager: 押しっぱなしが60フレームを超えても、離した後の静止に負けてrest=-1.0になる', () => {
+    const mgr = new GamepadManager([], DEFAULT_DEADZONE);
+    mgr.addBinding({ kind: 'axis', index: 3, dir: 1 }, { kind: 'joy', target: 'TRG1' });
+    expect(mgr.bitsForPad(makeGamepad({ axes: { 3: 0.0 } }))).toBe(0);
+    for (let i = 0; i < 65; i++) {
+      expect(mgr.bitsForPad(makeGamepad({ axes: { 3: 1.0 } }))).toBe(0); // 押しっぱなし65フレーム。
+    }
+    for (let i = 1; i < AXIS_CALIBRATION_WINDOW_FRAMES; i++) {
+      mgr.bitsForPad(makeGamepad({ axes: { 3: -1.0 } }));
+    }
+    const settled = makeGamepad({ axes: { 3: -1.0 } });
+    mgr.bitsForPad(settled);
+    expect(mgr.axisState(settled, 3)).toEqual({ valid: true, calibrated: true, calibrating: false, active: null });
+    // 押した瞬間(+1.0)はアクティブになる。静止値が誤って+1.0側に確定していないことの確認。
+    expect(mgr.bitsForPad(makeGamepad({ axes: { 3: 1.0 } }))).toBe(1 << 0); // TRG1
   });
 
   it('較正後: +1.0へ振れたらアクティブ、静止値(-1.0)に戻れば非アクティブ', () => {
@@ -833,7 +893,7 @@ describe('軸較正(AxisCalibration): 実機トリガ軸の「一度動かすま
     expect(mgr.bitsForPad(makeGamepad({ axes: { 3: -1.0 } }))).toBe(0);
   });
 
-  it('押しっぱなし(較正後に値が変化せず振れたまま)でも静止値が追いつかず、アクティブのまま', () => {
+  it('(d) 押しっぱなし(較正後に値が変化せず振れたまま)でも静止値が追いつかず、アクティブのまま', () => {
     const mgr = new GamepadManager([], DEFAULT_DEADZONE);
     mgr.addBinding({ kind: 'axis', index: 0, dir: 1 }, { kind: 'joy', target: 'TRG1' });
     calibrateAxis(mgr, 0, 0); // 通常のスティック、静止値0で較正完了させる。
@@ -844,7 +904,7 @@ describe('軸較正(AxisCalibration): 実機トリガ軸の「一度動かすま
     expect(mgr.bitsForPad(held)).toBe(1 << 0);
   });
 
-  it('通常のスティック(静止0.0、±1.0へ振れる)は較正完了後、従来どおりデッドゾーン判定で動く', () => {
+  it('(c) 通常のスティック(静止0.0、±1.0へ振れる)は較正完了後、従来どおりデッドゾーン判定で動く', () => {
     const mgr = new GamepadManager([], DEFAULT_DEADZONE);
     mgr.addBinding({ kind: 'axis', index: 0, dir: -1 }, { kind: 'joy', target: 'LEFT' });
     mgr.addBinding({ kind: 'axis', index: 0, dir: 1 }, { kind: 'joy', target: 'RIGHT' });
@@ -854,11 +914,11 @@ describe('軸較正(AxisCalibration): 実機トリガ軸の「一度動かすま
     expect(mgr.bitsForPad(makeGamepad({ axes: { 0: -0.9 } }))).toBe(1 << RETRO_LEFT);
   });
 
-  it('初期状態から一度も動かない軸は、いくらポーリングしても勝手に較正されない(baselineをrestとして誤採用しない)', () => {
+  it('(e) 初期状態から一度も動かない軸は、いくらポーリングしても勝手に較正されない(baselineをrestとして誤採用しない)', () => {
     const mgr = new GamepadManager([], DEFAULT_DEADZONE);
     const idle = makeGamepad({ axes: { 0: 0 } });
-    for (let i = 0; i < 50; i++) mgr.bitsForPad(idle);
-    expect(mgr.axisState(idle, 0)).toEqual({ valid: true, calibrated: false, active: null });
+    for (let i = 0; i < 1000; i++) mgr.bitsForPad(idle);
+    expect(mgr.axisState(idle, 0)).toEqual({ valid: true, calibrated: false, calibrating: false, active: null });
   });
 
   it('範囲外([-1,1]の外)の軸は較正されず常に無効(valid:false)のまま', () => {
@@ -866,7 +926,20 @@ describe('軸較正(AxisCalibration): 実機トリガ軸の「一度動かすま
     mgr.addBinding({ kind: 'axis', index: 9, dir: 1 }, { kind: 'joy', target: 'TRG1' });
     const hatPad = makeGamepad({ axes: { 9: 3.29 } }); // 8BitDo M30実機のaxes[9]は常に3.29(範囲外)。
     expect(mgr.bitsForPad(hatPad)).toBe(0);
-    expect(mgr.axisState(hatPad, 9)).toEqual({ valid: false, calibrated: false, active: null });
+    expect(mgr.axisState(hatPad, 9)).toEqual({ valid: false, calibrated: false, calibrating: false, active: null });
+  });
+
+  it('一度動かされてから較正ウィンドウが終わるまでの間は calibrating:true(較正待ちと較正中を区別できる)', () => {
+    const mgr = new GamepadManager([], DEFAULT_DEADZONE);
+    const untouched = makeGamepad({ axes: { 3: 0.0 } });
+    expect(mgr.axisState(untouched, 3)).toEqual({ valid: true, calibrated: false, calibrating: false, active: null });
+    mgr.bitsForPad(makeGamepad({ axes: { 3: 1.0 } })); // 初めて動かす。
+    expect(mgr.axisState(makeGamepad({ axes: { 3: 1.0 } }), 3)).toEqual({
+      valid: true,
+      calibrated: false,
+      calibrating: true, // 「一度も動いていない」ではなく「較正中」。
+      active: null,
+    });
   });
 
   it('isAxisValueValid/axisDeviationDir(純粋関数)は較正とは独立に、範囲外の値・静止値からの偏差を判定する', () => {
@@ -918,10 +991,10 @@ describe('軸較正(AxisCalibration): 実機トリガ軸の「一度動かすま
 
       const before = mgr.describeAxes(pad);
       expect(before).toEqual([
-        { index: 0, value: 0.3, valid: true, calibrated: false, rest: null, baseline: null, hasMoved: false, stableCount: null, active: null },
-        { index: 1, value: -1.0, valid: true, calibrated: false, rest: null, baseline: null, hasMoved: false, stableCount: null, active: null },
-        { index: 2, value: 0, valid: true, calibrated: false, rest: null, baseline: null, hasMoved: false, stableCount: null, active: null },
-        { index: 3, value: 0, valid: true, calibrated: false, rest: null, baseline: null, hasMoved: false, stableCount: null, active: null },
+        { index: 0, value: 0.3, valid: true, calibrated: false, calibrating: false, rest: null, baseline: null, hasMoved: false, framesObserved: null, active: null },
+        { index: 1, value: -1.0, valid: true, calibrated: false, calibrating: false, rest: null, baseline: null, hasMoved: false, framesObserved: null, active: null },
+        { index: 2, value: 0, valid: true, calibrated: false, calibrating: false, rest: null, baseline: null, hasMoved: false, framesObserved: null, active: null },
+        { index: 3, value: 0, valid: true, calibrated: false, calibrating: false, rest: null, baseline: null, hasMoved: false, framesObserved: null, active: null },
       ]);
 
       // 呼び出し自体が axisCalib への記録を引き起こしていないこと(何度呼んでも結果が変わらない)。
@@ -930,13 +1003,13 @@ describe('軸較正(AxisCalibration): 実機トリガ軸の「一度動かすま
       // describeAxes() では記録されていないことを、実際に軸を使う axisState() で確認する:
       // axisState() は観測を行うため、初めて呼ぶとその値(-1.0)を baseline として記録し
       // (まだ較正はされない)、calibrated:false のまま active:null を返すはず。
-      expect(mgr.axisState(pad, 1)).toEqual({ valid: true, calibrated: false, active: null });
+      expect(mgr.axisState(pad, 1)).toEqual({ valid: true, calibrated: false, calibrating: false, active: null });
     });
 
-    it('較正の途中(一度動いたが安定フレーム数に達していない)の状態を、記録を変えずに読める', () => {
+    it('較正の途中(一度動いたが較正ウィンドウが終わっていない)の状態を、記録を変えずに読める', () => {
       const mgr = new GamepadManager([], DEFAULT_DEADZONE);
       mgr.bitsForPad(makeGamepad({ axes: { 0: 0.0 } })); // baseline観測。
-      mgr.bitsForPad(makeGamepad({ axes: { 0: 1.0 } })); // 一度動かした(まだ較正未完了)。
+      mgr.bitsForPad(makeGamepad({ axes: { 0: 1.0 } })); // 一度動かした(まだ較正未完了、1フレーム目)。
 
       const result = mgr.describeAxes(makeGamepad({ axes: { 0: 1.0 } }));
       expect(result[0]).toEqual({
@@ -944,10 +1017,11 @@ describe('軸較正(AxisCalibration): 実機トリガ軸の「一度動かすま
         value: 1.0,
         valid: true,
         calibrated: false,
+        calibrating: true,
         rest: null,
         baseline: 0.0,
         hasMoved: true,
-        stableCount: 1,
+        framesObserved: 1,
         active: null,
       });
       // 覗いただけで状態が進行していないこと(再度呼んでも同じまま)。
@@ -965,16 +1039,17 @@ describe('軸較正(AxisCalibration): 実機トリガ軸の「一度動かすま
         value: 0.6,
         valid: true,
         calibrated: true,
+        calibrating: false,
         rest: -0.2,
         baseline: null,
         hasMoved: true,
-        stableCount: null,
+        framesObserved: null,
         active: 1,
       });
 
       // 覗いただけで rest が動かされていないこと(再度呼んでも同じ-0.2のまま)。
       expect(mgr.describeAxes(moved)[0].rest).toBe(-0.2);
-      expect(mgr.axisState(moved, 0)).toEqual({ valid: true, calibrated: true, active: 1 }); // 通常経路と結果が一致。
+      expect(mgr.axisState(moved, 0)).toEqual({ valid: true, calibrated: true, calibrating: false, active: 1 }); // 通常経路と結果が一致。
     });
 
     it('範囲外(ハット軸混入等)の軸は valid:false, calibrated:false, active:null を返す', () => {
@@ -986,10 +1061,11 @@ describe('軸較正(AxisCalibration): 実機トリガ軸の「一度動かすま
         value: 3.29,
         valid: false,
         calibrated: false,
+        calibrating: false,
         rest: null,
         baseline: null,
         hasMoved: false,
-        stableCount: null,
+        framesObserved: null,
         active: null,
       });
     });

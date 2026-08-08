@@ -1554,6 +1554,18 @@ body.pseudo-fullscreen .console-card {
   opacity: 0.6;
 }
 
+/*
+ * 較正中の軸(一度動かされて、dwellベースの較正ウィンドウ内で観測が進行中)。
+ * 「一度も動いていない(uncalibrated)」とは別の見た目にし、押しっぱなしの最中に
+ * 「もう使えるようになった」と誤解されないようにする(gamepad.ts のAxisCalibration参照)。
+ */
+.gp-axis.calibrating {
+  border-style: dotted;
+  border-color: var(--accent);
+  color: var(--accent);
+  opacity: 0.85;
+}
+
 /* ポート手動選択・割当編集エリア。 */
 .gp-port-select {
   display: flex;

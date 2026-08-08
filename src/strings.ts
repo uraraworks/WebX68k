@@ -261,6 +261,12 @@ interface Dict {
    * ならないことを短く案内する(gamepad.ts の AxisCalibration 参照)。
    */
   gamepadAxisUncalibratedSuffix(): string;
+  /**
+   * ライブ表示で較正中の軸(一度動かされて dwell ベースの較正ウィンドウが観測中)に付ける注記。
+   * 「未較正(一度も動いていない)」とは別の文言にし、押しっぱなしの最中に「もう使える」と
+   * 誤解されないようにする(gamepad.ts の AXIS_CALIBRATION_WINDOW_FRAMES 参照)。
+   */
+  gamepadAxisCalibratingSuffix(): string;
   gamepadDeadzoneLabel(): string;
   gamepadResetPresetBtn(): string;
   /** [既定に戻す]ボタンのツールチップ。接続中パッドに応じて既定値が変わる旨を明記する。 */
@@ -506,6 +512,7 @@ const STRINGS: Record<Lang, Dict> = {
     gamepadAxisLabel: ({ index, dir }) => `軸${index} ${dir}`,
     gamepadAxisInvalidSuffix: () => '(無効・範囲外の値)',
     gamepadAxisUncalibratedSuffix: () => '(未較正・一度動かすと使えます)',
+    gamepadAxisCalibratingSuffix: () => '(較正中・そのまま数秒待ってください)',
     gamepadDeadzoneLabel: () => 'デッドゾーン',
     gamepadResetPresetBtn: () => '既定に戻す',
     gamepadResetPresetBtnTitle: () =>
@@ -741,6 +748,7 @@ const STRINGS: Record<Lang, Dict> = {
     gamepadAxisLabel: ({ index, dir }) => `Axis ${index} ${dir}`,
     gamepadAxisInvalidSuffix: () => '(invalid, out of range)',
     gamepadAxisUncalibratedSuffix: () => '(not calibrated yet — move it once to use)',
+    gamepadAxisCalibratingSuffix: () => '(calibrating — please wait a few seconds)',
     gamepadDeadzoneLabel: () => 'Deadzone',
     gamepadResetPresetBtn: () => 'Reset to Defaults',
     gamepadResetPresetBtnTitle: () =>
