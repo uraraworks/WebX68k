@@ -376,6 +376,14 @@ interface Dict {
   inputProfileSourceDpadRight(): string;
   /** 補助ボタン1/2の行ラベル。 */
   inputProfileSourceOpt(options: { n: number }): string;
+  /** 入力元一覧が可変(bindings由来)のモードでのみ出る「キーを追加」ボタン。 */
+  inputProfileAddKeyBtn(): string;
+  /** 「キーを追加」待機中、同じボタンの表示テキスト(押すと待機をやめる)。 */
+  inputProfileAddKeyCancelBtn(): string;
+  /** 「キーを追加」待機中に出す案内文言。 */
+  inputProfileAddKeyWaitingHint(): string;
+  /** 入力元一覧が可変のモードでのみ出る、行ごとの削除ボタン(その入力元自体を一覧から消す)。 */
+  inputProfileRemoveRowBtn(): string;
 
   // --- ホストキー(物理キーボード再割り当て)ダイアログ ---
   /** ツールバー「…」メニュー内の項目名兼ダイアログのボタンaria-label。 */
@@ -683,6 +691,10 @@ const STRINGS: Record<Lang, Dict> = {
     inputProfileSourceDpadLeft: () => 'スティック左',
     inputProfileSourceDpadRight: () => 'スティック右',
     inputProfileSourceOpt: ({ n }) => `補助${n}`,
+    inputProfileAddKeyBtn: () => 'キーを追加',
+    inputProfileAddKeyCancelBtn: () => 'キャンセル',
+    inputProfileAddKeyWaitingHint: () => 'キーを押してください(Escで中止)',
+    inputProfileRemoveRowBtn: () => '削除',
     toolbarHostKey: () => 'キーボード割当',
     hostKeyDialogTitle: () => 'キーボード割当',
     hostKeyDialogDescription: () =>
@@ -982,6 +994,10 @@ const STRINGS: Record<Lang, Dict> = {
     inputProfileSourceDpadLeft: () => 'Stick Left',
     inputProfileSourceDpadRight: () => 'Stick Right',
     inputProfileSourceOpt: ({ n }) => `Aux ${n}`,
+    inputProfileAddKeyBtn: () => 'Add Key',
+    inputProfileAddKeyCancelBtn: () => 'Cancel',
+    inputProfileAddKeyWaitingHint: () => 'Press a key (Esc to cancel)',
+    inputProfileRemoveRowBtn: () => 'Remove',
     toolbarHostKey: () => 'Keyboard Assignment',
     hostKeyDialogTitle: () => 'Keyboard Assignment',
     hostKeyDialogDescription: () =>

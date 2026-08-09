@@ -21,16 +21,72 @@ import {
   deleteProfile as deleteProfileOf,
   setActiveProfile,
   setBinding,
+  type InputBindings,
   type InputProfile,
   type InputProfileStore,
 } from './input-profile';
 import { KBD_ROWS, KEYPAD_ROWS, type VirtualKeyDef } from './kbd-layout';
 import { t } from './strings';
 
-/** 編集対象の入力元1つ分(バーチャルパッドの場合は画面部品ID)。 */
+/** 編集対象の入力元1つ分(バーチャルパッドの場合は画面部品ID、ホストキーの場合はKeyboardEvent.code)。 */
 export interface InputSourceDef {
   id: string;
   label: string;
+}
+
+/**
+ * 編集対象の入力元一覧をどう決めるか。
+ * - fixed: バーチャルパッドのように入力元が12個で固定の場合。渡された配列をそのまま使う。
+ * - dynamic: ホストキー再割り当てのように入力元(KeyboardEvent.code)が可変で、ユーザーが
+ *   「キーを追加」で増やしていく場合。deriveSources() は現在のプロファイルの bindings から
+ *   「既に割当のある入力元」だけを導出する関数(このファイルは呼び出し側に委ねてUI/DOM非依存の
+ *   ロジックの二重実装を避ける)。まだ割当の無い「追加直後の行」は bindings に現れないため、
+ *   このファイル内部で別途 pendingSourceIds として保持し、deriveSources() の結果へ合成する
+ *   (mergeInputSources 参照)。
+ */
+export type InputSourceConfig =
+  | { kind: 'fixed'; sources: readonly InputSourceDef[] }
+  | { kind: 'dynamic'; deriveSources: (bindings: InputBindings) => readonly InputSourceDef[] };
+
+/** dynamic モードの唯一の deriveSources 実装: bindings のキー(KeyboardEvent.code)をそのままid=labelにする。 */
+export function sourcesFromBindingKeys(bindings: InputBindings): InputSourceDef[] {
+  return Object.keys(bindings).map((code) => ({ id: code, label: code }));
+}
+
+/**
+ * baseSources(bindings由来、既に割当のある行)に、pendingIds(「キーを追加」で増やしたがまだ
+ * 割当の無い行)のうち baseSources に無いものだけを末尾へ追加する。
+ * 並び順の不変条件: baseSources の順序はそのまま(Object.keysの挿入順=既存行の並びを変えない)、
+ * pending は追加された順のまま末尾へ足す。既に baseSources 側にある id は pending 側の重複として
+ * 無視する(bindingが付いた瞬間に「pending扱い」から「bindings由来」へ切り替わるだけで、
+ * 表示上は同じ1行のまま行送りが起きない)。
+ */
+export function mergeInputSources(baseSources: readonly InputSourceDef[], pendingIds: readonly string[]): InputSourceDef[] {
+  const known = new Set(baseSources.map((s) => s.id));
+  const extra = pendingIds.filter((id) => !known.has(id)).map((id) => ({ id, label: id }));
+  return [...baseSources, ...extra];
+}
+
+export interface AddKeySourceResult {
+  pendingIds: string[];
+  /** 新規行/既存行いずれの場合も、選択状態にすべき行のid。 */
+  selectedId: string;
+}
+
+/**
+ * 「キーを追加」で押されたキー(code)を処理する純粋関数。
+ * knownIds(現在表示されている全入力元id、bindings由来+pending)に既に存在するcodeなら
+ * 追加はせず(重複行を作らない)、その行を選択するだけにする。存在しなければ pendingIds の末尾へ
+ * 追加し、その行を選択する。
+ */
+export function addKeySource(knownIds: readonly string[], pendingIds: readonly string[], code: string): AddKeySourceResult {
+  if (knownIds.includes(code)) return { pendingIds: [...pendingIds], selectedId: code };
+  return { pendingIds: [...pendingIds, code], selectedId: code };
+}
+
+/** pendingIds から指定の code を取り除く(行の削除で、bindingを持たない行を完全に消すため)。 */
+export function removePendingSource(pendingIds: readonly string[], code: string): string[] {
+  return pendingIds.filter((id) => id !== code);
 }
 
 /**
@@ -132,21 +188,32 @@ function el<K extends keyof HTMLElementTagNameMap>(
   return node;
 }
 
+export interface InputProfileEditorBody {
+  root: HTMLElement;
+  /** ダイアログを開くたびに呼ぶ:選択/待機状態をリセットしてタブをキーボードへ戻し、再描画する。 */
+  reset(): void;
+  /** 言語切替時、静的文言を現在の言語で貼り直してから再描画する。 */
+  applyStrings(): void;
+  /**
+   * ダイアログを閉じる際に必ず呼ぶ: 「キーを追加」待機中の window keydown リスナ(capture段)を
+   * 確実に外す。外し忘れるとダイアログを閉じた後もキー入力を横取りし続けてしまう。
+   */
+  cancelPending(): void;
+}
+
 /**
- * 入力プロファイル編集ダイアログを構築して container へ追加する。
- * main.ts からはボタン1つ分の配線(open()呼び出しとapplyStrings()連携)だけ行えばよい
- * (gamepad-ui.ts の buildGamepadDialog と同じ流儀)。
+ * 割当編集UIの中身(プロファイル管理+割当一覧+ピッカー)を組み立てる。モーダル自体
+ * (backdrop/タイトル/閉じるボタン)は持たない: buildInputProfileEditor() がバーチャルパッド用の
+ * 単独ダイアログとしてラップし、hostkey-ui.ts は自前のダイアログ(有効/無効チェックボックス等)へ
+ * この root をそのまま埋め込む(プロファイル管理・割当一覧・ピッカーのロジックを二重実装しない
+ * ための分割)。
  */
-export function buildInputProfileEditor(
-  container: HTMLElement,
-  sources: readonly InputSourceDef[],
+export function buildInputProfileEditorBody(
+  sourceConfig: InputSourceConfig,
   callbacks: InputProfileEditorCallbacks,
   showToast: (message: string) => void,
-): InputProfileEditorDialog {
-  const sourceIds = sources.map((s) => s.id);
-
-  const titleEl = el('h2', { class: 'gp-title' }, [t('inputProfileEditorTitle')]);
-  const descEl = el('p', { class: 'gp-desc' }, [t('inputProfileEditorDescription')]);
+): InputProfileEditorBody {
+  const isDynamic = sourceConfig.kind === 'dynamic';
 
   // --- 上段: プロファイル管理 ---
   const profileRow = el('div', { class: 'gp-edit-pad-row' });
@@ -162,6 +229,10 @@ export function buildInputProfileEditor(
 
   // --- 中段: 割当の一覧 ---
   const listTitleEl = el('h3', { class: 'rom-modal-section-title' }, [t('inputProfileBindingsTitle')]);
+  // 「キーを追加」は入力元が可変(dynamic)のモード専用。固定リスト(バーチャルパッド)では出さない。
+  const addKeyBtn = el('button', { type: 'button', class: 'gp-detect-btn' }, [t('inputProfileAddKeyBtn')]);
+  const addKeyHintEl = el('div', { class: 'gp-pending-hint hidden' }, [t('inputProfileAddKeyWaitingHint')]);
+  const addKeyRow = el('div', { class: isDynamic ? 'gp-generic-row' : 'gp-generic-row hidden' }, [addKeyBtn, addKeyHintEl]);
   const bindTableEl = el('div', { class: 'gp-bind-table' });
   const clearSelectedBtn = el('button', { type: 'button', class: 'gp-clear-btn' }, [t('inputProfileClearBindingBtn')]);
   const selectedHintEl = el('div', { class: 'gp-pending-hint hidden' }, [t('inputProfileRowSelectedHint')]);
@@ -177,14 +248,12 @@ export function buildInputProfileEditor(
   const joyNoteEl = el('div', { class: 'gp-hint hidden' }, [t('inputProfileTrg3PlusNote')]);
   joystickPanelEl.append(joyNoteEl);
 
-  const closeBtn = el('button', { type: 'button', class: 'rom-close-btn' }, [t('gamepadDialogClose')]);
-  const modal = el('div', { class: 'rom-modal gp-modal', role: 'dialog', 'aria-modal': 'true' }, [
-    titleEl,
-    descEl,
+  const root = el('div', {}, [
     profileRow,
     profileActionsRow,
     readonlyNoteEl,
     listTitleEl,
+    addKeyRow,
     bindTableEl,
     el('div', { class: 'gp-generic-row' }, [clearSelectedBtn]),
     selectedHintEl,
@@ -192,13 +261,16 @@ export function buildInputProfileEditor(
     tabsRow,
     keyboardPanelEl,
     joystickPanelEl,
-    el('div', { class: 'rom-modal-footer' }, [closeBtn]),
   ]);
-  const backdrop = el('div', { class: 'rom-modal-backdrop gp-modal-backdrop hidden' }, [modal]);
-  container.append(backdrop);
 
   let activeTab: 'keyboard' | 'joystick' = 'keyboard';
   let selectedSourceId: string | null = null;
+  // dynamicモードで「キーを追加」したが、まだ割当を選んでいない行のid(このダイアログを開いている
+  // 間だけの一時状態。永続化はしない)。bindings由来の一覧(deriveSources)に無い行を表示するために
+  // 保持する(このファイル冒頭のInputSourceConfigコメント参照)。
+  let pendingSourceIds: string[] = [];
+  // 「キーを追加」待機中に window(capture段)へ張る一時リスナ。null=待機していない。
+  let waitingKeyHandler: ((e: KeyboardEvent) => void) | null = null;
 
   function currentStore(): InputProfileStore {
     return callbacks.getStore();
@@ -207,6 +279,18 @@ export function buildInputProfileEditor(
   function currentProfile(): InputProfile | null {
     const store = currentStore();
     return findProfile(store, store.activeId);
+  }
+
+  /** 現在表示すべき入力元一覧。fixedはそのまま、dynamicはbindings由来+pendingの合成(mergeInputSources)。 */
+  function currentSources(): InputSourceDef[] {
+    if (sourceConfig.kind === 'fixed') return [...sourceConfig.sources];
+    const profile = currentProfile();
+    const base = sourceConfig.deriveSources(profile?.bindings ?? {});
+    return mergeInputSources(base, pendingSourceIds);
+  }
+
+  function currentSourceIds(): string[] {
+    return currentSources().map((s) => s.id);
   }
 
   function duplicateLabelFor(profile: InputProfile): string {
@@ -232,7 +316,7 @@ export function buildInputProfileEditor(
       const next = setBinding(store, targetId, targetSourceId, binding);
       callbacks.applyStore(next);
     });
-    selectedSourceId = nextSourceId(sourceIds, selectedSourceId);
+    selectedSourceId = nextSourceId(currentSourceIds(), selectedSourceId);
     renderAll();
   }
 
@@ -243,6 +327,59 @@ export function buildInputProfileEditor(
       const next = clearBinding(store, targetId, targetSourceId);
       callbacks.applyStore(next);
     });
+    renderAll();
+  }
+
+  /**
+   * 行の削除(dynamicモード専用)。割当があれば消し(builtin編集時は自動複製を経由)、
+   * pendingSourceIdsからも外す。両方から外すことで、割当の有無に関わらず行自体が一覧から消える。
+   */
+  function removeSource(id: string): void {
+    pendingSourceIds = removePendingSource(pendingSourceIds, id);
+    if (selectedSourceId === id) selectedSourceId = null;
+    const profile = currentProfile();
+    if (profile && profile.bindings[id] !== undefined) {
+      withEditableProfile((store, targetId) => {
+        callbacks.applyStore(clearBinding(store, targetId, id));
+      });
+    }
+    renderAll();
+  }
+
+  function stopWaitingForKeyListener(): void {
+    if (waitingKeyHandler) {
+      window.removeEventListener('keydown', waitingKeyHandler, true);
+      waitingKeyHandler = null;
+    }
+  }
+
+  /**
+   * 「キーを追加」待機を開始する。次のkeydownをwindowのcapture段で奪う(SDL2/main.tsの通常経路
+   * より先に横取りするため、hostkey.ts冒頭のコメントと同じ発想)。preventDefault+stopPropagation
+   * するため、待機中に押したキーはゲスト側は元より、他のwindow keydownリスナ(ダイアログの
+   * Escape閉じるハンドラ含む)へも一切伝わらない。Escapeは待機の中断に使う(ダイアログを閉じない)。
+   */
+  function startWaitingForKey(): void {
+    if (waitingKeyHandler || !currentProfile()) return;
+    const handler = (e: KeyboardEvent): void => {
+      e.preventDefault();
+      e.stopPropagation();
+      if (e.key === 'Escape') {
+        stopWaitingForKeyListener();
+        renderAll();
+        return;
+      }
+      // e.code が空文字(合成イベント等、実機の物理キーボードでは通常発生しない)の場合は
+      // 入力元として採用しない(空idの行を作らせない)。待機は続ける。
+      if (!e.code) return;
+      stopWaitingForKeyListener();
+      const result = addKeySource(currentSourceIds(), pendingSourceIds, e.code);
+      pendingSourceIds = result.pendingIds;
+      selectedSourceId = result.selectedId;
+      renderAll();
+    };
+    waitingKeyHandler = handler;
+    window.addEventListener('keydown', handler, true);
     renderAll();
   }
 
@@ -314,6 +451,7 @@ export function buildInputProfileEditor(
   function renderBindTable(): void {
     bindTableEl.textContent = '';
     const profile = currentProfile();
+    const sources = currentSources();
     for (const source of sources) {
       const binding = profile?.bindings[source.id];
       const isSelected = selectedSourceId === source.id;
@@ -328,6 +466,14 @@ export function buildInputProfileEditor(
         renderAll();
       });
       row.append(mainArea);
+      if (isDynamic) {
+        const removeBtn = el('button', { type: 'button', class: 'gp-clear-btn' }, [t('inputProfileRemoveRowBtn')]);
+        removeBtn.addEventListener('click', (e) => {
+          e.stopPropagation();
+          removeSource(source.id);
+        });
+        row.append(removeBtn);
+      }
       bindTableEl.append(row);
     }
     selectedHintEl.classList.toggle('hidden', selectedSourceId === null);
@@ -338,10 +484,19 @@ export function buildInputProfileEditor(
     joyNoteEl.classList.toggle('hidden', callbacks.getPadType() !== 'default');
   }
 
+  function renderAddKeyUi(): void {
+    if (!isDynamic) return;
+    const waiting = waitingKeyHandler !== null;
+    addKeyBtn.disabled = currentProfile() === null;
+    addKeyBtn.textContent = waiting ? t('inputProfileAddKeyCancelBtn') : t('inputProfileAddKeyBtn');
+    addKeyHintEl.classList.toggle('hidden', !waiting);
+  }
+
   function renderAll(): void {
     renderProfileSelect();
     renderBindTable();
     renderJoyNote();
+    renderAddKeyUi();
   }
 
   profileSelect.addEventListener('change', () => {
@@ -349,6 +504,8 @@ export function buildInputProfileEditor(
     const next = setActiveProfile(store, profileSelect.value || null);
     callbacks.applyStore(next);
     selectedSourceId = null;
+    pendingSourceIds = [];
+    stopWaitingForKeyListener();
     renderAll();
   });
 
@@ -363,6 +520,7 @@ export function buildInputProfileEditor(
     if (!result) return;
     callbacks.applyStore(setActiveProfile(result.store, result.id));
     selectedSourceId = null;
+    pendingSourceIds = [];
     renderAll();
   });
 
@@ -385,15 +543,85 @@ export function buildInputProfileEditor(
     if (next.activeId === null) next = setActiveProfile(next, next.profiles[0]?.id ?? null);
     callbacks.applyStore(next);
     selectedSourceId = null;
+    pendingSourceIds = [];
     renderAll();
   });
 
   clearSelectedBtn.addEventListener('click', () => clearSelectedBinding());
   tabKeyboardBtn.addEventListener('click', () => switchTab('keyboard'));
   tabJoystickBtn.addEventListener('click', () => switchTab('joystick'));
+  addKeyBtn.addEventListener('click', () => {
+    if (waitingKeyHandler) {
+      stopWaitingForKeyListener();
+      renderAll();
+      return;
+    }
+    startWaitingForKey();
+  });
+
+  function reset(): void {
+    stopWaitingForKeyListener();
+    selectedSourceId = null;
+    pendingSourceIds = [];
+    activeTab = 'keyboard';
+    switchTab('keyboard');
+    tabKeyboardBtn.classList.add('active');
+    tabJoystickBtn.classList.remove('active');
+    renderAll();
+  }
+
+  return {
+    root,
+    reset,
+    cancelPending: stopWaitingForKeyListener,
+    applyStrings(): void {
+      profileLabel.textContent = t('inputProfileSelectLabel');
+      dupBtn.textContent = t('inputProfileDuplicateBtn');
+      renameBtn.textContent = t('inputProfileRenameBtn');
+      deleteBtn.textContent = t('inputProfileDeleteBtn');
+      readonlyNoteEl.textContent = t('inputProfileBuiltinReadonlyNote');
+      listTitleEl.textContent = t('inputProfileBindingsTitle');
+      clearSelectedBtn.textContent = t('inputProfileClearBindingBtn');
+      selectedHintEl.textContent = t('inputProfileRowSelectedHint');
+      pickerTitleEl.textContent = t('inputProfilePickerTitle');
+      tabKeyboardBtn.textContent = t('inputProfileTabKeyboard');
+      tabJoystickBtn.textContent = t('inputProfileTabJoystick');
+      joyNoteEl.textContent = t('inputProfileTrg3PlusNote');
+      renderAll();
+    },
+  };
+}
+
+/**
+ * バーチャルパッド用の割当編集ダイアログを構築して container へ追加する。
+ * main.ts からはボタン1つ分の配線(open()呼び出しとapplyStrings()連携)だけ行えばよい
+ * (gamepad-ui.ts の buildGamepadDialog と同じ流儀)。中身(プロファイル管理・割当一覧・ピッカー)
+ * は buildInputProfileEditorBody() に委ね、ここではモーダルの外枠(タイトル・説明・閉じる)だけを
+ * 持つ(hostkey-ui.ts と中身を二重実装しないための分割)。
+ */
+export function buildInputProfileEditor(
+  container: HTMLElement,
+  sourceConfig: InputSourceConfig,
+  callbacks: InputProfileEditorCallbacks,
+  showToast: (message: string) => void,
+): InputProfileEditorDialog {
+  const body = buildInputProfileEditorBody(sourceConfig, callbacks, showToast);
+
+  const titleEl = el('h2', { class: 'gp-title' }, [t('inputProfileEditorTitle')]);
+  const descEl = el('p', { class: 'gp-desc' }, [t('inputProfileEditorDescription')]);
+  const closeBtn = el('button', { type: 'button', class: 'rom-close-btn' }, [t('gamepadDialogClose')]);
+  const modal = el('div', { class: 'rom-modal gp-modal', role: 'dialog', 'aria-modal': 'true' }, [
+    titleEl,
+    descEl,
+    body.root,
+    el('div', { class: 'rom-modal-footer' }, [closeBtn]),
+  ]);
+  const backdrop = el('div', { class: 'rom-modal-backdrop gp-modal-backdrop hidden' }, [modal]);
+  container.append(backdrop);
 
   function close(): void {
     backdrop.classList.add('hidden');
+    body.cancelPending();
   }
 
   closeBtn.addEventListener('click', () => close());
@@ -407,12 +635,7 @@ export function buildInputProfileEditor(
 
   function open(): void {
     backdrop.classList.remove('hidden');
-    selectedSourceId = null;
-    activeTab = 'keyboard';
-    switchTab('keyboard');
-    tabKeyboardBtn.classList.add('active');
-    tabJoystickBtn.classList.remove('active');
-    renderAll();
+    body.reset();
   }
 
   return {
@@ -420,20 +643,8 @@ export function buildInputProfileEditor(
     applyStrings(): void {
       titleEl.textContent = t('inputProfileEditorTitle');
       descEl.textContent = t('inputProfileEditorDescription');
-      profileLabel.textContent = t('inputProfileSelectLabel');
-      dupBtn.textContent = t('inputProfileDuplicateBtn');
-      renameBtn.textContent = t('inputProfileRenameBtn');
-      deleteBtn.textContent = t('inputProfileDeleteBtn');
-      readonlyNoteEl.textContent = t('inputProfileBuiltinReadonlyNote');
-      listTitleEl.textContent = t('inputProfileBindingsTitle');
-      clearSelectedBtn.textContent = t('inputProfileClearBindingBtn');
-      selectedHintEl.textContent = t('inputProfileRowSelectedHint');
-      pickerTitleEl.textContent = t('inputProfilePickerTitle');
-      tabKeyboardBtn.textContent = t('inputProfileTabKeyboard');
-      tabJoystickBtn.textContent = t('inputProfileTabJoystick');
-      joyNoteEl.textContent = t('inputProfileTrg3PlusNote');
       closeBtn.textContent = t('gamepadDialogClose');
-      if (!backdrop.classList.contains('hidden')) renderAll();
+      body.applyStrings();
     },
   };
 }

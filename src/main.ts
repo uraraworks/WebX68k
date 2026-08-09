@@ -602,7 +602,7 @@ function refreshVpadSourceLabels(): void {
 
 const inputProfileEditor = buildInputProfileEditor(
   inputProfileRoot,
-  vpadSourceDefs,
+  { kind: 'fixed', sources: vpadSourceDefs },
   {
     getStore: () => vpadStore,
     applyStore: (store) => {
@@ -633,14 +633,19 @@ function hostKeyProfileLabel(profile: InputProfile): string {
   }
 }
 
-const hostKeyDialog = buildHostKeyDialog(hostkeyRoot, {
-  getStore: () => hostKeyStore,
-  applyStore: (store) => {
-    hostKeyStore = store;
-    saveInputProfileStore(HOSTKEY_STORAGE_KEY, hostKeyStore);
+const hostKeyDialog = buildHostKeyDialog(
+  hostkeyRoot,
+  {
+    getStore: () => hostKeyStore,
+    applyStore: (store) => {
+      hostKeyStore = store;
+      saveInputProfileStore(HOSTKEY_STORAGE_KEY, hostKeyStore);
+    },
+    labelFor: (profile) => hostKeyProfileLabel(profile),
+    getPadType: () => gamepadStore.joyType[0],
   },
-  labelFor: (profile) => hostKeyProfileLabel(profile),
-});
+  (message) => showToast(message),
+);
 btnHostKey.addEventListener('click', () => hostKeyDialog.open());
 
 /** ツールバーボタンの見た目・チップの表示/非表示をまとめて同期する(両パネル共通の唯一の情報源)。 */

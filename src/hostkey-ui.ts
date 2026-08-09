@@ -7,14 +7,17 @@
  * このファイルは callbacks 経由で読み書きするだけ(input-profile-ui.ts / gamepad-ui.ts と同じ
  * 分担)。
  *
- * 今回は「有効化 + 組み込みプロファイル選択 + 割当内容の読み取り専用表示」のみを提供する。
- * 自分で割り当てを作る編集機能は入れない(別タスク)。見た目は既存の gp-modal/rom-modal を
- * そのまま使う。
+ * 割当の編集(プロファイルの複製/名前変更/削除、組み込み編集時の自動複製、割当一覧+ピッカー)は
+ * input-profile-ui.ts の buildInputProfileEditorBody() をそのまま埋め込んで使う(バーチャルパッドの
+ * 割当編集ダイアログと同じ実装。二重実装しない)。このファイル固有なのは:
+ * - 有効/無効のチェックボックスと、有効化の副作用(通常の文字入力が効かなくなる)の注記
+ * - 入力元一覧が「KeyboardEvent.code」で可変(ユーザーが「キーを追加」で増やす)である指定
+ *   (sourcesFromBindingKeys を deriveSources として渡す、kind:'dynamic')
  */
 
-import type { Binding } from './gamepad';
-import { activeProfile, type InputProfile, type InputProfileStore, setActiveProfile, setEnabled } from './input-profile';
-import { labelForRetrok } from './input-profile-ui';
+import type { PadType } from './gamepad';
+import { buildInputProfileEditorBody, sourcesFromBindingKeys, type InputProfileEditorBody } from './input-profile-ui';
+import { type InputProfile, type InputProfileStore, setEnabled } from './input-profile';
 import { t } from './strings';
 
 export interface HostKeyDialogCallbacks {
@@ -24,6 +27,8 @@ export interface HostKeyDialogCallbacks {
   applyStore(store: InputProfileStore): void;
   /** プロファイルの表示ラベル(組み込みはstrings.ts経由の翻訳済み文言)。 */
   labelFor(profile: InputProfile): string;
+  /** 割当先ポートの現在のパッド種別。TRG3..TRG8が効かない旨の注記の出し分けに使う(input-profile-ui.tsへ素通し)。 */
+  getPadType(): PadType;
 }
 
 export interface HostKeyDialog {
@@ -46,13 +51,11 @@ function el<K extends keyof HTMLElementTagNameMap>(
   return node;
 }
 
-/** 割当の表示テキスト。joy→ターゲット名(例 'TRG1')、key→キーラベル。 */
-function bindingDisplayText(binding: Binding): string {
-  if (binding.kind === 'joy') return binding.target;
-  return labelForRetrok(binding.retrok);
-}
-
-export function buildHostKeyDialog(container: HTMLElement, callbacks: HostKeyDialogCallbacks): HostKeyDialog {
+export function buildHostKeyDialog(
+  container: HTMLElement,
+  callbacks: HostKeyDialogCallbacks,
+  showToast: (message: string) => void,
+): HostKeyDialog {
   const titleEl = el('h2', { class: 'gp-title' }, [t('hostKeyDialogTitle')]);
   const descEl = el('p', { class: 'gp-desc' }, [t('hostKeyDialogDescription')]);
 
@@ -60,80 +63,45 @@ export function buildHostKeyDialog(container: HTMLElement, callbacks: HostKeyDia
   const enableLabel = el('label', { for: 'hk-enable' }, [t('hostKeyEnableLabel')]);
   const enableRow = el('div', { class: 'gp-generic-row' }, [enableCheckbox, enableLabel]);
 
-  const profileSelect = el('select', { class: 'gp-edit-pad-input', id: 'hk-profile-select' });
-  const profileLabel = el('label', { for: 'hk-profile-select' }, [t('hostKeyProfileSelectLabel')]);
-  const profileRow = el('div', { class: 'gp-edit-pad-row' }, [profileLabel, profileSelect]);
-
-  const bindingsTitleEl = el('h3', { class: 'rom-modal-section-title' }, [t('hostKeyBindingsTitle')]);
-  const bindTableEl = el('div', { class: 'gp-bind-table' });
-
   const noteEl = el('div', { class: 'gp-hint' }, [t('hostKeyDisableTypingNote')]);
+
+  // 入力元(KeyboardEvent.code)は可変: 「キーを追加」で増える。プロファイル管理・割当一覧・
+  // ピッカーの実体は input-profile-ui.ts 側の唯一の実装をそのまま使う。
+  const body: InputProfileEditorBody = buildInputProfileEditorBody(
+    { kind: 'dynamic', deriveSources: sourcesFromBindingKeys },
+    {
+      getStore: callbacks.getStore,
+      applyStore: callbacks.applyStore,
+      labelFor: callbacks.labelFor,
+      getPadType: callbacks.getPadType,
+    },
+    showToast,
+  );
 
   const closeBtn = el('button', { type: 'button', class: 'rom-close-btn' }, [t('gamepadDialogClose')]);
   const modal = el('div', { class: 'rom-modal gp-modal', role: 'dialog', 'aria-modal': 'true' }, [
     titleEl,
     descEl,
     enableRow,
-    profileRow,
-    bindingsTitleEl,
-    bindTableEl,
     noteEl,
+    body.root,
     el('div', { class: 'rom-modal-footer' }, [closeBtn]),
   ]);
   const backdrop = el('div', { class: 'rom-modal-backdrop gp-modal-backdrop hidden' }, [modal]);
   container.append(backdrop);
 
-  function currentStore(): InputProfileStore {
-    return callbacks.getStore();
-  }
-
   function renderEnable(): void {
-    enableCheckbox.checked = currentStore().enabled;
-  }
-
-  function renderProfileSelect(): void {
-    const store = currentStore();
-    profileSelect.textContent = '';
-    for (const profile of store.profiles) {
-      profileSelect.append(new Option(callbacks.labelFor(profile), profile.id));
-    }
-    if (store.activeId !== null) profileSelect.value = store.activeId;
-  }
-
-  function renderBindTable(): void {
-    bindTableEl.textContent = '';
-    const store = currentStore();
-    const profile = activeProfile(store);
-    for (const [code, binding] of Object.entries(profile?.bindings ?? {})) {
-      const row = el('div', { class: 'gp-bind-row' }, [
-        el('div', { class: 'gp-bind-row-main' }, [
-          el('span', { class: 'gp-bind-row-label' }, [code]),
-          el('span', { class: 'gp-bind-arrow' }, ['→']),
-          el('span', { class: 'gp-bind-key' }, [bindingDisplayText(binding)]),
-        ]),
-      ]);
-      bindTableEl.append(row);
-    }
-  }
-
-  function renderAll(): void {
-    renderEnable();
-    renderProfileSelect();
-    renderBindTable();
+    enableCheckbox.checked = callbacks.getStore().enabled;
   }
 
   enableCheckbox.addEventListener('change', () => {
-    callbacks.applyStore(setEnabled(currentStore(), enableCheckbox.checked));
-    renderAll();
-  });
-
-  profileSelect.addEventListener('change', () => {
-    callbacks.applyStore(setActiveProfile(currentStore(), profileSelect.value || null));
-    renderAll();
+    callbacks.applyStore(setEnabled(callbacks.getStore(), enableCheckbox.checked));
+    renderEnable();
   });
 
   function close(): void {
     backdrop.classList.add('hidden');
+    body.cancelPending();
   }
 
   closeBtn.addEventListener('click', () => close());
@@ -147,7 +115,8 @@ export function buildHostKeyDialog(container: HTMLElement, callbacks: HostKeyDia
 
   function open(): void {
     backdrop.classList.remove('hidden');
-    renderAll();
+    renderEnable();
+    body.reset();
   }
 
   return {
@@ -156,11 +125,10 @@ export function buildHostKeyDialog(container: HTMLElement, callbacks: HostKeyDia
       titleEl.textContent = t('hostKeyDialogTitle');
       descEl.textContent = t('hostKeyDialogDescription');
       enableLabel.textContent = t('hostKeyEnableLabel');
-      profileLabel.textContent = t('hostKeyProfileSelectLabel');
-      bindingsTitleEl.textContent = t('hostKeyBindingsTitle');
       noteEl.textContent = t('hostKeyDisableTypingNote');
       closeBtn.textContent = t('gamepadDialogClose');
-      if (!backdrop.classList.contains('hidden')) renderAll();
+      renderEnable();
+      body.applyStrings();
     },
   };
 }

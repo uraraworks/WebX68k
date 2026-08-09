@@ -244,8 +244,10 @@ Three built-in profiles are included: Arrows -> Joystick (2 Buttons), Arrows
 -> Joystick (6 Buttons) (for CPSF-MD-style software), and Arrows -> Numpad —
 the last one also doubles as a way to play numpad-only software on a laptop
 that has no numpad. Once enabled, any key you've mapped stops working as a
-regular character key. There is no editor yet for building your own
-mapping — you can only pick from the built-ins.
+regular character key. Press "Add Key" and then press the physical key you
+want to register; it's added as a new input source that you can bind to a
+joystick button or a keyboard key. Editing a built-in profile automatically
+creates a copy for you to edit — the built-in itself is never changed.
 
 ### Mouse
 
