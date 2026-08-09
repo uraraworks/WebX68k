@@ -67,6 +67,52 @@ body {
   min-height: 100%;
   display: flex;
   flex-direction: column;
+  /*
+   * アプリ全体で長押し選択/コンテキストメニューを抑止する。実機(スマホ)で
+   * ゲスト画面やツールバー・ドライブ行を長押しすると文字選択が始まり、
+   * 「全選択」「Google翻訳」等のブラウザメニューが出てゲーム操作が止まって
+   * しまうという指摘への対応。iOS の長押しメニューを止めるのは
+   * -webkit-touch-callout、Android含む選択そのものを止めるのは user-select。
+   * タップ時の灰色フラッシュも合わせて消す(バーチャルパッド等の個別指定と同じ値)。
+   * 選択させたい場所(フォーム部品・各モーダル本文)は下記で個別に復活させる。
+   */
+  -webkit-user-select: none;
+  user-select: none;
+  -webkit-touch-callout: none;
+  -webkit-tap-highlight-color: transparent;
+}
+
+/* フォーム部品は選択・入力できないと困るので復活させる。 */
+input,
+textarea,
+[contenteditable],
+[contenteditable] * {
+  -webkit-user-select: text;
+  user-select: text;
+  -webkit-touch-callout: default;
+}
+
+/*
+ * 各モーダルダイアログの本文はコピーできる価値があるため選択可能に戻す。
+ * 実在するダイアログのコンテナクラス(grep で確認済み):
+ *   - .rom-modal            … 設定/ディスクライブラリの基底クラス(index.html)
+ *   - .fm-modal              … ファイルマネージャ(filemanager.ts、.rom-modal と併記)
+ *   - .gp-modal              … ジョイスティック設定/キーボード割当/入力プロファイル
+ *                              (gamepad-ui.ts・hostkey-ui.ts・input-profile-ui.ts、.rom-modal と併記)
+ * いずれも .rom-modal を基底に持つため、.rom-modal 単体の指定で全ダイアログをカバーできる。
+ * ただしダイアログ内のボタン(.rom-close-btn 等の button 要素)はラベルが選択されると
+ * 邪魔なので選択不可のまま残す。
+ */
+.rom-modal {
+  -webkit-user-select: text;
+  user-select: text;
+  -webkit-touch-callout: default;
+}
+
+.rom-modal button {
+  -webkit-user-select: none;
+  user-select: none;
+  -webkit-touch-callout: none;
 }
 
 #app {
