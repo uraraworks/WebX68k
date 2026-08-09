@@ -376,6 +376,22 @@ interface Dict {
   inputProfileSourceDpadRight(): string;
   /** 補助ボタン1/2の行ラベル。 */
   inputProfileSourceOpt(options: { n: number }): string;
+
+  // --- ホストキー(物理キーボード再割り当て)ダイアログ ---
+  /** ツールバー「…」メニュー内の項目名兼ダイアログのボタンaria-label。 */
+  toolbarHostKey(): string;
+  hostKeyDialogTitle(): string;
+  hostKeyDialogDescription(): string;
+  /** 「キーボード割当を有効にする」チェックボックスのラベル。 */
+  hostKeyEnableLabel(): string;
+  hostKeyProfileSelectLabel(): string;
+  hostKeyBindingsTitle(): string;
+  /** 有効化の副作用(割り当てたキーが通常の文字入力として働かなくなる)を伝える注記。 */
+  hostKeyDisableTypingNote(): string;
+  /** 組み込みホストキープロファイルの表示名。 */
+  hostKeyProfileArrowsJoy(): string;
+  hostKeyProfileArrowsJoy6(): string;
+  hostKeyProfileTenkey(): string;
 }
 
 const STRINGS: Record<Lang, Dict> = {
@@ -667,6 +683,17 @@ const STRINGS: Record<Lang, Dict> = {
     inputProfileSourceDpadLeft: () => 'スティック左',
     inputProfileSourceDpadRight: () => 'スティック右',
     inputProfileSourceOpt: ({ n }) => `補助${n}`,
+    toolbarHostKey: () => 'キーボード割当',
+    hostKeyDialogTitle: () => 'キーボード割当',
+    hostKeyDialogDescription: () =>
+      'ジョイスティックを持っていなくても、物理キーボードでジョイスティック専用ソフトを遊べるようにする機能です。テンキー専用ソフト向けのキー変換にも使えます。',
+    hostKeyEnableLabel: () => 'キーボード割当を有効にする',
+    hostKeyProfileSelectLabel: () => 'プロファイル',
+    hostKeyBindingsTitle: () => '割当内容',
+    hostKeyDisableTypingNote: () => '有効にすると、割り当てたキーは通常の文字入力として働かなくなります。',
+    hostKeyProfileArrowsJoy: () => '矢印キー -> ジョイスティック(2ボタン)',
+    hostKeyProfileArrowsJoy6: () => '矢印キー -> ジョイスティック(6ボタン)',
+    hostKeyProfileTenkey: () => '矢印キー -> テンキー',
   },
   en: {
     title: () => 'WebX68k - X68000 Emulator',
@@ -955,6 +982,17 @@ const STRINGS: Record<Lang, Dict> = {
     inputProfileSourceDpadLeft: () => 'Stick Left',
     inputProfileSourceDpadRight: () => 'Stick Right',
     inputProfileSourceOpt: ({ n }) => `Aux ${n}`,
+    toolbarHostKey: () => 'Keyboard Assignment',
+    hostKeyDialogTitle: () => 'Keyboard Assignment',
+    hostKeyDialogDescription: () =>
+      "Lets you play joystick-only software with the physical keyboard even without a joystick. Also useful for remapping keys for numpad-only software.",
+    hostKeyEnableLabel: () => 'Enable keyboard assignment',
+    hostKeyProfileSelectLabel: () => 'Profile',
+    hostKeyBindingsTitle: () => 'Assignments',
+    hostKeyDisableTypingNote: () => 'When enabled, assigned keys will no longer work as normal text input.',
+    hostKeyProfileArrowsJoy: () => 'Arrows -> Joystick (2 Buttons)',
+    hostKeyProfileArrowsJoy6: () => 'Arrows -> Joystick (6 Buttons)',
+    hostKeyProfileTenkey: () => 'Arrows -> Numpad',
   },
 };
 

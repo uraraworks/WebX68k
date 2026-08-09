@@ -57,15 +57,22 @@ import {
 } from './gamepad';
 import { buildGamepadDialog } from './gamepad-ui';
 import { buildInputProfileEditor, type InputSourceDef } from './input-profile-ui';
+import { buildHostKeyDialog } from './hostkey-ui';
 import { createVirtualKeyboard, SharedKeyInput } from './virtual-keyboard';
 import { createVirtualPad, type VpadPlacement, type VpadSideBoxes } from './virtual-pad';
 import {
   activeProfile,
   BUILTIN_CURSOR_SPACE_ID,
+  BUILTIN_HOSTKEY_ARROWS_JOY_ID,
+  BUILTIN_HOSTKEY_ARROWS_JOY6_ID,
+  BUILTIN_HOSTKEY_TENKEY_ID,
   BUILTIN_JOY_2BUTTON_ID,
   BUILTIN_JOY_6BUTTON_ID,
   BUILTIN_TENKEY_ID,
+  HOSTKEY_STORAGE_KEY,
+  joyBitsForPressedCodes,
   loadInputProfileStore,
+  resolveHostKeyBinding,
   saveInputProfileStore,
   setActiveProfile,
   VPAD_BTN_A,
@@ -127,6 +134,8 @@ const toastEl = document.getElementById('toast') as HTMLDivElement;
 const btnGamepad = document.getElementById('btn-gamepad') as HTMLButtonElement;
 const gamepadRoot = document.getElementById('gamepad-root') as HTMLDivElement;
 const inputProfileRoot = document.getElementById('input-profile-root') as HTMLDivElement;
+const btnHostKey = document.getElementById('btn-hostkey') as HTMLButtonElement;
+const hostkeyRoot = document.getElementById('hostkey-root') as HTMLDivElement;
 const btnSettings = document.getElementById('btn-settings') as HTMLButtonElement;
 const btnDiskLibrary = document.getElementById('btn-disk-library') as HTMLButtonElement;
 const btnFileManager = document.getElementById('btn-file-manager') as HTMLButtonElement;
@@ -606,6 +615,33 @@ const inputProfileEditor = buildInputProfileEditor(
   },
   (message) => showToast(message),
 );
+
+// --- ホストキー(物理キーボード再割り当て)。vpadStore と同じ流儀(input-profile.ts の器を共有)。
+let hostKeyStore: InputProfileStore = loadInputProfileStore(HOSTKEY_STORAGE_KEY);
+
+/** 組み込みプロファイルは strings.ts 経由の翻訳済みラベルへ差し替えて表示する(vpadProfileLabel と同じ流儀)。 */
+function hostKeyProfileLabel(profile: InputProfile): string {
+  switch (profile.id) {
+    case BUILTIN_HOSTKEY_ARROWS_JOY_ID:
+      return t('hostKeyProfileArrowsJoy');
+    case BUILTIN_HOSTKEY_ARROWS_JOY6_ID:
+      return t('hostKeyProfileArrowsJoy6');
+    case BUILTIN_HOSTKEY_TENKEY_ID:
+      return t('hostKeyProfileTenkey');
+    default:
+      return profile.label;
+  }
+}
+
+const hostKeyDialog = buildHostKeyDialog(hostkeyRoot, {
+  getStore: () => hostKeyStore,
+  applyStore: (store) => {
+    hostKeyStore = store;
+    saveInputProfileStore(HOSTKEY_STORAGE_KEY, hostKeyStore);
+  },
+  labelFor: (profile) => hostKeyProfileLabel(profile),
+});
+btnHostKey.addEventListener('click', () => hostKeyDialog.open());
 
 /** ツールバーボタンの見た目・チップの表示/非表示をまとめて同期する(両パネル共通の唯一の情報源)。 */
 function syncInputPanelUi(): void {
@@ -1847,7 +1883,7 @@ const OVERFLOW_GROUP_ORDER: OverflowGroupId[] = ['display', 'input', 'disk', 'st
 
 const OVERFLOW_GROUPS: Record<OverflowGroupId, OverflowGroup> = {
   display: { title: () => t('toolbarGroupDisplay'), actions: [btnAspect] },
-  input: { title: () => t('toolbarGroupInput'), actions: [btnMouseCapture, btnMouseResync, btnGamepad] },
+  input: { title: () => t('toolbarGroupInput'), actions: [btnMouseCapture, btnMouseResync, btnGamepad, btnHostKey] },
   disk: { title: () => t('toolbarGroupDisk'), actions: [btnDiskLibrary, btnFileManager] },
   state: { title: () => t('toolbarGroupState'), actions: [btnSaveState, btnLoadState] },
 };
@@ -2137,9 +2173,9 @@ async function bootCore(): Promise<void> {
   host.onPoll = () => {
     const pads = gamepadsByPort();
     const [bits0, bits1] = pollBitsByPort(pads);
-    // 物理パッドとバーチャルパッドが同じポート(0)に乗りうるため、ビットマスクはORで合成する
-    // (docs/DESIGN.md「joy出力の合成」参照)。
-    host!.setJoyState(0, bits0 | virtualPad.getJoyBits());
+    // 物理パッド・バーチャルパッド・ホストキー(物理キーボード再割り当て)が同じポート(0)に
+    // 乗りうるため、ビットマスクはORで合成する(docs/DESIGN.md「joy出力の合成」参照)。
+    host!.setJoyState(0, bits0 | virtualPad.getJoyBits() | hostKeyJoyBits());
     host!.setJoyState(1, bits1);
     syncGamepadKeys(pads);
   };
@@ -2341,6 +2377,9 @@ function applyDocumentStrings(): void {
   gamepadDialog.applyStrings();
   refreshVpadSourceLabels();
   inputProfileEditor.applyStrings();
+  btnHostKey.title = t('toolbarHostKey');
+  btnHostKey.setAttribute('aria-label', t('toolbarHostKey'));
+  hostKeyDialog.applyStrings();
   btnSettings.title = t('toolbarSettings');
   btnSettings.setAttribute('aria-label', t('toolbarSettings'));
   btnDiskLibrary.title = t('toolbarDiskLibrary');
@@ -2411,8 +2450,20 @@ btnLang.addEventListener('click', () => {
 // キーボード入力: canvas にフォーカスがある間だけ捕捉する
 canvas.tabIndex = 0;
 const physicalPressed = new Set<string>();
+// ホストキー(物理キーボード再割り当て)で横取り中の e.code -> press時点で確定した割当。
+// keyup側は「今のhostKeyStore/アクティブプロファイル」で再解決せず、必ずこのMapに記録された
+// press時点の割当を使って release する(押している最中にプロファイルが切り替わっても、
+// sharedKeyInput.press/releaseのretrokが噛み合わなくなる=固着する事故を防ぐため)。
+const hostKeyPressed = new Map<string, Binding>();
 window.addEventListener('keydown', (e) => {
   if (document.activeElement !== canvas || !host) return;
+  const hostBinding = resolveHostKeyBinding(hostKeyStore, e.code);
+  if (hostBinding) {
+    hostKeyPressed.set(e.code, hostBinding);
+    if (hostBinding.kind === 'key') sharedKeyInput.press(`physical:${e.code}`, hostBinding.retrok);
+    e.preventDefault();
+    return;
+  }
   const code = codeToRetrok(e.code);
   if (code === RETROK.UNKNOWN) return;
   const firstPress = !physicalPressed.has(e.code);
@@ -2422,13 +2473,39 @@ window.addEventListener('keydown', (e) => {
   e.preventDefault();
 });
 window.addEventListener('keyup', (e) => {
+  const hostBinding = hostKeyPressed.get(e.code);
+  if (hostBinding) {
+    hostKeyPressed.delete(e.code);
+    if (hostBinding.kind === 'key') sharedKeyInput.release(`physical:${e.code}`, hostBinding.retrok);
+    e.preventDefault();
+    return;
+  }
   if (!physicalPressed.delete(e.code)) return;
   const code = codeToRetrok(e.code);
   if (code === RETROK.UNKNOWN) return;
   sharedKeyInput.release(`physical:${e.code}`, code);
   e.preventDefault();
 });
-window.addEventListener('blur', () => physicalPressed.clear());
+/** ホストキー由来の押下記録を全解除する(blur時。押しっぱなし固着の予防、physicalPressed.clear()と同じ思想)。 */
+function clearHostKeyPressed(): void {
+  for (const [code, binding] of hostKeyPressed) {
+    if (binding.kind === 'key') sharedKeyInput.release(`physical:${code}`, binding.retrok);
+  }
+  hostKeyPressed.clear();
+}
+window.addEventListener('blur', () => {
+  physicalPressed.clear();
+  clearHostKeyPressed();
+});
+/**
+ * ホストキー由来のjoyビットマスク(ポート0、host.onPollからOR合成する)。padTypeは
+ * gamepadStore.joyType[0](TRG3..TRG8のビット位置がパッド種別で変わるため、バーチャルパッドと
+ * 同じ考え方)。押している最中に割当が変わっても hostKeyPressed に記録済みの押下時点の割当を
+ * そのまま使う(固着防止、resolveHostKeyBinding/joyBitsForPressedCodesのコメント参照)。
+ */
+function hostKeyJoyBits(): number {
+  return joyBitsForPressedCodes(hostKeyPressed.keys(), (code) => hostKeyPressed.get(code), gamepadStore.joyType[0]);
+}
 // --- マウス入力 ---
 // X68000 のマウスは SCC 経由で相対移動量(-128..127)を送る方式で、カーソル位置はゲストが
 // 自前で管理する。そのため WebNP2 と同じく2つのモードを用意する。
@@ -3291,7 +3368,8 @@ if (import.meta.env.DEV) {
       const pads = gamepadsByPort();
       const [rawBits0, bits1] = pollBitsByPort(pads);
       const vpadBits = virtualPad.getJoyBits();
-      const bits0 = rawBits0 | vpadBits;
+      const keyboardBits = hostKeyJoyBits();
+      const bits0 = rawBits0 | vpadBits | keyboardBits;
       const rawOf = (pad: Gamepad | null) =>
         pad === null
           ? null
@@ -3302,7 +3380,7 @@ if (import.meta.env.DEV) {
               axes: Array.from(pad.axes),
             };
       return {
-        port0: { bits: bits0, raw: rawOf(pads[0]), physicalBits: rawBits0, vpadBits },
+        port0: { bits: bits0, raw: rawOf(pads[0]), physicalBits: rawBits0, vpadBits, keyboardBits },
         port1: { bits: bits1, raw: rawOf(pads[1]) },
       };
     },

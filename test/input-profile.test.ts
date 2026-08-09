@@ -2,10 +2,16 @@ import { describe, expect, it } from 'vitest';
 import {
   activeProfile,
   BUILTIN_CURSOR_SPACE_ID,
+  BUILTIN_HOSTKEY_ARROWS_JOY_ID,
+  BUILTIN_HOSTKEY_ARROWS_JOY6_ID,
+  BUILTIN_HOSTKEY_TENKEY_ID,
   BUILTIN_JOY_2BUTTON_ID,
   BUILTIN_JOY_6BUTTON_ID,
   BUILTIN_TENKEY_ID,
   builtinCursorSpaceProfile,
+  builtinHostKeyArrowsJoy6Profile,
+  builtinHostKeyArrowsJoyProfile,
+  builtinHostKeyTenkeyProfile,
   builtinJoy2ButtonProfile,
   builtinJoy6ButtonProfile,
   builtinTenkeyProfile,
@@ -17,8 +23,10 @@ import {
   emptyVpadStore,
   findProfile,
   HOSTKEY_STORAGE_KEY,
+  joyBitsForPressedCodes,
   loadInputProfileStore,
   renameProfile,
+  resolveHostKeyBinding,
   saveInputProfileStore,
   setActiveProfile,
   setBinding,
@@ -36,6 +44,8 @@ import {
   VPAD_DPAD_RIGHT,
   VPAD_DPAD_UP,
   VPAD_STORAGE_KEY,
+  type Binding,
+  type InputBindings,
   type InputProfileStore,
 } from '../src/input-profile';
 import { RETROK } from '../src/keyboard';
@@ -68,11 +78,50 @@ describe('emptyVpadStore/組み込みプロファイル', () => {
     expect(store.enabled).toBe(false);
   });
 
-  it('既定のホストキーストアは組み込みプロファイル無しの器のみ', () => {
+  // 2026-08-09: ホストキー機能(物理キー→ジョイ/別キー再割り当て)の実装に伴い、
+  // 「器のみ(組み込み無し)」だった従来の既定値を「組み込み3種を持ち、既定でOFF」へ変更した。
+  // この変更は今回のタスク仕様が明示的に指示するものであり、以下のアサーションは
+  // その新しい既定契約を検証する(旧アサーションを緩めたのではなく、契約そのものが変わった)。
+  it('既定のホストキーストアは組み込み3種を持ち、矢印+ジョイ2ボタンがアクティブで、機能はOFF', () => {
     const store = emptyHostKeyStore();
-    expect(store.profiles).toEqual([]);
-    expect(store.activeId).toBeNull();
+    expect(store.profiles).toHaveLength(3);
+    expect(store.profiles.map((p) => p.id)).toEqual([
+      BUILTIN_HOSTKEY_ARROWS_JOY_ID,
+      BUILTIN_HOSTKEY_ARROWS_JOY6_ID,
+      BUILTIN_HOSTKEY_TENKEY_ID,
+    ]);
+    expect(store.profiles.every((p) => p.builtin)).toBe(true);
+    expect(store.activeId).toBe(BUILTIN_HOSTKEY_ARROWS_JOY_ID);
     expect(store.enabled).toBe(false);
+  });
+
+  it('hk-arrows-joy: 矢印はjoy(UP/DOWN/LEFT/RIGHT)、KeyZ=TRG1、KeyX=TRG2', () => {
+    const p = builtinHostKeyArrowsJoyProfile();
+    expect(p.bindings.ArrowUp).toEqual({ kind: 'joy', target: 'UP' });
+    expect(p.bindings.ArrowDown).toEqual({ kind: 'joy', target: 'DOWN' });
+    expect(p.bindings.ArrowLeft).toEqual({ kind: 'joy', target: 'LEFT' });
+    expect(p.bindings.ArrowRight).toEqual({ kind: 'joy', target: 'RIGHT' });
+    expect(p.bindings.KeyZ).toEqual({ kind: 'joy', target: 'TRG1' });
+    expect(p.bindings.KeyX).toEqual({ kind: 'joy', target: 'TRG2' });
+  });
+
+  it('hk-arrows-joy6: hk-arrows-joyに加えKeyA=TRG3、KeyS=TRG4、KeyD=TRG5、KeyC=TRG8(CPSF-MD用)', () => {
+    const p = builtinHostKeyArrowsJoy6Profile();
+    expect(p.bindings.ArrowUp).toEqual({ kind: 'joy', target: 'UP' });
+    expect(p.bindings.KeyZ).toEqual({ kind: 'joy', target: 'TRG1' });
+    expect(p.bindings.KeyX).toEqual({ kind: 'joy', target: 'TRG2' });
+    expect(p.bindings.KeyA).toEqual({ kind: 'joy', target: 'TRG3' });
+    expect(p.bindings.KeyS).toEqual({ kind: 'joy', target: 'TRG4' });
+    expect(p.bindings.KeyD).toEqual({ kind: 'joy', target: 'TRG5' });
+    expect(p.bindings.KeyC).toEqual({ kind: 'joy', target: 'TRG8' });
+  });
+
+  it('hk-tenkey: 矢印はkey(テンキー数字)への再割当のみ(キー→キーの例)', () => {
+    const p = builtinHostKeyTenkeyProfile();
+    expect(p.bindings.ArrowUp).toEqual({ kind: 'key', retrok: RETROK.KP8 });
+    expect(p.bindings.ArrowDown).toEqual({ kind: 'key', retrok: RETROK.KP2 });
+    expect(p.bindings.ArrowLeft).toEqual({ kind: 'key', retrok: RETROK.KP4 });
+    expect(p.bindings.ArrowRight).toEqual({ kind: 'key', retrok: RETROK.KP6 });
   });
 
   it('joy-2button: 方向はjoy、btn-a/btn-bはTRG1/TRG2', () => {
@@ -297,10 +346,118 @@ describe('CRUD', () => {
 });
 
 describe('normalizeStore(用途ごとの器の独立性)', () => {
-  it('ホストキー用ストアには組み込みプロファイルを補わない(器のみの仕様)', () => {
+  // 2026-08-09: ホストキー用ストアも組み込み3種を持つようになったため、vpad用ストアと同じく
+  // normalizeStore() が保存データから欠けた組み込みを補う対象になった(上のemptyHostKeyStoreの
+  // テスト変更と対になる契約変更)。
+  it('ホストキー用ストアも保存データから組み込みが欠けていれば補われる', () => {
     const storage = makeStorage();
     storage.setItem(HOSTKEY_STORAGE_KEY, JSON.stringify({ version: 1, profiles: [], activeId: null, enabled: false } satisfies InputProfileStore));
     const loaded = loadInputProfileStore(HOSTKEY_STORAGE_KEY, storage);
-    expect(loaded.profiles).toEqual([]);
+    expect(loaded.profiles.map((p) => p.id)).toEqual([
+      BUILTIN_HOSTKEY_ARROWS_JOY_ID,
+      BUILTIN_HOSTKEY_ARROWS_JOY6_ID,
+      BUILTIN_HOSTKEY_TENKEY_ID,
+    ]);
+  });
+
+  it('ホストキー用ストアの組み込みも読み取り専用(改ざんされても正規の内容へ強制される)', () => {
+    const storage = makeStorage();
+    storage.setItem(
+      HOSTKEY_STORAGE_KEY,
+      JSON.stringify({
+        version: 1,
+        profiles: [{ id: BUILTIN_HOSTKEY_ARROWS_JOY_ID, label: 'tampered', builtin: false, bindings: {} }],
+        activeId: null,
+        enabled: false,
+      } satisfies InputProfileStore),
+    );
+    const loaded = loadInputProfileStore(HOSTKEY_STORAGE_KEY, storage);
+    const builtin = findProfile(loaded, BUILTIN_HOSTKEY_ARROWS_JOY_ID);
+    expect(builtin?.builtin).toBe(true);
+    expect(builtin?.bindings).toEqual(builtinHostKeyArrowsJoyProfile().bindings);
+  });
+});
+
+describe('resolveHostKeyBinding(物理キーの関所の判定)', () => {
+  it('enabled:false のときは常にnull(素通り)', () => {
+    const store = { ...emptyHostKeyStore(), enabled: false };
+    expect(resolveHostKeyBinding(store, 'ArrowUp')).toBeNull();
+  });
+
+  it('enabled:true でも有効プロファイルが無ければnull', () => {
+    const store: InputProfileStore = { version: 1, profiles: [], activeId: null, enabled: true };
+    expect(resolveHostKeyBinding(store, 'ArrowUp')).toBeNull();
+  });
+
+  it('enabled:true・有効プロファイル有りで、割当の無いcodeはnull', () => {
+    const store = { ...emptyHostKeyStore(), enabled: true };
+    expect(resolveHostKeyBinding(store, 'KeyQ')).toBeNull();
+  });
+
+  it('enabled:true・有効プロファイル有りで、割当の有るcodeはそのBindingを返す', () => {
+    const store = { ...emptyHostKeyStore(), enabled: true };
+    expect(resolveHostKeyBinding(store, 'ArrowUp')).toEqual({ kind: 'joy', target: 'UP' });
+    expect(resolveHostKeyBinding(store, 'KeyZ')).toEqual({ kind: 'joy', target: 'TRG1' });
+  });
+});
+
+describe('joyBitsForPressedCodes(キーボード由来のjoyビット計算)', () => {
+  const bindings: InputBindings = {
+    ArrowUp: { kind: 'joy', target: 'UP' },
+    KeyZ: { kind: 'joy', target: 'TRG1' },
+    KeyReturn: { kind: 'key', retrok: RETROK.RETURN },
+  };
+  const resolve = (code: string): Binding | undefined => bindings[code];
+
+  it('padTypeでTRGnのビット位置が変わる(default→id0、cpsf-md→id8)', () => {
+    const bitsDefault = joyBitsForPressedCodes(['KeyZ'], resolve, 'default');
+    const bitsMd = joyBitsForPressedCodes(['KeyZ'], resolve, 'cpsf-md');
+    expect(bitsDefault).toBe(1 << 0);
+    expect(bitsMd).toBe(1 << 8);
+    expect(bitsDefault).not.toBe(bitsMd);
+  });
+
+  it('割当の無いcodeは無視される', () => {
+    const bits = joyBitsForPressedCodes(['ArrowUp', 'KeyQ'], resolve, 'default');
+    expect(bits).toBe(1 << 4); // UP の RetroPad ID(default)
+  });
+
+  it('kind:keyの割当は合算されない(joy側のビットには乗らない)', () => {
+    const bits = joyBitsForPressedCodes(['KeyReturn'], resolve, 'default');
+    expect(bits).toBe(0);
+  });
+
+  it('複数code同時押下はORで合成される', () => {
+    const bits = joyBitsForPressedCodes(['ArrowUp', 'KeyZ'], resolve, 'default');
+    expect(bits).toBe((1 << 4) | (1 << 0));
+  });
+});
+
+describe('物理キーの押下記録(main.tsの関所と同じ設計)による固着防止', () => {
+  it('press時点の割当をMapに記録し、途中でプロファイルが切り替わってもreleaseは記録済みの割当を使う', () => {
+    const storeA = { ...emptyHostKeyStore(), enabled: true }; // active: hk-arrows-joy(ArrowUp→joy UP)
+    const storeB = setActiveProfile({ ...emptyHostKeyStore(), enabled: true }, BUILTIN_HOSTKEY_TENKEY_ID); // ArrowUp→key KP8
+
+    // main.ts の keydown 相当: press時点のstore(storeA)で解決し、Mapへ記録する。
+    const pressed = new Map<string, Binding>();
+    const pressBinding = resolveHostKeyBinding(storeA, 'ArrowUp');
+    expect(pressBinding).not.toBeNull();
+    pressed.set('ArrowUp', pressBinding!);
+
+    // 押している最中にプロファイルが切り替わる(storeB)。
+    // もし release 側が「今のstore」で再解決してしまうと、pressBindingとは別物(kind:'key')になり、
+    // sharedKeyInput.press/releaseの対称性が壊れてretrokが噛み合わなくなる(固着の原因)。
+    const liveResolved = resolveHostKeyBinding(storeB, 'ArrowUp');
+    expect(liveResolved).not.toEqual(pressBinding); // 再解決すると別の割当になってしまうことの確認。
+
+    // main.ts の keyup 相当: Mapに記録済みの割当(press時点のもの)をそのまま使ってreleaseする。
+    const releaseBinding = pressed.get('ArrowUp');
+    pressed.delete('ArrowUp');
+    expect(releaseBinding).toEqual(pressBinding); // press したときの割当と同じものが release される。
+    expect(pressed.has('ArrowUp')).toBe(false); // 固着していない(Mapから消えている)。
+
+    // release後はjoyビットも0に戻る(Mapが空なので joyBitsForPressedCodes も0を返す)。
+    const bitsAfterRelease = joyBitsForPressedCodes(pressed.keys(), (c) => pressed.get(c), 'default');
+    expect(bitsAfterRelease).toBe(0);
   });
 });

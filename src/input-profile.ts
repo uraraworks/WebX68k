@@ -9,9 +9,11 @@
  * このファイルは UI/DOM に依存しない(テストしやすくするため)。
  */
 
-import type { Binding, JoyTarget } from './gamepad.ts';
-import { isBinding } from './gamepad.ts';
+import type { Binding, JoyTarget, PadType } from './gamepad.ts';
+import { isBinding, retroIdFor } from './gamepad.ts';
 import { RETROK } from './keyboard.ts';
+
+export type { Binding };
 
 /** 入力元ID -> Binding。入力元IDの意味は用途による(画面部品ID / KeyboardEvent.code)。 */
 export type InputBindings = Record<string, Binding>;
@@ -57,6 +59,12 @@ export const BUILTIN_JOY_2BUTTON_ID = 'builtin:joy-2button';
 export const BUILTIN_CURSOR_SPACE_ID = 'builtin:cursor-space';
 export const BUILTIN_TENKEY_ID = 'builtin:tenkey';
 export const BUILTIN_JOY_6BUTTON_ID = 'builtin:joy-6button';
+
+// --- 組み込みホストキープロファイルのid(入力元ID=KeyboardEvent.code)。 ---
+
+export const BUILTIN_HOSTKEY_ARROWS_JOY_ID = 'builtin:hk-arrows-joy';
+export const BUILTIN_HOSTKEY_ARROWS_JOY6_ID = 'builtin:hk-arrows-joy6';
+export const BUILTIN_HOSTKEY_TENKEY_ID = 'builtin:hk-tenkey';
 
 function joyBinding(target: JoyTarget): Binding {
   return { kind: 'joy', target };
@@ -162,15 +170,85 @@ function builtinVpadProfiles(): InputProfile[] {
   return [builtinJoy2ButtonProfile(), builtinCursorSpaceProfile(), builtinTenkeyProfile(), builtinJoy6ButtonProfile()];
 }
 
+/**
+ * 組み込みホストキープロファイル「矢印キー+Z/X(ジョイスティック代替)」の正規の内容。
+ * ジョイスティックを持たないユーザーが、ジョイスティック専用ソフトを矢印キーで遊べるようにする
+ * のが目的(input-profile.ts冒頭のコメント参照)。TRG1/TRG2 のみの2ボタン想定。
+ */
+export function builtinHostKeyArrowsJoyProfile(): InputProfile {
+  return {
+    id: BUILTIN_HOSTKEY_ARROWS_JOY_ID,
+    label: 'Arrows + Z/X -> Joystick (built-in)',
+    builtin: true,
+    bindings: {
+      ArrowUp: joyBinding('UP'),
+      ArrowDown: joyBinding('DOWN'),
+      ArrowLeft: joyBinding('LEFT'),
+      ArrowRight: joyBinding('RIGHT'),
+      KeyZ: joyBinding('TRG1'),
+      KeyX: joyBinding('TRG2'),
+    },
+  };
+}
+
+/**
+ * 組み込みホストキープロファイル「矢印キー+6ボタン(CPSF-MD用)」の正規の内容。
+ * builtinHostKeyArrowsJoyProfile() に A/S/D/C の4キーを足し、TRG3/TRG4/TRG5/TRG8 へ割り当てる
+ * (格闘ゲーム等、CPSF-MD 6ボタン配置を想定したソフト向け)。
+ */
+export function builtinHostKeyArrowsJoy6Profile(): InputProfile {
+  return {
+    id: BUILTIN_HOSTKEY_ARROWS_JOY6_ID,
+    label: 'Arrows + 6 Buttons -> Joystick (built-in)',
+    builtin: true,
+    bindings: {
+      ...builtinHostKeyArrowsJoyProfile().bindings,
+      KeyA: joyBinding('TRG3'),
+      KeyS: joyBinding('TRG4'),
+      KeyD: joyBinding('TRG5'),
+      KeyC: joyBinding('TRG8'),
+    },
+  };
+}
+
+/**
+ * 組み込みホストキープロファイル「テンキー」の正規の内容。
+ * WebNP2 のホストキー(../PC98/WebNP2/src/api/hostkey.ts)と同じ発想: テンキー専用ソフトを
+ * ノートPC等(独立したテンキーが無い環境)でも遊べるようにする、キー→別のキーの割当例。
+ */
+export function builtinHostKeyTenkeyProfile(): InputProfile {
+  return {
+    id: BUILTIN_HOSTKEY_TENKEY_ID,
+    label: 'Arrows -> Tenkey (built-in)',
+    builtin: true,
+    bindings: {
+      ArrowUp: keyBinding(RETROK.KP8),
+      ArrowDown: keyBinding(RETROK.KP2),
+      ArrowLeft: keyBinding(RETROK.KP4),
+      ArrowRight: keyBinding(RETROK.KP6),
+    },
+  };
+}
+
+/** ホストキー再割り当て用の組み込みプロファイル一覧(表示順)。normalizeStore() が正規の内容へ揃える唯一の情報源。 */
+function builtinHostKeyProfiles(): InputProfile[] {
+  return [builtinHostKeyArrowsJoyProfile(), builtinHostKeyArrowsJoy6Profile(), builtinHostKeyTenkeyProfile()];
+}
+
 /** 既定のバーチャルパッド用ストア: 組み込み4種のみ・joy-2buttonをアクティブに・機能自体はOFF。 */
 export function emptyVpadStore(): InputProfileStore {
   const profiles = builtinVpadProfiles();
   return { version: 1, profiles, activeId: BUILTIN_JOY_2BUTTON_ID, enabled: false };
 }
 
-/** 既定のホストキー用ストア: 組み込みプロファイルなし(器のみ)・未選択・機能自体はOFF。 */
+/**
+ * 既定のホストキー用ストア: 組み込み3種(矢印+ジョイ2ボタン/矢印+6ボタン/テンキー)を持ち、
+ * 矢印+ジョイ2ボタンをアクティブにしておく(が、機能自体はOFF=普段どおりキーボードで文字を
+ * 打ちたい人の邪魔をしない。有効化は明示的なオプトイン)。
+ */
 export function emptyHostKeyStore(): InputProfileStore {
-  return { version: 1, profiles: [], activeId: null, enabled: false };
+  const profiles = builtinHostKeyProfiles();
+  return { version: 1, profiles, activeId: BUILTIN_HOSTKEY_ARROWS_JOY_ID, enabled: false };
 }
 
 function isInputBindings(v: unknown): v is InputBindings {
@@ -204,7 +282,9 @@ function isInputProfileStore(v: unknown): v is InputProfileStore {
  * VPAD_STORAGE_KEY/HOSTKEY_STORAGE_KEY のいずれかを使うこと)。
  */
 function builtinsFor(key: string): InputProfile[] {
-  return key === VPAD_STORAGE_KEY ? builtinVpadProfiles() : [];
+  if (key === VPAD_STORAGE_KEY) return builtinVpadProfiles();
+  if (key === HOSTKEY_STORAGE_KEY) return builtinHostKeyProfiles();
+  return [];
 }
 
 function emptyStoreFor(key: string): InputProfileStore {
@@ -332,4 +412,43 @@ export function findProfile(store: InputProfileStore, id: string | null): InputP
 
 export function activeProfile(store: InputProfileStore): InputProfile | null {
   return findProfile(store, store.activeId);
+}
+
+// --- ホストキー再割り当てのランタイム判定(main.ts の物理キーの関所から呼ぶ純粋関数群) ---
+
+/**
+ * 物理キー(KeyboardEvent.code)を、ホストキー割当が横取りすべきかどうか判定する唯一の情報源。
+ * ストアが無効(enabled:false)・有効プロファイル無し・その code に割当が無い、のいずれかなら
+ * null を返す(呼び出し側は null のとき従来どおりの経路(codeToRetrok 等)へ素通りさせること)。
+ */
+export function resolveHostKeyBinding(store: InputProfileStore, code: string): Binding | null {
+  if (!store.enabled) return null;
+  const profile = activeProfile(store);
+  if (!profile) return null;
+  return profile.bindings[code] ?? null;
+}
+
+/**
+ * 現在押されている物理キー(e.code)の集合から、ホストキー割当ぶんの joy ビットマスクを計算する
+ * 純粋関数。kind:'key' の割当(resolveBinding が返す)は無視する(そちらは呼び出し側が
+ * SharedKeyInput へ別途 press/release する経路のため、ここでは合算しない)。割当の無い code
+ * (resolveBinding が undefined を返す)も無視する。padType により TRG3..TRG8 のビット位置が
+ * 変わる(retroIdFor 参照)。
+ *
+ * resolveBinding を「code -> Binding」の関数として受け取るのは、呼び出し側(main.ts)が
+ * 「その code を押した時点で確定した割当」を Map から引けるようにするため
+ * (押している最中にアクティブプロファイルが切り替わっても、そのキーの押下中は最初に押した
+ * 時点の割当のまま扱う=固着させない設計。呼び出し側の実装を参照)。
+ */
+export function joyBitsForPressedCodes(
+  pressedCodes: Iterable<string>,
+  resolveBinding: (code: string) => Binding | undefined,
+  padType: PadType,
+): number {
+  let bits = 0;
+  for (const code of pressedCodes) {
+    const binding = resolveBinding(code);
+    if (binding && binding.kind === 'joy') bits |= 1 << retroIdFor(binding.target, padType);
+  }
+  return bits;
 }
