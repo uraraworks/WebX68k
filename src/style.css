@@ -278,17 +278,30 @@ main {
 }
 
 /*
- * バーチャルパッド(オンスクリーンパッド)。2つの置き場所(main.ts の rescale() が
- * 縦の余りを実測して切り替える。詳細は applyVpadPlacement() 参照)を持つ:
+ * バーチャルパッド(オンスクリーンパッド)。3つの置き場所(main.ts の rescale() が
+ * 縦の余り・左右の余白を実測して切り替える。判定順序とreparent先の詳細は
+ * applyVpadPlacement() 参照)を持つ:
  *   - .vpad-overlay: 従来通り .stage に重ねるオーバーレイ(画面は縮めない代わりに指が被る)。
  *   - .vpad-panel: console-card 内の横長の帯(仮想キーボードと同じスロット。画面に指が被らない)。
- * どちらの場合もコンテナ自体は pointer-events:auto にする(virtual-pad.ts がコンテナ単位で
- * pointerdown/move を受ける実装のため)。非表示中は hidden で display:none になり
- * canvas側のマウス操作を一切妨げない。
+ *   - .vpad-sides: 横持ちフルスクリーンで .console-card の左右に生じるデッドスペースへ
+ *     スティック・ボタンを振り分ける(document.body直下・position:fixed;inset:0でビューポート
+ *     全体を覆うが、部品は左右の余白内にしか置かれないため画面には重ならない)。
+ *
+ * コンテナ(.virtual-pad)自体は pointer-events:none にし、各部品(.vpad-stick/.vpad-button)
+ * 側だけ pointer-events:auto にする(下記参照)。pointer-events:none の祖先の内側でも、
+ * 子要素に pointer-events:auto を指定すればその子はヒットテスト対象になり、発生した
+ * イベントは祖先(コンテナ)へ問題なくバブリングする。これにより:
+ *   - コンテナ単位で pointerdown/move を受ける virtual-pad.ts の既存実装(部品を跨いだ
+ *     スライド操作のため)はそのまま動く。
+ *   - 部品が乗っていない領域(オーバーレイの余白・sidesの覆っている範囲全体)は
+ *     ヒットテストされないため、ツールバーのボタンや canvas 側のタップがそのまま届く
+ *     (以前はコンテナが pointer-events:auto だったため、パッド表示中は画面のどこを
+ *     タップしても canvas 側へ届かなかった)。
+ * 非表示中は hidden で display:none になり canvas側のマウス操作を一切妨げない。
  */
 .virtual-pad {
   touch-action: none;
-  pointer-events: auto;
+  pointer-events: none;
   user-select: none;
   -webkit-user-select: none;
   -webkit-touch-callout: none;
@@ -330,6 +343,19 @@ main {
   overscroll-behavior: contain;
 }
 
+/*
+ * サイドモード。document.body 直下(main.ts の applyVpadPlacement() が reparent する)へ
+ * 置き、ビューポート全体を position:fixed;inset:0 で覆う。コンテナ自体は上の .virtual-pad の
+ * pointer-events:none がそのまま効いているので、部品(.vpad-stick/.vpad-button、下記で
+ * pointer-events:auto)が無い場所(左右の余白の外側=画面のある領域)のタップは素通りする。
+ * z-index はオーバーレイと同じ(全画面の最前面。ツールバー等より奥で構わない)。
+ */
+.virtual-pad.vpad-sides {
+  position: fixed;
+  inset: 0;
+  z-index: 5;
+}
+
 .virtual-pad.hidden {
   display: none !important;
 }
@@ -346,6 +372,9 @@ main {
   background: var(--vpad-fill);
   border: 2px solid var(--vpad-line);
   box-sizing: border-box;
+  /* コンテナ(.virtual-pad)は pointer-events:none だが、部品自身はヒットテスト対象に
+     戻す(このファイル冒頭の .virtual-pad のコメント参照)。 */
+  pointer-events: auto;
 }
 
 .vpad-stick-knob {
@@ -392,6 +421,9 @@ main {
   color: var(--vpad-line);
   font: 700 13px system-ui, sans-serif;
   transition: background 0.05s ease, border-color 0.05s ease;
+  /* コンテナ(.virtual-pad)は pointer-events:none だが、部品自身はヒットテスト対象に
+     戻す(このファイル冒頭の .virtual-pad のコメント参照)。 */
+  pointer-events: auto;
 }
 
 .vpad-button.active {

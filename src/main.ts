@@ -57,7 +57,7 @@ import {
 } from './gamepad';
 import { buildGamepadDialog } from './gamepad-ui';
 import { createVirtualKeyboard, SharedKeyInput } from './virtual-keyboard';
-import { createVirtualPad, type VpadPlacement } from './virtual-pad';
+import { createVirtualPad, type VpadPlacement, type VpadSideBoxes } from './virtual-pad';
 import {
   activeProfile,
   BUILTIN_CURSOR_SPACE_ID,
@@ -456,12 +456,18 @@ const virtualKeyboard = createVirtualKeyboard(
 // 両方閉じる)に役割変更し、どちらを出すかは stage 右上のチップ(⌨/🎮)で切り替える。
 const virtualPad = createVirtualPad(virtualPadPanel, sharedKeyInput);
 
-// --- バーチャルパッドの配置(パネルモード/オーバーレイモード)---
-// 判定・reparentの詳細は rescale() 内の applyVpadPlacement() を参照。
-// 縦の余りがこれ以上あればパネルモード(console-card内の帯として画面を潰さず表示)、
-// 未満ならオーバーレイモード(従来通りstageに重ねる。画面を削らない代わりに指が被る)。
+// --- バーチャルパッドの配置(パネルモード/オーバーレイモード/サイドモード)---
+// 判定・reparentの詳細は rescale() 内の applyVpadPlacement() を参照。判定順は
+// 「panel → sides → overlay」: 縦の余りが十分あればパネル(console-card内の帯として
+// 画面を潰さず表示)、無くても左右のデッドスペースが十分あればサイド(左にスティック・
+// 右にボタンを振り分け、画面の外側だけを使う)、どちらも無ければ従来通りオーバーレイ
+// (stageに重ねる。画面を削らない代わりに指が被る)。
 const VPAD_PANEL_MIN_HEIGHT = 160;
 const VPAD_PANEL_MAX_HEIGHT = 260;
+// 左右の余白がこれ未満ならサイドモードにしない(部品が縮みすぎて押しにくくなるため)。
+// 横持ちフルスクリーンの実測(812x375で左右194px)より十分小さい値にしてあり、
+// 画面幅の決め打ちにはしていない(実測した余白そのものと比較するだけ)。
+const VPAD_SIDES_MIN_WIDTH = 140;
 // #virtual-pad の初期DOM位置(index.html: .stage内、#toastの直前)。オーバーレイモードへ
 // 戻すときの再挿入先として使う(挿入順そのものは見た目に影響しない。全部品absolute配置のため)。
 let vpadPlacement: VpadPlacement = 'overlay';
@@ -469,19 +475,28 @@ let vpadPlacement: VpadPlacement = 'overlay';
 /**
  * バーチャルパッドの置き場所を確定させる。モードが変わったときだけ reparent し
  * (毎フレームreparentしない)、パネルモードの帯の高さは呼び出し側(rescale())が実測した
- * 余りをそのまま反映する。
+ * 余りをそのまま反映する。sides の左右ボックスは placement が変わらない呼び出しでも
+ * 毎回 virtualPad.setPlacement() へ渡し直す(ビューポートサイズの変化に追従するため。
+ * virtual-pad.ts の setPlacement() 側がボックスだけの更新を安全に処理する)。
  * かつてはネイティブフルスクリーン中に強制的に overlay へ倒していたが、フルスクリーン
  * 対象が .stage から .console-card(パッドを内包する)に変わったため、パッドが画面から
- * 消える事態が起きなくなり不要になった。通常どおり呼び出し側の判定(余り高さ)に従う。
+ * 消える事態が起きなくなり不要になった。通常どおり呼び出し側の判定(余り高さ・左右余白)に従う。
  */
-function applyVpadPlacement(next: VpadPlacement, panelHeight: number): void {
+function applyVpadPlacement(next: VpadPlacement, panelHeight: number, sidesBoxes: VpadSideBoxes): void {
   virtualPadPanel.style.height = next === 'panel' ? `${Math.round(panelHeight)}px` : '';
-  if (next !== vpadPlacement) {
-    vpadPlacement = next;
-    virtualPad.setPlacement(next);
+  const changed = next !== vpadPlacement;
+  if (changed) vpadPlacement = next;
+  virtualPad.setPlacement(next, sidesBoxes);
+  if (changed) {
     if (next === 'panel') {
       // #virtual-keyboard の兄弟として、その直前(= .console-footer より前)に置く。
       consoleCardEl.insertBefore(virtualPadPanel, virtualKeyboardPanel);
+    } else if (next === 'sides') {
+      // 左右のデッドスペースにまたがって重ねるため、.console-card の外(document.body直下)へ
+      // 出す。position:fixed;inset:0(style.css の .vpad-sides)でビューポート全体を覆うが、
+      // コンテナ自体は pointer-events:none にしてあるのでツールバー等のタップは素通りする
+      // (style.css の .virtual-pad.vpad-overlay, .virtual-pad.vpad-sides 参照)。
+      document.body.appendChild(virtualPadPanel);
     } else {
       // .stage 内の元の位置(#toast の直前)へ戻す。
       stageEl.insertBefore(virtualPadPanel, toastEl);
@@ -2932,12 +2947,32 @@ function rescale(): void {
     gapsInCard -
     cardGap -
     4;
-  // 3. 余り >= VPAD_PANEL_MIN_HEIGHT ならパネルモード(帯の高さは余りとVPAD_PANEL_MAX_HEIGHTの
-  //    小さい方)、未満ならオーバーレイモード。
-  const nextVpadPlacement: VpadPlacement = leftover >= VPAD_PANEL_MIN_HEIGHT ? 'panel' : 'overlay';
+  // 3. 縦の余りが足りない場合に備え、左右の余白も実測しておく(sides判定用)。
+  //    .console-card の矩形と window.innerWidth の差分がそのまま余白幅になる(横持ち
+  //    フルスクリーンで4:3維持のため画面が縦に制限されると、左右にこの余白が生まれる)。
+  //    左右で幅が違う場合は狭い方で判定する(狭い側に部品がはみ出すのを避けるため)。
+  const cardRect = consoleCardEl.getBoundingClientRect();
+  const leftMargin = cardRect.left;
+  const rightMargin = window.innerWidth - cardRect.right;
+  const sidesMargin = Math.min(leftMargin, rightMargin);
+  // ボックスの縦範囲は .stage の上端〜下端に合わせる(画面と同じ高さの帯にすると
+  // 指の位置が自然になるため)。
+  const stageRect = stageEl.getBoundingClientRect();
+  const sidesBoxes: VpadSideBoxes = {
+    left: { x: 0, y: stageRect.top, w: Math.max(0, leftMargin), h: stageRect.height },
+    right: { x: cardRect.right, y: stageRect.top, w: Math.max(0, rightMargin), h: stageRect.height },
+  };
+  // 4. 判定順は panel → sides → overlay。
+  //    - 縦の余り >= VPAD_PANEL_MIN_HEIGHT ならパネルモード(帯の高さは余りと
+  //      VPAD_PANEL_MAX_HEIGHT の小さい方)。
+  //    - そうでなくても左右の余白が両方とも VPAD_SIDES_MIN_WIDTH 以上あればサイドモード。
+  //    - どちらでもなければ従来通りオーバーレイモード。
+  const nextVpadPlacement: VpadPlacement =
+    leftover >= VPAD_PANEL_MIN_HEIGHT ? 'panel' : sidesMargin >= VPAD_SIDES_MIN_WIDTH ? 'sides' : 'overlay';
   const vpadPanelHeight = Math.min(Math.max(leftover, 0), VPAD_PANEL_MAX_HEIGHT);
-  // 4. モードが変わったときだけ reparent する(applyVpadPlacement内部で判定)。
-  applyVpadPlacement(nextVpadPlacement, vpadPanelHeight);
+  // 5. モードが変わったときだけ reparent する(applyVpadPlacement内部で判定)。sidesBoxes は
+  //    モード不変でも毎回渡す(ビューポートサイズの変化に追従させるため)。
+  applyVpadPlacement(nextVpadPlacement, vpadPanelHeight, sidesBoxes);
 }
 
 // visualViewport の resize は購読しない: ピンチズーム操作でも発火するため、ここで再フィット

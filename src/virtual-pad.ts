@@ -24,8 +24,13 @@ export type VpadWidget =
   | { kind: 'dpad'; ids: { up: string; down: string; left: string; right: string }; xPct: number; yPct: number; sizePct: number }
   | { kind: 'button'; id: string; label: string; xPct: number; yPct: number; sizePct: number };
 
-/** パネルモード(横長の帯。console-card内に置く)かオーバーレイモード(stageに重ねる)か。 */
-export type VpadPlacement = 'panel' | 'overlay';
+/**
+ * パネルモード(横長の帯。console-card内に置く)/オーバーレイモード(stageに重ねる)/
+ * サイドモード(横持ちフルスクリーンで .console-card の左右に生じるデッドスペースへ
+ * スティック・ボタンを振り分け、画面には重ねない)の3種類。判定順・reparent先の
+ * 詳細は main.ts の rescale()/applyVpadPlacement() を参照。
+ */
+export type VpadPlacement = 'panel' | 'overlay' | 'sides';
 
 /** dpad部品(方向入力4id共通)。placementで座標だけ変わる。 */
 const DPAD_IDS = { up: 'dpad-up', down: 'dpad-down', left: 'dpad-left', right: 'dpad-right' } as const;
@@ -106,10 +111,15 @@ const OVERLAY_BUTTON_SLOTS = slantedButtonSlots([60, 74, 88], 82, 60, VPAD_SLANT
  */
 const PANEL_BUTTON_SLOTS = slantedButtonSlots([58, 74, 90], 72, 30, VPAD_SLANT_PCT_PANEL, 22);
 
-/** 補助ボタン(1/2)。2ボタン/6ボタンで配置は変わらない。座標は従来のVPAD_WIDGETS/VPAD_PANEL_WIDGETSを踏襲。 */
+/**
+ * 補助ボタン(1/2)。2ボタン/6ボタンで配置は変わらない。
+ * **並びは placement によらず「左から 1、2」に揃える。** 以前は overlay だけ opt1 が右で、
+ * panel は opt1 が左と食い違っていた(実機のスクリーンショットで発覚)。ラベルが数字である以上、
+ * 読み順どおりに並んでいないと押し間違える。
+ */
 const OVERLAY_OPT_SLOTS = {
-  opt1: { xPct: 90, yPct: 8, sizePct: 10 } satisfies ButtonSlot,
-  opt2: { xPct: 78, yPct: 8, sizePct: 10 } satisfies ButtonSlot,
+  opt1: { xPct: 78, yPct: 8, sizePct: 10 } satisfies ButtonSlot,
+  opt2: { xPct: 90, yPct: 8, sizePct: 10 } satisfies ButtonSlot,
 };
 const PANEL_OPT_SLOTS = {
   opt1: { xPct: 34, yPct: 12, sizePct: 14 } satisfies ButtonSlot,
@@ -237,6 +247,131 @@ export function layoutVpad(
 }
 
 /**
+ * rect を、原点が (0,0) でない矩形 box の内側([box.x, box.x+box.w] x [box.y, box.y+box.h])へ
+ * 収める版の clampRectToBounds()。box のローカル座標系へ平行移動してから既存の
+ * clampRectToBounds() へ委譲し、結果を box の座標系へ戻す(サイズ不変で位置だけ動かす
+ * という契約はそのまま流用する)。
+ */
+function clampRectToBox(rect: VpadRect, box: VpadRect): VpadRect {
+  const local = clampRectToBounds({ x: rect.x - box.x, y: rect.y - box.y, w: rect.w, h: rect.h }, box.w, box.h);
+  return { x: local.x + box.x, y: local.y + box.y, w: local.w, h: local.h };
+}
+
+/** 左右の余白ボックス(px, ビューポート原点)。main.ts の rescale() が .console-card と .stage の実測から作る。 */
+export interface VpadSideBoxes {
+  left: VpadRect;
+  right: VpadRect;
+}
+
+/**
+ * sides 配置(横持ちフルスクリーンで .console-card の左右に生じるデッドスペースへ
+ * スティック・ボタンを振り分ける置き場所)の部品矩形を、左右の余白ボックスから直接計算する。
+ *
+ * layoutVpad() のような静的な xPct/yPct テーブルは使わない。余白の幅はビューポートの
+ * サイズ次第で大きく変わり(横持ちの実測で左右194px、縦横比によってはもっと狭くなりうる)、
+ * 固定の%テーブルでは「ボックスが狭いと部品同士が重なる/はみ出す」破綻を避けられないため。
+ * 代わりに部品の直径をボックス自身の寸法(列ピッチ・行ピッチ・min(w,h)等)から比例計算し、
+ * 位置の押し戻し(clampRectToBox、layoutVpad の clampRectToBounds と同じ考え方)だけでなく
+ * サイズそのものをボックスに応じて縮めることで、どんなに狭いボックスでも
+ * 「はみ出さない・重ならない」を数式的に保証する(反復的な当たり判定→縮小の試行錯誤はしない)。
+ *
+ * 配置方針(docs/DESIGN.md「バーチャルパッド」節参照):
+ * - スティック: 左ボックスの中央。直径は min(左ボックス幅, 左ボックス高) * 0.7。
+ * - 補助ボタン(opt1/opt2): 左ボックスの上部(スティックの上に生じる隙間)に横並び。
+ *   直径はその隙間の高さと横方向のピッチ(隙間があれば重ならない量)の小さい方から決める。
+ * - ボタン: 右ボックスに3列×2段。下段(y大きい方) 左→右 A/B/C、上段 左→右 X/Y/Z、
+ *   右へ行くほど上がる(既存の VPAD_SLANT_PCT_OVERLAY と同じ「右上がり」の考え方だが、
+ *   sides はボックス自体の寸法が可変なので、傾き量もボックス高さに対する比率で決める)。
+ *   2ボタンのときは下段の中央・右(mid/right)スロットだけを使う(Aが右、Bがその左)。
+ *   列ピッチ・行ピッチの小さい方より必ず小さい直径にすることで、格子内のどの2部品も
+ *   (同じ行・同じ列・斜めのいずれでも)中心間距離が直径を下回らないことを保証する。
+ */
+export function layoutVpadSides(boxes: VpadSideBoxes, boundIds: ReadonlySet<string>): LaidOutWidget[] {
+  const { left, right } = boxes;
+  const out: LaidOutWidget[] = [];
+
+  // --- 左ボックス: スティック + 補助ボタン ---
+  const dpadBound =
+    boundIds.has(DPAD_IDS.up) || boundIds.has(DPAD_IDS.down) || boundIds.has(DPAD_IDS.left) || boundIds.has(DPAD_IDS.right);
+
+  const stickDiameter = Math.min(left.w, left.h) * 0.7;
+  const stickCx = left.x + left.w / 2;
+  const stickCy = left.y + left.h / 2;
+  if (dpadBound) {
+    const rect = clampRectToBox(
+      { x: stickCx - stickDiameter / 2, y: stickCy - stickDiameter / 2, w: stickDiameter, h: stickDiameter },
+      left,
+    );
+    out.push({ widget: { kind: 'dpad', ids: DPAD_IDS, xPct: 0, yPct: 0, sizePct: 0 }, rect });
+  }
+
+  // スティック上端より上に生じる隙間へ補助ボタンを横並びに置く(隙間が無ければ直径0=非表示相当)。
+  const stickTopY = stickCy - stickDiameter / 2;
+  const gapAboveStick = Math.max(0, stickTopY - left.y);
+  const OPT_PITCH_RATIO = 0.36; // opt1/opt2 中心間の距離(左ボックス幅に対する比)
+  const OPT_MARGIN = 0.85; // 直径をピッチ/隙間ぴったりにせず15%の余裕を持たせる
+  const optDiameter = Math.max(0, Math.min(left.w * OPT_PITCH_RATIO, gapAboveStick) * OPT_MARGIN);
+  const optCy = left.y + gapAboveStick / 2;
+  // 並びは OVERLAY_OPT_SLOTS/PANEL_OPT_SLOTS と揃えて「左から 1、2」。
+  const optSlots: ReadonlyArray<{ id: string; label: string; cxRatio: number }> = [
+    { id: 'btn-opt1', label: '1', cxRatio: 0.32 },
+    { id: 'btn-opt2', label: '2', cxRatio: 0.68 },
+  ];
+  for (const slot of optSlots) {
+    if (!boundIds.has(slot.id)) continue;
+    const cx = left.x + left.w * slot.cxRatio;
+    const rect = clampRectToBox({ x: cx - optDiameter / 2, y: optCy - optDiameter / 2, w: optDiameter, h: optDiameter }, left);
+    out.push({ widget: { kind: 'button', id: slot.id, label: slot.label, xPct: 0, yPct: 0, sizePct: 0 }, rect });
+  }
+
+  // --- 右ボックス: 3列×2段のボタン格子 ---
+  const isSixButton = SIX_BUTTON_MARKER_IDS.some((id) => boundIds.has(id));
+  type GridSlot = { row: 0 | 1; col: 0 | 1 | 2; id: string; label: string };
+  // row: 1=下段(y大きい方)、0=上段。col: 0=左/1=中/2=右。
+  const gridSlots: readonly GridSlot[] = isSixButton
+    ? [
+        { row: 1, col: 0, id: 'btn-a', label: 'A' },
+        { row: 1, col: 1, id: 'btn-b', label: 'B' },
+        { row: 1, col: 2, id: 'btn-c', label: 'C' },
+        { row: 0, col: 0, id: 'btn-d', label: 'X' },
+        { row: 0, col: 1, id: 'btn-e', label: 'Y' },
+        { row: 0, col: 2, id: 'btn-f', label: 'Z' },
+      ]
+    : [
+        { row: 1, col: 1, id: 'btn-b', label: 'B' },
+        { row: 1, col: 2, id: 'btn-a', label: 'A' },
+      ];
+
+  const colPitchX = right.w / 3;
+  const rowPitchY = right.h / 2;
+  // 0.8: 列/行ピッチの小さい方に対する直径の比率。1未満にすることで、同列・同行は
+  // もちろん斜め(ピッチのベクトル和で常に単独ピッチ以上離れる)でも重ならない。
+  const GRID_MARGIN = 0.8;
+  const gridDiameter = Math.min(colPitchX, rowPitchY) * GRID_MARGIN;
+  // 右へ行くほど上がる傾き。VPAD_SLANT_PCT_OVERLAY と同じ「列ごとに一定量上げる」考え方を
+  // ボックス高さに対する比率(定数)で表す(sides はボックスの実寸が可変なため、既存の
+  // %テーブルではなくここだけの専用比率を使う)。
+  const SLANT_RATIO = 0.045;
+  const slantPx = right.h * SLANT_RATIO;
+  const lowerBaseY = right.y + right.h * 0.68;
+  const upperBaseY = right.y + right.h * 0.3;
+
+  for (const slot of gridSlots) {
+    if (!boundIds.has(slot.id)) continue;
+    const cx = right.x + colPitchX * (slot.col + 0.5);
+    const baseY = slot.row === 1 ? lowerBaseY : upperBaseY;
+    const cy = baseY - slantPx * slot.col;
+    const rect = clampRectToBox(
+      { x: cx - gridDiameter / 2, y: cy - gridDiameter / 2, w: gridDiameter, h: gridDiameter },
+      right,
+    );
+    out.push({ widget: { kind: 'button', id: slot.id, label: slot.label, xPct: 0, yPct: 0, sizePct: 0 }, rect });
+  }
+
+  return out;
+}
+
+/**
  * アナログスティック風UIの不感帯半径・ノブ最大変位半径。いずれもベース円の"直径"に対する比
  * (SBOP2 の手本 updateStick() と同じ基準。半径ではなく直径を基準にしているのは手本の実装に
  * 合わせるため。rect.w===rect.h の正方形前提)。
@@ -348,12 +483,15 @@ export interface VirtualPad {
   /** stage のサイズが変わったときに呼ぶ(再レイアウト)。 */
   refreshLayout(): void;
   /**
-   * パネルモード(console-card内の帯)かオーバーレイモード(stageに重ねる)かを切り替える。
-   * DOM の親要素を付け替えるのは呼び出し側(main.ts の rescale())の責務で、ここでは
-   * 座標セット(VPAD_WIDGETS/VPAD_PANEL_WIDGETS)の切替のみ行う(レイアウト基準は
-   * doRefreshLayout() が両モード共通で 'min' を使う)。
+   * パネルモード(console-card内の帯)/オーバーレイモード(stageに重ねる)/
+   * サイドモード(左右のデッドスペース)を切り替える。DOM の親要素を付け替えるのは
+   * 呼び出し側(main.ts の rescale()/applyVpadPlacement())の責務で、ここでは
+   * 座標計算方式の切替のみ行う(panel/overlay は layoutVpad()、sides は
+   * layoutVpadSides() を doRefreshLayout() 内で使い分ける)。
+   * sidesBoxes は placement==='sides' のときの左右ボックス(px, ビューポート原点)。
+   * placement が変わらなくてもボックスは毎回更新する(ビューポートサイズ変化に追従するため)。
    */
-  setPlacement(placement: VpadPlacement): void;
+  setPlacement(placement: VpadPlacement, sidesBoxes?: VpadSideBoxes): void;
 }
 
 /** touch Source を作る(id は画面部品ID、bindings のキーと1:1)。 */
@@ -379,6 +517,9 @@ export function createVirtualPad(overlay: HTMLElement, input: SharedKeyInput): V
   // placement を切り替えても buildDom() を呼び直す必要はない)。
   let bindingIds = new Set<string>();
   let placement: VpadPlacement = 'overlay';
+  // sides 配置での左右ボックス。main.ts が setPlacement() のたびに渡す(ビューポートが
+  // 変わるたびに main.ts の rescale() 経由で更新される想定)。未設定/sides以外では未使用。
+  let sidesBoxes: VpadSideBoxes | null = null;
 
   /** 現在の placement とプロファイルの束縛ID集合から、実際に描画する部品配置を決める。 */
   function widgetsForPlacement(pl: VpadPlacement): VpadWidget[] {
@@ -494,10 +635,18 @@ export function createVirtualPad(overlay: HTMLElement, input: SharedKeyInput): V
   }
 
   function doRefreshLayout(): void {
-    const rect = overlay.getBoundingClientRect();
-    // パネル/オーバーレイどちらも 'min'(短辺基準)に統一する。パネルは実測で正方形に近く、
-    // 'height' 基準だと部品が巨大化してはみ出す・重なる破綻が起きた(実機検証済み)。
-    laidOut = layoutVpad(rect.width, rect.height, widgets, 1, 'min');
+    if (placement === 'sides') {
+      // sides は overlay(#virtual-pad)自体が document.body 直下で position:fixed;inset:0
+      // になっており、overlay のローカル座標=ビューポート座標なので、layoutVpadSides() が
+      // 返す矩形(ビューポート原点)をそのまま left/top へ使える(layoutVpad のように
+      // overlay.getBoundingClientRect() 基準へ変換し直す必要が無い)。
+      laidOut = sidesBoxes ? layoutVpadSides(sidesBoxes, bindingIds) : [];
+    } else {
+      const rect = overlay.getBoundingClientRect();
+      // パネル/オーバーレイどちらも 'min'(短辺基準)に統一する。パネルは実測で正方形に近く、
+      // 'height' 基準だと部品が巨大化してはみ出す・重なる破綻が起きた(実機検証済み)。
+      laidOut = layoutVpad(rect.width, rect.height, widgets, 1, 'min');
+    }
     for (const { widget, rect: r } of laidOut) {
       if (widget.kind === 'dpad') {
         // スティックのベース円(.vpad-stick)を配置する。ノブはベース内の相対配置(CSSのleft/top:50%)
@@ -645,11 +794,18 @@ export function createVirtualPad(overlay: HTMLElement, input: SharedKeyInput): V
     },
     releaseAll: releaseAllInternal,
     refreshLayout: doRefreshLayout,
-    setPlacement(next: VpadPlacement): void {
-      if (placement === next) return;
+    setPlacement(next: VpadPlacement, nextSidesBoxes?: VpadSideBoxes): void {
+      // sides のボックスは placement が変わらない呼び出しでも常に更新する
+      // (ビューポートサイズが変わるたびに main.ts の rescale() が新しいボックスを渡すため)。
+      if (nextSidesBoxes) sidesBoxes = nextSidesBoxes;
+      if (placement === next) {
+        if (next === 'sides') doRefreshLayout();
+        return;
+      }
       placement = next;
       overlay.classList.toggle('vpad-panel', next === 'panel');
       overlay.classList.toggle('vpad-overlay', next === 'overlay');
+      overlay.classList.toggle('vpad-sides', next === 'sides');
       widgets = widgetsForPlacement(placement);
       doRefreshLayout();
     },

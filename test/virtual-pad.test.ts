@@ -5,6 +5,7 @@ import { RETROK } from '../src/keyboard.ts';
 import {
   hitTestVpad,
   layoutVpad,
+  layoutVpadSides,
   stickDirsFromPoint,
   stickKnobOffset,
   STICK_DEADZONE_RATIO,
@@ -13,6 +14,7 @@ import {
   VPAD_SLANT_PCT_OVERLAY,
   VPAD_SLANT_PCT_PANEL,
   type LaidOutWidget,
+  type VpadSideBoxes,
   type VpadWidget,
 } from '../src/virtual-pad.ts';
 
@@ -380,5 +382,124 @@ describe('組み込みプロファイルの割当解決(GamepadManager経由)', 
     expect(keys.has(RETROK.UP)).toBe(true);
     expect(keys.has(RETROK.SPACE)).toBe(true);
     expect(manager.bitsForSources(sources, 'default')).toBe(0);
+  });
+});
+
+/**
+ * layoutVpadSides(): sides配置(横持ちフルスクリーンで .console-card の左右に生じる
+ * デッドスペースへスティック・ボタンを振り分ける)の検証。実測値は横持ちフルスクリーンの
+ * ビューポート812x375で .console-card が left=194/right=618、.stage の高さ283
+ * (docs/DESIGN.md「バーチャルパッド」節参照)。この実測から左右ボックスを組み立てる:
+ * 左ボックス ≒ {x:0, y:(375-283)/2, w:194, h:283}、右ボックス ≒ {x:618, y:同上, w:194, h:283}。
+ */
+describe('layoutVpadSides', () => {
+  const STAGE_TOP = (375 - 283) / 2;
+  const REALISTIC_BOXES: VpadSideBoxes = {
+    left: { x: 0, y: STAGE_TOP, w: 194, h: 283 },
+    right: { x: 618, y: STAGE_TOP, w: 194, h: 283 },
+  };
+  const CARD_LEFT = 194;
+  const CARD_RIGHT = 618;
+
+  function findButton(laidOut: readonly LaidOutWidget[], id: string): LaidOutWidget {
+    const w = laidOut.find((l) => l.widget.kind === 'button' && l.widget.id === id);
+    if (!w) throw new Error(`widget not found: ${id}`);
+    return w;
+  }
+
+  /** 各部品の矩形が、それぞれが属するはずのボックスの内側に収まっているか。 */
+  function expectWithinBox(laidOut: readonly LaidOutWidget[], box: { x: number; y: number; w: number; h: number }): void {
+    for (const { widget, rect } of laidOut) {
+      const label = widget.kind === 'dpad' ? 'dpad' : widget.id;
+      expect(rect.x, `${label}.x`).toBeGreaterThanOrEqual(box.x - 1e-9);
+      expect(rect.y, `${label}.y`).toBeGreaterThanOrEqual(box.y - 1e-9);
+      expect(rect.x + rect.w, `${label}.right`).toBeLessThanOrEqual(box.x + box.w + 1e-9);
+      expect(rect.y + rect.h, `${label}.bottom`).toBeLessThanOrEqual(box.y + box.h + 1e-9);
+    }
+  }
+
+  /** 部品同士(内接円)が互いに重ならないか(中心間距離 >= 半径の和)。dpad(スティック)も円として扱う。 */
+  function expectNoOverlap(laidOut: readonly LaidOutWidget[]): void {
+    for (let i = 0; i < laidOut.length; i++) {
+      for (let j = i + 1; j < laidOut.length; j++) {
+        const a = laidOut[i].rect;
+        const b = laidOut[j].rect;
+        const acx = a.x + a.w / 2;
+        const acy = a.y + a.h / 2;
+        const bcx = b.x + b.w / 2;
+        const bcy = b.y + b.h / 2;
+        const dist = Math.hypot(acx - bcx, acy - bcy);
+        const radiusSum = Math.min(a.w, a.h) / 2 + Math.min(b.w, b.h) / 2;
+        const labelA = laidOut[i].widget.kind === 'dpad' ? 'dpad' : laidOut[i].widget.id;
+        const labelB = laidOut[j].widget.kind === 'dpad' ? 'dpad' : laidOut[j].widget.id;
+        expect(dist, `${labelA} vs ${labelB}`).toBeGreaterThanOrEqual(radiusSum - 1e-9);
+      }
+    }
+  }
+
+  /** どの部品も .console-card の範囲(x が CARD_LEFT〜CARD_RIGHT)に侵入していないか(=画面に被らない)。 */
+  function expectNoIntrusionIntoCard(laidOut: readonly LaidOutWidget[]): void {
+    for (const { widget, rect } of laidOut) {
+      const label = widget.kind === 'dpad' ? 'dpad' : widget.id;
+      const intrudesLeft = rect.x + rect.w > CARD_LEFT && rect.x < CARD_LEFT;
+      const withinCard = rect.x >= CARD_LEFT && rect.x + rect.w <= CARD_RIGHT;
+      const intrudesRight = rect.x < CARD_RIGHT && rect.x + rect.w > CARD_RIGHT;
+      expect(intrudesLeft || withinCard || intrudesRight, `${label} は x=[${rect.x},${rect.x + rect.w}]`).toBe(false);
+    }
+  }
+
+  it('6ボタン集合: 全部品がそれぞれの余白ボックス(左右)の内側に収まる', () => {
+    const laidOut = layoutVpadSides(REALISTIC_BOXES, SIX_BUTTON_IDS);
+    const leftWidgets = laidOut.filter((l) => l.rect.x < CARD_LEFT);
+    const rightWidgets = laidOut.filter((l) => l.rect.x >= CARD_LEFT);
+    expect(leftWidgets.length).toBeGreaterThan(0);
+    expect(rightWidgets.length).toBeGreaterThan(0);
+    expectWithinBox(leftWidgets, REALISTIC_BOXES.left);
+    expectWithinBox(rightWidgets, REALISTIC_BOXES.right);
+  });
+
+  it('6ボタン集合: ボタン同士が重ならない', () => {
+    const laidOut = layoutVpadSides(REALISTIC_BOXES, SIX_BUTTON_IDS);
+    expectNoOverlap(laidOut);
+  });
+
+  it('6ボタン集合: どの部品も.console-cardの範囲(x=194〜618)に侵入していない(画面に被らない)', () => {
+    const laidOut = layoutVpadSides(REALISTIC_BOXES, SIX_BUTTON_IDS);
+    expectNoIntrusionIntoCard(laidOut);
+  });
+
+  it('右ボックス: 下段A→B→C・上段X→Y→Zとも右へ行くほどyが小さい(右上がり)', () => {
+    const laidOut = layoutVpadSides(REALISTIC_BOXES, SIX_BUTTON_IDS);
+    const cy = (l: LaidOutWidget) => l.rect.y + l.rect.h / 2;
+    const a = findButton(laidOut, 'btn-a');
+    const b = findButton(laidOut, 'btn-b');
+    const c = findButton(laidOut, 'btn-c');
+    const d = findButton(laidOut, 'btn-d');
+    const e = findButton(laidOut, 'btn-e');
+    const f = findButton(laidOut, 'btn-f');
+    expect(cy(a)).toBeGreaterThan(cy(b));
+    expect(cy(b)).toBeGreaterThan(cy(c));
+    expect(cy(d)).toBeGreaterThan(cy(e));
+    expect(cy(e)).toBeGreaterThan(cy(f));
+  });
+
+  it('2ボタン集合: Aが右(xがBより大きい)', () => {
+    const laidOut = layoutVpadSides(REALISTIC_BOXES, TWO_BUTTON_IDS);
+    const a = findButton(laidOut, 'btn-a');
+    const b = findButton(laidOut, 'btn-b');
+    expect(a.rect.x + a.rect.w / 2).toBeGreaterThan(b.rect.x + b.rect.w / 2);
+  });
+
+  it('わざと狭いボックス(幅140px)でもはみ出し・重なりが起きない(縮小が効いている)', () => {
+    const narrowBoxes: VpadSideBoxes = {
+      left: { x: 0, y: STAGE_TOP, w: 140, h: 283 },
+      right: { x: 140, y: STAGE_TOP, w: 140, h: 283 },
+    };
+    const laidOut = layoutVpadSides(narrowBoxes, SIX_BUTTON_IDS);
+    const leftWidgets = laidOut.filter((l) => l.rect.x < 140);
+    const rightWidgets = laidOut.filter((l) => l.rect.x >= 140);
+    expectWithinBox(leftWidgets, narrowBoxes.left);
+    expectWithinBox(rightWidgets, narrowBoxes.right);
+    expectNoOverlap(laidOut);
   });
 });
