@@ -5,7 +5,14 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover" />
   <!-- X68000 縦置きツインタワー筐体の抽象シルエットアイコン(自作) -->
   <link rel="icon" type="image/png" href="./x68icon.png" />
-  <link rel="apple-touch-icon" href="./x68icon.png" />
+  <link rel="apple-touch-icon" href="./x68icon-180.png" />
+  <!-- PWA: ホーム画面追加で standalone/fullscreen 起動させ、iOS でも URL バーを消すための最低限のメタデータ。
+       Service Worker は入れない(オフライン動作はスコープ外)。 -->
+  <link rel="manifest" href="./manifest.webmanifest" />
+  <meta name="theme-color" content="#0c0c0c" />
+  <meta name="apple-mobile-web-app-capable" content="yes" />
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+  <meta name="apple-mobile-web-app-title" content="WebX68k" />
   <title id="doc-title">WebX68k - X68000 Emulator</title>
 </head>
 <body>

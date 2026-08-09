@@ -1,0 +1,30 @@
+{
+  "name": "WebX68k",
+  "short_name": "WebX68k",
+  "description": "The online X68000 emulator powered by px68k-libretro",
+  "start_url": "./",
+  "scope": "./",
+  "display": "fullscreen",
+  "background_color": "#101010",
+  "theme_color": "#0c0c0c",
+  "icons": [
+    {
+      "src": "./x68icon-192.png",
+      "sizes": "192x192",
+      "type": "image/png",
+      "purpose": "any"
+    },
+    {
+      "src": "./x68icon-512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "any"
+    },
+    {
+      "src": "./x68icon-maskable-512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "maskable"
+    }
+  ]
+}

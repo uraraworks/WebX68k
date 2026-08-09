@@ -1614,6 +1614,21 @@ body.immersive .console-card {
   box-shadow: none;
 }
 
+/* PWA(ホーム画面追加)で standalone/fullscreen 起動したとき用。iOS の
+   apple-mobile-web-app-status-bar-style=black-translucent はステータスバー領域に
+   ページを潜り込ませるため、非没入時(通常のヘッダー/フッター表示中)は
+   env(safe-area-inset-*) で切り欠き/ステータスバー分の余白を足す。没入モード側は
+   header/footer 自体を畳んでいるので影響しない。 */
+@media (display-mode: standalone), (display-mode: fullscreen) {
+  header.app-header {
+    padding-top: calc(10px + env(safe-area-inset-top));
+  }
+
+  footer.app-footer {
+    padding-bottom: calc(8px + env(safe-area-inset-bottom));
+  }
+}
+
 /* ジョイスティック設定ダイアログ(見える化のみ)。rom-modal系の見た目を踏襲しつつ、
    ライブ表示(物理入力/X68000側入力を並べる)を持てるよう fm-modal 同様に幅広にする。 */
 .gp-modal-backdrop {
