@@ -306,6 +306,152 @@ main {
   display: none;
 }
 
+/*
+ * バーチャルパッド(オンスクリーンパッド)。2つの置き場所(main.ts の rescale() が
+ * 縦の余りを実測して切り替える。詳細は applyVpadPlacement() 参照)を持つ:
+ *   - .vpad-overlay: 従来通り .stage に重ねるオーバーレイ(画面は縮めない代わりに指が被る)。
+ *   - .vpad-panel: console-card 内の横長の帯(仮想キーボードと同じスロット。画面に指が被らない)。
+ * どちらの場合もコンテナ自体は pointer-events:auto にする(virtual-pad.ts がコンテナ単位で
+ * pointerdown/move を受ける実装のため)。非表示中は hidden で display:none になり
+ * canvas側のマウス操作を一切妨げない。
+ */
+.virtual-pad {
+  touch-action: none;
+  pointer-events: auto;
+  user-select: none;
+  -webkit-user-select: none;
+  -webkit-touch-callout: none;
+  /* 部品の塗り/輪郭の濃さ。placement ごとに上書きする(下記)。 */
+  --vpad-fill: rgba(255, 255, 255, 0.3);
+  --vpad-line: rgba(255, 255, 255, 0.7);
+  /* スティックのノブ色(パネル用)。オンスクリーンパッドの慣例どおり外周(--vpad-fill/--vpad-line)
+     と同系統(半透明の白/グレー)にし、ベース円より一段明るくして区別を付ける
+     (以前は赤系だったが慣例に反するため撤回)。 */
+  --vpad-knob: rgba(255, 255, 255, 0.55);
+  --vpad-knob-line: rgba(255, 255, 255, 0.85);
+}
+
+/*
+ * オーバーレイモードは画面の上に乗るので、濃いと肝心のゲーム画面が見えなくなる
+ * (実機で十字が真っ白に潰れて画面を塞いだ)。パネルモードは画面に被らないので濃くてよい。
+ */
+.virtual-pad.vpad-overlay {
+  position: absolute;
+  inset: 0;
+  z-index: 5;
+  --vpad-fill: rgba(255, 255, 255, 0.14);
+  --vpad-line: rgba(255, 255, 255, 0.45);
+  /* 手本(SBOP2 sbocli-title.shell.html の .pad-stick-knob)の値そのまま:
+     塗り rgba(255,255,255,0.4) / 枠 rgba(255,255,255,0.7)。手本の .pad-stick は
+     このオーバーレイの --vpad-fill/--vpad-line とほぼ同値(0.12/0.45)なので、
+     「ベースより一段明るい同系色」の関係も手本どおりに保たれる。 */
+  --vpad-knob: rgba(255, 255, 255, 0.4);
+  --vpad-knob-line: rgba(255, 255, 255, 0.7);
+}
+
+.virtual-pad.vpad-panel {
+  position: relative;
+  width: 100%;
+  /* 高さは main.ts が実測した余り(VPAD_PANEL_MIN_HEIGHT〜VPAD_PANEL_MAX_HEIGHT)を
+     インラインstyleで指定する。ここでは仮想キーボードと揃えた見た目だけ用意する。 */
+  background: linear-gradient(var(--footer-bg-top), var(--footer-bg-bottom));
+  border-top: 1px solid var(--footer-border);
+  overscroll-behavior: contain;
+}
+
+.virtual-pad.hidden {
+  display: none !important;
+}
+
+/*
+ * アナログスティック風UI(見た目のみ。意味は方向入力=dpadのまま。virtual-pad.ts 参照)。
+ * ベース円は固定位置で、ノブだけが JS(virtual-pad.ts の updateKnobVisual())の
+ * transform:translate() で動く(left/topではなく transform にするのは、レイアウトの
+ * 再計算を伴わず合成だけで動かせて指の動きに滑らかに追従するため)。
+ */
+.vpad-stick {
+  position: absolute;
+  border-radius: 50%;
+  background: var(--vpad-fill);
+  border: 2px solid var(--vpad-line);
+  box-sizing: border-box;
+}
+
+.vpad-stick-knob {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  /* ベース直径の47%程度(手本は120pxベースに56pxノブ≒47%)。widthは要素自体には付けず、
+     ベース側の em 相対サイズ(下記 width/height 47%)で決める。 */
+  width: 47%;
+  height: 47%;
+  margin-left: -23.5%;
+  margin-top: -23.5%;
+  border-radius: 50%;
+  box-sizing: border-box;
+  /* 色そのものは --vpad-knob/--vpad-knob-line で placement ごとに決める(上の
+     .virtual-pad / .virtual-pad.vpad-overlay 参照)。ここでは変数を適用するだけ。 */
+  background: var(--vpad-knob);
+  border: 2px solid var(--vpad-knob-line);
+  /* JSが transform でノブ位置を更新する。初期値は中央(オフセット0)。 */
+  transform: translate(0px, 0px);
+  transition: background 0.05s ease, border-color 0.05s ease;
+  pointer-events: none;
+}
+
+.vpad-stick-knob.active {
+  /* 押下中は少し明るくする(挙動は維持。色相は変えず同系統のまま白寄りに)。 */
+  background: rgba(255, 255, 255, 0.75);
+  border-color: #fff;
+}
+
+/*
+ * 枠線・ラベルは常時フル不透明で描く(以前は要素全体に opacity:0.35 をかけていたため、
+ * 枠線もラベル文字もアイドル時にほぼ見えなくなっていた。実機スクリーンショットで指摘)。
+ * 押下の有無は塗り(background)のコントラストだけで表現する。
+ */
+.vpad-button {
+  position: absolute;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 50%;
+  background: rgba(20, 20, 20, 0.45);
+  border: 2px solid var(--vpad-line);
+  color: var(--vpad-line);
+  font: 700 13px system-ui, sans-serif;
+  transition: background 0.05s ease, border-color 0.05s ease;
+}
+
+.vpad-button.active {
+  background: rgba(255, 255, 255, 0.35);
+  border-color: #fff;
+}
+
+/*
+ * 入力パネル(仮想キーボード/バーチャルパッド)切り替えチップ。以前は .stage 右上に絶対配置していたが
+ * ゲーム画面に被って邪魔という指摘のため、.console-footer の .toolbar 内(#btn-virtual-keyboard の
+ * 直後)へ移設。ツールバーの一員として並ぶだけなので、単独の背景/枠は持たない。
+ */
+.input-panel-switch {
+  display: inline-flex;
+  gap: 6px;
+  align-items: center;
+  min-width: 0;
+  max-width: 100%;
+}
+
+.input-panel-switch.hidden {
+  display: none;
+}
+
+/* ボタン自体は .icon-btn の見た目・サイズをそのまま流用する(ツールバー内で浮かないように)。
+   ここでは押下状態(aria-pressed)の色だけ上書きする。 */
+.panel-switch-btn[aria-pressed="true"] {
+  background: var(--accent-dim);
+  border-color: var(--accent);
+}
+
 .virtual-keyboard-main {
   display: flex;
   flex: 1 1 auto;

@@ -141,11 +141,27 @@ export const TARGET_TO_RETRO_ID: Record<JoyTarget, number> = RETRO_ID_MAPS.defau
  */
 export type Binding = { kind: 'joy'; target: JoyTarget } | { kind: 'key'; retrok: number };
 
-/** 物理入力側。軸はデッドゾーンを超えた方向(dir)ごとに別の Source として扱う。 */
-export type Source = { kind: 'button'; index: number } | { kind: 'axis'; index: number; dir: 1 | -1 };
+/**
+ * 物理入力側。軸はデッドゾーンを超えた方向(dir)ごとに別の Source として扱う。
+ * kind:'touch' はバーチャルパッド(画面上のタッチ操作)用。Gamepad オブジェクトを持たないため、
+ * 偽の Gamepad を合成せず GamepadManager.bitsForSources()/keysForSources() へ直接 Source を渡す形にする
+ * (AxisCalibration はハードウェア軸の較正のための仕組みであり、タッチには無関係・無意味なため)。
+ * id はバーチャルパッドの画面部品ID(呼び出し側が決める、UI上で一意であればよい)。
+ */
+export type Source =
+  | { kind: 'button'; index: number }
+  | { kind: 'axis'; index: number; dir: 1 | -1 }
+  | { kind: 'touch'; id: string };
 
-function sourceKey(source: Source): string {
-  return source.kind === 'button' ? `b${source.index}` : `a${source.index}${source.dir > 0 ? '+' : '-'}`;
+/**
+ * Source を Map のキーにするための文字列化。button/axis のキー文字列は localStorage 互換のため
+ * 絶対に変えないこと(GamepadStore v2 の保存形式に含まれる)。touch は既存の 'b'/'a' prefix と
+ * 衝突しない 't' prefix にする。
+ */
+export function sourceKey(source: Source): string {
+  if (source.kind === 'button') return `b${source.index}`;
+  if (source.kind === 'axis') return `a${source.index}${source.dir > 0 ? '+' : '-'}`;
+  return `t${source.id}`;
 }
 
 /**
@@ -407,15 +423,17 @@ function emptyStore(): GamepadStore {
   return { version: 2, pads: {}, portPads: [null, null], joyType: ['default', 'default'] };
 }
 
-function isSource(v: unknown): v is Source {
+export function isSource(v: unknown): v is Source {
   if (typeof v !== 'object' || v === null) return false;
   const o = v as Record<string, unknown>;
   if (o.kind === 'button') return typeof o.index === 'number';
   if (o.kind === 'axis') return typeof o.index === 'number' && (o.dir === 1 || o.dir === -1);
+  if (o.kind === 'touch') return typeof o.id === 'string';
   return false;
 }
 
-function isBinding(v: unknown): v is Binding {
+/** Binding の構造検証。input-profile.ts の InputBindings 検証からも共有される(二重実装を避けるため export)。 */
+export function isBinding(v: unknown): v is Binding {
   if (typeof v !== 'object' || v === null) return false;
   const o = v as Record<string, unknown>;
   if (o.kind === 'joy') return typeof o.target === 'string' && (ALL_JOY_TARGETS as readonly string[]).includes(o.target);
@@ -724,6 +742,7 @@ export function sourcesEqual(a: Source, b: Source): boolean {
   if (a.kind !== b.kind) return false;
   if (a.kind === 'button' && b.kind === 'button') return a.index === b.index;
   if (a.kind === 'axis' && b.kind === 'axis') return a.index === b.index && a.dir === b.dir;
+  if (a.kind === 'touch' && b.kind === 'touch') return a.id === b.id;
   return false;
 }
 
@@ -955,23 +974,44 @@ export class GamepadManager {
    * 連打しない=呼び出し側で同じ retrok が続けて入っていれば無視される前提)。
    */
   keysForPad(pad: Gamepad): Set<number> {
+    const sources: Source[] = [];
+    this.forEachActiveSource(pad, (source) => sources.push(source));
+    return this.keysForSources(sources);
+  }
+
+  /**
+   * 今アクティブな Source 群から RetroPad ID ビットマスクを求める。
+   * Gamepad オブジェクトに依存しないため、バーチャルパッド(タッチ、kind:'touch' の Source)を
+   * 含む任意の Source 集合から直接呼べる(computeBits() はこれを Gamepad から集めた Source 群で
+   * 呼ぶだけの薄いラッパー)。
+   */
+  bitsForSources(sources: Iterable<Source>, padType: PadType = 'default'): number {
+    let bits = 0;
+    for (const source of sources) bits |= this.bitsFor(source, padType);
+    return bits;
+  }
+
+  /**
+   * 今アクティブな Source 群から kind:'key' の retrok 集合を求める。
+   * keysForPad() 同様、Gamepad オブジェクトに依存しないため、バーチャルパッドの Source 集合から
+   * 直接呼べる。
+   */
+  keysForSources(sources: Iterable<Source>): Set<number> {
     const keys = new Set<number>();
-    this.forEachActiveSource(pad, (source) => {
+    for (const source of sources) {
       const list = this.bindings.get(sourceKey(source));
-      if (!list) return;
+      if (!list) continue;
       for (const binding of list) {
         if (binding.kind === 'key') keys.add(binding.retrok);
       }
-    });
+    }
     return keys;
   }
 
   private computeBits(pad: Gamepad, padType: PadType): number {
-    let bits = 0;
-    this.forEachActiveSource(pad, (source) => {
-      bits |= this.bitsFor(source, padType);
-    });
-    return bits;
+    const sources: Source[] = [];
+    this.forEachActiveSource(pad, (source) => sources.push(source));
+    return this.bitsForSources(sources, padType);
   }
 
   /**

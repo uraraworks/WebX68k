@@ -324,6 +324,21 @@ interface Dict {
   gamepadPosDpadLeft(): string;
   gamepadPosDpadRight(): string;
   gamepadPosHome(): string;
+
+  // --- 入力パネル(仮想キーボード/バーチャルパッド)切り替え ---
+  /** ツールバーの入力パネルトグルボタン(どちらのパネルも非表示のとき)。 */
+  toolbarInputPanel(): string;
+  /** ツールバーの入力パネルトグルボタン(いずれかのパネルが表示中のとき)。 */
+  toolbarInputPanelHide(): string;
+  /** stage右上の切り替えチップ、仮想キーボード側ボタンのaria-label。 */
+  inputPanelSwitchKeyboard(): string;
+  /** stage右上の切り替えチップ、バーチャルパッド側ボタンのaria-label。 */
+  inputPanelSwitchPad(): string;
+  /** バーチャルパッドの組み込みプロファイル表示名。 */
+  vpadProfileJoy2Button(): string;
+  vpadProfileCursorSpace(): string;
+  vpadProfileTenkey(): string;
+  vpadProfileJoy6Button(): string;
 }
 
 const STRINGS: Record<Lang, Dict> = {
@@ -577,6 +592,15 @@ const STRINGS: Record<Lang, Dict> = {
     gamepadPosDpadLeft: () => '十字左',
     gamepadPosDpadRight: () => '十字右',
     gamepadPosHome: () => 'Home',
+
+    toolbarInputPanel: () => '入力パネルを表示',
+    toolbarInputPanelHide: () => '入力パネルを隠す',
+    inputPanelSwitchKeyboard: () => '仮想キーボードに切替',
+    inputPanelSwitchPad: () => 'バーチャルパッドに切替',
+    vpadProfileJoy2Button: () => 'ジョイスティック(2ボタン)',
+    vpadProfileCursorSpace: () => 'カーソルキー + スペース',
+    vpadProfileTenkey: () => 'テンキー',
+    vpadProfileJoy6Button: () => 'ジョイスティック(6ボタン)',
   },
   en: {
     title: () => 'WebX68k - X68000 Emulator',
@@ -827,6 +851,15 @@ const STRINGS: Record<Lang, Dict> = {
     gamepadPosDpadLeft: () => 'D-Pad Left',
     gamepadPosDpadRight: () => 'D-Pad Right',
     gamepadPosHome: () => 'Home',
+
+    toolbarInputPanel: () => 'Show input panel',
+    toolbarInputPanelHide: () => 'Hide input panel',
+    inputPanelSwitchKeyboard: () => 'Switch to virtual keyboard',
+    inputPanelSwitchPad: () => 'Switch to virtual pad',
+    vpadProfileJoy2Button: () => 'Joystick (2 buttons)',
+    vpadProfileCursorSpace: () => 'Cursor keys + Space',
+    vpadProfileTenkey: () => 'Tenkey',
+    vpadProfileJoy6Button: () => 'Joystick (6 buttons)',
   },
 };
 

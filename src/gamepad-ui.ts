@@ -227,7 +227,12 @@ export function sourceLabel(source: Source, pad: Gamepad): string {
     if (positionFn) return t('gamepadPositionalButtonLabel', { index: toDisplayIndex(source.index), position: positionFn() });
     return t('gamepadButtonLabel', { index: toDisplayIndex(source.index) });
   }
-  return t('gamepadAxisLabel', { index: toDisplayIndex(source.index), dir: source.dir > 0 ? '+' : '-' });
+  if (source.kind === 'axis') {
+    return t('gamepadAxisLabel', { index: toDisplayIndex(source.index), dir: source.dir > 0 ? '+' : '-' });
+  }
+  // kind:'touch' はバーチャルパッド(タッチ)用の Source で、この編集UI(物理ゲームパッド向け)からは
+  // 生成されない。到達しない分岐だが、Source が3種になった型を網羅するために形だけ用意しておく。
+  return source.id;
 }
 
 /**

@@ -57,6 +57,20 @@ import {
 } from './gamepad';
 import { buildGamepadDialog } from './gamepad-ui';
 import { createVirtualKeyboard, SharedKeyInput } from './virtual-keyboard';
+import { createVirtualPad, type VpadPlacement } from './virtual-pad';
+import {
+  activeProfile,
+  BUILTIN_CURSOR_SPACE_ID,
+  BUILTIN_JOY_2BUTTON_ID,
+  BUILTIN_JOY_6BUTTON_ID,
+  BUILTIN_TENKEY_ID,
+  loadInputProfileStore,
+  saveInputProfileStore,
+  setActiveProfile,
+  VPAD_STORAGE_KEY,
+  type InputProfile,
+  type InputProfileStore,
+} from './input-profile';
 import {
   getState,
   saveState as putState,
@@ -78,6 +92,10 @@ const btnVirtualKeyboard = document.getElementById('btn-virtual-keyboard') as HT
 const btnAspect = document.getElementById('btn-aspect') as HTMLButtonElement;
 const btnToolbarOverflow = document.getElementById('btn-toolbar-overflow') as HTMLButtonElement;
 const virtualKeyboardPanel = document.getElementById('virtual-keyboard') as HTMLDivElement;
+const virtualPadPanel = document.getElementById('virtual-pad') as HTMLDivElement;
+const inputPanelSwitchEl = document.getElementById('input-panel-switch') as HTMLDivElement;
+const btnPanelKeyboard = document.getElementById('btn-panel-keyboard') as HTMLButtonElement;
+const btnPanelPad = document.getElementById('btn-panel-pad') as HTMLButtonElement;
 const stageEl = document.querySelector('.stage') as HTMLDivElement;
 // .stage を囲む領域確保用ラッパ(style.css の .stage-frame 参照)。4:3切替でレイアウトが
 // 動かないよう、rescale() が常に「4:3時のサイズ」をここへインラインで指定する。
@@ -87,6 +105,9 @@ const mainEl = document.querySelector('main') as HTMLElement;
 const consoleCardEl = document.querySelector('.console-card') as HTMLElement;
 const consoleFooterEl = document.querySelector('.console-footer') as HTMLElement;
 const pageHeaderEl = document.querySelector('header.app-header') as HTMLElement | null;
+// ページ最下部の著作権表示フッタ。バーチャルパッドをパネルモードにできるかどうかの
+// 縦の余り(rescale() 内)を測るときに、これも「画面に既に確保されている領域」として引く。
+const pageFooterEl = document.querySelector('footer.app-footer') as HTMLElement | null;
 const btnSaveState = document.getElementById('btn-save-state') as HTMLButtonElement;
 const btnLoadState = document.getElementById('btn-load-state') as HTMLButtonElement;
 const toastEl = document.getElementById('toast') as HTMLDivElement;
@@ -392,6 +413,9 @@ const gamepadDialog = buildGamepadDialog(gamepadRoot, {
   setPadType: (port, padType) => {
     gamepadStore.joyType[port] = padType;
     saveGamepadStore(gamepadStore);
+    // バーチャルパッドの送り先は常にポート0(表示上のポート1)。TRG3..TRG8のビット位置が
+    // padTypeで変わるため、設定ダイアログでの変更にも追従させる(docs/DESIGN.md参照)。
+    if (port === 0) virtualPad.setPadType(padType);
   },
   isCoreRunning: () => running,
 });
@@ -417,18 +441,162 @@ const sharedKeyInput = new SharedKeyInput((retrok, down) => host?.setKey(retrok,
 const virtualKeyboard = createVirtualKeyboard(
   virtualKeyboardPanel,
   sharedKeyInput,
-  (visible) => {
-    btnVirtualKeyboard.classList.toggle('active', visible);
-    btnVirtualKeyboard.setAttribute('aria-pressed', visible ? 'true' : 'false');
-    btnVirtualKeyboard.title = visible ? t('toolbarVirtualKeyboardHide') : t('toolbarVirtualKeyboard');
-    btnVirtualKeyboard.setAttribute('aria-label', btnVirtualKeyboard.title);
+  (_visible) => {
     // 仮想キーボードの表示/非表示でパネル高が変わり、画面に使える縦幅も変わるため再計算する。
     // このコールバックは virtual-keyboard.ts の refreshLayout() が rAF 内(パネル実測後)で
     // 呼んでくれるので、ここで呼ぶ rescale() も実測済みの高さを見て走る。
+    syncInputPanelUi();
     rescale();
   },
 );
-btnVirtualKeyboard.addEventListener('click', () => virtualKeyboard.toggle());
+
+// --- バーチャルパッド(オンスクリーンパッド)+ 入力パネル(仮想キーボード/パッド)切り替え ---
+// docs/DESIGN.md「バーチャルパッド」節・「切り替えUI(案C採用)」参照。
+// ツールバーの btn-virtual-keyboard は「入力パネル」トグル(押すと最後に選んだ側が開く/
+// 両方閉じる)に役割変更し、どちらを出すかは stage 右上のチップ(⌨/🎮)で切り替える。
+const virtualPad = createVirtualPad(virtualPadPanel, sharedKeyInput);
+
+// --- バーチャルパッドの配置(パネルモード/オーバーレイモード)---
+// 判定・reparentの詳細は rescale() 内の applyVpadPlacement() を参照。
+// 縦の余りがこれ以上あればパネルモード(console-card内の帯として画面を潰さず表示)、
+// 未満ならオーバーレイモード(従来通りstageに重ねる。画面を削らない代わりに指が被る)。
+const VPAD_PANEL_MIN_HEIGHT = 160;
+const VPAD_PANEL_MAX_HEIGHT = 260;
+// #virtual-pad の初期DOM位置(index.html: .stage内、#toastの直前)。オーバーレイモードへ
+// 戻すときの再挿入先として使う(挿入順そのものは見た目に影響しない。全部品absolute配置のため)。
+let vpadPlacement: VpadPlacement = 'overlay';
+
+/**
+ * バーチャルパッドの置き場所を確定させる。モードが変わったときだけ reparent し
+ * (毎フレームreparentしない)、パネルモードの帯の高さは呼び出し側(rescale())が実測した
+ * 余りをそのまま反映する。ネイティブフルスクリーン中に呼ばれた場合は強制的に
+ * overlay へ倒す(パネルは console-card 内にあり、.stage がフルスクリーン化すると
+ * console-card ごと非表示になる=パネルモードのままだとパッドが消えてしまうため)。
+ */
+function applyVpadPlacement(next: VpadPlacement, panelHeight: number): void {
+  const placement = isStageFullscreen() ? 'overlay' : next;
+  virtualPadPanel.style.height = placement === 'panel' ? `${Math.round(panelHeight)}px` : '';
+  if (placement !== vpadPlacement) {
+    vpadPlacement = placement;
+    virtualPad.setPlacement(placement);
+    if (placement === 'panel') {
+      // #virtual-keyboard の兄弟として、その直前(= .console-footer より前)に置く。
+      consoleCardEl.insertBefore(virtualPadPanel, virtualKeyboardPanel);
+    } else {
+      // .stage 内の元の位置(#toast の直前)へ戻す。
+      stageEl.insertBefore(virtualPadPanel, toastEl);
+    }
+  }
+  virtualPad.refreshLayout();
+}
+
+const INPUT_PANEL_STORAGE_KEY = 'webx68k.inputPanel';
+type InputPanelKind = 'keyboard' | 'pad';
+
+/** 保存が無い初回だけ、粗いポインタ(タッチ主体の端末)ならパッド優先で始める。 */
+function defaultInputPanelKind(): InputPanelKind {
+  return window.matchMedia('(pointer: coarse)').matches ? 'pad' : 'keyboard';
+}
+
+function loadInputPanelPref(): InputPanelKind {
+  const v = localStorage.getItem(INPUT_PANEL_STORAGE_KEY);
+  return v === 'keyboard' || v === 'pad' ? v : defaultInputPanelKind();
+}
+
+function saveInputPanelPref(kind: InputPanelKind): void {
+  localStorage.setItem(INPUT_PANEL_STORAGE_KEY, kind);
+}
+
+let inputPanelPref: InputPanelKind = loadInputPanelPref();
+
+let vpadStore: InputProfileStore = loadInputProfileStore(VPAD_STORAGE_KEY);
+
+/** 組み込みプロファイルは strings.ts 経由の翻訳済みラベルへ差し替えて表示する(label自体は内部識別用)。 */
+function vpadProfileLabel(profile: InputProfile): string {
+  switch (profile.id) {
+    case BUILTIN_JOY_2BUTTON_ID:
+      return t('vpadProfileJoy2Button');
+    case BUILTIN_CURSOR_SPACE_ID:
+      return t('vpadProfileCursorSpace');
+    case BUILTIN_TENKEY_ID:
+      return t('vpadProfileTenkey');
+    case BUILTIN_JOY_6BUTTON_ID:
+      return t('vpadProfileJoy6Button');
+    default:
+      return profile.label;
+  }
+}
+
+function applyActiveVpadProfile(): void {
+  const profile = activeProfile(vpadStore) ?? vpadStore.profiles[0] ?? null;
+  if (profile) virtualPad.setProfile(profile);
+}
+
+applyActiveVpadProfile();
+
+/** ツールバーボタンの見た目・チップの表示/非表示をまとめて同期する(両パネル共通の唯一の情報源)。 */
+function syncInputPanelUi(): void {
+  const anyVisible = virtualKeyboard.isVisible() || virtualPad.isVisible();
+  btnVirtualKeyboard.classList.toggle('active', anyVisible);
+  btnVirtualKeyboard.setAttribute('aria-pressed', anyVisible ? 'true' : 'false');
+  btnVirtualKeyboard.title = anyVisible ? t('toolbarInputPanelHide') : t('toolbarInputPanel');
+  btnVirtualKeyboard.setAttribute('aria-label', btnVirtualKeyboard.title);
+
+  inputPanelSwitchEl.classList.toggle('hidden', !anyVisible);
+  btnPanelKeyboard.setAttribute('aria-pressed', virtualKeyboard.isVisible() ? 'true' : 'false');
+  btnPanelPad.setAttribute('aria-pressed', virtualPad.isVisible() ? 'true' : 'false');
+}
+
+/** 両パネルを閉じる。閉じる側は必ず releaseAll() を呼び、押しっぱなしの固着を防ぐ。 */
+function closeInputPanels(): void {
+  if (virtualKeyboard.isVisible()) {
+    virtualKeyboard.setVisible(false);
+    virtualKeyboard.releaseAll();
+  }
+  if (virtualPad.isVisible()) {
+    virtualPad.setVisible(false); // 内部で releaseAllInternal() を呼ぶ(virtual-pad.ts 参照)。
+  }
+  syncInputPanelUi();
+  rescale();
+}
+
+/** 指定した側だけを開く(もう片方は必ず閉じて releaseAll() する)。選んだ側を既定として保存する。 */
+function openInputPanel(kind: InputPanelKind): void {
+  if (kind === 'keyboard') {
+    if (virtualPad.isVisible()) virtualPad.setVisible(false);
+    virtualKeyboard.setVisible(true);
+  } else {
+    if (virtualKeyboard.isVisible()) {
+      virtualKeyboard.setVisible(false);
+      virtualKeyboard.releaseAll();
+    }
+    virtualPad.setVisible(true);
+  }
+  inputPanelPref = kind;
+  saveInputPanelPref(kind);
+  syncInputPanelUi();
+  rescale();
+}
+
+btnVirtualKeyboard.addEventListener('click', () => {
+  if (virtualKeyboard.isVisible() || virtualPad.isVisible()) closeInputPanels();
+  else openInputPanel(inputPanelPref);
+});
+btnPanelKeyboard.addEventListener('click', () => openInputPanel('keyboard'));
+// 🎮 は状態で役割が変わる: 仮想キーボード表示中はパッドへの即切替(ゲーム中に素早く出す用途を
+// 優先しメニューは出さない)、バーチャルパッドが既に表示中ならプロファイル選択メニューを開く。
+btnPanelPad.addEventListener('click', (e) => {
+  if (virtualPad.isVisible()) {
+    e.stopPropagation();
+    if (!slotPopupMenu.classList.contains('hidden')) {
+      closeSlotPopupMenu();
+      return;
+    }
+    renderVpadProfileMenu(btnPanelPad);
+  } else {
+    openInputPanel('pad');
+  }
+});
 
 // 同梱ROM/ディスク(public/system/)のパス。ユーザーが独自ファイルを設定した場合はそちらを優先する。
 // GitHub Pages のプロジェクトページ(https://<user>.github.io/WebX68k/)配下でも解決できるよう、
@@ -1539,6 +1707,27 @@ async function openSlotLibraryMenu(slot: SlotId, anchorEl: HTMLButtonElement): P
   renderSlotLibraryMenu(slot, anchorEl, nodes);
 }
 
+/**
+ * バーチャルパッドのプロファイル選択メニュー(旧 #vpad-profile <select> の置き換え)。
+ * 組み込み4種を単一階層で並べ、現在有効なプロファイルの行に checked(チェックマーク)を付ける。
+ * 選択すると setActiveProfile() → saveInputProfileStore() → virtualPad.setProfile() の順に適用してから閉じる。
+ */
+function renderVpadProfileMenu(anchorEl: HTMLButtonElement): void {
+  slotPopupMenu.textContent = '';
+  const current = vpadStore.activeId;
+  for (const profile of vpadStore.profiles) {
+    const row = menuRow(vpadProfileLabel(profile), undefined, '', { checked: profile.id === current });
+    onActivate(row, () => {
+      closeSlotPopupMenu();
+      vpadStore = setActiveProfile(vpadStore, profile.id);
+      saveInputProfileStore(VPAD_STORAGE_KEY, vpadStore);
+      applyActiveVpadProfile();
+    });
+    slotPopupMenu.append(row);
+  }
+  positionSlotPopupMenu(anchorEl);
+}
+
 // --- ツールバー「…」オーバーフローメニュー ---
 // 上の #slot-popup-menu / menuRow() / positionSlotPopupMenu() / closeSlotPopupMenu() をそのまま
 // 再利用し、階層は「グループ一覧(第1階層)→ グループ内の項目(第2階層、← 戻るで戻れる)」の
@@ -1854,11 +2043,17 @@ async function bootCore(): Promise<void> {
   // 書き換えても次に読み込まれるのは次回起動時。
   host.setCoreOption('px68k_joytype1', PAD_TYPE_CORE_OPTION_VALUE[gamepadStore.joyType[0]]);
   host.setCoreOption('px68k_joytype2', PAD_TYPE_CORE_OPTION_VALUE[gamepadStore.joyType[1]]);
+  // バーチャルパッドの送り先は常にポート0(表示上のポート1)。TRG3..TRG8のビット位置は
+  // そのポートのpadTypeに依存するため、コア起動時点の値を渡しておく(設定ダイアログで
+  // 変更されたときは setPadType コールバック側で追従させる)。
+  virtualPad.setPadType(gamepadStore.joyType[0]);
   await host.init(biosIplBytes!, biosCgBytes!);
   host.onPoll = () => {
     const pads = gamepadsByPort();
     const [bits0, bits1] = pollBitsByPort(pads);
-    host!.setJoyState(0, bits0);
+    // 物理パッドとバーチャルパッドが同じポート(0)に乗りうるため、ビットマスクはORで合成する
+    // (docs/DESIGN.md「joy出力の合成」参照)。
+    host!.setJoyState(0, bits0 | virtualPad.getJoyBits());
     host!.setJoyState(1, bits1);
     syncGamepadKeys(pads);
   };
@@ -2047,8 +2242,9 @@ function applyDocumentStrings(): void {
   btnMouseResync.setAttribute('aria-label', t('toolbarMouseResync'));
   updateMouseControls();
   updateFullscreenControl();
-  btnVirtualKeyboard.title = virtualKeyboard.isVisible() ? t('toolbarVirtualKeyboardHide') : t('toolbarVirtualKeyboard');
-  btnVirtualKeyboard.setAttribute('aria-label', btnVirtualKeyboard.title);
+  syncInputPanelUi();
+  btnPanelKeyboard.setAttribute('aria-label', t('inputPanelSwitchKeyboard'));
+  btnPanelPad.setAttribute('aria-label', t('inputPanelSwitchPad'));
   updateAspectControl();
   btnSaveState.title = t('toolbarSaveState');
   btnSaveState.setAttribute('aria-label', t('toolbarSaveState'));
@@ -2657,6 +2853,32 @@ function rescale(): void {
   canvas.style.height = `${h}px`;
   stageFrameEl.style.width = `${frameW}px`;
   stageFrameEl.style.height = `${frameH}px`;
+
+  // --- バーチャルパッドの配置決定 ---
+  // 手順(このファイル冒頭の指示コメントの順序を守る。逆にすると自己参照して発振する):
+  // 1. ここまでの w/h/frameH は「パッドのパネル高さを0とした」stageサイズであり、
+  //    パッドの有無で変化しない(=パッドを出しても画面が縮まないことがこの時点で保証される)。
+  // 2. その結果(frameH)から縦の余りを実測する。既存のreservedHeight計算と同じ実測要素
+  //    (ヘッダー/console-footer/仮想キーボード)に加え、ページ最下部のフッタも引く。
+  //    パネルモードにすると console-card 内の子要素が1つ増える分の gap も見込んで引いておく
+  //    (このgapは今回のパッド用に新しく必要になるもので、上の gapsInCard には含まれていない)。
+  const leftover =
+    window.innerHeight -
+    (pageHeaderEl?.getBoundingClientRect().height ?? 0) -
+    frameH -
+    consoleFooterEl.getBoundingClientRect().height -
+    (kbdVisible ? virtualKeyboardPanel.getBoundingClientRect().height : 0) -
+    (pageFooterEl?.getBoundingClientRect().height ?? 0) -
+    mainPaddingV -
+    gapsInCard -
+    cardGap -
+    4;
+  // 3. 余り >= VPAD_PANEL_MIN_HEIGHT ならパネルモード(帯の高さは余りとVPAD_PANEL_MAX_HEIGHTの
+  //    小さい方)、未満ならオーバーレイモード。
+  const nextVpadPlacement: VpadPlacement = leftover >= VPAD_PANEL_MIN_HEIGHT ? 'panel' : 'overlay';
+  const vpadPanelHeight = Math.min(Math.max(leftover, 0), VPAD_PANEL_MAX_HEIGHT);
+  // 4. モードが変わったときだけ reparent する(applyVpadPlacement内部で判定)。
+  applyVpadPlacement(nextVpadPlacement, vpadPanelHeight);
 }
 
 // visualViewport の resize は購読しない: ピンチズーム操作でも発火するため、ここで再フィット
@@ -2672,6 +2894,9 @@ document.addEventListener('fullscreenchange', () => {
   if (isStageFullscreen()) {
     canvas.style.width = '';
     canvas.style.height = '';
+    // フルスクリーン化するのは .stage だけで console-card 全体ではないため、パネルモードの
+    // ままだと(console-card内にある)パッドが画面から消えてしまう。強制的にoverlayへ倒す。
+    applyVpadPlacement('overlay', 0);
   } else {
     rescale();
   }
@@ -2680,6 +2905,7 @@ document.addEventListener('webkitfullscreenchange', () => {
   if (isStageFullscreen()) {
     canvas.style.width = '';
     canvas.style.height = '';
+    applyVpadPlacement('overlay', 0);
   } else {
     rescale();
   }
@@ -2904,9 +3130,16 @@ if (import.meta.env.DEV) {
     mouseButton: (button: 'left' | 'right', down: boolean) => host?.setMouseButton(button, down),
     // 各ポートの解決済みRetroPadビットマスクと、解決前の生の入力(pressed/axes)を返す。
     // ヘッドレスでの検証用(ブラウザUIを開かなくても割当が効いているか確認できる)。
+    //
+    // bits は host.onPoll が実際に setJoyState() へ渡すのと同じ値にすること
+    // (= ポート0はバーチャルパッドのビットもORした後の値)。ここが「物理パッドぶんだけ」に
+    // なっていると、バーチャルパッドの割当を調べているつもりで別の値を見ることになり、
+    // 「配線したのに0のまま」という誤った結論を導く。観測する値は必ず末端へ送る値と揃える。
     joy: () => {
       const pads = gamepadsByPort();
-      const [bits0, bits1] = pollBitsByPort(pads);
+      const [rawBits0, bits1] = pollBitsByPort(pads);
+      const vpadBits = virtualPad.getJoyBits();
+      const bits0 = rawBits0 | vpadBits;
       const rawOf = (pad: Gamepad | null) =>
         pad === null
           ? null
@@ -2917,7 +3150,7 @@ if (import.meta.env.DEV) {
               axes: Array.from(pad.axes),
             };
       return {
-        port0: { bits: bits0, raw: rawOf(pads[0]) },
+        port0: { bits: bits0, raw: rawOf(pads[0]), physicalBits: rawBits0, vpadBits },
         port1: { bits: bits1, raw: rawOf(pads[1]) },
       };
     },

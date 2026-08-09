@@ -24,6 +24,7 @@ import {
   retroIdFor,
   saveGamepadStore,
   snapshotPad,
+  sourceKey,
   type GamepadStore,
 } from '../src/gamepad';
 import { SharedKeyInput } from '../src/virtual-keyboard';
@@ -664,6 +665,72 @@ describe('GamepadManager.keysForPad(kind:key バインディングの出力)', (
     mgr.addBinding({ kind: 'button', index: 1 }, { kind: 'key', retrok: 98 });
     const pad = makeGamepad({ buttons: { 0: true, 1: true } });
     expect(mgr.keysForPad(pad)).toEqual(new Set([97, 98]));
+  });
+});
+
+// バーチャルパッド(タッチ)は Gamepad オブジェクトを持たないため、forEachActiveSource() を経由せず
+// 「今アクティブな Source 群」を直接渡す bitsForSources()/keysForSources() を使う。偽の Gamepad を
+// 合成する方式は採らない(AxisCalibration が無意味に走るため)。
+describe('GamepadManager.bitsForSources/keysForSources(Gamepadオブジェクトに依存しないAPI、バーチャルパッド向け)', () => {
+  it('bitsForSources() は kind:touch の Source を含む集合からその割当どおりのビットを立てる', () => {
+    const mgr = new GamepadManager([], 0.5);
+    mgr.addBinding({ kind: 'touch', id: 'vpad-trg1' }, { kind: 'joy', target: 'TRG1' });
+    mgr.addBinding({ kind: 'touch', id: 'vpad-up' }, { kind: 'joy', target: 'UP' });
+    const bits = mgr.bitsForSources([{ kind: 'touch', id: 'vpad-trg1' }, { kind: 'touch', id: 'vpad-up' }]);
+    expect(bits).toBe((1 << RETRO_B) | (1 << RETRO_UP));
+  });
+
+  it('bitsForSources() はアクティブでない(渡されていない) Source のビットを立てない', () => {
+    const mgr = new GamepadManager([], 0.5);
+    mgr.addBinding({ kind: 'touch', id: 'vpad-trg1' }, { kind: 'joy', target: 'TRG1' });
+    mgr.addBinding({ kind: 'touch', id: 'vpad-trg2' }, { kind: 'joy', target: 'TRG2' });
+    const bits = mgr.bitsForSources([{ kind: 'touch', id: 'vpad-trg1' }]);
+    expect(bits).toBe(1 << RETRO_B);
+  });
+
+  it('bitsForSources() は button/axis の Source が混ざっていても computeBits と同じ結果になる', () => {
+    const mgr = new GamepadManager([], 0.5);
+    mgr.addBinding({ kind: 'button', index: 0 }, { kind: 'joy', target: 'TRG1' });
+    mgr.addBinding({ kind: 'axis', index: 0, dir: -1 }, { kind: 'joy', target: 'LEFT' });
+    // 軸は初回観測値がbaselineになる(gamepad.tsの軸較正セクション参照)ため、静止(0)を1回
+    // 観測させてから動かす: そうしないとbaseline自体が-1になり偏差なしと判定されてしまう。
+    mgr.bitsForPad(makeGamepad({ buttons: { 0: false }, axes: { 0: 0 } }));
+    const pad = makeGamepad({ buttons: { 0: true }, axes: { 0: -1 } });
+    expect(mgr.bitsForPad(pad)).toBe((1 << RETRO_B) | (1 << RETRO_LEFT));
+  });
+
+  it('keysForSources() は kind:key の retrok だけを返し、kind:joy の割当は無視する', () => {
+    const mgr = new GamepadManager([], 0.5);
+    mgr.addBinding({ kind: 'touch', id: 'vpad-a' }, { kind: 'key', retrok: 97 });
+    mgr.addBinding({ kind: 'touch', id: 'vpad-b' }, { kind: 'joy', target: 'TRG1' });
+    const keys = mgr.keysForSources([{ kind: 'touch', id: 'vpad-a' }, { kind: 'touch', id: 'vpad-b' }]);
+    expect(keys).toEqual(new Set([97]));
+  });
+
+  it('keysForSources() は渡されなかった Source の retrok を含めない', () => {
+    const mgr = new GamepadManager([], 0.5);
+    mgr.addBinding({ kind: 'touch', id: 'vpad-a' }, { kind: 'key', retrok: 97 });
+    expect(mgr.keysForSources([])).toEqual(new Set());
+  });
+});
+
+// sourceKey() は Map の内部キーであると同時に localStorage 保存形式(GamepadStore v2)の識別に
+// 間接的に関わる(bindings の逆引きテーブルのキー)。touch 種別を足すリファクタで button/axis の
+// 文字列表現が変わっていないことを回帰確認する(期待値はリファクタ前の実装からそのまま採取した文字列)。
+describe('sourceKey(互換性の回帰テスト): button/axisの文字列表現はリファクタ前後で変わらない', () => {
+  it('button は従来どおり b<index>', () => {
+    expect(sourceKey({ kind: 'button', index: 0 })).toBe('b0');
+    expect(sourceKey({ kind: 'button', index: 12 })).toBe('b12');
+  });
+
+  it('axis は従来どおり a<index><+|->', () => {
+    expect(sourceKey({ kind: 'axis', index: 0, dir: 1 })).toBe('a0+');
+    expect(sourceKey({ kind: 'axis', index: 0, dir: -1 })).toBe('a0-');
+    expect(sourceKey({ kind: 'axis', index: 1, dir: 1 })).toBe('a1+');
+  });
+
+  it('touch は button/axis と衝突しない t<id> prefix', () => {
+    expect(sourceKey({ kind: 'touch', id: 'vpad-trg1' })).toBe('tvpad-trg1');
   });
 });
 
