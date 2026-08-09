@@ -38,6 +38,8 @@ interface Dict {
   mouseResynced(): string;
   mouseTrackUnavailable(): string;
   mouseCaptureFailed(): string;
+  /** AudioWorklet が使えず無音で起動したときの案内(secure context 以外で開いた場合など)。 */
+  audioUnavailable(): string;
   toolbarMouseCapture(): string;
   toolbarMouseRelease(): string;
   toolbarMouseResync(): string;
@@ -372,6 +374,8 @@ const STRINGS: Record<Lang, Dict> = {
     mouseResynced: () => 'マウスの基準を取り直しました。',
     mouseTrackUnavailable: () => 'このソフトではマウス追従を利用できません。右ダブルクリックでキャプチャしてください。',
     mouseCaptureFailed: () => 'マウスをキャプチャできませんでした。',
+    audioUnavailable: () =>
+      '音声を初期化できなかったため、無音で起動しました。https または localhost で開くと音が出ます。',
     toolbarMouseCapture: () => 'マウスキャプチャ(右ダブルクリック)',
     toolbarMouseRelease: () => 'マウスキャプチャを解除(Esc)',
     toolbarMouseResync: () => 'マウス再同期',
@@ -632,6 +636,8 @@ const STRINGS: Record<Lang, Dict> = {
     mouseResynced: () => 'Mouse position re-synced.',
     mouseTrackUnavailable: () => 'Mouse tracking is unavailable for this software. Right double-click to capture instead.',
     mouseCaptureFailed: () => 'Could not capture the mouse.',
+    audioUnavailable: () =>
+      'Audio could not be initialized, so the machine started without sound. Open the page over https or localhost to get audio.',
     toolbarMouseCapture: () => 'Capture mouse (right double-click)',
     toolbarMouseRelease: () => 'Release mouse (Esc)',
     toolbarMouseResync: () => 'Re-sync mouse',

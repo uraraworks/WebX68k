@@ -17,9 +17,18 @@
   --footer-border: rgba(0, 0, 0, 0.4);
   --footer-text: #e6e6e6;
   --footer-text-dim: #a8a8a8;
-  --page-footer-bg: #ececec;
-  --page-footer-text: #6b6b6b;
-  --page-footer-border: rgba(0, 0, 0, 0.12);
+  /*
+   * ページの余白(コンソールカードの外側)専用の背景色。--bg とは分けてある:
+   * --bg はダイアログ類の地色としても使われていて、そちらは濃い文字色(--text)と
+   * 組みになっているため、--bg を黒くすると各ダイアログが黒地に黒文字で潰れる。
+   * カードの外だけを暗くしたいので、body 専用の変数を用意する。
+   * 実機(iPhone)で、白い余白がゲスト画面の左右に出て目に刺さるという指摘を受けての変更。
+   * カード自体は box-shadow を持つので、真っ黒より少し明るくして輪郭を残す。
+   */
+  --page-bg: #101010;
+  --page-footer-bg: #1a1a1a;
+  --page-footer-text: #8c8c8c;
+  --page-footer-border: rgba(255, 255, 255, 0.1);
   --footer-btn-bg: #4a4a4a;
   --footer-btn-bg-hover: #5c5c5c;
   --footer-btn-border: #202020;
@@ -36,6 +45,9 @@
 
 html {
   height: 100%;
+  /* iOS の overscroll(ラバーバンド)で覗く地色も body と揃える。html に色が無いと
+     スクロール端で白がちらつく。 */
+  background: var(--page-bg);
   /* iOS Safari のテキスト自動拡大(auto text inflation)を止める。
      縦持ちの初回表示だけ文字が勝手に大きくなり、起動オーバーレイの中身が
      .stage をはみ出して上端のボタンが .console-card の overflow:hidden で
@@ -49,7 +61,7 @@ html {
 body {
   margin: 0;
   padding: 0;
-  background: var(--bg);
+  background: var(--page-bg);
   color: var(--text);
   font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Hiragino Sans', 'Yu Gothic', sans-serif;
   min-height: 100%;

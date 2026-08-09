@@ -2024,7 +2024,11 @@ function sanitizeFileName(name: string): string {
  * 同時搭載できるようにしている。
  */
 async function bootCore(): Promise<void> {
-  host = new LibretroHost(canvas, (samples) => audio!.push(samples));
+  // audio は null になりうる(AudioWorklet が使えない環境。呼び出し元の起動処理を参照)。
+  // ここを `audio!` にしていると、無音で起動したときにコアからの最初の音声コールバックで
+  // 例外になり、フレームループごと巻き込んで画面が真っ黒のまま止まる。
+  // 音の行き先が無いときはサンプルを捨てるだけでよい。
+  host = new LibretroHost(canvas, (samples) => audio?.push(samples));
   // X68000 は画面モード変更で実行中に canvas の実解像度(width/height)が変わる。
   // ウィンドウ表示のリスケールは実解像度基準で倍率を決めるため、変わった直後に再計算させる。
   host.onResolutionChanged = () => rescale();
@@ -3315,12 +3319,27 @@ async function startFromOverlay(withSystemDisk: boolean): Promise<void> {
   bootOverlay.classList.add('hidden');
 
   try {
-    audio = new AudioEngine();
-    await audio.start();
-    // タイマーがスロットルされる環境向け: オーディオスレッドの tick でも駆動する
-    audio.setTickHandler(() => {
-      if (running) enterLoop();
-    });
+    // 音声の初期化失敗で起動そのものを止めないこと。AudioWorklet は secure context
+    // (https または localhost)でしか使えず、例えば LAN の IP アドレス
+    // (http://192.168.x.x:port/)で開くと ctx.audioWorklet が undefined になる。
+    // 以前はこの初期化を bootCore() と同じ try に入れて await していたため、
+    // そういう環境では「起動に失敗しました: Cannot read properties of undefined
+    // (reading 'addModule')」で Human68k すら立ち上がらなかった。
+    // 音が出ないだけならエミュレータとしては使えるので、警告を出して先へ進む。
+    try {
+      const engine = new AudioEngine();
+      await engine.start();
+      // タイマーがスロットルされる環境向け: オーディオスレッドの tick でも駆動する
+      engine.setTickHandler(() => {
+        if (running) enterLoop();
+      });
+      audio = engine;
+    } catch {
+      // audio は null のまま。以降の参照はすべて audio?. で null 安全にしてある。
+      // 駆動は rAF + setTimeout(scheduleNext())が担うので、無音でも実行は続く。
+      audio = null;
+      showToast(t('audioUnavailable'));
+    }
 
     await bootCore();
     // 起動直後(初回描画後)の実解像度で一度リスケールしておく。以降は
