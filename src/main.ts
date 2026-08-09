@@ -3094,19 +3094,23 @@ function rescale(): void {
     cardGap -
     4;
   // 3. 縦の余りが足りない場合に備え、左右の余白も実測しておく(sides判定用)。
-  //    .console-card の矩形と window.innerWidth の差分がそのまま余白幅になる(横持ち
-  //    フルスクリーンで4:3維持のため画面が縦に制限されると、左右にこの余白が生まれる)。
+  //    横持ちで4:3維持のため画面が縦に制限されると、画面の左右に余白が生まれる。
+  //
+  //    基準は **.stage** の矩形にすること(.console-card ではない)。
+  //    ネイティブ全画面では .console-card:fullscreen が 100vw/100vh に広げられるため、
+  //    カード基準で測ると左右の余白が常に 0 になり、**sides 配置が絶対に発動しなくなる**
+  //    (Android の横持ち全画面という一番効かせたい場面で効かない、という状態だった)。
+  //    .stage 基準なら、ウィンドウ表示でも全画面でも「画面の横に空いている幅」を同じ式で測れる。
   //    左右で幅が違う場合は狭い方で判定する(狭い側に部品がはみ出すのを避けるため)。
-  const cardRect = consoleCardEl.getBoundingClientRect();
-  const leftMargin = cardRect.left;
-  const rightMargin = window.innerWidth - cardRect.right;
+  const stageRect = stageEl.getBoundingClientRect();
+  const leftMargin = stageRect.left;
+  const rightMargin = window.innerWidth - stageRect.right;
   const sidesMargin = Math.min(leftMargin, rightMargin);
   // ボックスの縦範囲は .stage の上端〜下端に合わせる(画面と同じ高さの帯にすると
   // 指の位置が自然になるため)。
-  const stageRect = stageEl.getBoundingClientRect();
   const sidesBoxes: VpadSideBoxes = {
     left: { x: 0, y: stageRect.top, w: Math.max(0, leftMargin), h: stageRect.height },
-    right: { x: cardRect.right, y: stageRect.top, w: Math.max(0, rightMargin), h: stageRect.height },
+    right: { x: stageRect.right, y: stageRect.top, w: Math.max(0, rightMargin), h: stageRect.height },
   };
   // 4. 判定順は panel → sides → overlay。
   //    - 縦の余り >= VPAD_PANEL_MIN_HEIGHT ならパネルモード(帯の高さは余りと
