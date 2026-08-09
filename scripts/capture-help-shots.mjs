@@ -420,6 +420,85 @@ async function run() {
       await clickToolbarButton(page, 'btn-virtual-keyboard');
       await page.setViewport(VIEWPORT);
 
+      // --- virtualpad: バーチャルパッド(縦持ち相当のパネル配置) ---
+      // 縦持ち(幅<高さ、375x812)にすると画面下に余白ができ、仮想キーボードと同じ帯状の
+      // "panel" 配置が自動で選ばれる(表示位置は実測値から決まる。src/virtual-pad.ts 参照)。
+      // 入力パネルの既定側(⌨/🎮)は前回選んだ側が localStorage(webx68k.inputPanel)に残るため、
+      // 同じブラウザプロファイルを使い回す ja/en の2周目以降は⌨側が既定とは限らない。
+      // 🎮チップは「パッドが非表示なら切替、表示済みならプロファイル選択メニューを開く」という
+      // 状態依存の役割を持つ(main.ts の btnPanelPad ハンドラ参照)ため、決め打ちで2回押すと
+      // 2周目にメニューが開いてしまう。実際にパッドが表示されているかをDOMで見てから
+      // 必要な場合だけ押す。
+      await page.setViewport({ width: 375, height: 812, deviceScaleFactor: 2 });
+      await clickToolbarButton(page, 'btn-virtual-keyboard'); // 入力パネルを開く(前回選択側)
+      const padAlreadyShown = await page.evaluate(() => {
+        const pad = document.getElementById('virtual-pad');
+        return !!pad && !pad.classList.contains('hidden');
+      });
+      if (!padAlreadyShown) {
+        await clickToolbarButton(page, 'btn-panel-pad'); // 🎮側へ切替
+      }
+      await shoot(page, '.console-card', `virtualpad${suffix}.png`);
+
+      // --- virtualpad-sides: バーチャルパッド(横持ちの左右配置) ---
+      // 横持ち(812x375)+疑似フルスクリーンにすると、画面の左右に余白ができ "sides" 配置が
+      // 自動で選ばれる。ただし .console-card:fullscreen は width:100vw;height:100vh で
+      // ビューポート全体を埋める実装(style.css)のため、ネイティブ全画面では左右の余白が
+      // 常に0になり sides 判定に絶対到達しない(実測して判明)。実機のiPhone Safariが
+      // <video>以外のFullscreen APIを持たない(main.ts のコメント参照)のと同じ状況を
+      // 作るため、nativeFullscreenSupported() が見る document.fullscreenEnabled を
+      // false に差し替えてからボタンを押す(navigator.getGamepads を差し替える
+      // injectFakeGamepad() と同じ「テスト環境に無いハードウェア/APIを模す」考え方)。
+      // これにより click ハンドラは最初からtogglePseudoFullscreen()の分岐を通る。
+      await page.setViewport({ width: 812, height: 375, deviceScaleFactor: 2 });
+      await page.evaluate(() => {
+        Object.defineProperty(document, 'fullscreenEnabled', { get: () => false, configurable: true });
+      });
+      await clickToolbarButton(page, 'btn-fullscreen');
+      const enteredPseudoFullscreen = await page.evaluate(() =>
+        document.body.classList.contains('pseudo-fullscreen'),
+      );
+      if (!enteredPseudoFullscreen) {
+        throw new Error('pseudo-fullscreen に入りませんでした(virtualpad-sides 撮影に必要)');
+      }
+      await sleep(300); // sides レイアウトの再計算を待つ
+      await page.screenshot({ path: join(OUT_DIR, `virtualpad-sides${suffix}.png`) });
+      console.log(`  wrote virtualpad-sides${suffix}.png`);
+      await clickToolbarButton(page, 'btn-fullscreen'); // 疑似フルスクリーンを解除
+      await sleep(300);
+      await page.setViewport(VIEWPORT);
+
+      // --- vpad-editor: バーチャルパッドの割当編集ダイアログ ---
+      // パッドは virtualpad ショットからずっと表示中(閉じていない)ので、🎮チップを押すと
+      // 「切替」ではなくプロファイル選択メニューが開く(main.ts の btnPanelPad ハンドラ参照)。
+      await clickToolbarButton(page, 'btn-panel-pad');
+      await page.evaluate(() => {
+        // メニュー末尾の「割当を編集…」行を、文言に頼らず(日英どちらでも同じ位置になる)
+        // 最後の .library-menu-item として掴む(区切り線 div は class が違うので混ざらない)。
+        const rows = document.querySelectorAll('#slot-popup-menu .library-menu-item');
+        const editRow = rows[rows.length - 1];
+        if (!editRow) throw new Error('vpad edit-assignments menu row not found');
+        editRow.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+      });
+      await sleep(400);
+      const vpadEditorModal = await page.$('#input-profile-root .gp-modal');
+      if (!vpadEditorModal) throw new Error('input profile editor modal not found');
+      await vpadEditorModal.screenshot({ path: join(OUT_DIR, `vpad-editor${suffix}.png`) });
+      console.log(`  wrote vpad-editor${suffix}.png`);
+      await page.keyboard.press('Escape');
+      await sleep(300);
+      await clickToolbarButton(page, 'btn-virtual-keyboard'); // 入力パネルを閉じる(後続に影響させない)
+
+      // --- hostkey: 物理キーボード→ジョイスティック割当ダイアログ ---
+      await clickToolbarButton(page, 'btn-hostkey');
+      await sleep(400);
+      const hostkeyModal = await page.$('#hostkey-root .gp-modal');
+      if (!hostkeyModal) throw new Error('hostkey modal not found');
+      await hostkeyModal.screenshot({ path: join(OUT_DIR, `hostkey${suffix}.png`) });
+      console.log(`  wrote hostkey${suffix}.png`);
+      await page.keyboard.press('Escape');
+      await sleep(300);
+
       await page.close();
     }
   } finally {

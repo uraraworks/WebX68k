@@ -80,6 +80,12 @@ Audio playback requires a click due to browser autoplay restrictions, so
 starting playback always begins from one of these two buttons — clicking
 elsewhere on the overlay does nothing.
 
+`AudioWorklet` is only available in a secure context (`https:` or
+`localhost`); opening the page over a plain LAN IP address (`http://
+192.168.x.x:port/`) leaves it unavailable. In that case WebX68k now boots
+silently instead of failing to boot at all — audio simply has nowhere to
+go.
+
 ### Drag & drop
 
 There are three places you can drop a disk image, ZIP, or LZH archive; the
@@ -184,6 +190,63 @@ again. Multi-modifier chords, multi-touch input, and long-press repeat are
 supported. Open the separate keypad only when needed with the Keypad button.
 Kana labels reflect the virtual keyboard's client-side state; if it differs from the guest, press the Kana key again to bring them back in sync.
 
+### Virtual pad (on-screen pad)
+
+For playing games on a phone, the "Show Input Panel" toolbar button (also
+toggled by the ⌨/🎮 chip once a panel is open) can show a touch virtual pad
+instead of the virtual keyboard — they're mutually exclusive. Directional
+input is an analog-stick-style control (a fixed base with a knob, snapping to
+8 directions), so a light tap near the edge of the circle is enough to get a
+direction out.
+
+What each on-screen part sends is a **profile**: a map from a screen part
+(stick directions, buttons) to either a joystick input or a keyboard key.
+Four built-in profiles are included: Joystick (2 Buttons), Cursor Keys +
+Space, Tenkey, and Joystick (6 Buttons). The 6-button layout follows a real
+Mega Drive 6-button pad — X/Y/Z on the top row, A/B/C on the bottom, both
+rising left to right.
+
+The pad's on-screen position is chosen automatically from **measured**
+layout space (never a hardcoded screen-width breakpoint), in one of three
+placements:
+
+- **Panel** — when there's spare room below the screen (as in portrait), the
+  pad sits in the same slot as the virtual keyboard, as a docked strip. The
+  screen is not shrunk.
+- **Sides** — when there's spare room on the left and right of the screen (as
+  in landscape), the stick and buttons go there instead, so nothing covers
+  the guest screen.
+- **Overlay** — when neither kind of margin is big enough, the pad is drawn
+  semi-transparently on top of the screen.
+
+Pressing 🎮 while the pad is showing opens the profile-select menu.
+
+#### Editing the pad's assignments
+
+"Edit assignments…" at the end of the 🎮 profile menu opens an editor for
+the pad's 12 input sources (stick up/down/left/right, A/B/C, X/Y/Z, and
+Aux 1/2). Each row can be bound to either a keyboard key or a joystick
+button.
+
+The key picker shares the same layout as the virtual keyboard; assigning a
+key automatically advances to the next row. Editing a built-in profile
+automatically creates a copy for you to edit — the built-in itself is never
+changed.
+
+### Keyboard-to-joystick mapping
+
+For PC users without a gamepad who want to play joystick-only software, a
+physical key can be mapped to a joystick input. Open it from the toolbar's
+"..." menu → Input group → "Keyboard Assignment". **It is disabled by
+default**, so it never gets in the way of normal typing until turned on.
+
+Three built-in profiles are included: Arrows -> Joystick (2 Buttons), Arrows
+-> Joystick (6 Buttons) (for CPSF-MD-style software), and Arrows -> Numpad —
+the last one also doubles as a way to play numpad-only software on a laptop
+that has no numpad. Once enabled, any key you've mapped stops working as a
+regular character key. There is no editor yet for building your own
+mapping — you can only pick from the built-ins.
+
 ### Mouse
 
 Click "Capture Mouse" in the toolbar's "..." menu (Input group), or
@@ -213,21 +276,26 @@ toggling the mode never shifts the surrounding layout.
 
 ### Fullscreen
 
-The "Fullscreen" toolbar button makes the screen (the black stage box that
-contains the canvas) fill the display. The X68000 can switch resolution
-while running (256x256 / 512x512 / 768x512, etc.), but fullscreen keeps
-whichever aspect ratio is currently selected — dot-for-dot or 4:3 (see
-"Display mode" above) — and letterboxes with black bars, matching the
-windowed view's look. Click the button again, or press **Esc**, to exit
-fullscreen.
+The "Fullscreen" toolbar button makes the **whole card — including the
+toolbar** — fill the display, not just the screen. This means Reset,
+switching the input panel, and the rest of the toolbar all stay usable while
+fullscreen. The X68000 can switch resolution while running (256x256 /
+512x512 / 768x512, etc.), but fullscreen keeps whichever aspect ratio is
+currently selected — dot-for-dot or 4:3 (see "Display mode" above) — and
+letterboxes with black bars, matching the windowed view's look. Click the
+button again, or press **Esc**, to exit fullscreen.
+
+On iPhone, the Fullscreen API is only available on `<video>` elements, so
+WebX68k falls back to a page-side pseudo-fullscreen (collapsing the
+surrounding page UI) instead — the toolbar still remains visible there too.
 
 If mouse capture is also active while fullscreen, pressing **Esc once
 releases both at the same time** — it does not take two presses. This is a
 browser-level behavior we can't override (the release can't be
 `preventDefault`-ed, and re-entering fullscreen right after can't be done
-from script either), and since fullscreen only covers the screen itself
-(the toolbar isn't visible), Esc is the only way to release the mouse while
-fullscreen — an intentional trade-off in favor of immersion.
+from script either); since native fullscreen swallows Esc, it's the only way
+to release the mouse while fullscreen — an intentional trade-off in favor of
+immersion.
 
 ### BIOS settings
 
@@ -240,6 +308,17 @@ future visits, taking priority over the bundled files.
 
 The `EN`/`JA` button in the toolbar's "..." menu switches the UI language at
 runtime; the choice is saved and reused on your next visit.
+
+### Add to Home Screen (PWA)
+
+On iPhone, there is no way for a web page to hide the browser's URL bar.
+Adding WebX68k to the Home Screen and launching it from there starts it in
+standalone mode, without the URL bar (on Android, the Fullscreen toolbar
+button already hides it, since native fullscreen is supported there).
+
+**This is unverified:** whether saved disks and state (IndexedDB) are shared
+between the Home Screen app and a regular browser tab has not been
+confirmed.
 
 ## Bundled ROM / disk images
 
@@ -358,6 +437,19 @@ This repository is **GPLv2** ([COPYING](COPYING)).
   browser's localStorage. A settings dialog covers ports/pad type/assignments
 - Own-BIOS loading (IPLROM.DAT/CGROM.DAT) via the Settings panel, persisted
   to IndexedDB and prioritized over the bundled files
+- Virtual pad (on-screen touch pad) for phones: analog-stick-style
+  direction input with 8-way snapping, 4 built-in profiles (2-button
+  joystick / cursor keys+space / tenkey / 6-button joystick), a full
+  assignment editor, and 3 auto-selected placements (panel/sides/overlay)
+  measured from actual available space
+- Keyboard-to-joystick mapping for PC users without a gamepad (3 built-in
+  profiles), off by default
+- Fullscreen now covers the whole card (toolbar included), with an iPhone
+  pseudo-fullscreen fallback since the Fullscreen API there only supports
+  `<video>`
+- Add to Home Screen (PWA) support so iPhone can hide the browser's URL bar
+- Boots silently (instead of failing to boot) when `AudioWorklet` is
+  unavailable, e.g. opening the page over a plain LAN IP address
 
 ## Known limitations
 
