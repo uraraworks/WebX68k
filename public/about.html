@@ -651,8 +651,12 @@
               ネイティブ全画面で既に消せます)。
             </p>
             <p>
-              <strong>未検証:</strong> ホーム画面アプリと通常のSafariタブとで、保存済みディスクや
-              ステート(IndexedDB)が共有されるかどうかは確認していません。
+              <strong>確定:</strong> ホーム画面アプリと通常のブラウザ(Safari/Chrome)とでは、
+              保存済みディスク・ステート・BIOS(IndexedDB)が共有されません(iOSではホーム画面
+              アプリ・Safari・Chromeがそれぞれ独立したストレージを持つため。実機で確認済み)。
+              どちらか一方に決めて使うのが無難です。ホーム画面版で遊ぶ場合は、ディスクの登録も
+              ホーム画面版から行う必要があります。これは iOS 側の仕様であり、アプリ側では回避
+              できません。
             </p>
           </div>
           <div class="lang-en">
@@ -663,8 +667,12 @@
               it via the Fullscreen button's native fullscreen).
             </p>
             <p>
-              <strong>Unverified:</strong> whether saved disks and state (IndexedDB) are shared
-              between the Home Screen app and a regular Safari tab has not been confirmed.
+              <strong>Confirmed:</strong> saved disks, state, and BIOS (IndexedDB) are not shared
+              between the Home Screen app and a regular browser (Safari/Chrome) — on iOS, the Home
+              Screen app, Safari, and Chrome each have their own independent storage (confirmed on a
+              real device). It's best to pick one and stick with it; if you play from the Home
+              Screen app, you also need to register disks from that same app. This is an iOS
+              platform limitation that cannot be worked around from the app side.
             </p>
           </div>
         </section>

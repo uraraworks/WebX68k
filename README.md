@@ -318,9 +318,12 @@ Adding WebX68k to the Home Screen and launching it from there starts it in
 standalone mode, without the URL bar (on Android, the Fullscreen toolbar
 button already hides it, since native fullscreen is supported there).
 
-**This is unverified:** whether saved disks and state (IndexedDB) are shared
-between the Home Screen app and a regular browser tab has not been
-confirmed.
+**Saved disks, state, and BIOS (IndexedDB) are not shared between the Home
+Screen app and a regular browser (Safari/Chrome)** — on iOS, the Home Screen
+app, Safari, and Chrome each have their own independent storage (confirmed on
+a real device). It's best to pick one and stick with it; if you play from the
+Home Screen app, you also need to register disks from that same app. This is
+an iOS platform limitation that cannot be worked around from the app side.
 
 ## Bundled ROM / disk images
 
