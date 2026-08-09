@@ -1967,3 +1967,101 @@ body.immersive .console-card {
 .gp-pending-source {
   font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
 }
+
+/* 入力プロファイル編集ダイアログ(input-profile-ui.ts)。既存の gp-* の見た目を踏襲する。 */
+.gp-tabs {
+  display: flex;
+  gap: 4px;
+  border-bottom: 1px solid var(--border);
+}
+
+.gp-tab {
+  padding: 6px 12px;
+  font-size: 12px;
+  border: none;
+  border-bottom: 2px solid transparent;
+  background: transparent;
+  color: var(--text-dim);
+  cursor: pointer;
+}
+
+.gp-tab.active {
+  color: var(--text);
+  border-bottom-color: var(--accent);
+  font-weight: 600;
+}
+
+.gp-preset-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.gp-preset-btn,
+.gp-clear-btn {
+  font-size: 12px;
+  padding: 3px 10px;
+  border-radius: 5px;
+  border: 1px solid var(--border);
+  background: var(--bg-panel);
+  color: inherit;
+  cursor: pointer;
+}
+
+.gp-preset-btn:disabled,
+.gp-clear-btn:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+.gp-bind-row-main {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex: 1 1 auto;
+  cursor: pointer;
+}
+
+.gp-bind-arrow {
+  color: var(--text-dim);
+}
+
+.gp-bind-key {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+
+.gp-bind-row.selected {
+  border-color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 12%, var(--bg));
+}
+
+.gp-pending-hint {
+  font-size: 11px;
+  color: var(--accent);
+}
+
+.ipe-kbd-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.ipe-joy-grid {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.gp-hint.hidden,
+.gp-pending-hint.hidden,
+.ipe-kbd-panel.hidden,
+.ipe-joy-panel.hidden {
+  display: none;
+}
+
+/* 🎮 プロファイルメニュー内の「割当を編集…」との区切り線。 */
+.vpad-menu-separator {
+  height: 1px;
+  margin: 4px 6px;
+  background: var(--border);
+}

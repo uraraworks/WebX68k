@@ -56,6 +56,7 @@ import {
   type Source,
 } from './gamepad';
 import { buildGamepadDialog } from './gamepad-ui';
+import { buildInputProfileEditor, type InputSourceDef } from './input-profile-ui';
 import { createVirtualKeyboard, SharedKeyInput } from './virtual-keyboard';
 import { createVirtualPad, type VpadPlacement, type VpadSideBoxes } from './virtual-pad';
 import {
@@ -67,6 +68,18 @@ import {
   loadInputProfileStore,
   saveInputProfileStore,
   setActiveProfile,
+  VPAD_BTN_A,
+  VPAD_BTN_B,
+  VPAD_BTN_C,
+  VPAD_BTN_D,
+  VPAD_BTN_E,
+  VPAD_BTN_F,
+  VPAD_BTN_OPT1,
+  VPAD_BTN_OPT2,
+  VPAD_DPAD_DOWN,
+  VPAD_DPAD_LEFT,
+  VPAD_DPAD_RIGHT,
+  VPAD_DPAD_UP,
   VPAD_STORAGE_KEY,
   type InputProfile,
   type InputProfileStore,
@@ -113,6 +126,7 @@ const btnLoadState = document.getElementById('btn-load-state') as HTMLButtonElem
 const toastEl = document.getElementById('toast') as HTMLDivElement;
 const btnGamepad = document.getElementById('btn-gamepad') as HTMLButtonElement;
 const gamepadRoot = document.getElementById('gamepad-root') as HTMLDivElement;
+const inputProfileRoot = document.getElementById('input-profile-root') as HTMLDivElement;
 const btnSettings = document.getElementById('btn-settings') as HTMLButtonElement;
 const btnDiskLibrary = document.getElementById('btn-disk-library') as HTMLButtonElement;
 const btnFileManager = document.getElementById('btn-file-manager') as HTMLButtonElement;
@@ -548,6 +562,50 @@ function applyActiveVpadProfile(): void {
 }
 
 applyActiveVpadProfile();
+
+// バーチャルパッドの割当編集ダイアログ。編集対象の入力元一覧(画面部品ID)はここで組み立てて渡す
+// (input-profile-ui.ts 自体はバーチャルパッド固有の知識を持たず、将来ホストキー再割り当てにも
+// 使い回せるようにするため)。label は言語切替のたびに applyDocumentStrings() 側で貼り直す
+// (配列そのものはここで1回だけ作り、以後は同じオブジェクトの label を書き換える)。
+const vpadSourceDefs: InputSourceDef[] = [
+  { id: VPAD_DPAD_UP, label: t('inputProfileSourceDpadUp') },
+  { id: VPAD_DPAD_DOWN, label: t('inputProfileSourceDpadDown') },
+  { id: VPAD_DPAD_LEFT, label: t('inputProfileSourceDpadLeft') },
+  { id: VPAD_DPAD_RIGHT, label: t('inputProfileSourceDpadRight') },
+  { id: VPAD_BTN_A, label: 'A' },
+  { id: VPAD_BTN_B, label: 'B' },
+  { id: VPAD_BTN_C, label: 'C' },
+  { id: VPAD_BTN_D, label: 'X' },
+  { id: VPAD_BTN_E, label: 'Y' },
+  { id: VPAD_BTN_F, label: 'Z' },
+  { id: VPAD_BTN_OPT1, label: t('inputProfileSourceOpt', { n: 1 }) },
+  { id: VPAD_BTN_OPT2, label: t('inputProfileSourceOpt', { n: 2 }) },
+];
+
+function refreshVpadSourceLabels(): void {
+  vpadSourceDefs[0].label = t('inputProfileSourceDpadUp');
+  vpadSourceDefs[1].label = t('inputProfileSourceDpadDown');
+  vpadSourceDefs[2].label = t('inputProfileSourceDpadLeft');
+  vpadSourceDefs[3].label = t('inputProfileSourceDpadRight');
+  vpadSourceDefs[10].label = t('inputProfileSourceOpt', { n: 1 });
+  vpadSourceDefs[11].label = t('inputProfileSourceOpt', { n: 2 });
+}
+
+const inputProfileEditor = buildInputProfileEditor(
+  inputProfileRoot,
+  vpadSourceDefs,
+  {
+    getStore: () => vpadStore,
+    applyStore: (store) => {
+      vpadStore = store;
+      saveInputProfileStore(VPAD_STORAGE_KEY, vpadStore);
+      applyActiveVpadProfile();
+    },
+    labelFor: (profile) => vpadProfileLabel(profile),
+    getPadType: () => gamepadStore.joyType[0],
+  },
+  (message) => showToast(message),
+);
 
 /** ツールバーボタンの見た目・チップの表示/非表示をまとめて同期する(両パネル共通の唯一の情報源)。 */
 function syncInputPanelUi(): void {
@@ -1740,6 +1798,15 @@ function renderVpadProfileMenu(anchorEl: HTMLButtonElement): void {
     });
     slotPopupMenu.append(row);
   }
+  const separator = document.createElement('div');
+  separator.className = 'vpad-menu-separator';
+  slotPopupMenu.append(separator);
+  const editRow = menuRow(t('vpadEditAssignmentsMenuItem'));
+  onActivate(editRow, () => {
+    closeSlotPopupMenu();
+    inputProfileEditor.open();
+  });
+  slotPopupMenu.append(editRow);
   positionSlotPopupMenu(anchorEl);
 }
 
@@ -2272,6 +2339,8 @@ function applyDocumentStrings(): void {
   btnGamepad.title = t('toolbarGamepad');
   btnGamepad.setAttribute('aria-label', t('toolbarGamepad'));
   gamepadDialog.applyStrings();
+  refreshVpadSourceLabels();
+  inputProfileEditor.applyStrings();
   btnSettings.title = t('toolbarSettings');
   btnSettings.setAttribute('aria-label', t('toolbarSettings'));
   btnDiskLibrary.title = t('toolbarDiskLibrary');

@@ -341,6 +341,41 @@ interface Dict {
   vpadProfileCursorSpace(): string;
   vpadProfileTenkey(): string;
   vpadProfileJoy6Button(): string;
+  /** 🎮プロファイルメニュー末尾の「割当を編集…」行。 */
+  vpadEditAssignmentsMenuItem(): string;
+
+  // --- 入力プロファイル編集ダイアログ(input-profile-ui.ts) ---
+  inputProfileEditorTitle(): string;
+  inputProfileEditorDescription(): string;
+  inputProfileSelectLabel(): string;
+  inputProfileDuplicateBtn(): string;
+  inputProfileRenameBtn(): string;
+  inputProfileDeleteBtn(): string;
+  inputProfileBuiltinReadonlyNote(): string;
+  inputProfileBindingsTitle(): string;
+  inputProfileClearBindingBtn(): string;
+  inputProfileRowSelectedHint(): string;
+  inputProfilePickerTitle(): string;
+  inputProfileTabKeyboard(): string;
+  inputProfileTabJoystick(): string;
+  /** TRG3以降がポート1のパッド種別によっては効かない旨の注記。 */
+  inputProfileTrg3PlusNote(): string;
+  /** 割当一覧で「未割当」を表す文言。 */
+  inputProfileUnassigned(): string;
+  /** 自動複製・手動複製の既定名(元プロファイル名+接尾辞)。 */
+  inputProfileDuplicateLabel(options: { name: string }): string;
+  inputProfileDuplicatePrompt(options: { name: string }): string;
+  inputProfileRenamePrompt(): string;
+  inputProfileDeleteConfirm(options: { name: string }): string;
+  /** 組み込みプロファイル編集時に自動複製が起きたことを知らせるトースト。 */
+  inputProfileAutoDuplicatedToast(options: { name: string }): string;
+  /** バーチャルパッドの入力元一覧(割当編集ダイアログの行ラベル)。 */
+  inputProfileSourceDpadUp(): string;
+  inputProfileSourceDpadDown(): string;
+  inputProfileSourceDpadLeft(): string;
+  inputProfileSourceDpadRight(): string;
+  /** 補助ボタン1/2の行ラベル。 */
+  inputProfileSourceOpt(options: { n: number }): string;
 }
 
 const STRINGS: Record<Lang, Dict> = {
@@ -605,6 +640,33 @@ const STRINGS: Record<Lang, Dict> = {
     vpadProfileCursorSpace: () => 'カーソルキー + スペース',
     vpadProfileTenkey: () => 'テンキー',
     vpadProfileJoy6Button: () => 'ジョイスティック(6ボタン)',
+    vpadEditAssignmentsMenuItem: () => '割当を編集…',
+
+    inputProfileEditorTitle: () => '割当編集',
+    inputProfileEditorDescription: () => 'バーチャルパッドの各部品に割り当てる入力(ジョイスティック/キーボード)を編集します。',
+    inputProfileSelectLabel: () => 'プロファイル',
+    inputProfileDuplicateBtn: () => '複製',
+    inputProfileRenameBtn: () => '名前を変更',
+    inputProfileDeleteBtn: () => '削除',
+    inputProfileBuiltinReadonlyNote: () => '組み込みプロファイルは編集できません。「複製」してから編集してください。',
+    inputProfileBindingsTitle: () => '割当',
+    inputProfileClearBindingBtn: () => 'この行の割当を解除',
+    inputProfileRowSelectedHint: () => '下のキーボード/ジョイスティックから割り当てる入力を選んでください。',
+    inputProfilePickerTitle: () => '割り当てる入力を選択',
+    inputProfileTabKeyboard: () => 'キーボード',
+    inputProfileTabJoystick: () => 'ジョイスティック',
+    inputProfileTrg3PlusNote: () => 'TRG3以降は、ポート1のパッド種別が2ボタンのままだと効きません。',
+    inputProfileUnassigned: () => 'なし',
+    inputProfileDuplicateLabel: ({ name }) => `${name} のコピー`,
+    inputProfileDuplicatePrompt: ({ name }) => `「${name}」を複製します。新しい名前を入力してください。`,
+    inputProfileRenamePrompt: () => '新しい名前を入力してください。',
+    inputProfileDeleteConfirm: ({ name }) => `「${name}」を削除します。よろしいですか?`,
+    inputProfileAutoDuplicatedToast: ({ name }) => `組み込みプロファイル「${name}」を複製しました`,
+    inputProfileSourceDpadUp: () => 'スティック上',
+    inputProfileSourceDpadDown: () => 'スティック下',
+    inputProfileSourceDpadLeft: () => 'スティック左',
+    inputProfileSourceDpadRight: () => 'スティック右',
+    inputProfileSourceOpt: ({ n }) => `補助${n}`,
   },
   en: {
     title: () => 'WebX68k - X68000 Emulator',
@@ -866,6 +928,33 @@ const STRINGS: Record<Lang, Dict> = {
     vpadProfileCursorSpace: () => 'Cursor keys + Space',
     vpadProfileTenkey: () => 'Tenkey',
     vpadProfileJoy6Button: () => 'Joystick (6 buttons)',
+    vpadEditAssignmentsMenuItem: () => 'Edit assignments…',
+
+    inputProfileEditorTitle: () => 'Edit Assignments',
+    inputProfileEditorDescription: () => 'Edit which input (joystick/keyboard) each virtual pad part sends.',
+    inputProfileSelectLabel: () => 'Profile',
+    inputProfileDuplicateBtn: () => 'Duplicate',
+    inputProfileRenameBtn: () => 'Rename',
+    inputProfileDeleteBtn: () => 'Delete',
+    inputProfileBuiltinReadonlyNote: () => 'Built-in profiles cannot be edited. Duplicate it first.',
+    inputProfileBindingsTitle: () => 'Assignments',
+    inputProfileClearBindingBtn: () => 'Clear this assignment',
+    inputProfileRowSelectedHint: () => 'Pick an input below (keyboard/joystick) to assign.',
+    inputProfilePickerTitle: () => 'Pick an input to assign',
+    inputProfileTabKeyboard: () => 'Keyboard',
+    inputProfileTabJoystick: () => 'Joystick',
+    inputProfileTrg3PlusNote: () => "TRG3 and above won't work while port 1's pad type stays 2-button.",
+    inputProfileUnassigned: () => 'None',
+    inputProfileDuplicateLabel: ({ name }) => `${name} copy`,
+    inputProfileDuplicatePrompt: ({ name }) => `Duplicating "${name}". Enter a new name.`,
+    inputProfileRenamePrompt: () => 'Enter a new name.',
+    inputProfileDeleteConfirm: ({ name }) => `Delete "${name}"?`,
+    inputProfileAutoDuplicatedToast: ({ name }) => `Duplicated built-in profile "${name}"`,
+    inputProfileSourceDpadUp: () => 'Stick Up',
+    inputProfileSourceDpadDown: () => 'Stick Down',
+    inputProfileSourceDpadLeft: () => 'Stick Left',
+    inputProfileSourceDpadRight: () => 'Stick Right',
+    inputProfileSourceOpt: ({ n }) => `Aux ${n}`,
   },
 };
 
