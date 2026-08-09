@@ -98,6 +98,7 @@ import {
 } from './state-store';
 import { describeError, getLang, langSelfName, setLang, t } from './strings';
 import { getTargetSize, resolveAspectMode, type AspectMode } from './aspect';
+import { isIOS } from './platform';
 
 const canvas = document.getElementById('screen') as HTMLCanvasElement;
 const bootOverlay = document.getElementById('boot-overlay') as HTMLDivElement;
@@ -201,6 +202,22 @@ const slotElements: Record<SlotId, SlotElements> = {
   fdd1: slotEls('fdd1'),
   hdd: slotEls('hdd'),
 };
+
+// iOS の Chrome ではファイル選択ダイアログが accept 属性の拡張子を UTI(Uniform Type
+// Identifier)へ変換して候補を絞る。.xdf/.hdf/.dup/.hdm/.2hd/.dim のような拡張子は
+// UTI が登録されておらず、候補から丸ごと消えて .zip だけが残ってしまう(ホーム画面に
+// 追加したWKWebView版では発生しない、Chrome/Safariのタブだけの制約。実機で確認済み)。
+// 単体ファイルの選択は読み込み後に拡張子で内容を検証している(docs/DESIGN.md「ディスク
+// イメージの形式判定(拡張子 vs 内容ベース)」節)ため、accept はダイアログの絞り込み
+// (利便性)にすぎず、外しても無関係なファイルを受け入れてしまう心配はない。
+// デスクトップでは候補が絞られたほうが便利なので、iOS のときだけ外す。
+if (isIOS()) {
+  for (const key of Object.keys(slotElements) as SlotId[]) {
+    slotElements[key].input.removeAttribute('accept');
+  }
+  biosIplInput.removeAttribute('accept');
+  biosCgInput.removeAttribute('accept');
+}
 
 interface PendingDisk {
   name: string;
