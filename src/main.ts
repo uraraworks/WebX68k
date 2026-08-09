@@ -469,17 +469,17 @@ let vpadPlacement: VpadPlacement = 'overlay';
 /**
  * バーチャルパッドの置き場所を確定させる。モードが変わったときだけ reparent し
  * (毎フレームreparentしない)、パネルモードの帯の高さは呼び出し側(rescale())が実測した
- * 余りをそのまま反映する。ネイティブフルスクリーン中に呼ばれた場合は強制的に
- * overlay へ倒す(パネルは console-card 内にあり、.stage がフルスクリーン化すると
- * console-card ごと非表示になる=パネルモードのままだとパッドが消えてしまうため)。
+ * 余りをそのまま反映する。
+ * かつてはネイティブフルスクリーン中に強制的に overlay へ倒していたが、フルスクリーン
+ * 対象が .stage から .console-card(パッドを内包する)に変わったため、パッドが画面から
+ * 消える事態が起きなくなり不要になった。通常どおり呼び出し側の判定(余り高さ)に従う。
  */
 function applyVpadPlacement(next: VpadPlacement, panelHeight: number): void {
-  const placement = isStageFullscreen() ? 'overlay' : next;
-  virtualPadPanel.style.height = placement === 'panel' ? `${Math.round(panelHeight)}px` : '';
-  if (placement !== vpadPlacement) {
-    vpadPlacement = placement;
-    virtualPad.setPlacement(placement);
-    if (placement === 'panel') {
+  virtualPadPanel.style.height = next === 'panel' ? `${Math.round(panelHeight)}px` : '';
+  if (next !== vpadPlacement) {
+    vpadPlacement = next;
+    virtualPad.setPlacement(next);
+    if (next === 'panel') {
       // #virtual-keyboard の兄弟として、その直前(= .console-footer より前)に置く。
       consoleCardEl.insertBefore(virtualPadPanel, virtualKeyboardPanel);
     } else {
@@ -2610,13 +2610,14 @@ btnMouseResync.addEventListener('click', () => {
 });
 
 /**
- * フルスクリーン化の対象は canvas ではなく .stage(黒背景+canvas を中央寄せする箱)。
- * 理由は style.css 側の .stage:fullscreen 系ルールのコメントを参照。
- * アスペクト比の維持自体は CSS (:fullscreen 時の #screen の object-fit:contain) に
- * 任せており、ここでは要素の全画面化/解除のトグルだけを行う。
+ * フルスクリーン化の対象は .stage ではなく .console-card(ツールバーを内包するカード全体)。
+ * .stage だけを全画面化するとツールバー(⌨/🎮切り替え・プロファイルメニュー等)が
+ * 描画対象外になり操作できなくなるため、疑似フルスクリーン(ツールバーを残す方式)に
+ * 合わせて一本化した。アスペクト比の維持・サイズ決定は rescale() (JS側)が
+ * getTargetSize() 経由で行う(旧 object-fit:contain の CSS 任せはやめた)。
  */
-function isStageFullscreen(): boolean {
-  return document.fullscreenElement === stageEl || (document as any).webkitFullscreenElement === stageEl;
+function isCardFullscreen(): boolean {
+  return document.fullscreenElement === consoleCardEl || (document as any).webkitFullscreenElement === consoleCardEl;
 }
 
 /**
@@ -2636,22 +2637,62 @@ function nativeFullscreenSupported(el: HTMLElement): boolean {
   return hasMethod && enabled;
 }
 
-/** 現在ページ側のクロームを畳んで疑似フルスクリーン中かどうか。 */
+/**
+ * 現在ページ側のクロームを畳んで疑似フルスクリーン中かどうか。
+ * 見た目を決めるCSSセレクタ自体は body.immersive に一本化したため、この関数は
+ * 「Fullscreen API が無いので CSS で代替している」という内部状態の識別にのみ使う
+ * (fullscreenchangeが飛んでこない経路なので、ボタンの3分岐ラベル判定に必要)。
+ */
 function isPseudoFullscreen(): boolean {
   return document.body.classList.contains('pseudo-fullscreen');
 }
 
+/**
+ * ネイティブ全画面(.console-card)・疑似フルスクリーンのどちらかで「没入モード」中かどうか。
+ * body.immersive クラスの有無をそのまま見る単一の判定にすることで、ネイティブ/疑似の
+ * 違いをスケール計算(rescale())や表示切り替えの分岐から追い出す。
+ */
+function isImmersive(): boolean {
+  return document.body.classList.contains('immersive');
+}
+
+/**
+ * requestFullscreen() を呼んでから「通らなかった」と見なすまでの待ち時間(ms)。
+ * 実際の全画面遷移は数十msで fullscreenchange が飛ぶので、これより十分短い。
+ */
+const FULLSCREEN_FALLBACK_MS = 400;
+
 function setFullscreen(makeFullscreen: boolean): void {
   if (makeFullscreen) {
-    if (isStageFullscreen()) return;
+    if (isCardFullscreen()) return;
     const req =
-      stageEl.requestFullscreen?.bind(stageEl) ??
-      (stageEl as any).webkitRequestFullscreen?.bind(stageEl);
-    void Promise.resolve(req?.()).catch(() => {
-      // 一部環境(iOS Safari 等)は canvas 以外の任意要素の requestFullscreen に対応していない。
-      // フルスクリーン非対応環境向けの代替UIは用意していないため、ここでは失敗を静かに無視する。
-    });
-  } else if (isStageFullscreen()) {
+      consoleCardEl.requestFullscreen?.bind(consoleCardEl) ??
+      (consoleCardEl as any).webkitRequestFullscreen?.bind(consoleCardEl);
+    // requestFullscreen は「メソッドが生えていて document.fullscreenEnabled も true」でも
+    // 実行時に通らないことがある(埋め込み webview 等)。nativeFullscreenSupported() のような
+    // 静的な能力判定だけでは足りない。以前はここで失敗を黙って無視していたため、
+    // そういう環境では全画面ボタンを押しても「何も起きない」状態になっていた。
+    //
+    // 通らない形は2種類あり、両方を拾う必要がある(どちらも実測):
+    //  1. Promise が reject される(ユーザー操作起点でない等) -> catch で拾う
+    //  2. Promise が resolve も reject もされないまま放置される -> catch では拾えないので
+    //     タイムアウトで拾う(この挙動を埋め込みブラウザで実測した)
+    // どちらの場合も、代替として用意してある疑似フルスクリーンへ倒す。
+    let settled = false;
+    void Promise.resolve(req?.()).then(
+      () => {
+        settled = true;
+      },
+      () => {
+        settled = true;
+        togglePseudoFullscreen(true);
+      },
+    );
+    window.setTimeout(() => {
+      if (settled || isCardFullscreen() || isPseudoFullscreen()) return;
+      togglePseudoFullscreen(true);
+    }, FULLSCREEN_FALLBACK_MS);
+  } else if (isCardFullscreen()) {
     const exit = document.exitFullscreen?.bind(document) ?? (document as any).webkitExitFullscreen?.bind(document);
     void Promise.resolve(exit?.());
   }
@@ -2659,7 +2700,7 @@ function setFullscreen(makeFullscreen: boolean): void {
 
 /** フルスクリーンボタンの見た目(トグル状態)を実際の全画面状態に追従させる。マウスキャプチャボタンと同じ流儀。 */
 function updateFullscreenControl(): void {
-  const nativeFs = isStageFullscreen();
+  const nativeFs = isCardFullscreen();
   const pseudoFs = isPseudoFullscreen();
   btnFullscreen.classList.toggle('active', nativeFs || pseudoFs);
   // 疑似フルスクリーンは Esc では抜けられない(nativeFullscreenSupported() の
@@ -2676,17 +2717,31 @@ function updateFullscreenControl(): void {
   btnFullscreen.setAttribute('aria-pressed', nativeFs || pseudoFs ? 'true' : 'false');
 }
 
+/**
+ * 疑似フルスクリーンを切り替える(ネイティブが使えない/拒否された場合の代替)。
+ * ページ側のクロームを畳んで実行画面へ面積を明け渡す。解除操作のため .toolbar は残す。
+ */
+function togglePseudoFullscreen(on?: boolean): void {
+  document.body.classList.toggle('pseudo-fullscreen', on);
+  document.body.classList.toggle('immersive', isPseudoFullscreen() || isCardFullscreen());
+  updateFullscreenControl();
+  rescale();
+}
+
 btnFullscreen.addEventListener('click', () => {
-  if (nativeFullscreenSupported(stageEl)) {
-    setFullscreen(!isStageFullscreen());
+  // 疑似フルスクリーン中は(ネイティブが使える環境かどうかに関わらず)まずそちらを解除する。
+  // ネイティブが拒否されて疑似へ倒れた状態から抜けられなくなるのを防ぐ。
+  if (isPseudoFullscreen()) {
+    togglePseudoFullscreen(false);
+    return;
+  }
+  if (nativeFullscreenSupported(consoleCardEl)) {
+    setFullscreen(!isCardFullscreen());
     return;
   }
   // iPhone の WebKit は <video> 以外の Fullscreen API を持たないため、ネイティブ版は
-  // 無反応になる。ページ側のクロームを畳んで画面を最大化する疑似フルスクリーンで
-  // 代替する(解除操作のため .toolbar は残す)。
-  document.body.classList.toggle('pseudo-fullscreen');
-  updateFullscreenControl();
-  rescale();
+  // 無反応になる。疑似フルスクリーンで代替する。
+  togglePseudoFullscreen();
 });
 document.addEventListener('fullscreenchange', updateFullscreenControl);
 document.addEventListener('webkitfullscreenchange', updateFullscreenControl);
@@ -2727,8 +2782,9 @@ function updateAspectControl(): void {
   btnAspect.setAttribute('aria-pressed', is43 ? 'true' : 'false');
   btnAspect.title = is43 ? t('toolbarAspect43') : t('toolbarAspectNative');
   btnAspect.setAttribute('aria-label', btnAspect.title);
-  // ネイティブフルスクリーンは JS を経由せず CSS (.stage.aspect-4-3:fullscreen #screen、
-  // style.css 参照) だけで4:3化するため、モードを stage 要素にクラスとして反映しておく。
+  // 4:3化そのものは(フルスクリーン中も含めて)rescale() が getTargetSize() 経由で計算する。
+  // ここで stage 要素に付けるクラスは、4:3時だけ image-rendering を補間ありに切り替える
+  // 表示用ルール(.stage.aspect-4-3 #screen、style.css 参照)のためのもの。
   stageEl.classList.toggle('aspect-4-3', is43);
 }
 
@@ -2743,11 +2799,11 @@ updateAspectControl();
 
 /**
  * canvas の表示倍率(等倍〜整数倍、収まらない場合は端数の縮小)を実測して決める。
- * フルスクリーン中は CSS 側(.stage:fullscreen #screen の object-fit:contain、
- * style.css の該当コメント参照)に表示サイズを任せているため、ここでインラインの
- * width/height を触ると「スタイルシートよりインラインが強い」性質でフルスクリーンの
- * CSS ルールが効かなくなってしまう。フルスクリーン中は何もしない
- * (fullscreenchange 側で入る/抜けるタイミングにインラインスタイルの付け外しをしている)。
+ * かつてはフルスクリーン中は CSS 側(.stage:fullscreen #screen の object-fit:contain)に
+ * 表示サイズを丸投げして早期returnしていたが、フルスクリーン対象が .stage から
+ * .console-card に変わり、中の stage サイズを決めるCSSルールが無くなったため、
+ * ネイティブ全画面中もここでサイズを決める必要がある。よって早期returnは廃止し、
+ * 没入モード判定(isImmersive())は下の scale 計算の分岐にのみ残す。
  */
 /**
  * getComputedStyle() から取り出した長さ値を安全に数値化する。
@@ -2762,8 +2818,6 @@ function parseLengthOrZero(value: string): number {
 }
 
 function rescale(): void {
-  if (isStageFullscreen()) return;
-
   const nativeWidth = canvas.width || FALLBACK_NATIVE_WIDTH;
   const nativeHeight = canvas.height || FALLBACK_NATIVE_HEIGHT;
   // 4:3モードでは実解像度(nativeWidth x nativeHeight)そのものではなく、そこから導いた
@@ -2815,11 +2869,12 @@ function rescale(): void {
   // (WebNP2側)特有の懸念であり、WebX68k の rescale() は resize 等のイベント発火のたびに
   // 1パスだけ計算して終わる(自分自身の呼び直しをトリガーする仕組みを持たない)ため、
   // この収縮ループは原理的に起こらない。よってここでは単純に幅・高さ両方の fit を使う。
-  // 疑似フルスクリーン中は整数倍への丸めと MAX_SCALE の上限を外し、fit をそのまま使って
-  // 画面いっぱいに拡大する(下限 0.3 は維持)。ネイティブのフルスクリーンは
-  // .stage:fullscreen #screen の object-fit:contain で整数倍に丸めず連続的に最大化して
-  // いるため、その代替である疑似フルスクリーンも同じ見え方に揃えるのが狙い。
-  const scale = isPseudoFullscreen()
+  // 没入モード中(ネイティブ全画面 or 疑似フルスクリーン、isImmersive() 参照)は整数倍への
+  // 丸めと MAX_SCALE の上限を外し、fit をそのまま使って画面いっぱいに拡大する
+  // (下限 0.3 は維持)。ネイティブ全画面も疑似フルスクリーンも同じ「画面を最大限使う」
+  // 見え方に揃えるのが狙いで、フルスクリーン対象が .console-card になった今はどちらも
+  // このJS計算がサイズを決める(旧 object-fit:contain へ丸投げする経路は無くなった)。
+  const scale = isImmersive()
     ? Math.max(0.3, fit)
     : fit >= 1
       ? Math.min(MAX_SCALE, Math.floor(fit))
@@ -2886,30 +2941,19 @@ function rescale(): void {
 window.addEventListener('resize', rescale);
 window.addEventListener('orientationchange', rescale);
 
-// フルスクリーンの出入りに合わせてインラインスタイルを付け外しする。
-// canvas.style.width/height を設定したままだと、インラインスタイルはスタイルシートの
-// セレクタより強いため、フルスクリーン用ルール(.stage:fullscreen #screen の
-// width:100%/height:100%/object-fit:contain)が効かなくなりフルスクリーンが壊れる。
-document.addEventListener('fullscreenchange', () => {
-  if (isStageFullscreen()) {
-    canvas.style.width = '';
-    canvas.style.height = '';
-    // フルスクリーン化するのは .stage だけで console-card 全体ではないため、パネルモードの
-    // ままだと(console-card内にある)パッドが画面から消えてしまう。強制的にoverlayへ倒す。
-    applyVpadPlacement('overlay', 0);
-  } else {
-    rescale();
-  }
-});
-document.addEventListener('webkitfullscreenchange', () => {
-  if (isStageFullscreen()) {
-    canvas.style.width = '';
-    canvas.style.height = '';
-    applyVpadPlacement('overlay', 0);
-  } else {
-    rescale();
-  }
-});
+// ネイティブ全画面の出入りに合わせて body.immersive を付け外し、rescale() を呼び直す。
+// かつては canvas.style.width/height の付け外しと、パッドをoverlayへ強制する処理を
+// ここに置いていたが、フルスクリーン対象が .console-card になりパッドも画面内に残る
+// ようになったため不要になった(サイズ決定・パッド配置ともrescale()に一本化された)。
+function onNativeFullscreenChange(): void {
+  // ネイティブが遅れて通った場合(タイムアウトで疑似へ倒した後に fullscreenchange が来る)、
+  // 疑似との二重掛けを解いてネイティブ側に一本化する。
+  if (isCardFullscreen() && isPseudoFullscreen()) document.body.classList.remove('pseudo-fullscreen');
+  document.body.classList.toggle('immersive', isCardFullscreen() || isPseudoFullscreen());
+  rescale();
+}
+document.addEventListener('fullscreenchange', onNativeFullscreenChange);
+document.addEventListener('webkitfullscreenchange', onNativeFullscreenChange);
 
 // スクリプト読み込み直後(起動前オーバーレイが出ている段階)にも一度リスケールしておく。
 // resize 等のイベントが飛んでくるのを待つだけの設計だと、ユーザーが最初に開いたときに
@@ -2944,10 +2988,10 @@ window.addEventListener('load', () => rescale());
 //   (requestFullscreen はユーザー操作を必要とし、Esc 由来の離脱直後は特に拒否される)
 //
 // その結果「マウスを外したいだけなのにフルスクリーンも抜ける」ことになる。フルスクリーンの
-// 対象を .stage(画面のみ)にしている以上、全画面中はツールバーが見えず、キャプチャ解除の
-// 手段が Esc しかないためこれは避けられない。没入感を優先して画面のみを全画面にする方針を
-// 採ったうえで、この挙動は仕様として README / help.html に明記してある。
-// (.console-card ごと全画面にしてツールバーを残せば回避できるが、画面が狭くなるため採らない)
+// 対象は .console-card(ツールバーを内包)にしてあるため、Esc を使わずツールバーの
+// マウスキャプチャボタンから解除する経路も用意してあるが、Esc 自体の挙動(キャプチャと
+// 同時にフルスクリーンも抜ける)はブラウザ実装によるものでこちらからは制御できない。
+// この挙動は仕様として README / help.html に明記してある。
 //
 // 自動検証について: CDP(Input.dispatchKeyEvent)経由の合成 Esc では
 // pointerlockchange/fullscreenchange のどちらも発火しない。Chromium の Esc 解除処理が
