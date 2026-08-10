@@ -314,6 +314,10 @@
               出さずそのまま自動起動します(自動再生制限により音は最初のクリック/キー入力まで
               鳴りません)。指定URLがZIP/LZHアーカイブで複数枚のディスクを含む場合は、
               自動起動せずディスクライブラリを開いて選んでもらう形になります。
+              <code>?lib=URL</code>(<code>&amp;lib=URL2</code> のように複数指定可)は、種別
+              (FD/HDD)を問わずディスクライブラリへ登録するだけの共有リンク用パラメータです。
+              スロットへは自動挿入せず必ずライブラリを開き、指定時は <code>run=1</code> でも
+              自動起動しません。
             </p>
             <div class="note-box">
               <strong>注意:</strong> 音声再生には <code>AudioWorklet</code> が必要ですが、これは
@@ -348,6 +352,10 @@
               (playback starts muted until the first click or key press, due to autoplay
               restrictions). If the URL resolves to a ZIP/LZH archive containing multiple disks, it
               won't auto-boot — the Disk Library opens instead so you can pick.
+              <code>?lib=URL</code> (repeatable, e.g. <code>&amp;lib=URL2</code>) is a sharing-link
+              parameter that only registers images in the Disk Library, regardless of kind (FD/HDD).
+              It never auto-inserts into a slot — the Library always opens — and skips <code>run=1</code>
+              auto-boot whenever it's given.
             </p>
             <div class="note-box">
               <strong>Note:</strong> Audio playback needs <code>AudioWorklet</code>, which is only

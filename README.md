@@ -24,6 +24,7 @@ See [docs/DESIGN.md](docs/DESIGN.md) for design and implementation details.
 | `bridge` | `1` (or empty) to enable the MCP WebSocket bridge | Connects to `ws://127.0.0.1:3099`. See "MCP support" below |
 | `fd1` / `fd2` | URL of a disk image to load into FDD1 / FDD2 | See below |
 | `hdd` | URL of a disk image to set into the HDD slot | See below |
+| `lib` | URL of a disk image to register in the Disk Library only (repeatable) | See below |
 | `run` | `1` to auto-boot without showing the start overlay | |
 | `system` | `1` to load the bundled system disk (`human302.xdf`) into FDD1 | Ignored if `fd1` is also given — `fd1` takes priority |
 
@@ -44,6 +45,24 @@ Notes on `fd1`/`fd2`/`hdd`:
 - A `hdd` image is only *set* into the slot before boot; it does not boot by
   itself unless `run=1` is also given. While set (and before boot), you can
   still edit its contents via file transfer.
+
+Notes on `lib` (for sharing links to multi-disk collections):
+
+- Use `?lib=<url>` and repeat it (`&lib=<url2>`, ...) to specify **multiple
+  URLs** (comma-separated values aren't supported, since a URL itself can
+  contain a comma).
+- Unlike `fd1`/`fd2`/`hdd`, `lib` registers images **regardless of their kind**
+  (FD or HDD) — a ZIP mixing HDD and FD images can be registered as-is (the
+  usual kind check still applies once you insert an image into a slot).
+- Regardless of how many disk images it resolves to, `lib` never auto-inserts
+  into a slot — it **always opens the Disk Library** so the recipient can pick
+  what to use.
+- `run=1` is skipped whenever `lib` is given.
+- If combined with `fd1`/`fd2`/`hdd`, those slots are processed first, then
+  `lib`.
+- Fetching, resuming on revisit, and archive extraction follow the same rules
+  as `fd1`/`fd2`/`hdd` (CORS required, no re-download on revisit, ZIP/LZH
+  auto-extracted).
 
 ### Toolbar
 

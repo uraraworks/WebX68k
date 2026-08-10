@@ -748,6 +748,9 @@ const urlFd2 = urlParams.get('fd2') ?? undefined;
 const urlHdd = urlParams.get('hdd') ?? undefined;
 const urlRun = urlParams.get('run') === '1';
 const urlSystem = urlParams.get('system') === '1';
+// lib=<url>: 複数指定可(ディスクライブラリへ登録するだけの共有リンク用)。
+// カンマ区切りにしないのはURL自体にカンマが含まれ得るため。複数指定は getAll で受け取る。
+const urlLib = urlParams.getAll('lib').filter((v) => v !== '');
 
 function setBiosStatus(el: HTMLSpanElement, state: 'user' | 'bundled' | 'none'): void {
   if (state === 'user') {
@@ -850,18 +853,23 @@ type UrlSlotOutcome =
   | { kind: 'group'; groupId: string }
   | { kind: 'error' };
 
+/** `?lib=` 経由のディスク解決結果。スロットへの自動挿入はしないため名前/バイト列は持たず、ライブラリを開く材料のみ返す。 */
+type UrlLibOutcome = { kind: 'single'; sourceKey: string } | { kind: 'group'; groupId: string } | { kind: 'error' };
+
 /**
- * URLパラメータ由来のディスクイメージを用意する(WebNP2 の resolveImage に準拠)。
- * 取得結果がZIP/LZHアーカイブの場合は展開し、D&D/ファイル選択と同じ枚数分岐
- * (1枚ならそのままスロットへ、複数枚ならライブラリへ登録して選ばせる)を適用する。
- * アーカイブの展開・ライブラリ登録は同じURLの再訪時は再ダウンロードせず復帰する
+ * URL由来のディスクイメージを取得し、ディスクライブラリ(IndexedDB)へ登録する共通処理
+ * (WebNP2 の resolveImage に準拠)。スロットの種別(fd/hdd)は一切見ない。
+ * 取得結果がZIP/LZHアーカイブの場合は展開し、中の全ディスクをライブラリへ登録する。
+ * アーカイブの展開・登録は同じURLの再訪時は再ダウンロードせず復帰する
  * (グループIDに `arcurl:<url>` を使い、展開済みのレコードがライブラリにあればそれを使う)。
- * 取得やスロットとの不一致で処理できない場合はここでトースト/アラートを出したうえで
- * { kind: 'error' } を返す(呼び出し側は他スロットの処理を継続できる)。
+ * 非アーカイブの単体ディスクも同様に、既に保存済み(sourceKey===url)なら再ダウンロードしない。
+ *
+ * 戻り値は登録済みディスクの配列(0件ならアーカイブ内にディスクイメージが無かったことを示す)。
+ * 取得自体に失敗した場合はここでトーストを出したうえで `{ kind: 'error' }` を返す
+ * (呼び出し側は他スロット/他URLの処理を継続できる)。
  */
-async function resolveUrlSlotContent(url: string, label: string, slot: SlotId): Promise<UrlSlotOutcome> {
+async function resolveUrlToLibrary(url: string, label: string): Promise<RegisteredDisk[] | { kind: 'error' }> {
   const groupId = `arcurl:${url}`;
-  const requiredKind = requiredKindForSlot(slot);
 
   // 展開済みのアーカイブ由来グループ(前回このURLを展開済み)があれば再ダウンロードせず復帰する。
   const stored = await listDisks();
@@ -870,14 +878,14 @@ async function resolveUrlSlotContent(url: string, label: string, slot: SlotId): 
     .map((d): RegisteredDisk => ({ name: d.name, sourceKey: d.sourceKey, data: d.bytes, kind: classifyDiskKind(d.name) ?? 'fd' }));
   if (resumedDisks.length > 0) {
     showToast(t('urlArchiveResumed', { label, count: resumedDisks.length }));
-    return finishArchiveDisks(resumedDisks, label, requiredKind, groupId);
+    return resumedDisks;
   }
 
   // 非アーカイブの単体ディスクとして既に保存済みなら(従来どおり sourceKey===url)、そちらを使う。
   const plainStored = await getDisk(url);
   if (plainStored) {
     showToast(t('urlDiskResumed', { label, name: plainStored.name }));
-    return { kind: 'single', name: plainStored.name, bytes: plainStored.bytes, sourceKey: url };
+    return [{ name: plainStored.name, sourceKey: url, data: plainStored.bytes, kind: classifyDiskKind(plainStored.name) ?? 'fd' }];
   }
 
   const name = urlFileNameGuess(url, label);
@@ -904,12 +912,41 @@ async function resolveUrlSlotContent(url: string, label: string, slot: SlotId): 
   // 拡張子で判定できない配布URL(拡張子無し)向けに、バイト列のシグネチャでもアーカイブかどうかを見る。
   const archiveName = resolveArchiveFileName(name, bytes);
   if (archiveName) {
-    const disks = await registerArchiveBytesToLibrary(archiveName, bytes, groupId, name);
-    return finishArchiveDisks(disks, label, requiredKind, groupId);
+    return registerArchiveBytesToLibrary(archiveName, bytes, groupId, name);
   }
 
   await saveDisk({ sourceKey: url, name, bytes, savedAt: Date.now() });
-  return { kind: 'single', name, bytes, sourceKey: url };
+  return [{ name, sourceKey: url, data: bytes, kind: classifyDiskKind(name) ?? 'fd' }];
+}
+
+/**
+ * URLパラメータ由来のディスクイメージをスロット(fd1/fd2/hdd)向けに解決する。
+ * `resolveUrlToLibrary` で取得・ライブラリ登録したうえで、`finishArchiveDisks` により
+ * スロットの種別一致チェックと枚数分岐(1枚ならそのままスロットへ、複数枚ならライブラリを開いて選ばせる)を適用する。
+ */
+async function resolveUrlSlotContent(url: string, label: string, slot: SlotId): Promise<UrlSlotOutcome> {
+  const groupId = `arcurl:${url}`;
+  const requiredKind = requiredKindForSlot(slot);
+  const result = await resolveUrlToLibrary(url, label);
+  if (!Array.isArray(result)) return { kind: 'error' };
+  return finishArchiveDisks(result, label, requiredKind, groupId);
+}
+
+/**
+ * `?lib=` パラメータ由来のディスクイメージをライブラリへ登録する(スロットへの自動挿入はしない)。
+ * 種別(hdd/fd)のチェックは行わない(HDD/FD混在のzipもそのまま登録できるようにする。
+ * スロットへ挿入する時点で既存のチェックが効くので安全性は変わらない)。
+ */
+async function resolveUrlLibContent(url: string, label: string): Promise<UrlLibOutcome> {
+  const groupId = `arcurl:${url}`;
+  const result = await resolveUrlToLibrary(url, label);
+  if (!Array.isArray(result)) return { kind: 'error' };
+  if (result.length === 0) {
+    showToast(t('urlArchiveNoDiskImage', { label }), 8000);
+    return { kind: 'error' };
+  }
+  if (result.length === 1) return { kind: 'single', sourceKey: result[0].sourceKey };
+  return { kind: 'group', groupId };
 }
 
 /**
@@ -3924,16 +3961,21 @@ btnFileManager.addEventListener('click', () => fileManagerDialog.open());
 btnHelp.addEventListener('click', () => window.open(`./help.html?lang=${getLang()}`, '_blank'));
 
 /**
- * URLパラメータ(fd1/fd2/hdd/system/run)に応じてディスクを起動前にセットし、
+ * URLパラメータ(fd1/fd2/hdd/system/run/lib)に応じてディスクを起動前にセットし、
  * run=1 なら自動起動する(WebNP2 の同名パラメータ方式に準拠)。
  * 1つのディスクの取得に失敗しても他スロットの読み込み・起動は継続する(要件3)。
  * いずれのパラメータも無ければ何もしない(要件7: 既存のオーバーレイ2択のまま)。
+ *
+ * lib=<url> (複数指定可): 種別を問わずディスクライブラリへ登録するだけの共有リンク用パラメータ
+ * (複数ディスク入りzipを配布し、受け取った側はリンクを開くだけでライブラリから選べるようにする用途)。
+ * fd1/fd2/hdd と異なりスロットへの自動挿入は行わず、必ずライブラリダイアログを開く。
+ * fd1/fd2/hdd と併用された場合は、それらのスロット処理を先に行ってから lib を処理する。
  */
 async function applyUrlParams(): Promise<void> {
   // system=1: fd1 の明示指定が無いときだけ、同梱システムディスクをFDD1として使う
   // (WebNP2 の freedos=1 相当。fd1 が指定されていればそちらを優先する)。
   const wantsBundledSystem = urlSystem && !urlFd1;
-  if (!urlFd1 && !urlFd2 && !urlHdd && !wantsBundledSystem && !urlRun) return;
+  if (!urlFd1 && !urlFd2 && !urlHdd && !wantsBundledSystem && !urlRun && urlLib.length === 0) return;
 
   if (wantsBundledSystem) {
     const bytes = await fetchBytes(BUNDLED_DISK_URL);
@@ -3969,6 +4011,22 @@ async function applyUrlParams(): Promise<void> {
     showToast(t('urlArchiveNeedsSelection'), 8000);
     openLibraryModal(unresolvedGroupId);
     return; // 複数枚のときは run=1 でも自動起動しない(要件3)
+  }
+
+  // lib=: 種別を問わずライブラリへ登録するだけの共有リンク。1件でもスロットへは挿入せず、
+  // 必ずライブラリを開く(共有リンクの意図として一貫させる)。run=1 でも自動起動しない。
+  if (urlLib.length > 0) {
+    let firstOutcome: UrlLibOutcome | undefined;
+    for (let i = 0; i < urlLib.length; i++) {
+      const label = t('urlLibSlotLabel', { index: i + 1 });
+      const outcome = await resolveUrlLibContent(urlLib[i], label);
+      if (outcome.kind === 'error') continue; // 失敗しても他のURLの処理は続行する
+      firstOutcome ??= outcome;
+    }
+    if (firstOutcome) {
+      openLibraryModal(firstOutcome.kind === 'group' ? firstOutcome.groupId : undefined);
+    }
+    return;
   }
 
   // run=1: オーバーレイの2択を待たずそのまま自動起動する(ディスク未指定でも run=1 だけで起動する)。

@@ -202,6 +202,8 @@ interface Dict {
   urlArchiveKindMismatch(args: { label: string; kind: 'hdd' | 'fd' }): string;
   /** URLパラメータのアーカイブが複数枚のディスクを含んでいたため、ライブラリを開いて選ばせるときの案内(run=1でも自動起動しない旨を含む)。 */
   urlArchiveNeedsSelection(): string;
+  /** ?lib=<url> (複数指定可)のトースト等で使う、何本目のlibか示すラベル(fdSlotLabel/hddSlotLabelのlib版)。 */
+  urlLibSlotLabel(args: { index: number }): string;
   /** run=1自動起動時、自動再生制限でAudioContextがsuspendedのままのときに出す表示。 */
   audioMutedBanner(): string;
 
@@ -583,6 +585,7 @@ const STRINGS: Record<Lang, Dict> = {
       `${label}: アーカイブ内に${kind === 'hdd' ? 'HDD' : 'FD'}用のディスクイメージが見つかりませんでした。`,
     urlArchiveNeedsSelection: () =>
       'アーカイブに複数のディスクイメージが含まれていたため、ライブラリを開きました。使用するイメージを選んでください(自動起動はしません)。',
+    urlLibSlotLabel: ({ index }) => `ライブラリ${index}`,
     audioMutedBanner: () => '自動再生の制限により音声が無効です。クリックまたはキー入力で音声が有効になります。',
 
     toolbarGamepad: () => 'ジョイスティック設定',
@@ -886,6 +889,7 @@ const STRINGS: Record<Lang, Dict> = {
       `${label}: The archive doesn't contain a ${kind === 'hdd' ? 'HDD' : 'FD'} disk image.`,
     urlArchiveNeedsSelection: () =>
       'The archive contains multiple disk images, so the library was opened. Please choose which image to use (auto-boot is skipped).',
+    urlLibSlotLabel: ({ index }) => `Library ${index}`,
     audioMutedBanner: () => 'Audio is muted due to autoplay restrictions. Click or press a key to enable sound.',
 
     toolbarGamepad: () => 'Joystick Settings',
