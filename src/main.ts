@@ -41,6 +41,7 @@ import { buildFileManagerDialog, type FmTarget } from './filemanager';
 import { Bridge, resolveBridgeUrl, type BridgeHost } from './bridge';
 import { RETROK, charToKey, codeToRetrok } from './keyboard';
 import { LibretroHost } from './libretro-host';
+import { parseRamSizeParam } from './url-params';
 import {
   assignPorts,
   defaultProfileFor,
@@ -252,6 +253,18 @@ function loadMachineConfig(): { cpuSpeed: string; ramSize: string } {
 }
 
 let { cpuSpeed, ramSize } = loadMachineConfig();
+
+// ?ram=<1〜12> : 起動時のみ RAM サイズを上書きする(共有URLで推奨環境を再現するため)。
+// 意図的に localStorage には保存しない。共有リンクを開いただけで利用者の既定設定が
+// 書き換わってしまうと、リンクを踏むたびに意図せず設定が上書きされる事故になるため。
+const ramParamRaw = new URLSearchParams(location.search).get('ram');
+const urlRamSize = parseRamSizeParam(ramParamRaw);
+if (ramParamRaw !== null && urlRamSize === null) {
+  console.warn('?ram= の値が不正です(1〜12の整数、または "12MB" 形式で指定してください)');
+} else if (urlRamSize !== null) {
+  ramSize = urlRamSize;
+}
+
 cfgCpuSpeed.value = cpuSpeed;
 cfgRamSize.value = ramSize;
 
