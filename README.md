@@ -22,11 +22,11 @@ See [docs/DESIGN.md](docs/DESIGN.md) for design and implementation details.
 |---|---|---|
 | `lang` | UI language (`ja` / `en`) | If omitted, resolved in order: `localStorage['webx68k.lang']` → the browser's `navigator.language` (`ja` if it starts with `ja`) → default `en`. Can be switched at runtime with the language toggle button in the toolbar's "..." menu; the choice is persisted to `localStorage` |
 | `bridge` | `1` (or empty) to enable the MCP WebSocket bridge | Connects to `ws://127.0.0.1:3099`. See "MCP support" below |
-| `fd1` / `fd2` | URL of a disk image to load into FDD1 / FDD2 | See below |
+| `fd1` / `fd2` | URL of a disk image to load into FDD0 / FDD1 | See below |
 | `hdd` | URL of a disk image to set into the HDD slot | See below |
 | `lib` | URL of a disk image to register in the Disk Library only (repeatable) | See below |
 | `run` | `1` to auto-boot without showing the start overlay | |
-| `system` | `1` to load the bundled system disk (`human302.xdf`) into FDD1 | Ignored if `fd1` is also given — `fd1` takes priority |
+| `system` | `1` to load the bundled system disk (`human302.xdf`) into FDD0 | Ignored if `fd1` is also given — `fd1` takes priority |
 
 Notes on `fd1`/`fd2`/`hdd`:
 
@@ -93,7 +93,7 @@ On first load, a start overlay offers two choices:
   appears). If a HDD is already set (see below), this button instead reads
   "Boot with the Selected Disks" and boots with it
 - **Start with System Disk** — boots with the bundled `human302.xdf` inserted
-  into FDD1, straight into Human68k
+  into FDD0, straight into Human68k
 
 Audio playback requires a click due to browser autoplay restrictions, so
 starting playback always begins from one of these two buttons — clicking
@@ -112,25 +112,25 @@ drop-accepting area is highlighted with a border while dragging:
 
 - **The screen area** (over the emulator display) — a HDD image goes to the
   HDD slot (a message is shown if it's locked because the machine has already
-  booted); a FD image goes to FDD1, or to FDD2 if FDD1 is already occupied and
-  FDD2 is free (to make use of the two floppy drives). An archive containing
+  booted); a FD image goes to FDD0, or to FDD1 if FDD0 is already occupied and
+  FDD1 is free (to make use of the two floppy drives). An archive containing
   multiple images doesn't go into a slot — it's registered as a group and the
   Disk Library opens so you can pick which disk goes where.
-- **A drive slot row** (FDD1 / FDD2 / HDD) — inserts straight into that slot,
+- **A drive slot row** (FDD0 / FDD1 / HDD) — inserts straight into that slot,
   as before.
 - **The Disk Library dialog** — only registers the file(s) into the library;
   nothing is inserted into a slot, since opening the library means you're
   about to choose a destination yourself.
 
-### Drive slots (FDD1 / FDD2 / HDD)
+### Drive slots (FDD0 / FDD1 / HDD)
 
-The toolbar's console footer has three drive rows: FDD1, FDD2, and HDD. Each
+The toolbar's console footer has three drive rows: FDD0, FDD1, and HDD. Each
 row lets you insert a file, insert from the Disk Library, create a blank
 disk (FDD only), eject, or download the current image. Dropping a file onto
 a slot row inserts it into that slot (see "Drag & drop" above for the other
 drop targets).
 
-- **FDD1/FDD2 are hot-swappable** — insert/eject while the core is running,
+- **FDD0/FDD1 are hot-swappable** — insert/eject while the core is running,
   no reset needed.
 - **HDDs can only be handled before boot.** The emulator core cannot swap a
   HDD while running, so dropping/inserting a HDD image before boot no longer
@@ -364,7 +364,7 @@ the bundled files on future visits.
 
 - **HDD**: can only be set/edited before boot; read-only and locked once
   running. Blank HDDs are FAT16 data drives only (no IPL).
-- **FDD1/FDD2**: hot-swappable at any time.
+- **FDD0/FDD1**: hot-swappable at any time.
 
 ## MCP support (control WebX68k from AI agents)
 
@@ -400,7 +400,7 @@ npm run build   # type-check + production build (dist/)
 
 Building the emulator core itself (px68k-libretro → WebAssembly) is done via
 `scripts/build-core.sh`; see [docs/DESIGN.md](docs/DESIGN.md) for the full
-build setup and how the FDD1/FDD2/HDD triple-mount trick works.
+build setup and how the FDD0/FDD1/HDD triple-mount trick works.
 
 ## License
 
@@ -424,8 +424,8 @@ This repository is **GPLv2** ([COPYING](COPYING)).
 - Bundled IPL-ROM/Human68k system disk — boots with no setup required
 - Boot overlay with "Start Without a Disk" (relabeled "Boot with the Selected
   Disks" when a HDD is set) / "Start with System Disk"
-- FDD1/FDD2/HDD triple-mount (via a cmd-file + core-option combination), with
-  HDD locked while running and FDD1/FDD2 hot-swappable
+- FDD0/FDD1/HDD triple-mount (via a cmd-file + core-option combination), with
+  HDD locked while running and FDD0/FDD1 hot-swappable
 - Setting a HDD before boot (from the library, a drop, or the slot buttons),
   and editing its contents while it is only set
 - Blank HDD creation (40MB, FAT16-formatted, Human68k-partitioned; carries no
@@ -437,7 +437,7 @@ This repository is **GPLv2** ([COPYING](COPYING)).
 - Loading disk images from a ZIP/LZH archive (drop, file picker, or the `fd1`/
   `fd2`/`hdd` URL parameters): a single image inside goes straight into the
   slot; multiple images are grouped as a folder in the Disk Library for you to
-  pick from, since the emulator can't tell whether a title wants FDD1+FDD2
+  pick from, since the emulator can't tell whether a title wants FDD0+FDD1
   loaded together or single-drive swapping
 - File manager: two-pane file transfer between browser and mounted disk
   images, with Human68k Shift_JIS filename handling and ZIP/LZH extraction
@@ -490,5 +490,5 @@ This repository is **GPLv2** ([COPYING](COPYING)).
 - Dropping/selecting/loading-by-URL a ZIP or LZH archive that contains more
   than one disk image never auto-inserts any of them — it's always registered
   as a group in the Disk Library for you to pick from, since there's no way to
-  tell whether a title expects simultaneous FDD1+FDD2 loading or single-drive
+  tell whether a title expects simultaneous FDD0+FDD1 loading or single-drive
   disk swapping.

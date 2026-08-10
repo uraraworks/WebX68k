@@ -33,4 +33,4 @@ cp "$SYSTEM_DISK" "$OUT_DISK"
 python3 "$REPO_DIR/tools/x68/fatput.py" "$OUT_DISK" "MOUSETST.X" "$BUILD_DIR/MOUSETST.X"
 
 echo "== 完了 =="
-echo "FDD1 に $OUT_DISK を入れて起動し、A> で MOUSETST と入力してください。"
+echo "FDD0 に $OUT_DISK を入れて起動し、A> で MOUSETST と入力してください。"

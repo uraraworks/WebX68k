@@ -249,7 +249,7 @@ server.tool(
 
 server.tool(
   'list_disks',
-  '各ドライブ(FDD1=fdd0 / FDD2=fdd1 / HDD=hdd)に入っているディスクを一覧する。',
+  '各ドライブ(FDD0=fdd0 / FDD1=fdd1 / HDD=hdd)に入っているディスクを一覧する。',
   {},
   async () => withBridge(async () => jsonResult(await sendCommand('list_disks')))
 );
@@ -260,7 +260,7 @@ server.tool(
     'HDD を交換できるのは起動前だけで(コアが実行中の HDD 挿抜に未対応のため)、起動前に指定した場合は' +
     'スロットへセットされるだけで起動はしない。実行中に HDD を指定するとエラーになる。',
   {
-    slot: z.enum(['fdd0', 'fdd1', 'hdd']).describe('挿入先。fdd0=FDD1, fdd1=FDD2, hdd=HDD'),
+    slot: z.enum(['fdd0', 'fdd1', 'hdd']).describe('挿入先。fdd0=FDD0, fdd1=FDD1, hdd=HDD'),
     name: z.string().describe('ファイル名(拡張子で種別を判定する。例: game.xdf)'),
     data_base64: z.string().describe('ディスクイメージの中身を base64 で'),
   },

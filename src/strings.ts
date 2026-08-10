@@ -502,7 +502,7 @@ const STRINGS: Record<Lang, Dict> = {
     biosStatusNone: () => '未設定',
     libraryDialogTitle: () => 'ディスクライブラリ',
     libraryDialogDescription: () =>
-      'これまでに挿入したディスクイメージはブラウザに保存され、ここから挿入するドライブ(FDD1 / FDD2 / HDD)を選んで再挿入できます。',
+      'これまでに挿入したディスクイメージはブラウザに保存され、ここから挿入するドライブ(FDD0 / FDD1 / HDD)を選んで再挿入できます。',
     libraryDialogClose: () => '閉じる',
     libraryBadgeBundled: () => '同梱',
     libraryBadgeHdd: () => 'HDD',
@@ -528,7 +528,7 @@ const STRINGS: Record<Lang, Dict> = {
 
     fmDialogTitle: () => 'ファイル転送',
     fmDialogNote: () =>
-      'ホストPCとFDD1/FDD2/HDD・ライブラリ内のディスクイメージとの間でファイルをやり取りします。ファイル名は自動的に8.3形式へ変換されます。実行中のFDDスロットへ書き込んだ場合はディスクを入れ直したのと同じ扱いになります。起動中のHDDは読み出し専用です。',
+      'ホストPCとFDD0/FDD1/HDD・ライブラリ内のディスクイメージとの間でファイルをやり取りします。ファイル名は自動的に8.3形式へ変換されます。実行中のFDDスロットへ書き込んだ場合はディスクを入れ直したのと同じ扱いになります。起動中のHDDは読み出し専用です。',
     fmHostPaneTitle: () => 'ホスト(このPC)',
     fmDiskPaneTitle: () => 'ディスクイメージ',
     fmSelectFilesBtn: () => 'ファイルを選択',
@@ -806,7 +806,7 @@ const STRINGS: Record<Lang, Dict> = {
     biosStatusNone: () => 'Not set',
     libraryDialogTitle: () => 'Disk Library',
     libraryDialogDescription: () =>
-      'Disk images you have inserted are saved in your browser. Choose a drive (FDD1 / FDD2 / HDD) to insert one from here.',
+      'Disk images you have inserted are saved in your browser. Choose a drive (FDD0 / FDD1 / HDD) to insert one from here.',
     libraryDialogClose: () => 'Close',
     libraryBadgeBundled: () => 'Bundled',
     libraryBadgeHdd: () => 'HDD',
@@ -832,7 +832,7 @@ const STRINGS: Record<Lang, Dict> = {
 
     fmDialogTitle: () => 'File Transfer',
     fmDialogNote: () =>
-      'Transfer files between this PC and disk images in FDD1/FDD2/HDD or the library. File names are automatically converted to 8.3 format. Writing to a running FDD slot is treated as reinserting the disk. The HDD is read-only while the emulator is running.',
+      'Transfer files between this PC and disk images in FDD0/FDD1/HDD or the library. File names are automatically converted to 8.3 format. Writing to a running FDD slot is treated as reinserting the disk. The HDD is read-only while the emulator is running.',
     fmHostPaneTitle: () => 'Host (this PC)',
     fmDiskPaneTitle: () => 'Disk Image',
     fmSelectFilesBtn: () => 'Select Files',

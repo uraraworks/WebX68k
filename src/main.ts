@@ -159,15 +159,16 @@ const overflowSubmenu = document.getElementById('overflow-submenu') as HTMLDivEl
 const cfgCpuSpeed = document.getElementById('cfg-cpuspeed') as HTMLSelectElement;
 const cfgRamSize = document.getElementById('cfg-ramsize') as HTMLSelectElement;
 
-// WebNP2 のドライブ行に合わせた FDD1 / FDD2 / HDD の3スロット構成(表示ラベルのみ1始まり。
-// コア内部のドライブindexは 0/1 のまま、要素IDも従来通り fdd0/fdd1 を使う)。
+// WebNP2 のドライブ行に合わせた FDD0 / FDD1 / HDD の3スロット構成(実機のFDD呼称
+// FDD0/FDD1に合わせ、表示ラベルもコア内部のドライブindex 0/1 と一致させている。
+// 要素IDも従来通り fdd0/fdd1 を使う)。
 type SlotId = 'fdd0' | 'fdd1' | 'hdd';
 const SLOT_IDS: SlotId[] = ['fdd0', 'fdd1', 'hdd'];
 
-/** スロットの表示用ドライブ名(FDD1/FDD2/HDD)。 */
+/** スロットの表示用ドライブ名(FDD0/FDD1/HDD)。 */
 function slotDisplayName(slot: SlotId): string {
-  if (slot === 'fdd0') return t('fdSlotLabel', { drive: 1 });
-  if (slot === 'fdd1') return t('fdSlotLabel', { drive: 2 });
+  if (slot === 'fdd0') return t('fdSlotLabel', { drive: 0 });
+  if (slot === 'fdd1') return t('fdSlotLabel', { drive: 1 });
   return t('hddSlotLabel');
 }
 
@@ -740,7 +741,7 @@ const BUNDLED_DISK_NAME = 'human302.xdf';
 const BUNDLED_DISK_SOURCE_KEY = 'bundled:human302';
 
 // --- URLパラメータ(WebNP2 に準拠。fd1/fd2/hdd でディスクURL指定、run=1で自動起動)。---
-// system=1: 同梱システムディスク(human302.xdf)をFDD1として使う(WebNP2の freedos=1 相当)。
+// system=1: 同梱システムディスク(human302.xdf)をFDD0として使う(WebNP2の freedos=1 相当)。
 // fd1 が同時指定されていれば fd1 を優先する。
 const urlParams = new URLSearchParams(location.search);
 const urlFd1 = urlParams.get('fd1') ?? undefined;
@@ -1382,9 +1383,9 @@ async function handleDroppedFileForLibrary(file: File): Promise<void> {
  * 画面(stage)へのD&Dで、ディスクの種別(hdd/fd)から投入先スロットを決める。
  * - HDDイメージ: 常にHDDスロットへ(起動中でロック済みの場合は insertDiskBytes 内の
  *   isSlotLocked チェックが既存のロック時メッセージを出す)。
- * - FDイメージ: FDD1が空ならFDD1へ。FDD1が埋まっていてFDD2が空なら、2ドライブ運用の
- *   利便性を優先してFDD2へ入れる(WebNP2には無い挙動だがドライブ行が2本あるWebX68k独自の配慮)。
- *   両方埋まっている/両方空の場合はFDD1をデフォルトの投入先とする
+ * - FDイメージ: FDD0が空ならFDD0へ。FDD0が埋まっていてFDD1が空なら、2ドライブ運用の
+ *   利便性を優先してFDD1へ入れる(WebNP2には無い挙動だがドライブ行が2本あるWebX68k独自の配慮)。
+ *   両方埋まっている/両方空の場合はFDD0をデフォルトの投入先とする
  *   (ドライブ行へ直接ドロップしたときと同じ「常に決め打ちのスロットへ入る」既定動作に合わせる)。
  */
 function resolveStageDropSlot(kind: 'hdd' | 'fd'): SlotId {
@@ -1490,7 +1491,7 @@ function buildLibraryRow(entry: LibraryRowEntry, inGroup = false): HTMLElement {
   const actions = document.createElement('div');
   actions.className = 'library-item-actions';
 
-  // 挿入先ドライブを選べるようにする: HDDイメージはHDDへのみ、FDイメージはFDD1/FDD2へ挿入可能。
+  // 挿入先ドライブを選べるようにする: HDDイメージはHDDへのみ、FDイメージはFDD0/FDD1へ挿入可能。
   const insertTargets: SlotId[] = kind === 'hdd' ? ['hdd'] : ['fdd0', 'fdd1'];
   for (const target of insertTargets) {
     const insertBtn = document.createElement('button');
@@ -2356,7 +2357,7 @@ for (const slot of SLOT_IDS) {
 }
 
 // 画面(stage、canvasを含む領域)へのD&D配線。WebNP2 の stage D&D(dragenterカウンタ方式)を移植し、
-// 投入先の決定だけ resolveStageDropSlot 経由で WebX68k のスロット構成(FDD1/FDD2/HDD)に合わせる。
+// 投入先の決定だけ resolveStageDropSlot 経由で WebX68k のスロット構成(FDD0/FDD1/HDD)に合わせる。
 // 起動前・起動中どちらでも受け付ける(insertDiskBytes/hotSwapFdd が両方を扱えるため)。
 {
   let stageDropDepth = 0;
@@ -3878,7 +3879,7 @@ async function openLibraryVolume(sourceKey: string): Promise<FmVolumeHandle> {
   };
 }
 
-/** ファイルマネージャのターゲット一覧: FDD1/FDD2/HDD(実行中スロット) + ライブラリ内イメージ。 */
+/** ファイルマネージャのターゲット一覧: FDD0/FDD1/HDD(実行中スロット) + ライブラリ内イメージ。 */
 async function fmListTargets(): Promise<FmTarget[]> {
   const targets: FmTarget[] = [];
   for (const slot of SLOT_IDS) {
@@ -3990,7 +3991,7 @@ btnHelp.addEventListener('click', () => window.open(`./help.html?lang=${getLang(
  * fd1/fd2/hdd と併用された場合は、それらのスロット処理を先に行ってから lib を処理する。
  */
 async function applyUrlParams(): Promise<void> {
-  // system=1: fd1 の明示指定が無いときだけ、同梱システムディスクをFDD1として使う
+  // system=1: fd1 の明示指定が無いときだけ、同梱システムディスクをFDD0として使う
   // (WebNP2 の freedos=1 相当。fd1 が指定されていればそちらを優先する)。
   const wantsBundledSystem = urlSystem && !urlFd1;
   if (!urlFd1 && !urlFd2 && !urlHdd && !wantsBundledSystem && !urlRun && urlLib.length === 0) return;
@@ -4005,8 +4006,8 @@ async function applyUrlParams(): Promise<void> {
   }
 
   const jobs: Array<{ slot: SlotId; url: string | undefined; label: string }> = [
-    { slot: 'fdd0', url: urlFd1, label: t('fdSlotLabel', { drive: 1 }) },
-    { slot: 'fdd1', url: urlFd2, label: t('fdSlotLabel', { drive: 2 }) },
+    { slot: 'fdd0', url: urlFd1, label: t('fdSlotLabel', { drive: 0 }) },
+    { slot: 'fdd1', url: urlFd2, label: t('fdSlotLabel', { drive: 1 }) },
     { slot: 'hdd', url: urlHdd, label: t('hddSlotLabel') },
   ];
 

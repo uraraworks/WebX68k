@@ -292,7 +292,7 @@
             <h2>起動する</h2>
             <p>
               ページを開くと起動オーバーレイが表示され、「ディスク無しで起動」(内蔵IPL ROMメニューから起動)
-              と「システムディスクで起動」(同梱の <code>human302.xdf</code> をFDD1へ挿入してから起動)
+              と「システムディスクで起動」(同梱の <code>human302.xdf</code> をFDD0へ挿入してから起動)
               の2択が選べます。
             </p>
             <img src="./help/overlay.png" alt="起動オーバーレイ。ディスク無しで起動/システムディスクで起動の選択ボタンが並ぶ" />
@@ -305,11 +305,11 @@
             </p>
             <p>
               URLパラメータでディスクとオーバーレイの扱いを指定することもできます。
-              <code>?fd1=URL</code> / <code>?fd2=URL</code> でFDD1/FDD2へディスクイメージを、
+              <code>?fd1=URL</code> / <code>?fd2=URL</code> でFDD0/FDD1へディスクイメージを、
               <code>?hdd=URL</code> でHDDへイメージをセットした状態でページを開けます
               (URLはCORSが有効なオリジンから配信されている必要があります)。同じURLに再度
               アクセスした場合は再ダウンロードせず、ブラウザに保存済みのイメージ(編集内容含む)
-              から復帰します。<code>?system=1</code> は同梱システムディスクをFDD1へ
+              から復帰します。<code>?system=1</code> は同梱システムディスクをFDD0へ
               (<code>fd1</code> 指定時はそちらが優先)、<code>?run=1</code> はオーバーレイを
               出さずそのまま自動起動します(自動再生制限により音は最初のクリック/キー入力まで
               鳴りません)。指定URLがZIP/LZHアーカイブで複数枚のディスクを含む場合は、
@@ -331,7 +331,7 @@
             <p>
               A start overlay appears when you open the page, offering two choices:
               "Start Without a Disk" (boots from the built-in IPL ROM menu) or "Start with System Disk"
-              (inserts the bundled <code>human302.xdf</code> into FDD1 before starting).
+              (inserts the bundled <code>human302.xdf</code> into FDD0 before starting).
             </p>
             <img src="./help/overlay-en.png" alt="Start overlay showing Start Without a Disk / Start with System Disk choices" />
             <p>
@@ -343,11 +343,11 @@
             </p>
             <p>
               URL parameters can also control disk loading and the overlay: <code>?fd1=URL</code> /
-              <code>?fd2=URL</code> load a disk image into FDD1/FDD2, and <code>?hdd=URL</code> sets
+              <code>?fd2=URL</code> load a disk image into FDD0/FDD1, and <code>?hdd=URL</code> sets
               one into the HDD, all before the page finishes opening (the URL must be served from a
               CORS-enabled origin). Revisiting the same URL doesn't re-download it — the image
               already saved in the browser, including any edits, is reused. <code>?system=1</code>
-              loads the bundled system disk into FDD1 (unless <code>fd1</code> is also given, which
+              loads the bundled system disk into FDD0 (unless <code>fd1</code> is also given, which
               takes priority), and <code>?run=1</code> auto-boots without showing the overlay
               (playback starts muted until the first click or key press, due to autoplay
               restrictions). If the URL resolves to a ZIP/LZH archive containing multiple disks, it
@@ -414,7 +414,7 @@
           <div class="lang-ja">
             <h2>ディスクイメージを読み込む</h2>
             <p>
-              画面下部のFDD1/FDD2/HDDそれぞれのスロット行へファイルをドラッグ&ドロップするか、
+              画面下部のFDD0/FDD1/HDDそれぞれのスロット行へファイルをドラッグ&ドロップするか、
               「ディスク挿入」ボタンから選択して読み込ませます。ライブラリから挿入したり、
               ブランクディスクを新規作成したり、挿入中のディスクをダウンロードすることもできます。
             </p>
@@ -422,12 +422,12 @@
               ドロップできる場所はドライブ行以外にも2つあり、ドラッグ中は受け付け可能な場所が
               枠で強調表示されます。<strong>画面領域</strong>(エミュレータ画面の上)に落とすと、
               HDDイメージはHDDスロットへ(起動後でロック済みならメッセージが出ます)、FDイメージは
-              FDD1へ(FDD1が埋まっていてFDD2が空ならFDD2へ)入ります。複数枚入りアーカイブは
+              FDD0へ(FDD0が埋まっていてFDD1が空ならFDD1へ)入ります。複数枚入りアーカイブは
               スロットへは入らずライブラリへ登録してライブラリを開きます。<strong>ディスク
               ライブラリのダイアログ</strong>に落とした場合は、スロットには入れずライブラリへの
               登録だけを行います(挿入先はこれから選ぶ、という文脈のため)。
             </p>
-            <img src="./help/overview.png" alt="プレイヤー全体像。上部にツールバー、下部にFDD1/FDD2/HDDのスロット行" />
+            <img src="./help/overview.png" alt="プレイヤー全体像。上部にツールバー、下部にFDD0/FDD1/HDDのスロット行" />
             <ul>
               <li>FDD対応拡張子: <code>.xdf</code> <code>.dim</code> <code>.d88</code> <code>.hdm</code> <code>.img</code> <code>.2hd</code></li>
               <li>HDD対応拡張子: <code>.hdf</code> <code>.dup</code></li>
@@ -459,7 +459,7 @@
           <div class="lang-en">
             <h2>Loading disk images</h2>
             <p>
-              Drag & drop a file onto an FDD1/FDD2/HDD slot row at the bottom of the player, or
+              Drag & drop a file onto an FDD0/FDD1/HDD slot row at the bottom of the player, or
               use the "Insert Disk" button to pick one. You can also insert from the library,
               create a new blank disk, or download the currently inserted disk.
             </p>
@@ -468,13 +468,13 @@
               the drop-accepting area is highlighted with a border. Dropping onto the
               <strong>screen area</strong> (over the emulator display) sends a HDD image to the
               HDD slot (a message is shown if it's already locked after boot), and a FD image to
-              FDD1 (or FDD2 if FDD1 is occupied and FDD2 is free). An archive containing multiple
+              FDD0 (or FDD1 if FDD0 is occupied and FDD1 is free). An archive containing multiple
               images isn't inserted into a slot — it's registered to the library, which then
               opens. Dropping onto the <strong>Disk Library dialog</strong> only registers the
               file(s) into the library without inserting into any slot, since opening the library
               means you're about to choose a destination yourself.
             </p>
-            <img src="./help/overview-en.png" alt="Player overview with the toolbar on top and FDD1/FDD2/HDD slot rows below" />
+            <img src="./help/overview-en.png" alt="Player overview with the toolbar on top and FDD0/FDD1/HDD slot rows below" />
             <ul>
               <li>FDD extensions: <code>.xdf</code> <code>.dim</code> <code>.d88</code> <code>.hdm</code> <code>.img</code> <code>.2hd</code></li>
               <li>HDD extensions: <code>.hdf</code> <code>.dup</code></li>
@@ -512,13 +512,13 @@
             <p>
               「…」メニューの「ディスク」グループにある「ディスクライブラリ」から、これまでに挿入したディスクイメージの
               一覧を開けます。ブラウザ内に保存されたイメージから、挿入するドライブ
-              (FDD1 / FDD2 / HDD) を選んで再挿入できます。
+              (FDD0 / FDD1 / HDD) を選んで再挿入できます。
             </p>
             <img src="./help/library.png" alt="ディスクライブラリダイアログ" />
             <p>
               複数枚のディスクを含むZIP/LZHアーカイブを読み込んだ場合は、ここへ
               <strong>フォルダとしてまとめて登録</strong>されます。フォルダを開くと中のディスク
-              一覧に切り替わり、FDD1 / FDD2 それぞれへ挿入できるので、2ドライブ同時装填型の
+              一覧に切り替わり、FDD0 / FDD1 それぞれへ挿入できるので、2ドライブ同時装填型の
               ソフトはここで続けて両方を指定できます。URLパラメータ(<code>fd1</code>/
               <code>fd2</code>/<code>hdd</code>)経由でアーカイブを読み込んだ場合は、該当フォルダが
               展開・強調表示された状態でこのダイアログが自動的に開きます。
@@ -540,14 +540,14 @@
             <h2>Disk Library</h2>
             <p>
               "Disk Library" in the "…" menu's Disk group opens the list of disk images you have inserted
-              so far. Choose a drive (FDD1 / FDD2 / HDD) to re-insert an image saved in your
+              so far. Choose a drive (FDD0 / FDD1 / HDD) to re-insert an image saved in your
               browser.
             </p>
             <img src="./help/library-en.png" alt="Disk Library dialog" />
             <p>
               When you load a ZIP/LZH archive containing multiple disk images, it's registered here
               as a <strong>folder</strong>. Opening the folder switches to the list of disks inside,
-              and you can insert each one into FDD1 / FDD2 — so a title that expects both drives
+              and you can insert each one into FDD0 / FDD1 — so a title that expects both drives
               loaded at once can be set up here in two steps. If the archive was loaded via a URL
               parameter (<code>fd1</code>/<code>fd2</code>/<code>hdd</code>), this dialog opens
               automatically with that folder expanded and highlighted.
@@ -1051,7 +1051,7 @@
               gzip圧縮して保存・復元できます。
             </p>
             <p>
-              保存時には、そのときのディスク構成(FDD1/FDD2/HDDに何が挿入されていたか)も
+              保存時には、そのときのディスク構成(FDD0/FDD1/HDDに何が挿入されていたか)も
               一緒に記録されます。復元時に現在のディスク構成と異なる場合は確認ダイアログが
               表示され、キャンセルすれば復元を中止できます。
             </p>
@@ -1069,7 +1069,7 @@
               state to/from IndexedDB, gzip-compressed.
             </p>
             <p>
-              The disk configuration at save time (what was inserted in FDD1/FDD2/HDD) is recorded
+              The disk configuration at save time (what was inserted in FDD0/FDD1/HDD) is recorded
               alongside the state. If it differs from the current configuration at load time, a
               confirmation dialog appears; canceling it aborts the restore.
             </p>

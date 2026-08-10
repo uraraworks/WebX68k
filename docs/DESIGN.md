@@ -746,7 +746,7 @@ UI変更後に撮り直す際は、開発サーバーを起動した状態で `n
   `src/api/` から移植。`fat.ts` はX68000の2HD(1232KB)向けジオメトリとHuman68k HDD形式に対応。
 - `src/filemanager.ts` … WebNP2の `src/ui/filemanager.ts` を移植。FmTargetの表示ラベルを
   呼び出し側(main.ts)で組み立て済み文字列として受け取る形に簡略化(WebX68kの
-  FDD1/FDD2/HDDという3スロット構成の表示名を一元管理するため)。
+  FDD0/FDD1/HDDという3スロット構成の表示名を一元管理するため)。
 - `src/main.ts` の `fmListTargets`/`fmListDir`/`fmReadFile`/`fmWriteFile`/`fmDeleteFile`/
   `fmMakeDir`/`fmCreateTransferFd` … WebNP2の `np2.diskXxx`/`libraryXxx` 相当のコールバック実装。
 
@@ -816,7 +816,7 @@ NT フラグ(0x00/0x08/0x10/0x18)で必ず 0x20 未満なので、そこが 0x20
 - ホストへファイルを1つ取り出し(`BEEP.SYS`)、転送が成功することを確認した。
 - ホストからファイルを書き込み(`/SYS/TESTUP.TXT`)、書き込み後に空き容量が減り一覧に反映される
   こと、読み出した内容がバイト完全一致することを確認した。
-- 書き込み後の `human302.xdf` を実際にFDD1へ挿入して起動し、Human68kが正常にブートすること
+- 書き込み後の `human302.xdf` を実際にFDD0へ挿入して起動し、Human68kが正常にブートすること
   (HUMAN.SYS/CONFIG.SYS/ASK68K.SYS/FD driver extension 等の読み込みに成功すること)を確認した。
   ファイルマネージャでの書き込みがディスクを壊していないことの実証になっている。
 - `hd0.hdf`(Human68k入りHDD)のルートと`SYS`/`BIN`/`GAME`を列挙し、ファイル名・サイズと

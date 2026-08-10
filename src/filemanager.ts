@@ -1,12 +1,12 @@
 // ファイルマネージャUI (FTPクライアント風2ペイン)。
 // 移植元: WebNP2 (../PC98/WebNP2/src/ui/filemanager.ts)。
-// ホスト(ブラウザ)⇔実行中スロット(FDD1/FDD2/HDD)/ライブラリ内イメージ間でファイルを出し入れする。
+// ホスト(ブラウザ)⇔実行中スロット(FDD0/FDD1/HDD)/ライブラリ内イメージ間でファイルを出し入れする。
 // 実際のディスクI/OはWebX68k(main.ts経由のコールバック)に委譲し、このモジュールは
 // DOM構築・ステージング管理・アーカイブ展開・8.3名変換・転送フローのみを担当する。
 //
 // WebNP2版との差分: FmTarget は表示ラベルを呼び出し側(main.ts)で組み立て済みの
 // 文字列として受け取る(drive番号からの組み立てをUI側で持たない)。これはWebX68kが
-// FDD1/FDD2/HDDの3スロット構成の表示名を一元管理するため。
+// FDD0/FDD1/HDDの3スロット構成の表示名を一元管理するため。
 
 import { describeError, t } from './strings.ts';
 import type { FatEntry } from './api/fat.ts';
