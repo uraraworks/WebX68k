@@ -172,6 +172,8 @@ URL パラメータ `?ram=<1〜12>`(`src/url-params.ts` の `parseRamSizeParam()
 上書きし、設定UI(`cfgRamSize.value`)には実際に効いている値を表示しつつ、ユーザーが select を
 自分で操作するまでは保存しない。不正値(範囲外・非数値など)は無視して `console.warn` するのみで、
 既存の保存値/既定値へフォールバックする(`fd1`/`fd2`/`hdd` のようにエラー表示や起動停止はしない)。
+`?cpu=<10|16|25|33|66|100>`(`parseCpuSpeedParam()`)も同じ扱いで、`cpuSpeed` 変数のみを
+上書きし `localStorage` には保存しない。
 
 ## TVRAM テキスト取得
 

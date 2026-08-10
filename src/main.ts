@@ -41,7 +41,7 @@ import { buildFileManagerDialog, type FmTarget } from './filemanager';
 import { Bridge, resolveBridgeUrl, type BridgeHost } from './bridge';
 import { RETROK, charToKey, codeToRetrok } from './keyboard';
 import { LibretroHost } from './libretro-host';
-import { parseRamSizeParam } from './url-params';
+import { parseCpuSpeedParam, parseRamSizeParam } from './url-params';
 import {
   assignPorts,
   defaultProfileFor,
@@ -253,6 +253,17 @@ function loadMachineConfig(): { cpuSpeed: string; ramSize: string } {
 }
 
 let { cpuSpeed, ramSize } = loadMachineConfig();
+
+// ?cpu=<10|16|25|33|66|100> : 起動時のみ CPU クロックを上書きする(共有URLで推奨環境を再現するため)。
+// 意図的に localStorage には保存しない。共有リンクを開いただけで利用者の既定設定が
+// 書き換わってしまうと、リンクを踏むたびに意図せず設定が上書きされる事故になるため。
+const cpuParamRaw = new URLSearchParams(location.search).get('cpu');
+const urlCpuSpeed = parseCpuSpeedParam(cpuParamRaw);
+if (cpuParamRaw !== null && urlCpuSpeed === null) {
+  console.warn('?cpu= の値が不正です(10/16/25/33/66/100 のいずれか、または "16Mhz" 形式で指定してください)');
+} else if (urlCpuSpeed !== null) {
+  cpuSpeed = urlCpuSpeed;
+}
 
 // ?ram=<1〜12> : 起動時のみ RAM サイズを上書きする(共有URLで推奨環境を再現するため)。
 // 意図的に localStorage には保存しない。共有リンクを開いただけで利用者の既定設定が
