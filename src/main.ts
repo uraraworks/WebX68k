@@ -857,6 +857,13 @@ type UrlSlotOutcome =
 type UrlLibOutcome = { kind: 'single'; sourceKey: string } | { kind: 'group'; groupId: string } | { kind: 'error' };
 
 /**
+ * `resolveUrlToLibrary` の戻り値。`fromArchive` は disks がアーカイブ展開由来かどうかを示す
+ * (`resolveUrlSlotContent` が種別チェックを行うかどうかの分岐に使う。非アーカイブの単体ディスクは
+ * 従来どおり種別チェックなしで直接スロットへ入れられる必要があるため区別が要る)。
+ */
+type UrlLibraryResult = { disks: RegisteredDisk[]; fromArchive: boolean } | { kind: 'error' };
+
+/**
  * URL由来のディスクイメージを取得し、ディスクライブラリ(IndexedDB)へ登録する共通処理
  * (WebNP2 の resolveImage に準拠)。スロットの種別(fd/hdd)は一切見ない。
  * 取得結果がZIP/LZHアーカイブの場合は展開し、中の全ディスクをライブラリへ登録する。
@@ -864,11 +871,12 @@ type UrlLibOutcome = { kind: 'single'; sourceKey: string } | { kind: 'group'; gr
  * (グループIDに `arcurl:<url>` を使い、展開済みのレコードがライブラリにあればそれを使う)。
  * 非アーカイブの単体ディスクも同様に、既に保存済み(sourceKey===url)なら再ダウンロードしない。
  *
- * 戻り値は登録済みディスクの配列(0件ならアーカイブ内にディスクイメージが無かったことを示す)。
+ * 戻り値は登録済みディスクの配列と、それがアーカイブ展開由来かどうか
+ * (0件ならアーカイブ内にディスクイメージが無かったことを示す)。
  * 取得自体に失敗した場合はここでトーストを出したうえで `{ kind: 'error' }` を返す
  * (呼び出し側は他スロット/他URLの処理を継続できる)。
  */
-async function resolveUrlToLibrary(url: string, label: string): Promise<RegisteredDisk[] | { kind: 'error' }> {
+async function resolveUrlToLibrary(url: string, label: string): Promise<UrlLibraryResult> {
   const groupId = `arcurl:${url}`;
 
   // 展開済みのアーカイブ由来グループ(前回このURLを展開済み)があれば再ダウンロードせず復帰する。
@@ -878,14 +886,17 @@ async function resolveUrlToLibrary(url: string, label: string): Promise<Register
     .map((d): RegisteredDisk => ({ name: d.name, sourceKey: d.sourceKey, data: d.bytes, kind: classifyDiskKind(d.name) ?? 'fd' }));
   if (resumedDisks.length > 0) {
     showToast(t('urlArchiveResumed', { label, count: resumedDisks.length }));
-    return resumedDisks;
+    return { disks: resumedDisks, fromArchive: true };
   }
 
   // 非アーカイブの単体ディスクとして既に保存済みなら(従来どおり sourceKey===url)、そちらを使う。
   const plainStored = await getDisk(url);
   if (plainStored) {
     showToast(t('urlDiskResumed', { label, name: plainStored.name }));
-    return [{ name: plainStored.name, sourceKey: url, data: plainStored.bytes, kind: classifyDiskKind(plainStored.name) ?? 'fd' }];
+    return {
+      disks: [{ name: plainStored.name, sourceKey: url, data: plainStored.bytes, kind: classifyDiskKind(plainStored.name) ?? 'fd' }],
+      fromArchive: false,
+    };
   }
 
   const name = urlFileNameGuess(url, label);
@@ -912,24 +923,31 @@ async function resolveUrlToLibrary(url: string, label: string): Promise<Register
   // 拡張子で判定できない配布URL(拡張子無し)向けに、バイト列のシグネチャでもアーカイブかどうかを見る。
   const archiveName = resolveArchiveFileName(name, bytes);
   if (archiveName) {
-    return registerArchiveBytesToLibrary(archiveName, bytes, groupId, name);
+    const disks = await registerArchiveBytesToLibrary(archiveName, bytes, groupId, name);
+    return { disks, fromArchive: true };
   }
 
   await saveDisk({ sourceKey: url, name, bytes, savedAt: Date.now() });
-  return [{ name, sourceKey: url, data: bytes, kind: classifyDiskKind(name) ?? 'fd' }];
+  return { disks: [{ name, sourceKey: url, data: bytes, kind: classifyDiskKind(name) ?? 'fd' }], fromArchive: false };
 }
 
 /**
  * URLパラメータ由来のディスクイメージをスロット(fd1/fd2/hdd)向けに解決する。
- * `resolveUrlToLibrary` で取得・ライブラリ登録したうえで、`finishArchiveDisks` により
- * スロットの種別一致チェックと枚数分岐(1枚ならそのままスロットへ、複数枚ならライブラリを開いて選ばせる)を適用する。
+ * `resolveUrlToLibrary` で取得・ライブラリ登録したうえで、アーカイブ展開由来(`fromArchive`)の
+ * 場合のみ `finishArchiveDisks` によるスロットの種別一致チェックと枚数分岐(1枚ならそのまま
+ * スロットへ、複数枚ならライブラリを開いて選ばせる)を適用する。非アーカイブの単体ディスクは
+ * 従来どおり種別チェックなしでそのままスロットへ入れる(旧実装の挙動を維持するための分岐)。
  */
 async function resolveUrlSlotContent(url: string, label: string, slot: SlotId): Promise<UrlSlotOutcome> {
   const groupId = `arcurl:${url}`;
   const requiredKind = requiredKindForSlot(slot);
   const result = await resolveUrlToLibrary(url, label);
-  if (!Array.isArray(result)) return { kind: 'error' };
-  return finishArchiveDisks(result, label, requiredKind, groupId);
+  if ('kind' in result) return { kind: 'error' };
+  if (!result.fromArchive) {
+    const only = result.disks[0];
+    return { kind: 'single', name: only.name, bytes: only.data, sourceKey: only.sourceKey };
+  }
+  return finishArchiveDisks(result.disks, label, requiredKind, groupId);
 }
 
 /**
@@ -940,12 +958,12 @@ async function resolveUrlSlotContent(url: string, label: string, slot: SlotId): 
 async function resolveUrlLibContent(url: string, label: string): Promise<UrlLibOutcome> {
   const groupId = `arcurl:${url}`;
   const result = await resolveUrlToLibrary(url, label);
-  if (!Array.isArray(result)) return { kind: 'error' };
-  if (result.length === 0) {
+  if ('kind' in result) return { kind: 'error' };
+  if (result.disks.length === 0) {
     showToast(t('urlArchiveNoDiskImage', { label }), 8000);
     return { kind: 'error' };
   }
-  if (result.length === 1) return { kind: 'single', sourceKey: result[0].sourceKey };
+  if (result.disks.length === 1) return { kind: 'single', sourceKey: result.disks[0].sourceKey };
   return { kind: 'group', groupId };
 }
 
