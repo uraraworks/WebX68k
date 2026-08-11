@@ -41,7 +41,7 @@ import { buildFileManagerDialog, type FmTarget } from './filemanager';
 import { Bridge, resolveBridgeUrl, type BridgeHost } from './bridge';
 import { RETROK, charToKey, codeToRetrok } from './keyboard';
 import { LibretroHost } from './libretro-host';
-import { parseCpuSpeedParam, parseRamSizeParam } from './url-params';
+import { parseAspectModeParam, parseCpuSpeedParam, parseRamSizeParam } from './url-params';
 import {
   assignPorts,
   defaultProfileFor,
@@ -3041,6 +3041,17 @@ function loadAspectMode(): AspectMode {
 }
 
 let aspectMode: AspectMode = loadAspectMode();
+
+// ?aspect=<4:3|native> : 起動時のみ表示縦横比モードを上書きする(共有URLで推奨環境を再現するため)。
+// 意図的に localStorage には保存しない。共有リンクを開いただけで利用者の既定設定が
+// 書き換わってしまうと、リンクを踏むたびに意図せず設定が上書きされる事故になるため。
+const aspectParamRaw = new URLSearchParams(location.search).get('aspect');
+const urlAspectMode = parseAspectModeParam(aspectParamRaw);
+if (aspectParamRaw !== null && urlAspectMode === null) {
+  console.warn('?aspect= の値が不正です("4:3" または "native" で指定してください)');
+} else if (urlAspectMode !== null) {
+  aspectMode = urlAspectMode;
+}
 
 /** アスペクト比ボタンの見た目(トグル状態)を現在のモードに合わせる。フルスクリーンボタンと同じ流儀。 */
 function updateAspectControl(): void {

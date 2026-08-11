@@ -1,5 +1,7 @@
 // URLパラメータのパース関数群(main.ts から純粋関数として切り出し、単体テスト可能にする)。
 
+import type { AspectMode } from './aspect';
+
 /**
  * `?ram=` の値を px68k_ramsize コアオプション形式(例: '12MB')にパースする。
  * 受理形式: '12' / '12MB' / '12mb' / 前後空白あり(trim + 大小文字無視)。
@@ -38,4 +40,18 @@ export function parseCpuSpeedParam(raw: string | null): string | null {
   if (!Number.isInteger(n)) return null;
   const normalized = OC_MHZ.has(n) ? `${n}Mhz (OC)` : `${n}Mhz`;
   return (CPU_SPEEDS as readonly string[]).includes(normalized) ? normalized : null;
+}
+
+/**
+ * `?aspect=` の値を AspectMode('4:3' | 'native')にパースする。
+ * 受理形式(trim + 大小文字無視): '4:3' / '43' / '4-3' / '4/3' → '4:3'、
+ * 'native' / '1:1' / '11' → 'native'。それ以外・空文字・null は無効値として null を返す。
+ */
+export function parseAspectModeParam(raw: string | null): AspectMode | null {
+  if (raw === null) return null;
+  const trimmed = raw.trim().toLowerCase();
+  if (trimmed === '') return null;
+  if (trimmed === '4:3' || trimmed === '43' || trimmed === '4-3' || trimmed === '4/3') return '4:3';
+  if (trimmed === 'native' || trimmed === '1:1' || trimmed === '11') return 'native';
+  return null;
 }

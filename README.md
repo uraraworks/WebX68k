@@ -27,6 +27,7 @@ See [docs/DESIGN.md](docs/DESIGN.md) for design and implementation details.
 | `lib` | URL of a disk image to register in the Disk Library only (repeatable) | See below |
 | `cpu` | `10`/`16`/`25`/`33`/`66`/`100` to override the CPU clock (MHz) for this boot only | A one-off override for reproducing a recommended environment from a shared URL. Reflected in the settings UI but not persisted to `localStorage` (opening the link alone must not overwrite the user's saved default) |
 | `ram` | `1`–`12` to override the RAM size (MB) for this boot only | A one-off override for reproducing a recommended environment from a shared URL. Reflected in the settings UI but not persisted to `localStorage` (opening the link alone must not overwrite the user's saved default) |
+| `aspect` | `4:3` or `native` to override the display aspect ratio mode for this boot only | A one-off override for reproducing a recommended environment from a shared URL. Reflected in the toggle button state but not persisted to `localStorage` (opening the link alone must not overwrite the user's saved default) |
 | `run` | `1` to auto-boot without showing the start overlay | |
 | `system` | `1` to load the bundled system disk (`human302.xdf`) into FDD0 | Ignored if `fd1` is also given — `fd1` takes priority |
 
