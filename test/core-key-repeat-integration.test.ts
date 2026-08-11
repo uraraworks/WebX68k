@@ -3,8 +3,10 @@ import { createRequire } from 'node:module';
 import { dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { runInThisContext } from 'node:vm';
-import { describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { isRepeatableKey, KeyRepeater } from '../src/key-repeat';
 import { RETROK } from '../src/keyboard';
+import { SharedKeyInput } from '../src/virtual-keyboard';
 
 // KeyRepeaterの設計(release後は「次のonPoll」を待ってからpressし直す = フレーム基準の
 // break)が正しく、壁時計の短いギャップで戻す旧実装が誤りであることを、実際のコア
@@ -208,5 +210,83 @@ describe('px68k-libretro キーリピート結合(フレーム基準のbreakが�
     const end = writePointer();
     const makeCount = countMakeCodes(mod, start, end);
     expect(makeCount, '同一フレーム内でrelease→pressしたときの make 回数').toBe(1);
+  });
+});
+
+describe('KeyRepeater→SharedKeyInput→コアの配線結合(onPollの実際の呼び順を通す)', () => {
+  beforeEach(() => {
+    vi.useFakeTimers();
+  });
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  const FRAME_MS = 1000 / 60;
+
+  /** LibretroHost.onPollと同じ「input_poll→input_state」の順を崩さないフレームループ。 */
+  function makeRunFrame(mod: CoreModule, keyRepeater: KeyRepeater): () => void {
+    return () => {
+      vi.advanceTimersByTime(FRAME_MS);
+      keyRepeater.notifyFramePolled();
+      mod._retro_run();
+    };
+  }
+
+  it('keydown相当の押しっぱなしで、KeyRepeater→SharedKeyInput→コアの配線を通してmakeコードが複数回積まれる', async () => {
+    const { mod, pressedKeys } = await initializeCore();
+    const writePointer = mod._webx68k_keybuf_write_pointer!;
+    // main.tsの `new SharedKeyInput((retrok, down) => host?.setKey(retrok, down))` と
+    // 同じ関係になるよう、sinkの出力をコアが読むpressedKeysへ直結する。
+    const sharedKeyInput = new SharedKeyInput((retrok, down) => {
+      if (down) pressedKeys.add(retrok);
+      else pressedKeys.delete(retrok);
+    });
+    const keyRepeater = new KeyRepeater(sharedKeyInput);
+    const runFrame = makeRunFrame(mod, keyRepeater);
+
+    // main.tsのkeydownハンドラ相当: press してから isRepeatableKey ならリピート開始。
+    const source = 'physical:KeyA';
+    expect(isRepeatableKey(RETROK.a)).toBe(true);
+    sharedKeyInput.press(source, RETROK.a);
+    keyRepeater.start(source, RETROK.a);
+
+    const start = writePointer();
+
+    // delayMs(500ms)はフレーム間隔1000/60msのちょうど30フレームぶん。よってフレーム30の
+    // notifyFramePolled()でrelease後1回目のポーリング(pollsSinceRelease=1、まだpressしない)、
+    // フレーム31で2回目のポーリング(pollsSinceRelease=2)に達してpressし直し、make再発。
+    // 以降はintervalMs(50ms)=ちょうど3フレームごとにrelease→次フレームでpressを繰り返す
+    // ため、makeはフレーム31,35,39,43,47で立つ(初回のフレーム1とあわせて計6回)。
+    // 51フレーム目で次の周期に入る前の49フレームで止め、6回ぴったりを確定させる。
+    for (let frame = 0; frame < 49; frame++) runFrame();
+
+    const end = writePointer();
+    const makeCount = countMakeCodes(mod, start, end);
+    expect(makeCount, 'KeyRepeater配線を通した49フレームぶんのmake回数').toBe(6);
+  });
+
+  it('isRepeatableKeyがfalseのキー(LSHIFT)は押しっぱなしでもリピートせず、KeyBuf書き込みは最初のmake1回だけ', async () => {
+    const { mod, pressedKeys } = await initializeCore();
+    const writePointer = mod._webx68k_keybuf_write_pointer!;
+    const sharedKeyInput = new SharedKeyInput((retrok, down) => {
+      if (down) pressedKeys.add(retrok);
+      else pressedKeys.delete(retrok);
+    });
+    const keyRepeater = new KeyRepeater(sharedKeyInput);
+    const runFrame = makeRunFrame(mod, keyRepeater);
+
+    // main.tsのkeydownハンドラと同じく、isRepeatableKeyがfalseならkeyRepeater.start()を
+    // そもそも呼ばない。
+    const source = 'physical:ShiftLeft';
+    expect(isRepeatableKey(RETROK.LSHIFT)).toBe(false);
+    sharedKeyInput.press(source, RETROK.LSHIFT);
+
+    const start = writePointer();
+    for (let frame = 0; frame < 49; frame++) runFrame();
+    const end = writePointer();
+
+    // LSHIFTの状態は一度も変化しないので、KeyBufへの書き込みは最初のmake1回だけのはず。
+    const writesCount = (end - start) & KEYBUF_MASK;
+    expect(writesCount, 'LSHIFTを押しっぱなしにした49フレームぶんのKeyBuf書き込み回数').toBe(1);
   });
 });

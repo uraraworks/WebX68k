@@ -35,11 +35,21 @@ describe('KeyRepeater', () => {
     expect(sink.calls).toEqual([{ kind: 'release', source: 'src', retrok: RETROK.a }]);
   });
 
-  it('notifyFramePolled()を呼ぶとpressし直される', () => {
+  it('release後1回目のnotifyFramePolled()ではまだpressし直さない(そのフレームがbreakを読む番のため)', () => {
     const sink = createSink();
     const repeater = new KeyRepeater(sink);
     repeater.start('src', RETROK.a);
     vi.advanceTimersByTime(DEFAULT_DELAY_MS);
+    repeater.notifyFramePolled();
+    expect(sink.calls).toEqual([{ kind: 'release', source: 'src', retrok: RETROK.a }]);
+  });
+
+  it('release後2回目のnotifyFramePolled()でpressし直される', () => {
+    const sink = createSink();
+    const repeater = new KeyRepeater(sink);
+    repeater.start('src', RETROK.a);
+    vi.advanceTimersByTime(DEFAULT_DELAY_MS);
+    repeater.notifyFramePolled();
     repeater.notifyFramePolled();
     expect(sink.calls).toEqual([
       { kind: 'release', source: 'src', retrok: RETROK.a },
@@ -65,6 +75,7 @@ describe('KeyRepeater', () => {
     const repeater = new KeyRepeater(sink);
     repeater.start('src', RETROK.a);
     vi.advanceTimersByTime(DEFAULT_DELAY_MS);
+    repeater.notifyFramePolled();
     repeater.notifyFramePolled();
     sink.calls.length = 0;
     vi.advanceTimersByTime(DEFAULT_INTERVAL_MS);

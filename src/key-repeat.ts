@@ -4,9 +4,18 @@
 // 1エミュレートフレームにつき1回(input_poll直後のinput_state読み出し)しか
 // 読まれない。そのため release→press を同一フレーム内で済ませるとコアには
 // breakが一切見えず、リピートが無言で消える(壁時計の短いギャップで戻す旧実装は
-// これを踏んでいた)。ここでは release 後、次にエミュレートフレームが1回
-// ポーリングされたのを確認してから press し直すことで、breakがちょうど1フレーム
-// 分コアに見えるようにする。
+// これを踏んでいた)。
+//
+// retro_run() 内の順序は「onPoll(=input_poll) → input_state でkeyStateを読む」。
+// releaseはこの外(setTimeoutによるJSイベントループの隙間)で起こるので、release後
+// 最初に来るnotifyFramePolled()は「このフレームのinput_stateがこれから'離れた'を
+// 読む」合図でしかない。そのフレームの読み出しが済むのはonPollが返った後、つまり
+// 次のnotifyFramePolled()が来た時点なので、press し直してよいのは release 後
+// **2回目** の notifyFramePolled()。1回目で press し直すと、そのフレームの
+// input_state はまだ呼ばれておらず、結局一度も「離れた」状態を読まれないまま
+// press に上書きされてしまい、breakが一切コアに見えなくなる。
+// (2026-08-11レビュー: 実装が1回目でpressし直しており、結合テストもKeyRepeater
+// →onPollの配線順を通していなかったため検出できていなかった)
 
 import { RETROK } from './keyboard';
 
@@ -26,7 +35,13 @@ export interface KeyRepeatOptions {
 /** 仮想キーボード旧実装(startRepeat)が使っていた値を踏襲。 */
 export const DEFAULT_DELAY_MS = 500;
 export const DEFAULT_INTERVAL_MS = 50;
-export const DEFAULT_FALLBACK_GAP_MS = 50;
+// フレーム合図2回ぶん(60fpsで約33ms)より確実に長い値。フォールバックは純粋に
+// 「コアが動いていない/止まっている(仮想キーボード単体・テスト環境など)ときの
+// 固着防止」だけが役目で、通常運転ではフレーム合図の側が必ず先に来る。ここが
+// フレーム間隔に近いと、フレーム落ちやタブスロットルのジッタで「2回目の合図が
+// 来る前にフォールバックが先に発火」してbreakが読まれる前にpressし直してしまい、
+// そのリピートが無言で落ちる事故になる。
+export const DEFAULT_FALLBACK_GAP_MS = 250;
 
 type EntryState = 'delay' | 'waitingFrame' | 'waitingInterval';
 
@@ -34,6 +49,8 @@ interface RepeatEntry {
   retrok: number;
   state: EntryState;
   timer: ReturnType<typeof setTimeout>;
+  /** state==='waitingFrame'の間、release後にnotifyFramePolled()が呼ばれた回数。 */
+  pollsSinceRelease: number;
 }
 
 export class KeyRepeater {
@@ -59,7 +76,7 @@ export class KeyRepeater {
   start(source: string, retrok: number): void {
     if (this.entries.has(source)) return;
     const timer = this.setTimeoutFn(() => this.doRelease(source), this.delayMs);
-    this.entries.set(source, { retrok, state: 'delay', timer });
+    this.entries.set(source, { retrok, state: 'delay', timer, pollsSinceRelease: 0 });
   }
 
   /**
@@ -84,7 +101,11 @@ export class KeyRepeater {
   notifyFramePolled(): void {
     for (const [source, entry] of this.entries) {
       if (entry.state !== 'waitingFrame') continue;
-      this.doPress(source, entry);
+      entry.pollsSinceRelease++;
+      // 1回目はこのフレームのinput_stateがこれから'離れた'を読む合図でしかないので
+      // まだpressし直さない。2回目(=次フレームの先頭)に達して初めて、直前のフレームの
+      // input_stateがbreakを読み終えたと判断できる。
+      if (entry.pollsSinceRelease >= 2) this.doPress(source, entry);
     }
   }
 
@@ -93,6 +114,7 @@ export class KeyRepeater {
     if (!entry) return;
     this.sink.release(source, entry.retrok);
     entry.state = 'waitingFrame';
+    entry.pollsSinceRelease = 0;
     // フォールバック: コアが止まっている/未起動(仮想キーボード単体・テスト環境など)だと
     // notifyFramePolledが来ず、releaseしたままキーが固着してしまう。壁時計で一定時間
     // 待っても合図が来なければpressし直して救済する。
