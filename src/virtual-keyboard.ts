@@ -1,6 +1,7 @@
 import { RETROK } from './keyboard';
 import type { VirtualKeyDef } from './kbd-layout';
 import { KBD_ROWS, KEYPAD_ROWS } from './kbd-layout';
+import { isRepeatableKey, KeyRepeater } from './key-repeat';
 
 export type { VirtualKeyDef } from './kbd-layout';
 export { KBD_ROWS, KEYPAD_ROWS } from './kbd-layout';
@@ -51,9 +52,6 @@ interface PointerState {
   button: HTMLButtonElement;
   def: VirtualKeyDef;
   source: string;
-  repeatDelay?: number;
-  repeatInterval?: number;
-  repressTimer?: number;
   modifierWasActive?: boolean;
 }
 
@@ -75,7 +73,12 @@ export function createVirtualKeyboard(
   panel: HTMLElement,
   input: SharedKeyInput,
   onVisibilityChanged?: (visible: boolean) => void,
+  keyRepeater?: KeyRepeater,
 ): VirtualKeyboard {
+  // 呼び出し元(main.ts)が物理キーボードと同じインスタンスを渡してこない場合は
+  // 内部で新規生成する。この場合host.onPollからのフレーム合図が届かないため、
+  // KeyRepeaterのfallbackGapMs経過での再pressにフォールバックする。
+  const repeater = keyRepeater ?? new KeyRepeater(input);
   const main = document.createElement('div');
   main.className = 'virtual-keyboard-main';
   const keypad = document.createElement('div');
@@ -128,17 +131,11 @@ export function createVirtualKeyboard(
     updateKanaDisplay();
   };
 
-  const stopTimers = (state: PointerState): void => {
-    if (state.repeatDelay !== undefined) window.clearTimeout(state.repeatDelay);
-    if (state.repeatInterval !== undefined) window.clearInterval(state.repeatInterval);
-    if (state.repressTimer !== undefined) window.clearTimeout(state.repressTimer);
-  };
-
   const finishPointer = (pointerId: number, keepModifierToggle: boolean): void => {
     const state = pointers.get(pointerId);
     if (!state) return;
     pointers.delete(pointerId);
-    stopTimers(state);
+    repeater.stop(state.source);
     state.button.classList.remove('pressed');
     if (state.button.hasPointerCapture(pointerId)) state.button.releasePointerCapture(pointerId);
 
@@ -169,20 +166,6 @@ export function createVirtualKeyboard(
     }
   };
 
-  const startRepeat = (state: PointerState): void => {
-    if (state.def.retrok === undefined) return;
-    state.repeatDelay = window.setTimeout(() => {
-      const repeat = (): void => {
-        input.release(state.source, state.def.retrok!);
-        state.repressTimer = window.setTimeout(() => {
-          if (pointers.has(Number(state.source.split(':').pop()))) input.press(state.source, state.def.retrok!);
-        }, 20);
-      };
-      repeat();
-      state.repeatInterval = window.setInterval(repeat, 50);
-    }, 500);
-  };
-
   const bindButton = (button: HTMLButtonElement, def: VirtualKeyDef): void => {
     if (def.width) button.style.flexGrow = String(def.width);
     button.addEventListener('pointerdown', (event) => {
@@ -204,7 +187,7 @@ export function createVirtualKeyboard(
         toggleModifier(def, button);
       } else if (def.retrok !== undefined) {
         input.press(source, def.retrok);
-        startRepeat(state);
+        if (isRepeatableKey(def.retrok)) repeater.start(source, def.retrok);
       }
     });
     button.addEventListener('pointerup', (event) => finishPointer(event.pointerId, true));
@@ -256,6 +239,7 @@ export function createVirtualKeyboard(
   }
 
   const releaseAll = (): void => {
+    repeater.stopAll();
     for (const pointerId of [...pointers.keys()]) finishPointer(pointerId, false);
     clearOneshots();
     // 状態キーはゲスト側を既にトグル済みで、RETROK自体は保持していない。

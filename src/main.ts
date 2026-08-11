@@ -60,6 +60,7 @@ import { buildGamepadDialog } from './gamepad-ui';
 import { buildInputProfileEditor, type InputSourceDef } from './input-profile-ui';
 import { buildHostKeyDialog } from './hostkey-ui';
 import { createVirtualKeyboard, SharedKeyInput } from './virtual-keyboard';
+import { isRepeatableKey, KeyRepeater } from './key-repeat';
 import { createVirtualPad, type VpadPlacement, type VpadSideBoxes } from './virtual-pad';
 import {
   activeProfile,
@@ -503,6 +504,8 @@ document.addEventListener('visibilitychange', () => {
 // 物理・仮想・ブリッジ入力を入力元ごとに保持し、同じキーの片側だけが先に離れても
 // コア側の押下状態が消えないよう集約する。
 const sharedKeyInput = new SharedKeyInput((retrok, down) => host?.setKey(retrok, down));
+// 物理・仮想キーボードで同じインスタンスを共有し、host.onPollのフレーム合図を両方に届ける。
+const keyRepeater = new KeyRepeater(sharedKeyInput);
 const virtualKeyboard = createVirtualKeyboard(
   virtualKeyboardPanel,
   sharedKeyInput,
@@ -513,6 +516,7 @@ const virtualKeyboard = createVirtualKeyboard(
     syncInputPanelUi();
     rescale();
   },
+  keyRepeater,
 );
 
 // --- バーチャルパッド(オンスクリーンパッド)+ 入力パネル(仮想キーボード/パッド)切り替え ---
@@ -2273,6 +2277,7 @@ async function bootCore(): Promise<void> {
   virtualPad.setPadType(gamepadStore.joyType[0]);
   await host.init(biosIplBytes!, biosCgBytes!);
   host.onPoll = () => {
+    keyRepeater.notifyFramePolled();
     const pads = gamepadsByPort();
     const [bits0, bits1] = pollBitsByPort(pads);
     // 物理パッド・バーチャルパッド・ホストキー(物理キーボード再割り当て)が同じポート(0)に
@@ -2559,6 +2564,8 @@ const physicalPressed = new Set<string>();
 const hostKeyPressed = new Map<string, Binding>();
 window.addEventListener('keydown', (e) => {
   if (document.activeElement !== canvas || !host) return;
+  // ホストキー割当(ジョイスティック等への横取り)経路はここで早期returnするため、
+  // 以降のkeyRepeater.start()に到達しない = 連打(リピート)対象にならない。
   const hostBinding = resolveHostKeyBinding(hostKeyStore, e.code);
   if (hostBinding) {
     hostKeyPressed.set(e.code, hostBinding);
@@ -2571,6 +2578,10 @@ window.addEventListener('keydown', (e) => {
   const firstPress = !physicalPressed.has(e.code);
   physicalPressed.add(e.code);
   sharedKeyInput.press(`physical:${e.code}`, code);
+  // ブラウザ自身のオートリピート(e.repeat===true)ではリピートを開始し直さない。
+  // 自前タイマ(KeyRepeater)で刻むことで、OSごとに異なるキーリピート間隔設定に
+  // 依存せず一定のリピート挙動にするのが狙い。
+  if (firstPress && !e.repeat && isRepeatableKey(code)) keyRepeater.start(`physical:${e.code}`, code);
   if (firstPress && code === RETROK.BROWSER_REFRESH) virtualKeyboard.togglePhysicalKanaLock();
   e.preventDefault();
 });
@@ -2585,6 +2596,7 @@ window.addEventListener('keyup', (e) => {
   if (!physicalPressed.delete(e.code)) return;
   const code = codeToRetrok(e.code);
   if (code === RETROK.UNKNOWN) return;
+  keyRepeater.stop(`physical:${e.code}`);
   sharedKeyInput.release(`physical:${e.code}`, code);
   e.preventDefault();
 });
@@ -2596,6 +2608,7 @@ function clearHostKeyPressed(): void {
   hostKeyPressed.clear();
 }
 window.addEventListener('blur', () => {
+  keyRepeater.stopAll();
   physicalPressed.clear();
   clearHostKeyPressed();
 });
