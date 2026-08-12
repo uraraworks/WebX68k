@@ -180,3 +180,204 @@
 **ワーカー化での問題** — MCP の同期 host interface と debug console API は非同期化が必要で、既存の外部クライアントが応答を待てるか回帰確認が要る。Worker 内の実コアを対象にするテストは、現在の同一 Realm 前提とは別に worker 起動、ready、メッセージ、OffscreenCanvas、終了処理を扱う必要がある。Vitest の Node worker だけではブラウザの OffscreenCanvas/OPFS 同期ハンドルを十分再現できるか未確認。
 
 **取りうる対応** — `BridgeHost` を全面的に `value | Promise<value>` または Promise に揃え、dispatch で全コマンドを await する。`read_memory` は範囲一括 RPC、screenshot/hash/text は Worker 内生成にする。テストは protocol の単体テスト、fake Worker を使うメイン proxy テスト、実ブラウザでの Worker+OffscreenCanvas+入力結合、実ブラウザでの OPFS 永続化/再起動/異常終了を分ける。既存の実 wasm 結合テストはコア単体回帰として残せるが、Worker 境界の回帰保証にはならない。COOP/COEP を追加する必要は、この調査範囲では見当たらなかった。
+
+## ワーカー境界のAPI設計
+
+### 境界の原則
+
+`LibretroHost` は Worker 内のコア実装と、メイン側の `Promise` ベースの proxy に分ける。Emscripten Module、HEAP、関数ポインタ、FS、`retro_run()` は Worker から公開しない。proxy は `loadGame()`、`fetchAvInfo()`、`serialize()`、`readTextScreen()` など現行 API に近い名前と引数を保ち、内部で下記メッセージへ変換する。これにより呼び出し側をカテゴリ単位で段階移行できる。
+
+駆動ループ、フレーム予算計算、可変 fps の反映は Worker が所有する。メインの rAF や AudioWorklet tick はフレーム実行要求にせず、入力状態、速度設定、音声キューのサンプル数などの状態更新だけを送る。Worker は自分のスケジューラで複数フレームを進められ、タブ非表示時にも rAF に依存しない。Worker 内スケジューラの実装にタイマーを使うこと自体は避けられないが、境界上の時系列識別子は起動後の累積 `frameNo` だけとし、壁時計の timestamp や別系統の連番を観測イベントへ付けない。UI のアクセス残光、定期処理、実測速度も `frameNo` とそのフレームの fps から扱う。
+
+各 `retro_run()` の直後、次のフレームを実行する前に、そのフレームの映像・音声と観測値を一度だけ採取し、同じ `frame` イベントへ束ねる。特にアクセスフラグは次の `retro_run()` 冒頭で消えるため、後から query する API は設けない。個別バッファへ frame 番号を付けて突き合わせる方式も採らない。
+
+### メッセージの分類と型の骨格
+
+メインから Worker へ送るものを command、command の成否を返すものを response、Worker が自発的に通知するものを event とする。command は同一 Worker 内で受信順に処理し、コアへ触る command はフレーム境界の safe point で実行する。`generation` は Worker 再生成ごとに増やし、`requestId` はその世代内の応答照合だけに使う。時系列の基準ではない。
+
+```ts
+type Generation = number;
+type RequestId = number;
+type FrameNo = number; // 起動後に完了した retro_run() の累積数。唯一の時刻基準
+
+type MainToWorker = CoreCommand;
+type WorkerToMain = CoreResponse | CoreEvent;
+
+type CoreCommand =
+  | { kind: 'command'; generation: Generation; requestId: RequestId;
+      op: 'initialize'; payload: InitPayload }
+  | { kind: 'command'; generation: Generation; requestId: RequestId;
+      op: 'loadGame'; payload: { path?: string } }
+  | { kind: 'command'; generation: Generation; requestId: RequestId;
+      op: 'setRunning'; payload: { running: boolean } }
+  | { kind: 'command'; generation: Generation; requestId: RequestId;
+      op: 'updateInput'; payload: InputUpdate }
+  | { kind: 'command'; generation: Generation; requestId: RequestId;
+      op: 'hotSwapFdd'; payload: HotSwapFddPayload }
+  | { kind: 'command'; generation: Generation; requestId: RequestId;
+      op: 'serialize' | 'readTextScreen' | 'screenshot'; payload: {} }
+  | { kind: 'command'; generation: Generation; requestId: RequestId;
+      op: 'readMemory'; payload: { address: number; length: number } };
+
+type CoreResponse =
+  | { kind: 'response'; generation: Generation; requestId: RequestId;
+      ok: true; completedFrameNo: FrameNo; result: unknown }
+  | { kind: 'response'; generation: Generation; requestId: RequestId;
+      ok: false; completedFrameNo?: FrameNo; error: CoreError };
+
+type CoreEvent =
+  | { kind: 'event'; generation: Generation; event: 'ready'; avInfo: AvInfo }
+  | { kind: 'event'; generation: Generation; event: 'frame'; snapshot: FrameSnapshot }
+  | { kind: 'event'; generation: Generation; event: 'sramChanged';
+      frameNo: FrameNo; bytes: ArrayBuffer; keyRepeat?: KeyRepeatConfig }
+  | { kind: 'event'; generation: Generation; event: 'fatal'; error: CoreError };
+
+interface CoreError {
+  code: 'INVALID_STATE' | 'INVALID_ARGUMENT' | 'LOAD_FAILED' |
+        'IO_FAILED' | 'UNSUPPORTED' | 'CORE_FAILURE' | 'WORKER_FAILURE';
+  message: string;
+  operation?: string;
+  recoverable: boolean;
+  details?: unknown; // structured-clone 可能な診断情報だけ
+}
+```
+
+`initialize` は BIOS、CGROM、SRAM、起動時オプション、初期ディスク参照と OffscreenCanvas（採用する場合）を受け取る。大きな `ArrayBuffer` と canvas は transfer list で渡す。`ready` は初期化とコールバック登録の完了を表し、`loadGame` の応答とは分ける。`dispose` は正常終了の応答を待つ command とするが、最終的な `Worker.terminate()` はメインが行う。
+
+proxy の公開形状は、例えば次のように同期戻り値だけを `Promise` に置き換える。
+
+```ts
+interface LibretroHostProxy {
+  init(payload: InitPayload): Promise<void>;
+  setCoreOption(key: string, value: string): Promise<void>;
+  loadGame(path: string): Promise<boolean>;
+  fetchAvInfo(): Promise<AvInfo>;
+  serialize(): Promise<ArrayBuffer | null>;
+  unserialize(bytes: ArrayBuffer): Promise<boolean>;
+  readTextScreen(): Promise<TextScreenDump>;
+  readMemory(address: number, length: number): Promise<ArrayBuffer>;
+  hotSwapFdd(payload: HotSwapFddPayload): Promise<HotSwapFddResult>;
+  dispose(): Promise<void>;
+}
+```
+
+### フレームスナップショット
+
+```ts
+interface FrameSnapshot {
+  frameNo: FrameNo;
+  av: {
+    fps: number;
+    sampleRate: number;
+    width: number;
+    height: number;
+  };
+  video:
+    | { kind: 'offscreen'; changed: boolean }
+    | { kind: 'bitmap'; bitmap: ImageBitmap }
+    | { kind: 'rgba'; bytes: ArrayBuffer; width: number; height: number };
+  audio: {
+    chunks: ArrayBuffer[]; // Float32、stereo interleaved
+    sampleFrames: number;
+  };
+  disk: {
+    access: { fddReading: boolean; fddDrive: number; hddAccessing: boolean };
+    dirty: { fddMask: number; hdd: boolean };
+  };
+}
+```
+
+`frameNo`、そのフレームで有効だった fps/sample rate/解像度、完成映像、生成音声、アクセス状態、フレーム完了時点のダーティ状態を同梱する。AV 値は変更時だけ別イベントにせず毎回含め、スナップショット単体でそのフレームを解釈できるようにする。解像度変更時の DOM/CSS `rescale()` もこのスナップショットを契機にする。SRAM 全量、TVRAM テキスト、任意メモリ、マウス診断はフレーム結果の常時表示に必要なくサイズまたは抽出コストもあるため含めない。SRAM は Worker 内で差分検出し、変更時だけ `sramChanged` を送る。閉ループのマウス追従は Worker 内で完結させ、診断値は明示 query にする。
+
+OffscreenCanvas へ Worker が直接描画する構成では、`video.kind === 'offscreen'` がそのフレームの描画完了を表す。描画をメインへ渡す構成では `ImageBitmap` または RGBA の `ArrayBuffer` を同じイベントの transfer list に入れる。音声チャンクも同じ transfer list に入れ、メインは受け取った buffer をコピーせず AudioWorklet へ再 transfer する。音声だけを別 channel に分けるとフレーム結果との一体性が失われるため採用しない。セーブステート、ディスクイメージ、メモリ範囲、スクリーンショット Blob/bytes も同様に transferable とし、送信側が detach 後の配列を再利用しない所有権規約にする。
+
+イベントがメインの処理速度を上回る場合でも、観測値だけを別送・間引きしてはならない。描画済みの古い `frame` イベント全体を捨てられるか、音声を失わずに背圧をかける方法は、映像経路と音声経路の選択に依存するため未決とする。
+
+### command と不可分操作
+
+通常 command はフレーム間で一件ずつ処理する。不可分操作は自由な primitive 配列を送る汎用 transaction にはせず、順序と失敗時の意味を固定した専用 command とする。handler の開始から終了までは駆動ループと他 command を進めない。
+
+```ts
+interface HotSwapFddPayload {
+  drive: 0 | 1;
+  image: null | { name: string; bytes: ArrayBuffer };
+}
+
+interface HotSwapFddResult {
+  previousImage: ArrayBuffer | null;
+  mountedPath: string | null;
+}
+
+// Worker 内の一つの handler で次を完了する。
+// 交換: eject旧 → 旧イメージ読出し → 新イメージwrite → insert新
+// 排出: eject旧 → 旧イメージ読出し → 不要ファイルunlink
+type AtomicCommand =
+  | { op: 'hotSwapFdd'; payload: HotSwapFddPayload }
+  | { op: 'exportLiveMedia'; payload: { slot: 'fdd0' | 'fdd1' | 'hdd' } }
+  | { op: 'captureDirtyMedia'; payload: { slots: Array<'fdd0' | 'fdd1' | 'hdd'> } }
+  | { op: 'finishDirtyCapture'; payload: { token: string; persisted: boolean } }
+  | { op: 'flushAndClose'; payload: {} };
+```
+
+`exportLiveMedia` の FDD 処理は eject→read→同じ path を再insert までを一つにする。`captureDirtyMedia` は対象の dirty clear を吸い出し直前に行い、FDD なら eject→read→reinsert まで進め、bytes と token を返す。メインが IndexedDB 保存に成功した後で `finishDirtyCapture(persisted: true)`、失敗時は `persisted: false` を返し、失敗時は Worker が対象を再度 dirty にする。capture 後に発生した新しい書き込みの dirty は消さない。これにより Worker 内の順序は不可分にしつつ、境界外の永続化失敗も次回保存対象として残せる。token の具体的な保持期間と、応答前に Worker が異常終了した場合の回収方法は未決である。
+
+`flushAndClose` は駆動停止→全 dirty media の回収→SRAM 回収→FS/OPFS の flush/close を一つの終了シーケンスとして行い、回収データを transferable で返す。メイン側の永続化完了は Worker 内だけでは保証できないため、正常な再起動は回収データを保存し終えてから旧 Worker を終了する。
+
+### メッセージ一覧と同期呼び出しの対応
+
+| 「7.」の用途 | command / response / event | 境界での扱い |
+|---|---|---|
+| 初期化・コールバック | `initialize` → response、`ready` event、`dispose` → response | malloc、callback 登録、`retro_init` は Worker 内だけ。ready/disposed のみ公開する。 |
+| コアオプション | `setCoreOption` → response、または `initialize.options` | Map と文字列 pointer は Worker 所有。再起動時反映の項目は proxy 側で区別する。 |
+| ゲームロード・AV・実行 | `loadGame` / `loadGameNone` / `unloadGame` / `fetchAvInfo` → response、`setRunning` → response、`frame` event | `runFrame` RPC は作らず、Worker 内ループだけが `retro_run()` を呼ぶ。 |
+| リセット・破棄 | `flushAndClose` / `dispose` → response、再生成後の `ready` event | 通常 UI reset はメイン側の再生成手順。コアだけの soft reset を残す場合は別 command とする。 |
+| ステート | `serialize` / `unserialize` → response | bytes は transferable。unserialize 中は駆動を止め、成功応答後に音声 flush と基準状態を更新する。 |
+| MEMFS | `writeFile` / `readFile` / `removeFile` → response | 互換用の限定 API。FDD 全量 bytes は transferable、HDD は OPFS ID/stream APIへ分離する。 |
+| FDD ホットマウント | `hotSwapFdd` → response | eject→旧内容回収→write→insert を専用不可分 command にする。 |
+| アクセス・ダーティ | `frame.snapshot.disk` event、`captureDirtyMedia` / `finishDirtyCapture` → response | アクセス/dirty の pull API は廃止。clear と吸い出しは不可分にする。 |
+| キー・パッド・マウス入力 | `updateInput`、`sendKeyMake`、`clearInput` → response | Worker は受信済み状態を同期参照。key/button は状態、mouse delta は加算値と入力世代で表し、clear より古い更新を捨てる。 |
+| ゲストカーソル・マウス診断 | `setMouseTrackingTarget` → response、`readMouseDiagnostics` → response | 閉ループ追従は Worker 内。診断 API は Promise とし、駆動には使わない。 |
+| SRAM・キーリピート | `sramChanged` event、必要なら `readSram` → response | 差分検出は Worker 内。変更 bytes と repeat 設定を通知し、bytes は transferable。 |
+| TVRAMテキスト | `readTextScreen` → response | 抽出も Worker 内。HEAP view/pointer は返さない。 |
+| 任意メモリ参照 | `readMemory` → response | 1 byte RPC を繰り返さず、範囲を一括して transferable で返す。 |
+| 描画・音声 callback | `frame.snapshot.video/audio` event、`screenshot` / `screenHash` → response | HEAP 読みと変換は Worker 内。完成データだけを渡す。 |
+
+入力 command の `requestId` は ACK 用であり時刻には使わない。`InputUpdate` にはキー集合、2 port の解決済み pad bitmask、mouse button、加算 delta と `inputGeneration` を含める。blur/visibility の `clearInput` は `inputGeneration` を進め、Worker は古い世代の入力を無視する。同じ世代の mouse delta は受信順に加算し、押下状態は最新値で置換する。ゲームパッドを何を契機にメインで poll するかは後述の未決事項とする。
+
+### エラー、異常終了、再生成
+
+command の予期される失敗は `ok: false` response とし、proxy は `CoreError` を保持した例外へ変換する。command handler 内の例外でコア状態の継続可否を保証できない場合は、失敗 response に加えて `fatal` event を送り、その Worker は新しい command を受け付けない。`messageerror`、Worker の `error`、応答 timeout、突然の終了はメインが `WORKER_FAILURE` として扱い、その世代の未完了 Promise をすべて reject する。
+
+メインは生成ごとに単調増加する `generation` を割り当て、現在世代と異なる response/event を無視する。正常な UI reset は次の順序に固定する。
+
+1. 新規 UI 操作の受付を止め、旧 Worker に `setRunning(false)` を送る。
+2. `flushAndClose` の回収データを受け取り、IndexedDB 等への保存完了を await する。
+3. `dispose` の完了を待って旧 Worker を terminate する。
+4. `generation` を増やして Worker を生成し、永続化済み BIOS/SRAM/ディスクと設定で初期化する。
+5. `ready` と `loadGame` 成功後に入力をクリアし、UI 操作と駆動を再開する。
+
+異常終了時は旧 Worker 内だけにあった未永続化データを回収できるとはみなさない。最後に永続化に成功した SRAM/ディスク、メインが保持する設定とマウントメタデータから新 Worker を作り直し、データ損失の可能性を UI へ通知する。自動再生成の回数制限と backoff、異常終了後に自動で実行再開するかは未決である。
+
+### 段階移行の順序
+
+1. **protocol と非同期 proxy の導入** — generation、request/response、エラー、transferable 所有権を先に固定する。既存 `LibretroHost` 実装を当面 proxy と同じ interface に合わせ、呼び出し側の Promise 化を始められるようにする。
+2. **観測・診断系 query** — 任意メモリ、TVRAM、screen hash/screenshot、マウス診断を範囲 RPC/非同期 API にする。駆動や永続化を変えず、MCP dispatch が既に Promise を扱えるため境界の検証に向く。
+3. **ステートと単純な FS 転送** — serialize/unserialize、互換用 read/write を transferable 化する。大容量データの所有権とエラー処理をここで確立する。
+4. **初期化、オプション、load/AV** — Module、callback、HEAP、FS を Worker 内へ閉じ、ready/load 応答までを移す。以後のカテゴリは Worker 内コアを前提とする。
+5. **描画・音声出力** — video/audio callback と変換を Worker へ移し、`frame` の完成データ経路を作る。OffscreenCanvas と音声転送の実機確認を行う。
+6. **入力** — メインで DOM/Gamepad を正規化し、Worker の `input_state` が受信済みスナップショットだけを見るようにする。世代付き clear と加算 mouse delta を先に検証し、その後に閉ループ追従を Worker へ移す。
+7. **Worker 駆動ループとフレームスナップショット** — `retro_run()`、予算計算、可変 fps、フレーム番号を Worker 所有にし、アクセス/dirty/AV/映像/音声を一イベントへ統合する。ここでメインの `runFrame()` と rAF 駆動を廃止する。
+8. **FDD/MEMFS の不可分操作とオートセーブ** — hot swap、live export、dirty capture、終了 flush を専用 command に置き換える。永続化失敗時の再 dirty 化まで確認してから再起動経路を切り替える。
+9. **再生成と異常系** — 正常 reset の保存→終了→ready、および crash、timeout、旧世代遅延応答を検証する。最後に同期 host と旧スケジューラを除去する。
+
+順序上、Worker 内コアが必要な初期化より前に query の実処理を Worker へ移す必要はない。手順2・3では同じ非同期 proxy interface を同一スレッド adapter で先行導入し、呼び出し側を安全に変更してから実体を Worker に差し替える。
+
+### 未決事項
+
+- Worker の内部スケジューラを `setTimeout` のみで構成するか、音声キューの sample frame 数をどの頻度でフィードバックするかは、非表示タブ、iOS、ヘッドレスでの実測がないため未決。メインから一フレームずつ駆動しないことと、境界の時刻を `frameNo` に統一することは固定する。
+- OffscreenCanvas へ直接描画するか、各フレームの `ImageBitmap`/RGBA を転送するかは未決。前者では screenshot、hash、Worker 再生成時の canvas 再移譲を対象ブラウザで検証する必要がある。後者では帯域と背圧を測る必要がある。
+- `frame` event の安全な間引き・背圧方式は未決。アクセス値を失わず、音声の連続性を保ち、別バッファとの事後照合を導入しない方式を実測して決める必要がある。
+- ゲームパッドを独立タイマーで poll するか、受信した `frame` event を契機に poll するかは未決。Worker 内の `input_poll` からメインへ同期問い合わせはしない。
+- HDD の OPFS ID/stream API、既存 IndexedDB からの移行、FDD 全量イメージのメイン側保持方針はストレージ方式の決定に依存するため未決。
+- `_retro_deinit` を正常終了で呼ぶべきか、現在未使用の `loadGameNone()` / `unloadGame()` とテスト用 export を本番 proxy に残すかは、現行の意図と外部利用が確認できないため未決。
+- save state load 後に累積 `frameNo` を 0 へ戻すと世代内で番号が重複するため、本設計では単調増加を維持する。セーブデータ内のゲスト時刻と host の `frameNo` の関係を外部へ見せる必要があるかは未決。
