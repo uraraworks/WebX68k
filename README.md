@@ -216,6 +216,9 @@ Long-press repeat delay/interval follow the X68000's own SRAM setting (the one
 SWITCH.X changes), for both the physical and virtual keyboard. Changing it via
 SWITCH.X while running is picked up live.
 
+SRAM (boot drive, memory size, key repeat, and other SWITCH.X settings) is
+automatically persisted to IndexedDB, so these settings survive a page reload.
+
 ### Virtual pad (on-screen pad)
 
 For playing games on a phone, the "Show Input Panel" toolbar button (also

@@ -17,6 +17,7 @@ Vite + TypeScript（フレームワーク無し）の最小構成です。
 - `src/keyboard.ts` … `KeyboardEvent.code` → `RETROK_*` のマッピング
 - `src/virtual-keyboard.ts` … X68000仮想キーボード、Pointer管理、物理入力との押下状態統合
 - `src/bios-store.ts` … BIOS ファイルを IndexedDB に永続化するヘルパー
+- `src/sram-store.ts` … SRAM(SWITCH.Xの設定)を IndexedDB に永続化するヘルパー(後述)
 - `src/disk-store.ts` … ディスクイメージ(FD/HDD)を IndexedDB に永続化する「ディスクライブラリ」ヘルパー。
   拡張子なしイメージの内容ベース判定(`classifyDiskBytes()`/`detectDiskContentKind()`)もここにある(後述)
 - `src/api/archive.ts` … LZH/ZIP アーカイブ展開の公開API。拡張子判定と `lzh.ts`/`zip.ts` への振り分けのみ行う
@@ -322,6 +323,54 @@ SRAM読み出し→変換までをまとめて行い、`main.ts` は `host.onPol
 `LibretroHost.readKeyRepeatConfig()` はさらに、読み出し先が本物のSRAMであることの
 健全性チェックとして、SRAM先頭8バイトが機種シグネチャ「Ｘ68000W」であることを毎回
 確認してから値を使う。
+
+## SRAM永続化(SWITCH.Xの設定をリロード後も残す)
+
+`src/sram-store.ts`(IndexedDB永続化)と `LibretroHost.init()`の第3引数/`readSram()`/
+`startSramAutosave()`(`src/libretro-host.ts`)で、SRAM(起動ドライブ・メモリ容量・
+キーリピート等、実機の `SWITCH.X` で設定する項目が載る `$ED0000`-`$ED3FFF`)をページの
+リロードをまたいで永続化している。
+
+**`sram.dat` は `retro_load_game()` より前に置く必要がある。** `SRAM_Init()`
+(`x68k/sram.c`)は `retro_load_game()` の中(`WinX68k_Init()` 経由)でシステムディレクトリの
+`sram.dat` を読む。ファイルが無ければ SRAM を `0xFF` 埋めにし、IPL が既定値を書く
+(初回起動相当)。BIOS(IPLROM/CGROM)と同じ `/system/keropi/` 配下に置くファイルなので、
+`LibretroHost.init(biosIpl, biosCg, sram?)` の第3引数として渡し、`init()` 内で
+`_retro_init()` より前(=呼び出し元が `retro_load_game()` を呼ぶより確実に前)に書き込む。
+長さが `0x4000`(16KB)でないものは壊れたデータを渡さないよう無視して `console.warn` する。
+
+**保存は `retro_deinit()` に頼れないので、ホスト側で行う。** 書き出し側の
+`SRAM_Cleanup()` は `retro_deinit()` からしか呼ばれないが、WebX68k は
+`_retro_deinit()` を呼んでいない(呼ぶとコアの内部状態が破棄されて以後動かせなくなる)。
+そのため保存はコア側の仕組みに任せず、`LibretroHost.readSram()`
+(`_webx68k_sram_read()` で0x4000バイトを読み出す)を使ってホストが能動的に読み、
+別途 IndexedDB へ書く。
+
+**離脱イベント(beforeunload/pagehide)に保存を託さない。** 過去にこの方式で
+保存し損ねた実績がある(離脱イベントは非同期処理を完走できないことがあり、特に
+モバイル Safari で顕著。`main.ts` の HDD/FDD ダーティ保存の項も参照)。代わりに
+`LibretroHost.startSramAutosave(save)` が3秒ごとに `readSram()` を呼び、前回保存した
+内容と1バイトでも変わっていれば `save()` を呼ぶ、という平常時の定期保存にしている。
+16KBの全バイト比較を3秒に1回行う程度は軽く、SWITCH.Xの設定はユーザーが明示的に
+変更したときしか変わらないため、この頻度で十分(毎フレーム=60Hzでやる必要はない)。
+
+**シグネチャ不一致のときは保存しない。** `readSram()` は `readKeyRepeatConfig()` と同じ
+健全性チェックとして、SRAM先頭8バイトが機種シグネチャ「Ｘ68000W」と一致しない場合は
+`null` を返す。ここで弾かずに保存してしまうと、未初期化・読み出し経路異常のSRAMを
+そのまま永続化することになり、次回起動時にその壊れたSRAMを読み込んで正常な状態へ
+戻れなくなってしまう。
+
+**ファイルのバイト順は「file[adr] === `_webx68k_sram_read(adr)`」であることを実測済み。**
+`SRAM_Init()` はファイル読み込み後に隣接バイトをswapし(`#ifndef MSB_FIRST`)、
+`SRAM_Read()` は常に `adr ^= 1` する。この2つを合成すると理論上は打ち消し合って
+ファイルのバイト順とゲスト側の読み出し順が一致するはずだが、これは静的な読解による
+推論でしかない。`test/core-sram-persistence-integration.test.ts` で実際のコアに対し、
+1台目のコアで読んだSRAMのoffset `0x59`/`0x5A`(キーリピート段階値)を書き換えたバイト列を
+作り、2台目の新しいコアインスタンスへ `retro_load_game()` 前に `sram.dat` として置いて
+起動、`_webx68k_sram_read(0x59)`/`(0x5A)` から書き換えた値がそのまま読めること・
+機種シグネチャが保たれていること・`readKeyRepeatConfig()` 相当の変換結果
+(開始500ms・間隔50ms)が正しいことを検証している。IPLが `$59`/`$5A` を毎回既定値へ
+書き戻す、といった懸念も無いことをこのテストで確認済み。
 
 ## マウス入力
 

@@ -200,6 +200,10 @@ export class LibretroHost {
 
   private callbackPtrs: number[] = [];
 
+  // SRAM定期保存用。setInterval のIDと直近保存したバイト列(差分検出用)を持つ。
+  private sramAutosaveTimer: ReturnType<typeof setInterval> | null = null;
+  private lastSavedSram: Uint8Array | null = null;
+
   private _avInfo: AvInfo | null = null;
   // FS へ書いたものと逆引き用を必ず同じバイト列にするための唯一の CGROM 保持先。
   private coreCgrom: Uint8Array | null = null;
@@ -314,6 +318,53 @@ export class LibretroHost {
     return { delayMs, intervalMs };
   }
 
+  /**
+   * SRAM全体(0x4000バイト、$ED0000-$ED3FFFに対応)を読み出す。
+   * 先頭8バイトが機種シグネチャ「Ｘ68000W」と一致しない場合はnullを返す
+   * (readKeyRepeatConfig()と同じ健全性チェック)。ここでnullを弾かずに保存してしまうと、
+   * 未初期化・読み出し経路異常のSRAMをそのまま永続化することになり、次回起動時に
+   * その壊れたSRAMを読み込んで正常な状態へ戻れなくなってしまう。
+   */
+  readSram(): Uint8Array | null {
+    const mod = this.mod;
+    const sramRead = mod._webx68k_sram_read;
+    if (!sramRead) return null;
+    for (let i = 0; i < SRAM_SIGNATURE.length; i++) {
+      if (sramRead(i) !== SRAM_SIGNATURE[i]) return null;
+    }
+    const bytes = new Uint8Array(0x4000);
+    for (let i = 0; i < 0x4000; i++) bytes[i] = sramRead(i);
+    return bytes;
+  }
+
+  /**
+   * SRAMを定期的に読み、前回保存した内容から変化していれば save() を呼ぶ。
+   * 離脱イベント(beforeunload/pagehide)に保存を託さない設計にしている
+   * (非同期処理を完走できないことがあり、過去にそれで保存し損ねた実績があるため)。
+   * 代わりに平常時、短い間隔(3秒)で読み直して差分があれば保存する。
+   * SWITCH.Xの設定はユーザーが明示的に変更したときしか変わらないため、
+   * 16KB全バイト比較をこの頻度で行っても無駄が大きくない(毎フレーム=60Hzで
+   * やる必要はない)。同名タイマーが既にあれば張り替える。
+   */
+  startSramAutosave(save: (bytes: Uint8Array) => void): void {
+    this.stopSramAutosave();
+    this.sramAutosaveTimer = setInterval(() => {
+      const bytes = this.readSram();
+      if (!bytes) return; // シグネチャ不一致(未初期化等)は保存対象にしない
+      if (this.lastSavedSram && bytesEqual(this.lastSavedSram, bytes)) return;
+      this.lastSavedSram = bytes;
+      save(bytes);
+    }, 3000);
+  }
+
+  /** SRAM定期保存を止める(dispose時・テスト後始末用)。 */
+  stopSramAutosave(): void {
+    if (this.sramAutosaveTimer !== null) {
+      clearInterval(this.sramAutosaveTimer);
+      this.sramAutosaveTimer = null;
+    }
+  }
+
   readGuestCursor(): { x: number; y: number; minX: number; minY: number; maxX: number; maxY: number; visible: boolean } | null {
     const mod = this.mod;
     const word = (addr: number): number => {
@@ -380,8 +431,14 @@ export class LibretroHost {
     }
   }
 
-  /** BIOS ファイルを書き込み、コアを初期化する */
-  async init(biosIpl: Uint8Array, biosCg: Uint8Array): Promise<void> {
+  /**
+   * BIOS ファイル(と、あれば SRAM)を書き込み、コアを初期化する。
+   * SRAM_Init()(x68k/sram.c)は sram.dat を retro_load_game() の中(WinX68k_Init()経由)で
+   * 読むため、ここ(retro_load_game() より確実に前)で書いておく必要がある。長さが
+   * 0x4000(16KB)でないものは壊れたデータを渡さないよう無視する(未初期化 0xFF 埋めの
+   * ままIPLに既定値を書かせたほうが安全なため)。
+   */
+  async init(biosIpl: Uint8Array, biosCg: Uint8Array, sram?: Uint8Array): Promise<void> {
     const mod = await window.PX68K({});
     this.mod = mod;
 
@@ -394,6 +451,16 @@ export class LibretroHost {
     // 呼び出し元による後日の変更を遮断し、この同じ配列を FS 書き込みと逆引きの両方に使う。
     this.coreCgrom = biosCg.slice();
     mod.FS.writeFile('/system/keropi/cgrom.dat', this.coreCgrom);
+
+    if (sram) {
+      if (sram.byteLength === 0x4000) {
+        mod.FS.writeFile('/system/keropi/sram.dat', sram);
+      } else {
+        console.warn(
+          `SRAMファイルのサイズが不正です(${sram.byteLength} bytes, 期待値 0x4000): 無視します`,
+        );
+      }
+    }
 
     this.systemDirPtr = mallocString(mod, '/system');
     this.saveDirPtr = mallocString(mod, '/save');
@@ -794,9 +861,19 @@ export class LibretroHost {
 
   /** コールバック用関数テーブルエントリを解放する */
   dispose(): void {
+    this.stopSramAutosave();
     for (const ptr of this.callbackPtrs) {
       this.mod.removeFunction(ptr);
     }
     this.callbackPtrs = [];
   }
+}
+
+/** 2つのUint8Arrayが同じ内容か(長さ違いも含めて)比較する素朴な全バイト比較。 */
+function bytesEqual(a: Uint8Array, b: Uint8Array): boolean {
+  if (a.length !== b.length) return false;
+  for (let i = 0; i < a.length; i++) {
+    if (a[i] !== b[i]) return false;
+  }
+  return true;
 }
