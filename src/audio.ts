@@ -129,13 +129,15 @@ export class AudioEngine {
 
     const ctx = new AudioContext({ sampleRate: 44100 });
     // ユーザー操作を起点に start() が呼ばれた場合はここで即 running になる。
-    // suspended のままでも起動自体は続け、失敗時は上位の自動再生制限バナーに委ねる。
+    // ここは await しない: Safari では自動再生が許可されない状況で resume() の
+    // Promise が解決しないまま放置されることがあり、await するとエミュレータの
+    // 起動そのものが止まってしまう(start() は main.ts の startFromOverlay() で
+    // bootCore() より前に await されているため)。resume の成否は上位の
+    // maybeShowAudioMutedBanner() が statechange で拾うので、ここで待つ必要はない。
     if (ctx.state === 'suspended') {
-      try {
-        await ctx.resume();
-      } catch {
-        // 握りつぶす(自動再生制限などで失敗しても起動は止めない)
-      }
+      void ctx.resume().catch(() => {
+        /* 失敗しても起動は止めない */
+      });
     }
     const blob = new Blob([WORKLET_SOURCE], { type: 'application/javascript' });
     const url = URL.createObjectURL(blob);
