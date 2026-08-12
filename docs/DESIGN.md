@@ -254,8 +254,8 @@ SHIFT・CTRL・OPT.1・OPT.2は `Map` で複数同時に保持するワンショ
 ゲスト側を切り替え、UIだけをロック表示する。
 
 入力はPointer Eventsだけを使い、`pointerId` ごとの押下先を `Map` に記録して各ボタンで
-`setPointerCapture()` する。pointerup/cancel/leaveで必ず対応する入力元だけを解放し、500ms後・
-50ms間隔の長押しリピートも入力元ごとに管理する。`blur` とhiddenへの
+`setPointerCapture()` する。pointerup/cancel/leaveで必ず対応する入力元だけを解放し、長押し
+リピート(`KeyRepeater`。詳細は次節「キーリピート」)も入力元ごとに管理する。`blur` とhiddenへの
 `visibilitychange` では全入力元を強制解放する。`SharedKeyInput` は物理・仮想・MCP入力を
 入力元別に参照カウントし、同じRETROKを複数経路が押している間は片方のbreakで解除しない。
 
@@ -269,6 +269,59 @@ canvas自体は引き続き`width/height:auto`なので固有の画素比を維�
 `kanaShift`を選び、SHIFT解除後は`kana`へ戻す。この状態はゲストではなくクライアント側のロック状態を正とし、
 ゲスト側とずれた場合はかなキーの押し直しで合わせる。物理キーボードの`KanaMode`も共有入力に統合し、
 リピートでない初回keydownで仮想キーボードの表示ロックを反転する。
+
+## キーリピート
+
+`key-repeat.ts` の `KeyRepeater` が物理・仮想キーボード共通のオートリピート機構を担う。
+px68k-libretro コア自体にはリピート機構が無く、`LibretroHost.keyState` は
+1エミュレートフレームにつき1回(`input_poll` 直後の `input_state` 読み出し)しか読まれない
+ため、ホスト側で make/break のパルス(release→press)を打ってリピートを模倣する。
+
+**breakはフレーム基準で管理する。** release を `setTimeout` で起こしてすぐ press し直すと、
+コアがそのフレームでまだ `input_state` を呼んでいない場合は break が一度もコアに見えないまま
+press へ上書きされてしまう(retro_run内の順序は「onPoll(=input_poll) → input_state」で、
+JSのsetTimeoutはこの外側でしか起きない)。そのため `KeyRepeater.notifyFramePolled()`
+(`host.onPoll` から毎フレーム呼ぶ)を release 後 **2回** 数えてから press し直す
+— 1回目はそのフレームの `input_state` がこれから break を読む合図でしかなく、実際に
+読み終えるのは次のフレームの先頭だからである。コアが動いていない(仮想キーボード単体・
+テスト環境等)場合の固着防止に、壁時計ベースの `fallbackGapMs` も併用する。
+
+**周期はパルス所要時間ぶんを差し引いて補正する。** release→press(パルス)にも実時間が
+かかる(フレーム基準の待ちにより最短でも1フレーム程度)ため、press後に単純に
+`intervalMs` だけ待って次のreleaseを起こすと、実際のpress→press周期が
+`intervalMs + パルス所要時間`になり指定値より遅くなる。`KeyRepeater` は直前の
+release→press実測時間を`pulseEstimateMs`として保持し、次のreleaseまでの待ちを
+`Math.max(0, intervalMs - pulseEstimateMs)`にすることで周期を`intervalMs`ちょうどへ
+補正する。最初のリピート(押下からのdelayMs)も同様に、初回だけは実測値が無いため
+初期推定(60fpsで2フレームぶん)を使って先に差し引いておく。時刻取得は`options.now`
+(既定`Date.now`)で注入できるため、vitestのfake timersでも決定的に検証できる。
+
+**設定はSRAMから読み、X68000の式でmsへ変換する。** 実機のSWITCH.Xで設定するキーリピートの
+開始時間・間隔は、SRAM(ゲスト側 `$ED0000`-`$ED3FFF`)の `$ED0059`(開始段階値n)・
+`$ED005A`(間隔段階値n、n=0..15)に格納される。公開されているX68000のキーリピート仕様は
+
+```
+開始時間[ms] = 200 + 100 × n
+間隔[ms]     = 30 + 5 × n²
+```
+
+で、`key-repeat.ts` の `keyRepeatDelayMsFromSramValue()` / `keyRepeatIntervalMsFromSramValue()`
+がこの式の純粋関数版(範囲外・非整数はnull)。`LibretroHost.readKeyRepeatConfig()` が
+SRAM読み出し→変換までをまとめて行い、`main.ts` は `host.onPoll` 内で60フレームおきに
+これを呼んで値が変わっていれば `keyRepeater.setTiming()` を呼び直す(SWITCH.Xでの設定変更を
+実行中に追従させるため)。SRAM読み出し不能(古いwasm・未初期化)時は `KeyRepeater` の
+既定値(`DEFAULT_DELAY_MS`=300ms・`DEFAULT_INTERVAL_MS`=35ms、実機の SWITCH.X の
+既定に近い値)のまま据え置く。
+
+**`_webx68k_peek8()` では SRAM を読めない。** `webx68k_peek8()` は `MEM[]` を素通しで読む
+だけで、`x68k/mem_wrap.c` の `ReadMem` 関数テーブルが `0x00ED0000`-`0x00ED3FFF` を
+`SRAM_Read`/`SRAM_Write` へ特殊ディスパッチしている実体(`x68k/sram.c` の別配列 `SRAM[]`)を
+経由しない。そのため `webx68k_peek8()` でSRAM領域を読むと一律 `0xE5` が返り、
+「読めているつもり」で不定値を掴む事故になる(実際に発生した)。SRAM読み出しは必ず
+`core-shim.c` の `webx68k_sram_read()`(内部で `SRAM_Read()` を呼ぶ)経由にすること。
+`LibretroHost.readKeyRepeatConfig()` はさらに、読み出し先が本物のSRAMであることの
+健全性チェックとして、SRAM先頭8バイトが機種シグネチャ「Ｘ68000W」であることを毎回
+確認してから値を使う。
 
 ## マウス入力
 

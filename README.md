@@ -212,6 +212,10 @@ again. Multi-modifier chords, multi-touch input, and long-press repeat are
 supported. Open the separate keypad only when needed with the Keypad button.
 Kana labels reflect the virtual keyboard's client-side state; if it differs from the guest, press the Kana key again to bring them back in sync.
 
+Long-press repeat delay/interval follow the X68000's own SRAM setting (the one
+SWITCH.X changes), for both the physical and virtual keyboard. Changing it via
+SWITCH.X while running is picked up live.
+
 ### Virtual pad (on-screen pad)
 
 For playing games on a phone, the "Show Input Panel" toolbar button (also

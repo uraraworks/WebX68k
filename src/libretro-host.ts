@@ -2,6 +2,10 @@
 // libretro API の callback を wasm 関数テーブルへ登録し、コアを駆動する。
 
 import {
+  keyRepeatDelayMsFromSramValue,
+  keyRepeatIntervalMsFromSramValue,
+} from './key-repeat';
+import {
   extractTextScreenFromCore,
   MINIMUM_ANK_CGROM_SIZE,
   type TextScreenDump,
@@ -115,7 +119,20 @@ export interface PX68KModule {
   _webx68k_text_scroll_y?: () => number;
   // ジョイスティック配線の結合テスト用(core-shim.c 経由で libretro/joystick.c の Joystick_Read を公開)
   _webx68k_joystick_read(port: number): number;
+  // SRAM($ED0000-$ED3FFF)読み出し用(core-shim.c 経由でx68k/sram.cのSRAM_Read()を公開)。
+  // 古いwasm(再ビルド前)でも落ちないよう任意プロパティにしている。
+  _webx68k_sram_read?(offset: number): number;
 }
+
+/**
+ * SRAM先頭8バイトの機種シグネチャ「Ｘ68000W」(SJIS/Shift-JIS表現でのバイト列)。
+ * webx68k_peek8()はmem_wrap.cの特殊ディスパッチによりSRAM領域($00ED0000-)を経由せず
+ * 一律0xE5を返してしまい、過去に「読めているつもり」で不定値を掴んだ事故があった。
+ * SRAM_Read()経由の_webx68k_sram_read()を使っていても、読み出し先が本物の初期化済み
+ * SRAMかどうかは別問題(未初期化・オフセット間違い等でも値は返ってきてしまう)なので、
+ * 読むたびにこのシグネチャで健全性を確認する。
+ */
+const SRAM_SIGNATURE = [0x82, 0x77, 0x36, 0x38, 0x30, 0x30, 0x30, 0x57];
 
 declare global {
   interface Window {
@@ -273,6 +290,28 @@ export class LibretroHost {
   /** ゲストメモリを1ワード(ビッグエンディアン)読む(デバッグ・IOCSワーク参照用) */
   peekWord(addr: number): number {
     return this.mod._webx68k_peek16(addr);
+  }
+
+  /**
+   * SWITCH.Xで設定されたキーリピート設定をSRAMから読む。
+   * SRAM $ED0059 = 開始時間の段階値(n)、$ED005A = 間隔の段階値(n)で、それぞれ
+   * keyRepeatDelayMsFromSramValue/keyRepeatIntervalMsFromSramValueのX68000の式でmsへ変換する。
+   * 次のいずれかに該当すればnullを返す(呼び出し側はKeyRepeaterの既定値のまま据え置くこと):
+   *   - _webx68k_sram_read が無い(古いコア・再ビルド前のwasm)
+   *   - SRAM先頭が機種シグネチャ「Ｘ68000W」と一致しない(SRAM未初期化・読み出し経路の異常)
+   *   - 段階値(n)が0..15の整数範囲外
+   */
+  readKeyRepeatConfig(): { delayMs: number; intervalMs: number } | null {
+    const mod = this.mod;
+    const sramRead = mod._webx68k_sram_read;
+    if (!sramRead) return null;
+    for (let i = 0; i < SRAM_SIGNATURE.length; i++) {
+      if (sramRead(i) !== SRAM_SIGNATURE[i]) return null;
+    }
+    const delayMs = keyRepeatDelayMsFromSramValue(sramRead(0x59));
+    const intervalMs = keyRepeatIntervalMsFromSramValue(sramRead(0x5a));
+    if (delayMs === null || intervalMs === null) return null;
+    return { delayMs, intervalMs };
   }
 
   readGuestCursor(): { x: number; y: number; minX: number; minY: number; maxX: number; maxY: number; visible: boolean } | null {

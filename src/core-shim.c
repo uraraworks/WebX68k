@@ -4,6 +4,7 @@
  * ここで vsnprintf に畳んでから JS 側 (js_retro_log) へ渡す。
  */
 #include <stdarg.h>
+#include <stdint.h>
 #include <stdio.h>
 #include <emscripten.h>
 
@@ -313,4 +314,25 @@ __attribute__((used))
 int get_mouse_scc_stat(void)
 {
   return MouseSt;
+}
+
+/*
+ * SRAM (ゲスト側 $ED0000-$ED3FFF) 読み出し用。
+ * 罠: webx68k_peek8() は MEM[] をフラットに読むだけで SRAM を経由しないため、
+ * SRAM 領域では一律 0xE5 が返る。x68k/mem_wrap.c の ReadMem 関数テーブルは
+ * 0x00ed0000-0x00ed3fff を SRAM_Read/SRAM_Write へ特殊ディスパッチしており、
+ * 実体は x68k/sram.c のグローバル配列 SRAM[0x4000] で、MEM とは別物。
+ * さらに SRAM_Read() 自身が内部で adr ^= 1 のバイトスワップを行っているため、
+ * SRAM[] を自前で直接読むと隣のバイトを読んでしまう。必ず SRAM_Read() 経由で読むこと。
+ */
+/* FASTCALL は libretro/common.h でこのビルド構成では空マクロ定義されるが、
+ * ここではマクロを取り込まず、実体に合わせて素の関数宣言で受ける。 */
+extern uint8_t SRAM_Read(uint32_t adr);
+
+__attribute__((used))
+int webx68k_sram_read(int offset)
+{
+  if (offset < 0 || offset >= 0x4000)
+    return -1;
+  return SRAM_Read(0x00ed0000 + (uint32_t)offset);
 }
