@@ -116,7 +116,27 @@ export class AudioEngine {
 
   async start(): Promise<void> {
     if (this.ctx) return;
+
+    // iOS では既定でマナーモード(消音スイッチ)が有効だと WebAudio が鳴らない。
+    // navigator.audioSession(iOS 16.4+、型定義が無いため any 経由)で再生用途を
+    // 明示すると消音スイッチの影響を受けなくなる。未対応環境では何もしない。
+    try {
+      const audioSession = (navigator as unknown as { audioSession?: { type: string } }).audioSession;
+      if (audioSession) audioSession.type = 'playback';
+    } catch {
+      // 失敗しても起動は続行する
+    }
+
     const ctx = new AudioContext({ sampleRate: 44100 });
+    // ユーザー操作を起点に start() が呼ばれた場合はここで即 running になる。
+    // suspended のままでも起動自体は続け、失敗時は上位の自動再生制限バナーに委ねる。
+    if (ctx.state === 'suspended') {
+      try {
+        await ctx.resume();
+      } catch {
+        // 握りつぶす(自動再生制限などで失敗しても起動は止めない)
+      }
+    }
     const blob = new Blob([WORKLET_SOURCE], { type: 'application/javascript' });
     const url = URL.createObjectURL(blob);
     try {

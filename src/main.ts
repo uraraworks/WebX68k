@@ -3509,6 +3509,15 @@ document.addEventListener('visibilitychange', () => {
   if (document.visibilityState === 'hidden') flushAllSlots();
 });
 
+// iOS はアプリ切替/画面ロックで AudioContext を suspend し、復帰時に自動では
+// 再開しない。フォアグラウンド復帰のたびに running でなければ resume を試みる。
+// 上の保存用リスナとは用途が別のため混ぜず、新規に登録する。
+document.addEventListener('visibilitychange', () => {
+  if (document.visibilityState === 'visible' && audio?.context?.state !== 'running') {
+    audio?.resume();
+  }
+});
+
 // 開発時デバッグ用: 音声遅延(キュー滞留秒)とコアの現在 fps をコンソールから覗けるようにする。
 if (import.meta.env.DEV) {
   (window as unknown as Record<string, unknown>).__webx68kDebug = {
@@ -3627,18 +3636,27 @@ function maybeShowAudioMutedBanner(): void {
 
   showToast(t('audioMutedBanner'), null);
 
+  // 復帰トリガーは pointerdown/touchend/click/keydown の4種、すべて capture 段で登録する。
+  // スマホでは仮想キーボードのボタン(virtual-keyboard.ts)が pointerdown で
+  // event.preventDefault() を呼んでおり、互換 click イベントが生成されない。
+  // bubble 段の document リスナには何も届かないため、preventDefault/stopPropagation
+  // より先に走る capture 段で拾う必要がある。
+  const resumeEvents: (keyof DocumentEventMap)[] = ['pointerdown', 'touchend', 'click', 'keydown'];
+
   const onStateChange = () => {
     if (ctx.state !== 'running') return;
     ctx.removeEventListener('statechange', onStateChange);
-    document.removeEventListener('click', tryResume);
-    document.removeEventListener('keydown', tryResume);
+    for (const ev of resumeEvents) {
+      document.removeEventListener(ev, tryResume, { capture: true });
+    }
     hideToast();
   };
   const tryResume = () => audio?.resume();
 
   ctx.addEventListener('statechange', onStateChange);
-  document.addEventListener('click', tryResume);
-  document.addEventListener('keydown', tryResume);
+  for (const ev of resumeEvents) {
+    document.addEventListener(ev, tryResume, { capture: true });
+  }
 }
 
 /** 起動前オーバーレイのボタン(「そのまま起動」/「システムディスクで起動」)から呼ばれる起動処理。 */

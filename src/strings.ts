@@ -586,7 +586,8 @@ const STRINGS: Record<Lang, Dict> = {
     urlArchiveNeedsSelection: () =>
       'アーカイブに複数のディスクイメージが含まれていたため、ライブラリを開きました。使用するイメージを選んでください(自動起動はしません)。',
     urlLibSlotLabel: ({ index }) => `ライブラリ${index}`,
-    audioMutedBanner: () => '自動再生の制限により音声が無効です。クリックまたはキー入力で音声が有効になります。',
+    audioMutedBanner: () =>
+      '自動再生の制限により音声が無効です。画面のタップ(クリック)またはキー入力で音声が有効になります。',
 
     toolbarGamepad: () => 'ジョイスティック設定',
     gamepadDialogTitle: () => 'ジョイスティック設定',
@@ -890,7 +891,8 @@ const STRINGS: Record<Lang, Dict> = {
     urlArchiveNeedsSelection: () =>
       'The archive contains multiple disk images, so the library was opened. Please choose which image to use (auto-boot is skipped).',
     urlLibSlotLabel: ({ index }) => `Library ${index}`,
-    audioMutedBanner: () => 'Audio is muted due to autoplay restrictions. Click or press a key to enable sound.',
+    audioMutedBanner: () =>
+      'Audio is muted due to autoplay restrictions. Tap or click the screen, or press a key, to enable sound.',
 
     toolbarGamepad: () => 'Joystick Settings',
     gamepadDialogTitle: () => 'Joystick Settings',
