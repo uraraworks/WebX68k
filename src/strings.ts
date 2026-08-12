@@ -27,6 +27,8 @@ interface Dict {
   toolbarSaveState(): string;
   toolbarLoadState(): string;
   toolbarScreenshot(): string;
+  /** ツールバーの速度ボタン(ON/OFFトグル)のツールチップ/aria-label。 */
+  toolbarSpeedLabel(): string;
   statusScreenshotSaved(): string;
   stateSaved(): string;
   stateLoaded(): string;
@@ -101,6 +103,10 @@ interface Dict {
   settingsMachineResetNote(): string;
   settingsCpuSpeedLabel(): string;
   settingsRamSizeLabel(): string;
+  settingsSpeedTitle(): string;
+  settingsSpeedNote(): string;
+  settingsSpeedLabel(): string;
+  settingsSpeedActualPrefix(): string;
   settingsClose(): string;
   biosStatusUser(): string;
   biosStatusBundled(): string;
@@ -424,6 +430,7 @@ const STRINGS: Record<Lang, Dict> = {
     toolbarSaveState: () => 'ステート保存',
     toolbarLoadState: () => 'ステート復元',
     toolbarScreenshot: () => 'スクリーンショット',
+    toolbarSpeedLabel: () => '速度変更',
     statusScreenshotSaved: () => 'スクリーンショットを保存しました。',
     stateSaved: () => 'ステートを保存しました。',
     stateLoaded: () => 'ステートを復元しました。',
@@ -496,6 +503,10 @@ const STRINGS: Record<Lang, Dict> = {
     settingsMachineResetNote: () => '変更を反映するにはリセットが必要です。',
     settingsCpuSpeedLabel: () => 'CPU速度',
     settingsRamSizeLabel: () => 'RAM',
+    settingsSpeedTitle: () => 'エミュレーション速度',
+    settingsSpeedNote: () => 'ツールバーの速度ボタンをONにしたときの倍率です。リセット不要で即時反映し、設定は保存されません。',
+    settingsSpeedLabel: () => '速度ボタンON時の倍率',
+    settingsSpeedActualPrefix: () => '実測',
     settingsClose: () => '閉じる',
     biosStatusUser: () => '設定済み',
     biosStatusBundled: () => '同梱ROM使用中(差し替え可)',
@@ -730,6 +741,7 @@ const STRINGS: Record<Lang, Dict> = {
     toolbarSaveState: () => 'Save State',
     toolbarLoadState: () => 'Load State',
     toolbarScreenshot: () => 'Screenshot',
+    toolbarSpeedLabel: () => 'Speed',
     statusScreenshotSaved: () => 'Screenshot saved.',
     stateSaved: () => 'State saved.',
     stateLoaded: () => 'State loaded.',
@@ -801,6 +813,11 @@ const STRINGS: Record<Lang, Dict> = {
     settingsMachineResetNote: () => 'Reset is required for changes to take effect.',
     settingsCpuSpeedLabel: () => 'CPU Speed',
     settingsRamSizeLabel: () => 'RAM',
+    settingsSpeedTitle: () => 'Emulation Speed',
+    settingsSpeedNote: () =>
+      'The multiplier used when the toolbar speed button is turned on. Applied instantly, no reset needed, and not saved.',
+    settingsSpeedLabel: () => 'Multiplier when the speed button is on',
+    settingsSpeedActualPrefix: () => 'Actual',
     settingsClose: () => 'Close',
     biosStatusUser: () => 'Configured',
     biosStatusBundled: () => 'Using bundled ROM (replaceable)',

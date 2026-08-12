@@ -44,6 +44,14 @@ import { RETROK, charToKey, codeToRetrok } from './keyboard';
 import { LibretroHost } from './libretro-host';
 import { parseAspectModeParam, parseCpuSpeedParam, parseRamSizeParam } from './url-params';
 import {
+  createResampleState,
+  DEFAULT_SPEED_STEP,
+  parseSpeedStep,
+  resampleSpeed,
+  resetResampleState,
+  type SpeedStep,
+} from './speed';
+import {
   assignPorts,
   defaultProfileFor,
   GamepadManager,
@@ -109,6 +117,8 @@ const btnBootPlain = document.getElementById('btn-boot-plain') as HTMLButtonElem
 const btnBootSystem = document.getElementById('btn-boot-system') as HTMLButtonElement;
 const btnReset = document.getElementById('btn-reset') as HTMLButtonElement;
 const btnScreenshot = document.getElementById('btn-screenshot') as HTMLButtonElement;
+const btnSpeed = document.getElementById('btn-speed') as HTMLButtonElement;
+const btnSpeedBadge = document.getElementById('btn-speed-badge') as HTMLSpanElement;
 const btnMouseCapture = document.getElementById('btn-mouse-capture') as HTMLButtonElement;
 const btnMouseResync = document.getElementById('btn-mouse-resync') as HTMLButtonElement;
 const btnFullscreen = document.getElementById('btn-fullscreen') as HTMLButtonElement;
@@ -161,6 +171,8 @@ const slotPopupMenu = document.getElementById('slot-popup-menu') as HTMLDivEleme
 const overflowSubmenu = document.getElementById('overflow-submenu') as HTMLDivElement;
 const cfgCpuSpeed = document.getElementById('cfg-cpuspeed') as HTMLSelectElement;
 const cfgRamSize = document.getElementById('cfg-ramsize') as HTMLSelectElement;
+const cfgSpeed = document.getElementById('cfg-speed') as HTMLSelectElement;
+const speedActualEl = document.getElementById('speed-actual') as HTMLSpanElement;
 
 // WebNP2 のドライブ行に合わせた FDD0 / FDD1 / HDD の3スロット構成(実機のFDD呼称
 // FDD0/FDD1に合わせ、表示ラベルもコア内部のドライブindex 0/1 と一致させている。
@@ -289,6 +301,98 @@ cfgRamSize.addEventListener('change', () => {
   ramSize = cfgRamSize.value;
   localStorage.setItem(RAM_SIZE_KEY, ramSize);
 });
+
+// --- エミュレーション速度倍率 ---
+// px68k_cpuspeed(上のマシン構成、コアのCPUクロック設定でリセットが要る)とは別物。
+// こちらはホスト側のフレーム供給ペースを変えるだけで実行中に即時反映され、あえて
+// localStorage には保存しない(共有目的の設定ではなく、常に起動時はOFF(100%)から
+// 始まってほしいため)。
+//
+// 状態の出どころは selectedSpeed(設定モーダルのセレクト値) と speedEnabled(ツールバーの
+// 速度ボタンのON/OFF)の2つだけにし、実効倍率(speedMultiplier)は必ずこの2つから導出する。
+// 実効値を書き込む場所を複数に増やすと、片方だけ更新し忘れてボタン表示と実際の速度が
+// 食い違う事故につながる。
+let selectedSpeed: SpeedStep = DEFAULT_SPEED_STEP;
+let speedEnabled = false;
+// 実効倍率は「ボタンOFF時の1」を含むため SpeedStep(=SPEED_STEPS の要素型、1を含まない)とは
+// 別の型になる。
+let speedMultiplier: SpeedStep | 1 = 1;
+// コアの音声出力(1エミュフレームぶんのサンプル)を速度倍率に合わせて可変レートリサンプルする
+// ための状態。チャンクをまたいで位相を持ち越す必要があるためモジュールスコープに置く。
+const audioResampleState = createResampleState();
+
+/** selectedSpeed/speedEnabled から実効倍率(speedMultiplier)を再計算する唯一の場所。 */
+function recomputeSpeedMultiplier(): void {
+  speedMultiplier = speedEnabled ? selectedSpeed : 1;
+}
+
+/** 速度・状態の切り替わりでフレーム供給と音声リサンプラの持ち越し状態をリセットする。 */
+function resetSpeedState(): void {
+  accumulator = 0;
+  resetResampleState(audioResampleState);
+  audio?.flush();
+}
+
+/** #btn-speed の見た目(押し込み状態・バッジ・ツールチップ)を現在の状態から一括更新する。 */
+function updateSpeedButtonUi(): void {
+  btnSpeed.classList.toggle('active', speedEnabled);
+  btnSpeed.setAttribute('aria-pressed', String(speedEnabled));
+  if (speedEnabled) {
+    const pct = `${Math.round(selectedSpeed * 100)}%`;
+    btnSpeedBadge.textContent = pct;
+    btnSpeedBadge.hidden = false;
+    const label = `${t('toolbarSpeedLabel')} (${pct})`;
+    btnSpeed.title = label;
+    btnSpeed.setAttribute('aria-label', label);
+  } else {
+    btnSpeedBadge.hidden = true;
+    btnSpeed.title = t('toolbarSpeedLabel');
+    btnSpeed.setAttribute('aria-label', t('toolbarSpeedLabel'));
+  }
+}
+
+cfgSpeed.value = String(selectedSpeed);
+cfgSpeed.addEventListener('change', () => {
+  selectedSpeed = parseSpeedStep(cfgSpeed.value);
+  if (speedEnabled) {
+    recomputeSpeedMultiplier();
+    resetSpeedState();
+  }
+  updateSpeedButtonUi();
+});
+
+btnSpeed.addEventListener('click', () => {
+  speedEnabled = !speedEnabled;
+  recomputeSpeedMultiplier();
+  resetSpeedState();
+  updateSpeedButtonUi();
+});
+
+// 実測速度表示(約500msごと): 直近区間で実際に走ったエミュフレーム数 ÷ (fps × 経過秒)。
+// 端末性能で頭打ちになったことが見えるように、設定した倍率どおりに出ていない場合に気づける。
+const SPEED_MEASURE_INTERVAL_MS = 500;
+let speedMeasureFrameCount = 0;
+let speedMeasureLastAt = 0;
+
+function updateSpeedActualDisplay(now: number): void {
+  if (!running) {
+    speedActualEl.textContent = '';
+    return;
+  }
+  if (speedMeasureLastAt === 0) {
+    speedMeasureLastAt = now;
+    speedMeasureFrameCount = 0;
+    return;
+  }
+  const elapsedMs = now - speedMeasureLastAt;
+  if (elapsedMs < SPEED_MEASURE_INTERVAL_MS) return;
+  const fps = host?.avInfo?.fps ?? 60;
+  const expectedFrames = fps * (elapsedMs / 1000);
+  const pct = expectedFrames > 0 ? Math.round((speedMeasureFrameCount / expectedFrames) * 100) : 0;
+  speedActualEl.textContent = `${t('settingsSpeedActualPrefix')} ${pct}%`;
+  speedMeasureFrameCount = 0;
+  speedMeasureLastAt = now;
+}
 
 let audio: AudioEngine | null = null;
 let host: LibretroHost | null = null;
@@ -2249,11 +2353,22 @@ function sanitizeFileName(name: string): string {
  * 同時搭載できるようにしている。
  */
 async function bootCore(): Promise<void> {
+  // 起動時・リセット時は必ず速度ボタンをOFF(実効100%)に戻す。状態を保存しない設計のため、
+  // ここで揃えておかないとリセット直後だけ前回のON状態が残ってしまう。
+  speedEnabled = false;
+  recomputeSpeedMultiplier();
+  updateSpeedButtonUi();
   // audio は null になりうる(AudioWorklet が使えない環境。呼び出し元の起動処理を参照)。
   // ここを `audio!` にしていると、無音で起動したときにコアからの最初の音声コールバックで
   // 例外になり、フレームループごと巻き込んで画面が真っ黒のまま止まる。
   // 音の行き先が無いときはサンプルを捨てるだけでよい。
-  host = new LibretroHost(canvas, (samples) => audio?.push(samples));
+  host = new LibretroHost(canvas, (samples) => {
+    // k===1 はバイパスして元の配列をそのまま渡す(従来と同一の経路)。
+    // それ以外は速度倍率ぶん可変レートでリサンプルし、テープ早送りのようにピッチを変える。
+    const out =
+      speedMultiplier === 1 ? samples : resampleSpeed(samples, speedMultiplier, audioResampleState);
+    audio?.push(out);
+  });
   // X68000 は画面モード変更で実行中に canvas の実解像度(width/height)が変わる。
   // ウィンドウ表示のリスケールは実解像度基準で倍率を決めるため、変わった直後に再計算させる。
   host.onResolutionChanged = () => rescale();
@@ -2265,6 +2380,22 @@ async function bootCore(): Promise<void> {
   // マウスを有効化する。px68k は MouseSW が立っていないと Mouse_Event() を丸ごと無視するため、
   // このオプション("Mouse")が Mouse_StartCapture(1) を呼ぶまでマウス入力は一切通らない。
   host.setCoreOption('px68k_joy_mouse', 'Mouse');
+  // 速度倍率ボタンを機能させるために必須。px68k-libretro は libretro.c の retro_run() 内で
+  // `Config.NoWaitMode || Timer_GetCount()` を満たさない限り WinX68k_Exec()(実際にゲストを
+  // 1フレーム進める処理)を呼ばない。Timer_GetCount() は実時間の経過を積算し、1フレームぶん
+  // 溜まったときだけ1を返すため、無効のままだと retro_run() を何倍の頻度で呼んでもゲストは
+  // 実時間どおりの回数しか進まない(速度倍率が効かない=見た目の速度が変わらない)。
+  // 'enabled' にすると `||` の短絡で Timer_GetCount() 自体が呼ばれなくなり、retro_run() 1回
+  // につき必ず1フレーム進む。つまり「進行のペースを決める時計」がコア内部から、上の loop()
+  // (音声キューの滞留量でフレーム供給ペースを自動調整する側)へ移る。loop() は実質
+  // AudioContext の 44100Hz に同期しているので、これで速度ボタンの倍率がそのままゲストの
+  // 体感速度に反映される。
+  // px68k_audio_desync_hack は代わりに有効化しないこと。あちらは溜まりすぎた音声サンプルを
+  // 単純に間引いて捨てる実装で、こちらの可変レートリサンプラ(resampleSpeed)と機能が衝突する。
+  // また、この設定はコアの update_variables() が起動直後の1回目の retro_run() でしか読まない
+  // (ホスト側がRETRO_ENVIRONMENT_SET_VARIABLE_UPDATEに対応していないため)。速度ボタンの
+  // ON/OFFに連動させる余地は無く、起動時に固定で 'enabled' にしておく。
+  host.setCoreOption('px68k_no_wait_mode', 'enabled');
   // ジョイスティックのパッド種別(2ボタン/CPSF-MD/CPSF-SFC)。gamepadStore.joyType(設定ダイアログの
   // パッド種別セレクタ、localStorage永続化)がそのまま唯一の情報源。この設定は update_variables()
   // が firstcall(起動直後の1回目のretro_run)でしか読まないため、変更を反映するには
@@ -2348,6 +2479,9 @@ async function bootCore(): Promise<void> {
   running = true;
   lastFrameTime = 0;
   accumulator = 0;
+  resetResampleState(audioResampleState);
+  speedMeasureLastAt = 0;
+  speedMeasureFrameCount = 0;
   // running が立ってから更新する(HDD行のロック状態がここで確定する)
   updateSlotControls();
   resetAccessLamps();
@@ -2499,6 +2633,7 @@ function applyDocumentStrings(): void {
   btnReset.setAttribute('aria-label', t('toolbarReset'));
   btnScreenshot.title = t('toolbarScreenshot');
   btnScreenshot.setAttribute('aria-label', t('toolbarScreenshot'));
+  updateSpeedButtonUi();
   btnMouseCapture.setAttribute('aria-label', t('toolbarMouseCapture'));
   btnMouseResync.setAttribute('aria-label', t('toolbarMouseResync'));
   updateMouseControls();
@@ -2569,6 +2704,9 @@ function applyDocumentStrings(): void {
   document.getElementById('settings-machine-reset-note')!.textContent = t('settingsMachineResetNote');
   document.getElementById('settings-cpuspeed-label')!.textContent = t('settingsCpuSpeedLabel');
   document.getElementById('settings-ramsize-label')!.textContent = t('settingsRamSizeLabel');
+  document.getElementById('settings-speed-title')!.textContent = t('settingsSpeedTitle');
+  document.getElementById('settings-speed-note')!.textContent = t('settingsSpeedNote');
+  document.getElementById('settings-speed-label')!.textContent = t('settingsSpeedLabel');
   settingsCloseBtn.textContent = t('settingsClose');
   setBiosStatus(biosIplStatus, biosIplState);
   setBiosStatus(biosCgStatus, biosCgState);
@@ -3598,13 +3736,17 @@ function loop(t: number): void {
   const queued = audio?.queuedSeconds ?? 0;
   const err = queued - AudioEngine.TARGET_LATENCY_SEC;
   const adjust = Math.max(-0.02, Math.min(0.02, err / 2));
-  const frameInterval = (1 / fps) * (1 + adjust);
+  // 速度倍率ぶんフレーム間隔を短く(倍率>1)/長く(倍率<1)する。
+  const frameInterval = (1 / (fps * speedMultiplier)) * (1 + adjust);
   accumulator += dt;
 
   // 補正が追いつかない急変(タブ復帰・重い処理からの復帰)に備えた保険。
-  let budget = 2;
-  if (queued > AudioEngine.MAX_LATENCY_SEC * 0.8) budget = 0;
-  else if (queued < AudioEngine.TARGET_LATENCY_SEC * 0.4) budget = 3;
+  // 倍率を上げたときは1ループtickあたりの上限フレーム数も比例して引き上げないと、
+  // frameIntervalが縮んでも budget が頭打ちになって速度が出ない。
+  let budgetBase = 2;
+  if (queued > AudioEngine.MAX_LATENCY_SEC * 0.8) budgetBase = 0;
+  else if (queued < AudioEngine.TARGET_LATENCY_SEC * 0.4) budgetBase = 3;
+  const budget = Math.ceil(budgetBase * speedMultiplier);
 
   let ran = 0;
   while (accumulator >= frameInterval && ran < budget) {
@@ -3617,6 +3759,8 @@ function loop(t: number): void {
     pollAutoSave(t);
     stepMouseTracking();
   }
+  speedMeasureFrameCount += ran;
+  updateSpeedActualDisplay(t);
   // 破綻(タブ非アクティブ復帰等)したら蓄積をリセット
   if (accumulator > frameInterval * 4) accumulator = 0;
 
@@ -3712,6 +3856,7 @@ async function startFromOverlay(withSystemDisk: boolean): Promise<void> {
     btnSaveState.disabled = false;
     btnLoadState.disabled = false;
     btnScreenshot.disabled = false;
+    btnSpeed.disabled = false;
     btnFullscreen.disabled = false;
     btnVirtualKeyboard.disabled = false;
     updateMouseControls();
@@ -3897,6 +4042,7 @@ async function handleLoadState(): Promise<void> {
   }
   // 復元直後は旧状態の音がキューに残っているので捨て、フレーム供給の蓄積もリセットする
   audio?.flush();
+  resetResampleState(audioResampleState);
   lastFrameTime = 0;
   accumulator = 0;
   resetAccessLamps();
