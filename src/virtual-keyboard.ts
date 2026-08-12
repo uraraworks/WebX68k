@@ -171,7 +171,16 @@ export function createVirtualKeyboard(
     button.addEventListener('pointerdown', (event) => {
       event.preventDefault();
       if (pointers.has(event.pointerId)) return;
-      button.setPointerCapture(event.pointerId);
+      // キャプチャの取得は「失敗しても入力自体は成立させる」扱いにする(virtual-pad.ts の
+      // handlePointerDown と同じ理由)。setPointerCapture() は指定 pointerId がアクティブでない
+      // 場合に NotFoundError を投げる仕様で、未捕捉のままだと押下処理(pointers への登録・
+      // input.press)が丸ごと飛ぶ。キャプチャは追従を良くするための最適化にすぎないので、
+      // 失敗は握りつぶして押下処理を続行する。
+      try {
+        button.setPointerCapture(event.pointerId);
+      } catch {
+        /* キャプチャできなくても押下自体は成立させる(上のコメント参照)。 */
+      }
       button.classList.add('pressed');
       const source = `vk:pointer:${event.pointerId}`;
       const state: PointerState = { button, def, source };
