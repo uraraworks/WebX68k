@@ -622,7 +622,7 @@
             <h2>ツールバーのボタン一覧</h2>
             <img src="./help/overview.png" alt="プレイヤー全体像。ツールバーのアイコンが並ぶ" />
             <p>
-              常時表示されているのは次の4つだけです。残りはすべて「…」ボタンのメニューに
+              常時表示されているのは次の5つだけです。残りはすべて「…」ボタンのメニューに
               まとまっています。
             </p>
             <table class="btn-table">
@@ -651,7 +651,7 @@
             <h2>Toolbar buttons</h2>
             <img src="./help/overview-en.png" alt="Player overview with the toolbar icons" />
             <p>
-              Only these 4 buttons are always visible. Everything else lives inside the
+              Only these 5 buttons are always visible. Everything else lives inside the
               "…" button's menu.
             </p>
             <table class="btn-table">
@@ -709,6 +709,15 @@
               ScrollLock、ROLL UP / ROLL DOWN は PageDown / PageUp に割り当てられていますが、
               これらのキーが無いキーボードも多いので、その場合も仮想キーボードが便利です。
             </div>
+            <p>
+              キーを押しっぱなしにするとリピート入力されます(物理キーボード・仮想キーボード
+              とも対応)。リピートの開始時間・間隔はゲスト側の設定ユーティリティ
+              <strong>SWITCH.X</strong> の設定に従い、変更内容はブラウザ内に保存されるため
+              リロード後も引き継がれます。ただし<strong>キークリック音とキーボードLEDの
+              制御はホスト側で未対応</strong>です。また<strong>メモリ容量</strong>は
+              SWITCH.X で変更しても、常に設定ダイアログ(または <code>?ram=</code>)側の
+              値が優先されます。
+            </p>
             <p>
               物理キーボード・仮想キーボード・(MCP経由の)自動操作は、それぞれ入力元ごとに
               押下状態を数えており、同じキーを複数の入力元から押しても、最後の入力元が
@@ -781,6 +790,15 @@
               PrintScreen, ScrollLock, and PageDown/PageUp respectively, but many keyboards lack
               those keys too, so the virtual keyboard is handy for them as well.
             </div>
+            <p>
+              Holding a key down repeats it (works for both the physical and virtual keyboard).
+              The repeat delay and interval follow the guest-side <strong>SWITCH.X</strong>
+              configuration utility, and changes you make there are saved in the browser, so
+              they persist across reloads. However, <strong>key-click sound and keyboard LED
+              control are not supported</strong> on the host side. Also, changing the
+              <strong>memory size</strong> in SWITCH.X has no lasting effect — the value from
+              the settings dialog (or <code>?ram=</code>) always takes priority.
+            </p>
             <p>
               The physical keyboard, virtual keyboard, and automated input (e.g. via MCP) each
               keep their own reference count of pressed keys per input source, so pressing the
@@ -1360,7 +1378,7 @@
         // ツールバーのボタン一覧テーブルを生成する。
         // アイコンのpath dは index.html のツールバーボタン定義と同一。
 
-        // 常設(4個): リセット / フルスクリーン / 仮想キーボード / スクリーンショット。
+        // 常設(5個): リセット / フルスクリーン / 仮想キーボード / スクリーンショット / 速度変更。
         var PERMANENT_BUTTONS = [
           {
             icon: 'M3 12a9 9 0 1 0 3-6.7M3 4v5h5',
@@ -1413,6 +1431,31 @@
             en: 'Screenshot',
             descJa: '現在の画面をPNG画像としてダウンロードします。',
             descEn: 'Downloads the current display as a PNG image.',
+          },
+          {
+            icon: 'M2 6l7 6-7 6z M11 6l7 6-7 6z M18 6l4 6-4 6z',
+            ja: '速度変更',
+            en: 'Speed',
+            descJa:
+              'ON/OFFのトグルボタンです。OFF(既定)は等倍の100%で動作し、ONにすると設定パネルで' +
+              '選んだ倍率で走ります(選択肢は25%/50%/75%/150%/200%/300%/400%、既定200%)。' +
+              'ON中はボタンに現在の倍率がバッジ表示されます。リセット不要でトグル操作の' +
+              'その場から即時に反映され、音声もテープの早送り/スローのようにピッチが変わります' +
+              '(BGMも含めて速度に追従します)。設定は保存されず、起動時・リセット時は必ずOFF' +
+              '(100%)から始まります。実際に出せる速度は端末の処理能力次第で、設定パネルには' +
+              '実測の速度が表示されます。マシン構成の「CPU速度」(実機のクロックを変える設定で' +
+              'リセットが必要)とは別物です。',
+            descEn:
+              'A toggle button. OFF (the default) runs at 100% speed; ON runs at whatever multiplier' +
+              ' is chosen in the settings panel (25% / 50% / 75% / 150% / 200% / 300% / 400%, default' +
+              ' 200%). While ON, the button shows a badge with the current multiplier. The change' +
+              ' takes effect immediately from the toggle itself — no reset needed — and audio pitch' +
+              ' shifts along with it, like a tape running fast or slow (BGM speeds up too). The' +
+              ' setting is not saved, so playback always starts at OFF (100%) on boot and after a' +
+              ' reset. How fast it can actually go depends on your device, and the settings panel' +
+              ' shows the measured speed you\'re actually getting. This is separate from the machine' +
+              ' configuration\'s "CPU speed" setting, which changes the emulated clock and needs a' +
+              ' reset.',
           },
         ];
 

@@ -78,6 +78,10 @@
             <button id="btn-screenshot" type="button" class="icon-btn" title="スクリーンショット" aria-label="スクリーンショット" disabled>
               <svg class="btn-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 8h3l2-3h6l2 3h3a1 1 0 0 1 1 1v10a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1V9a1 1 0 0 1 1-1z M12 17a3.5 3.5 0 1 0 0-7 3.5 3.5 0 0 0 0 7z"/></svg>
             </button>
+            <button id="btn-speed" type="button" class="icon-btn" title="速度変更" aria-label="速度変更" aria-pressed="false" disabled>
+              <svg class="btn-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M2 6l7 6-7 6z M11 6l7 6-7 6z M18 6l4 6-4 6z"/></svg>
+              <span id="btn-speed-badge" class="btn-speed-badge" hidden></span>
+            </button>
             <button id="btn-toolbar-overflow" type="button" class="icon-btn" title="その他" aria-label="その他" aria-haspopup="menu">
               <svg class="btn-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M5 12h.01 M12 12h.01 M19 12h.01"/></svg>
             </button>
@@ -257,6 +261,25 @@
           <option value="11MB">11MB</option>
           <option value="12MB">12MB</option>
         </select>
+      </div>
+
+      <!-- マシン構成(リセット必須)とは別枠。速度倍率は実行中に即時反映されるため注記も別にする。 -->
+      <div class="settings-machine-heading">
+        <h3 id="settings-speed-title" class="rom-modal-section-title">エミュレーション速度</h3>
+        <p id="settings-speed-note" class="rom-modal-section-note">ツールバーの速度ボタンをONにしたときの倍率です。リセット不要で即時反映し、設定は保存されません。</p>
+      </div>
+      <div class="field-row">
+        <label id="settings-speed-label" for="cfg-speed">速度ボタンON時の倍率</label>
+        <select id="cfg-speed">
+          <option value="0.25">25%</option>
+          <option value="0.5">50%</option>
+          <option value="0.75">75%</option>
+          <option value="1.5">150%</option>
+          <option value="2" selected>200%</option>
+          <option value="3">300%</option>
+          <option value="4">400%</option>
+        </select>
+        <span id="speed-actual"></span>
       </div>
 
       <div class="rom-modal-footer">

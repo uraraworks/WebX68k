@@ -2,6 +2,11 @@
 // libretro API の callback を wasm 関数テーブルへ登録し、コアを駆動する。
 
 import {
+  keyRepeatDelayMsFromSramValue,
+  keyRepeatIntervalMsFromSramValue,
+} from './key-repeat';
+import { RETROK_TO_SCANCODE } from './keyboard';
+import {
   extractTextScreenFromCore,
   MINIMUM_ANK_CGROM_SIZE,
   type TextScreenDump,
@@ -115,7 +120,22 @@ export interface PX68KModule {
   _webx68k_text_scroll_y?: () => number;
   // ジョイスティック配線の結合テスト用(core-shim.c 経由で libretro/joystick.c の Joystick_Read を公開)
   _webx68k_joystick_read(port: number): number;
+  // SRAM($ED0000-$ED3FFF)読み出し用(core-shim.c 経由でx68k/sram.cのSRAM_Read()を公開)。
+  // 古いwasm(再ビルド前)でも落ちないよう任意プロパティにしている。
+  _webx68k_sram_read?(offset: number): number;
+  // 実機と同じmakeのみのキーリピート注入用。古いwasmでも落ちないよう任意プロパティ。
+  _webx68k_send_key_make?(scancode: number): void;
 }
+
+/**
+ * SRAM先頭8バイトの機種シグネチャ「Ｘ68000W」(SJIS/Shift-JIS表現でのバイト列)。
+ * webx68k_peek8()はmem_wrap.cの特殊ディスパッチによりSRAM領域($00ED0000-)を経由せず
+ * 一律0xE5を返してしまい、過去に「読めているつもり」で不定値を掴んだ事故があった。
+ * SRAM_Read()経由の_webx68k_sram_read()を使っていても、読み出し先が本物の初期化済み
+ * SRAMかどうかは別問題(未初期化・オフセット間違い等でも値は返ってきてしまう)なので、
+ * 読むたびにこのシグネチャで健全性を確認する。
+ */
+const SRAM_SIGNATURE = [0x82, 0x77, 0x36, 0x38, 0x30, 0x30, 0x30, 0x57];
 
 declare global {
   interface Window {
@@ -183,6 +203,10 @@ export class LibretroHost {
 
   private callbackPtrs: number[] = [];
 
+  // SRAM定期保存用。setInterval のIDと直近保存したバイト列(差分検出用)を持つ。
+  private sramAutosaveTimer: ReturnType<typeof setInterval> | null = null;
+  private lastSavedSram: Uint8Array | null = null;
+
   private _avInfo: AvInfo | null = null;
   // FS へ書いたものと逆引き用を必ず同じバイト列にするための唯一の CGROM 保持先。
   private coreCgrom: Uint8Array | null = null;
@@ -235,6 +259,14 @@ export class LibretroHost {
     else this.keyState.delete(retrok);
   }
 
+  /** 押下状態を変えず、RETROKに対応するmakeだけをコアへ追加する。 */
+  sendKeyMake(retrok: number): void {
+    const sendMake = this.mod?._webx68k_send_key_make;
+    const scancode = RETROK_TO_SCANCODE[retrok];
+    if (!sendMake || scancode === undefined) return;
+    sendMake(scancode);
+  }
+
   /** マウスの相対移動量を積む(ゲスト1ドット単位。呼び出し側で感度・表示倍率を換算済みの値を渡す) */
   addMouseDelta(dx: number, dy: number): void {
     this.mouseDx += dx;
@@ -273,6 +305,84 @@ export class LibretroHost {
   /** ゲストメモリを1ワード(ビッグエンディアン)読む(デバッグ・IOCSワーク参照用) */
   peekWord(addr: number): number {
     return this.mod._webx68k_peek16(addr);
+  }
+
+  /**
+   * SWITCH.Xで設定されたキーリピート設定をSRAMから読む。
+   * SRAM $ED003A = 開始時間の段階値(n、FIRST_KEY)、$ED003B = 間隔の段階値(n、NEXT_KEY)で、
+   * それぞれkeyRepeatDelayMsFromSramValue/keyRepeatIntervalMsFromSramValueのX68000の式でmsへ変換する。
+   *
+   * この番地は資料の記憶ではなく実測で確定させたもの。ゲスト上でSWITCH.Xを実際に起動し、
+   * その表示(FIRST_KEY 3 → 500ms、NEXT_KEY 2 → 50ms、X68000の式 開始=200+100n /
+   * 間隔=30+5n^2 に一致)と、起動直後のSRAMダンプの $ED003A=0x03 / $ED003B=0x02 が
+   * 一致することを突き合わせて判明した。以前はここを $ED0059 / $ED005A だと誤って読んでいた。
+   * この誤りはシグネチャ照合(先頭8バイト一致)や下のnullチェック(段階値0..15の範囲内か)を
+   * どちらも素通りしてしまっていた。$ED0059=0 / $ED005A=1 がたまたま0..15に収まる値だった
+   * ため、「読めてはいるが番地が違う」状態を検出できず、ゲスト自身の表示と突き合わせて
+   * 初めて食い違いに気づけた。番地の正しさは範囲チェックでは保証できず、実測でしか確かめられない。
+   * 次のいずれかに該当すればnullを返す(呼び出し側はKeyRepeaterの既定値のまま据え置くこと):
+   *   - _webx68k_sram_read が無い(古いコア・再ビルド前のwasm)
+   *   - SRAM先頭が機種シグネチャ「Ｘ68000W」と一致しない(SRAM未初期化・読み出し経路の異常)
+   *   - 段階値(n)が0..15の整数範囲外
+   */
+  readKeyRepeatConfig(): { delayMs: number; intervalMs: number } | null {
+    const mod = this.mod;
+    const sramRead = mod._webx68k_sram_read;
+    if (!sramRead) return null;
+    for (let i = 0; i < SRAM_SIGNATURE.length; i++) {
+      if (sramRead(i) !== SRAM_SIGNATURE[i]) return null;
+    }
+    const delayMs = keyRepeatDelayMsFromSramValue(sramRead(0x3a));
+    const intervalMs = keyRepeatIntervalMsFromSramValue(sramRead(0x3b));
+    if (delayMs === null || intervalMs === null) return null;
+    return { delayMs, intervalMs };
+  }
+
+  /**
+   * SRAM全体(0x4000バイト、$ED0000-$ED3FFFに対応)を読み出す。
+   * 先頭8バイトが機種シグネチャ「Ｘ68000W」と一致しない場合はnullを返す
+   * (readKeyRepeatConfig()と同じ健全性チェック)。ここでnullを弾かずに保存してしまうと、
+   * 未初期化・読み出し経路異常のSRAMをそのまま永続化することになり、次回起動時に
+   * その壊れたSRAMを読み込んで正常な状態へ戻れなくなってしまう。
+   */
+  readSram(): Uint8Array | null {
+    const mod = this.mod;
+    const sramRead = mod._webx68k_sram_read;
+    if (!sramRead) return null;
+    for (let i = 0; i < SRAM_SIGNATURE.length; i++) {
+      if (sramRead(i) !== SRAM_SIGNATURE[i]) return null;
+    }
+    const bytes = new Uint8Array(0x4000);
+    for (let i = 0; i < 0x4000; i++) bytes[i] = sramRead(i);
+    return bytes;
+  }
+
+  /**
+   * SRAMを定期的に読み、前回保存した内容から変化していれば save() を呼ぶ。
+   * 離脱イベント(beforeunload/pagehide)に保存を託さない設計にしている
+   * (非同期処理を完走できないことがあり、過去にそれで保存し損ねた実績があるため)。
+   * 代わりに平常時、短い間隔(3秒)で読み直して差分があれば保存する。
+   * SWITCH.Xの設定はユーザーが明示的に変更したときしか変わらないため、
+   * 16KB全バイト比較をこの頻度で行っても無駄が大きくない(毎フレーム=60Hzで
+   * やる必要はない)。同名タイマーが既にあれば張り替える。
+   */
+  startSramAutosave(save: (bytes: Uint8Array) => void): void {
+    this.stopSramAutosave();
+    this.sramAutosaveTimer = setInterval(() => {
+      const bytes = this.readSram();
+      if (!bytes) return; // シグネチャ不一致(未初期化等)は保存対象にしない
+      if (this.lastSavedSram && bytesEqual(this.lastSavedSram, bytes)) return;
+      this.lastSavedSram = bytes;
+      save(bytes);
+    }, 3000);
+  }
+
+  /** SRAM定期保存を止める(dispose時・テスト後始末用)。 */
+  stopSramAutosave(): void {
+    if (this.sramAutosaveTimer !== null) {
+      clearInterval(this.sramAutosaveTimer);
+      this.sramAutosaveTimer = null;
+    }
   }
 
   readGuestCursor(): { x: number; y: number; minX: number; minY: number; maxX: number; maxY: number; visible: boolean } | null {
@@ -341,8 +451,14 @@ export class LibretroHost {
     }
   }
 
-  /** BIOS ファイルを書き込み、コアを初期化する */
-  async init(biosIpl: Uint8Array, biosCg: Uint8Array): Promise<void> {
+  /**
+   * BIOS ファイル(と、あれば SRAM)を書き込み、コアを初期化する。
+   * SRAM_Init()(x68k/sram.c)は sram.dat を retro_load_game() の中(WinX68k_Init()経由)で
+   * 読むため、ここ(retro_load_game() より確実に前)で書いておく必要がある。長さが
+   * 0x4000(16KB)でないものは壊れたデータを渡さないよう無視する(未初期化 0xFF 埋めの
+   * ままIPLに既定値を書かせたほうが安全なため)。
+   */
+  async init(biosIpl: Uint8Array, biosCg: Uint8Array, sram?: Uint8Array): Promise<void> {
     const mod = await window.PX68K({});
     this.mod = mod;
 
@@ -355,6 +471,16 @@ export class LibretroHost {
     // 呼び出し元による後日の変更を遮断し、この同じ配列を FS 書き込みと逆引きの両方に使う。
     this.coreCgrom = biosCg.slice();
     mod.FS.writeFile('/system/keropi/cgrom.dat', this.coreCgrom);
+
+    if (sram) {
+      if (sram.byteLength === 0x4000) {
+        mod.FS.writeFile('/system/keropi/sram.dat', sram);
+      } else {
+        console.warn(
+          `SRAMファイルのサイズが不正です(${sram.byteLength} bytes, 期待値 0x4000): 無視します`,
+        );
+      }
+    }
 
     this.systemDirPtr = mallocString(mod, '/system');
     this.saveDirPtr = mallocString(mod, '/save');
@@ -755,9 +881,19 @@ export class LibretroHost {
 
   /** コールバック用関数テーブルエントリを解放する */
   dispose(): void {
+    this.stopSramAutosave();
     for (const ptr of this.callbackPtrs) {
       this.mod.removeFunction(ptr);
     }
     this.callbackPtrs = [];
   }
+}
+
+/** 2つのUint8Arrayが同じ内容か(長さ違いも含めて)比較する素朴な全バイト比較。 */
+function bytesEqual(a: Uint8Array, b: Uint8Array): boolean {
+  if (a.length !== b.length) return false;
+  for (let i = 0; i < a.length; i++) {
+    if (a[i] !== b[i]) return false;
+  }
+  return true;
 }

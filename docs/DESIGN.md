@@ -17,6 +17,7 @@ Vite + TypeScript（フレームワーク無し）の最小構成です。
 - `src/keyboard.ts` … `KeyboardEvent.code` → `RETROK_*` のマッピング
 - `src/virtual-keyboard.ts` … X68000仮想キーボード、Pointer管理、物理入力との押下状態統合
 - `src/bios-store.ts` … BIOS ファイルを IndexedDB に永続化するヘルパー
+- `src/sram-store.ts` … SRAM(SWITCH.Xの設定)を IndexedDB に永続化するヘルパー(後述)
 - `src/disk-store.ts` … ディスクイメージ(FD/HDD)を IndexedDB に永続化する「ディスクライブラリ」ヘルパー。
   拡張子なしイメージの内容ベース判定(`classifyDiskBytes()`/`detectDiskContentKind()`)もここにある(後述)
 - `src/api/archive.ts` … LZH/ZIP アーカイブ展開の公開API。拡張子判定と `lzh.ts`/`zip.ts` への振り分けのみ行う
@@ -254,8 +255,8 @@ SHIFT・CTRL・OPT.1・OPT.2は `Map` で複数同時に保持するワンショ
 ゲスト側を切り替え、UIだけをロック表示する。
 
 入力はPointer Eventsだけを使い、`pointerId` ごとの押下先を `Map` に記録して各ボタンで
-`setPointerCapture()` する。pointerup/cancel/leaveで必ず対応する入力元だけを解放し、500ms後・
-50ms間隔の長押しリピートも入力元ごとに管理する。`blur` とhiddenへの
+`setPointerCapture()` する。pointerup/cancel/leaveで必ず対応する入力元だけを解放し、長押し
+リピート(`KeyRepeater`。詳細は次節「キーリピート」)も入力元ごとに管理する。`blur` とhiddenへの
 `visibilitychange` では全入力元を強制解放する。`SharedKeyInput` は物理・仮想・MCP入力を
 入力元別に参照カウントし、同じRETROKを複数経路が押している間は片方のbreakで解除しない。
 
@@ -269,6 +270,130 @@ canvas自体は引き続き`width/height:auto`なので固有の画素比を維�
 `kanaShift`を選び、SHIFT解除後は`kana`へ戻す。この状態はゲストではなくクライアント側のロック状態を正とし、
 ゲスト側とずれた場合はかなキーの押し直しで合わせる。物理キーボードの`KanaMode`も共有入力に統合し、
 リピートでない初回keydownで仮想キーボードの表示ロックを反転する。
+
+## キーリピート
+
+`key-repeat.ts` の `KeyRepeater` が物理・仮想キーボード共通のオートリピート機構を担う。
+px68k-libretro コア自体にはリピート機構が無く、`LibretroHost.keyState` は
+1エミュレートフレームにつき1回(`input_poll` 直後の `input_state` 読み出し)しか読まれない。
+
+**実機のX68000キーボードは、リピート時にmakeだけを繰り返す。** 押下状態は指を離すまで
+立ったままで、breakは解放時の1回だけである。以前の実装はホストの押下状態を
+release→pressしてmake/breakパルスを作り、breakを1フレーム見せるため
+`notifyFramePolled()`を2回待っていたが、この方式は実機と異なり誤りだった。IOCSのBITSNS等で
+キーマトリクスの押下状態をポーリングするゲームには、リピートのたびにキーが離れたように見える。
+実際にテンキーで移動するゲームで、押しっぱなしにすると数秒後に移動が止まる不具合が発生した。
+
+現在は `SharedKeyInput` / `LibretroHost.keyState` の押下状態を一切変更せず、
+`KeyRepeater` が `delayMs` 後から `intervalMs` ごとにmake注入コールバックだけを呼ぶ。
+`LibretroHost.sendKeyMake()` は `keyboard.ts` の `RETROK_TO_SCANCODE` でX68000スキャンコードへ
+変換し、core-shimの `webx68k_send_key_make()` を通してコアの `send_keycode(scancode, 2)` を
+直接呼ぶ。これによりリピート中はmakeだけがKeyBufへ追加され、物理・仮想キーボードの解放時に
+通常の押下状態エッジからbreakが1回だけ送られる。フレーム基準のbreak待ちとパルス時間の
+周期補正は不要になり、初回は単純に`delayMs`後、以降は`intervalMs`間隔で送る。
+
+**設定はSRAMから読み、X68000の式でmsへ変換する。** 実機のSWITCH.Xで設定するキーリピートの
+開始時間・間隔は、SRAM(ゲスト側 `$ED0000`-`$ED3FFF`)の `$ED003A`(開始段階値n、FIRST_KEY)・
+`$ED003B`(間隔段階値n、NEXT_KEY、n=0..15)に格納される。
+
+この番地は当初 `$ED0059`/`$ED005A` だと誤って実装していた。資料の記憶を基に決め、
+段階値が0..15の整数範囲内であることの健全性チェックだけを通していたためで、
+たまたまその番地の値(0/1)も範囲内に収まってしまい、誤りに気づけないまま動いていた。
+ゲスト上でSWITCH.Xを実際に起動し、その表示(FIRST_KEY 3=500ms・NEXT_KEY 2=50ms)と
+SRAMダンプを突き合わせて初めて `$ED003A`/`$ED003B` が正しい番地だと判明した
+(実機の既定値は開始500ms・間隔50ms)。番地の正しさは範囲チェックでは保証できず、
+ゲスト自身の表示との突き合わせでしか確かめられない。公開されているX68000のキーリピート仕様は
+
+```
+開始時間[ms] = 200 + 100 × n
+間隔[ms]     = 30 + 5 × n²
+```
+
+で、`key-repeat.ts` の `keyRepeatDelayMsFromSramValue()` / `keyRepeatIntervalMsFromSramValue()`
+がこの式の純粋関数版(範囲外・非整数はnull)。`LibretroHost.readKeyRepeatConfig()` が
+SRAM読み出し→変換までをまとめて行い、`main.ts` は `host.onPoll` 内で60フレームおきに
+これを呼んで値が変わっていれば `keyRepeater.setTiming()` を呼び直す(SWITCH.Xでの設定変更を
+実行中に追従させるため)。SRAM読み出し不能(古いwasm・未初期化)時は `KeyRepeater` の
+既定値(`DEFAULT_DELAY_MS`=300ms・`DEFAULT_INTERVAL_MS`=35ms、実機の SWITCH.X の
+既定に近い値)のまま据え置く。
+
+**`_webx68k_peek8()` では SRAM を読めない。** `webx68k_peek8()` は `MEM[]` を素通しで読む
+だけで、`x68k/mem_wrap.c` の `ReadMem` 関数テーブルが `0x00ED0000`-`0x00ED3FFF` を
+`SRAM_Read`/`SRAM_Write` へ特殊ディスパッチしている実体(`x68k/sram.c` の別配列 `SRAM[]`)を
+経由しない。そのため `webx68k_peek8()` でSRAM領域を読むと一律 `0xE5` が返り、
+「読めているつもり」で不定値を掴む事故になる(実際に発生した)。SRAM読み出しは必ず
+`core-shim.c` の `webx68k_sram_read()`(内部で `SRAM_Read()` を呼ぶ)経由にすること。
+`LibretroHost.readKeyRepeatConfig()` はさらに、読み出し先が本物のSRAMであることの
+健全性チェックとして、SRAM先頭8バイトが機種シグネチャ「Ｘ68000W」であることを毎回
+確認してから値を使う。
+
+## SRAM永続化(SWITCH.Xの設定をリロード後も残す)
+
+`src/sram-store.ts`(IndexedDB永続化)と `LibretroHost.init()`の第3引数/`readSram()`/
+`startSramAutosave()`(`src/libretro-host.ts`)で、SRAM(起動ドライブ・メモリ容量・
+キーリピート等、実機の `SWITCH.X` で設定する項目が載る `$ED0000`-`$ED3FFF`)をページの
+リロードをまたいで永続化している。
+
+**`sram.dat` は `retro_load_game()` より前に置く必要がある。** `SRAM_Init()`
+(`x68k/sram.c`)は `retro_load_game()` の中(`WinX68k_Init()` 経由)でシステムディレクトリの
+`sram.dat` を読む。ファイルが無ければ SRAM を `0xFF` 埋めにし、IPL が既定値を書く
+(初回起動相当)。BIOS(IPLROM/CGROM)と同じ `/system/keropi/` 配下に置くファイルなので、
+`LibretroHost.init(biosIpl, biosCg, sram?)` の第3引数として渡し、`init()` 内で
+`_retro_init()` より前(=呼び出し元が `retro_load_game()` を呼ぶより確実に前)に書き込む。
+長さが `0x4000`(16KB)でないものは壊れたデータを渡さないよう無視して `console.warn` する。
+
+**保存は `retro_deinit()` に頼れないので、ホスト側で行う。** 書き出し側の
+`SRAM_Cleanup()` は `retro_deinit()` からしか呼ばれないが、WebX68k は
+`_retro_deinit()` を呼んでいない(呼ぶとコアの内部状態が破棄されて以後動かせなくなる)。
+そのため保存はコア側の仕組みに任せず、`LibretroHost.readSram()`
+(`_webx68k_sram_read()` で0x4000バイトを読み出す)を使ってホストが能動的に読み、
+別途 IndexedDB へ書く。
+
+**離脱イベント(beforeunload/pagehide)に保存を託さない。** 過去にこの方式で
+保存し損ねた実績がある(離脱イベントは非同期処理を完走できないことがあり、特に
+モバイル Safari で顕著。`main.ts` の HDD/FDD ダーティ保存の項も参照)。代わりに
+`LibretroHost.startSramAutosave(save)` が3秒ごとに `readSram()` を呼び、前回保存した
+内容と1バイトでも変わっていれば `save()` を呼ぶ、という平常時の定期保存にしている。
+16KBの全バイト比較を3秒に1回行う程度は軽く、SWITCH.Xの設定はユーザーが明示的に
+変更したときしか変わらないため、この頻度で十分(毎フレーム=60Hzでやる必要はない)。
+
+**シグネチャ不一致のときは保存しない。** `readSram()` は `readKeyRepeatConfig()` と同じ
+健全性チェックとして、SRAM先頭8バイトが機種シグネチャ「Ｘ68000W」と一致しない場合は
+`null` を返す。ここで弾かずに保存してしまうと、未初期化・読み出し経路異常のSRAMを
+そのまま永続化することになり、次回起動時にその壊れたSRAMを読み込んで正常な状態へ
+戻れなくなってしまう。
+
+**ファイルのバイト順は「file[adr] === `_webx68k_sram_read(adr)`」であることを実測済み。**
+`SRAM_Init()` はファイル読み込み後に隣接バイトをswapし(`#ifndef MSB_FIRST`)、
+`SRAM_Read()` は常に `adr ^= 1` する。この2つを合成すると理論上は打ち消し合って
+ファイルのバイト順とゲスト側の読み出し順が一致するはずだが、これは静的な読解による
+推論でしかない。`test/core-sram-persistence-integration.test.ts` で実際のコアに対し、
+1台目のコアで読んだSRAMのoffset `0x3a`/`0x3b`(キーリピート段階値)を、実機の既定値
+(開始n:3・間隔n:2)とは異なる値(5・4)へ書き換えたバイト列を作り、2台目の新しい
+コアインスタンスへ `retro_load_game()` 前に `sram.dat` として置いて起動、
+`_webx68k_sram_read(0x3a)`/`(0x3b)` から書き換えた値がそのまま読めること・
+機種シグネチャが保たれていること・`readKeyRepeatConfig()` 相当の変換結果
+(開始700ms・間隔110ms)が正しいことを検証している。既定値と異なる値を選んでいるのは、
+既定値のままだと「復元できた」のか「単に何もしなくても既定値のまま読めているだけ」なのか
+このテストだけでは区別できないため。IPLが `$3A`/`$3B` を毎回既定値へ書き戻す、
+といった懸念も無いことをこのテストで確認済み。
+
+**SWITCH.Xの設定はSRAM全体を保存するが、効く範囲はキーリピートだけ。** ゲスト内で
+完結する設定(IPL/IOCSがSRAMを読んで判断する項目)は実機同様そのまま効くが、
+ホスト側が肩代わりしているのはキーリピートのみである。実機ではキーボード側のMCUが
+リピートを生成しており、px68kはキーボードMCUをエミュレートしていないため、ホストが
+`readKeyRepeatConfig()` で肩代わりする形になっている。
+
+より正確には、ゲストがキーボードへ送るコマンドはMFPのUDR書き込みだが、`x68k/mfp.c` の
+`MFP_Write` は `case MFP_UDR: break;` でこれを黙って捨てている。そのためキーボードMCU
+宛のコマンドは総じて効かず、キークリック音やキーボードLEDの制御も未対応のまま
+(この2点はSWITCH.Xの設定項目でもある)。
+
+**保存はされてもコア側の設定が優先される項目がある。** 確認済みの例はメモリ容量で、
+`libretro.c` の `WinX68k_Exec()` が毎フレーム SRAM の `$ED0008` を `Config.ram_size` と
+比較し、食い違っていれば `Config.ram_size` の値で書き戻す。そのためSWITCH.Xでメモリ容量を
+変更してSRAMへ書き込んでも、次のフレームでコアが上書きしてしまい、設定ダイアログ/
+`?ram=` クエリ側の値が常に優先される。
 
 ## マウス入力
 
@@ -659,6 +784,23 @@ X68000 は画面モード(15kHz/31kHz)を切り替えるたびにフレームレ
    (ドリフト補正)。一度膨らんだ遅延を目標値 80ms 付近へ戻す復元力になる
 3. `src/audio.ts` の AudioWorklet 側で滞留量の上限(250ms)を設け、超過分は古い側から捨てる
    最終防波堤。滞留量は tick メッセージでメインスレッドへ返している
+
+### 速度倍率ボタンには `px68k_no_wait_mode` が必須
+
+`libretro.c` の `retro_run()` は `Config.NoWaitMode || Timer_GetCount()` を満たしたフレームでしか
+`WinX68k_Exec()`(実際にゲストを1フレーム進める処理)を呼ばない。`Timer_GetCount()`
+(`libretro/timer.c`)は実時間の経過を積算し、1フレームぶん溜まったときだけ真を返す。
+このオプションを既定(disabled)のままにしておくと、ホスト側の `loop()` が `retro_run()` を
+倍率ぶん多い頻度で呼んでも `WinX68k_Exec()` 自体は実時間どおりの回数しか走らず、余分な呼び出しは
+入力ポーリングと `audio_batch_cb`/`video_cb` を素通りするだけで終わる — **速度ボタンを押しても
+ゲストの体感速度が変わらない**。`bootCore()`(`src/main.ts`)で `px68k_no_wait_mode` を起動時に
+`'enabled'` 固定にすることで `||` の短絡により `Timer_GetCount()` 自体を呼ばせず、`retro_run()`
+1回につき必ず1フレーム進むようにしている。これにより「進行ペースを決める時計」がコア内部の
+実時間から `loop()` 側(上記の音声キュー滞留量ベースのペーシング、実質 AudioContext の
+44100Hz 基準)へ移る。前節「コアオプションの反映は起動時のみ」のとおり実行中の切り替えはできない
+ため、速度ボタンのON/OFFとは連動させず常時有効にしている。`px68k_audio_desync_hack` は
+超過した音声サンプルを間引いて捨てる別実装のオプションで、こちらの可変レートリサンプラ
+(`resampleSpeed`)と機能が衝突するため有効化しないこと。
 
 ## MCP 対応(AI からの遠隔操作)
 

@@ -3,16 +3,17 @@ import { createRequire } from 'node:module';
 import { dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { runInThisContext } from 'node:vm';
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { isRepeatableKey, KeyRepeater } from '../src/key-repeat';
-import { RETROK } from '../src/keyboard';
+import { afterEach, describe, expect, it, vi } from 'vitest';
+import {
+  KeyRepeater,
+  keyRepeatDelayMsFromSramValue,
+  keyRepeatIntervalMsFromSramValue,
+} from '../src/key-repeat';
+import { RETROK, RETROK_TO_SCANCODE } from '../src/keyboard';
 import { SharedKeyInput } from '../src/virtual-keyboard';
 
-// KeyRepeaterの設計(release後は「次のonPoll」を待ってからpressし直す = フレーム基準の
-// break)が正しく、壁時計の短いギャップで戻す旧実装が誤りであることを、実際のコア
-// (px68k-libretro)に対して末端(KeyBuf)で実測して証明する結合テスト。
-// コアのロード手順・KeyBuf観測用exportの使い方はtest/core-keyboard-integration.test.tsを
-// そのまま流用している。
+// 実機と同じ「押下状態を保ったままmakeだけを繰り返し、解放時だけbreakを送る」経路を、
+// 実ROMで起動したpx68k-libretroの末端(KeyBuf)まで通して実測する。
 
 const RETRO_DEVICE_KEYBOARD = 3;
 const RETRO_ENVIRONMENT_GET_SYSTEM_DIRECTORY = 9;
@@ -49,6 +50,8 @@ interface CoreModule {
   _get_retro_log_shim(): number;
   _webx68k_keybuf_peek?(index: number): number;
   _webx68k_keybuf_write_pointer?(): number;
+  _webx68k_sram_read?(offset: number): number;
+  _webx68k_send_key_make?(scancode: number): void;
 }
 
 type CoreFactory = (options?: Record<string, unknown>) => Promise<CoreModule>;
@@ -101,20 +104,35 @@ function mallocString(mod: CoreModule, value: string): number {
   return ptr;
 }
 
-async function initializeCore(): Promise<{ mod: CoreModule; pressedKeys: Set<number> }> {
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+/**
+ * 実ROM(public/system/iplrom.dat・cgrom.dat。git管理下の実機ROM)でディスク無し起動する。
+ * core-ramsize-integration.test.tsと同様、WinX68k_Exec()の実行条件(壁時計ベースの
+ * Timer_GetCount())を満たすため実際にsleepしながらretro_runを重ねる必要がある。
+ */
+async function initializeCoreWithRealRom(): Promise<{ mod: CoreModule; pressedKeys: Set<number> }> {
   const mod = await loadCoreFactory()({});
-  if (!mod._webx68k_keybuf_peek || !mod._webx68k_keybuf_write_pointer) {
+  if (
+    !mod._webx68k_sram_read ||
+    !mod._webx68k_keybuf_peek ||
+    !mod._webx68k_keybuf_write_pointer ||
+    !mod._webx68k_send_key_make
+  ) {
     throw new Error(
-      'KeyBuf 観測用 export が wasm にありません。scripts/build-core.sh でコアを再ビルドしてください',
+      'キーリピート結合テスト用exportがwasmにありません。scripts/build-core.shでコアを再ビルドしてください',
     );
   }
 
   mkdirSafe(mod, '/system');
   mkdirSafe(mod, '/system/keropi');
   mkdirSafe(mod, '/save');
-  // キー入力経路のみを駆動するため、最小のダミー ROM でディスク無し起動する。
-  mod.FS.writeFile('/system/keropi/iplrom.dat', new Uint8Array(0x20000));
-  mod.FS.writeFile('/system/keropi/cgrom.dat', new Uint8Array(0xc0000));
+  const iplrom = readFileSync(fileURLToPath(new URL('../public/system/iplrom.dat', import.meta.url)));
+  const cgrom = readFileSync(fileURLToPath(new URL('../public/system/cgrom.dat', import.meta.url)));
+  mod.FS.writeFile('/system/keropi/iplrom.dat', iplrom);
+  mod.FS.writeFile('/system/keropi/cgrom.dat', cgrom);
 
   const systemDirPtr = mallocString(mod, '/system');
   const saveDirPtr = mallocString(mod, '/save');
@@ -142,151 +160,121 @@ async function initializeCore(): Promise<{ mod: CoreModule; pressedKeys: Set<num
         return 0;
     }
   };
-  const inputState = (_port: number, device: number, _index: number, id: number): number =>
-    device === RETRO_DEVICE_KEYBOARD && pressedKeys.has(id) ? 1 : 0;
 
   mod._retro_set_environment(mod.addFunction(environment, 'iii'));
   mod._retro_set_video_refresh(mod.addFunction(() => {}, 'viiii'));
   mod._retro_set_audio_sample(mod.addFunction(() => {}, 'vii'));
   mod._retro_set_audio_sample_batch(mod.addFunction((_data, frames) => frames, 'iii'));
   mod._retro_set_input_poll(mod.addFunction(() => {}, 'v'));
-  mod._retro_set_input_state(mod.addFunction(inputState, 'iiiii'));
+  mod._retro_set_input_state(mod.addFunction(
+    (_port, device, _index, id) => device === RETRO_DEVICE_KEYBOARD && pressedKeys.has(id) ? 1 : 0,
+    'iiiii',
+  ));
   mod._retro_init();
 
   expect(mod._retro_load_game(0)).toBe(1);
   mod._retro_run(); // firstcall: ROM 読み込みとコア初期化
 
+  // SRAMへのシグネチャ書き込み等、IPLの初期化処理が壁時計ベースで進むまで実際に待つ
+  // (core-ramsize-integration.test.tsと同じ理由。Timer_GetCount()が壁時計依存のため)。
+  for (let i = 0; i < 10; i++) {
+    await sleep(20);
+    mod._retro_run();
+  }
+
   return { mod, pressedKeys };
 }
 
-function countMakeCodes(mod: CoreModule, from: number, to: number): number {
-  let count = 0;
+function readKeyBuffer(mod: CoreModule, from: number, to: number): number[] {
+  const codes: number[] = [];
   for (let i = from; i !== to; i = (i + 1) & KEYBUF_MASK) {
-    if (mod._webx68k_keybuf_peek!(i) === A_SCAN_CODE) count++;
+    codes.push(mod._webx68k_keybuf_peek!(i));
   }
-  return count;
+  return codes;
 }
 
-describe('px68k-libretro キーリピート結合(フレーム基準のbreakが必須である根拠)', () => {
-  it('押下→retro_run→1フレーム離す→retro_run→再押下→retro_runで、makeコードが2回積まれる', async () => {
-    const { mod, pressedKeys } = await initializeCore();
-    const writePointer = mod._webx68k_keybuf_write_pointer!;
-    const start = writePointer();
-
-    // フレーム1: 押下 → make
-    pressedKeys.add(RETROK.a);
-    mod._retro_run();
-
-    // フレーム2: release だけ済ませ、丸ごと1フレームretro_runを回して
-    // コアに「離された」状態を実際に読ませる(=1フレーム離す)。break が記録される。
-    pressedKeys.delete(RETROK.a);
-    mod._retro_run();
-
-    // フレーム3: 再押下 → 2回目の make
-    pressedKeys.add(RETROK.a);
-    mod._retro_run();
-
-    const end = writePointer();
-    const makeCount = countMakeCodes(mod, start, end);
-    expect(makeCount, 'フレームを跨いで release→press したときの make 回数').toBe(2);
-  });
-
-  it('同一フレーム内でrelease/pressを済ませた場合、makeコードは1回しか積まれない', async () => {
-    const { mod, pressedKeys } = await initializeCore();
-    const writePointer = mod._webx68k_keybuf_write_pointer!;
-    const start = writePointer();
-
-    // フレーム1: 押下 → make
-    pressedKeys.add(RETROK.a);
-    mod._retro_run();
-
-    // フレーム2の retro_run を呼ぶ前に release→press を両方済ませてしまう
-    // (壁時計の短いギャップ実装が踏んでいた壊れ方の再現)。
-    // コアが読む状態は「変化なし(押されたまま)」のため、break/make とも記録されない。
-    pressedKeys.delete(RETROK.a);
-    pressedKeys.add(RETROK.a);
-    mod._retro_run();
-
-    const end = writePointer();
-    const makeCount = countMakeCodes(mod, start, end);
-    expect(makeCount, '同一フレーム内でrelease→pressしたときの make 回数').toBe(1);
-  });
-});
-
-describe('KeyRepeater→SharedKeyInput→コアの配線結合(onPollの実際の呼び順を通す)', () => {
-  beforeEach(() => {
-    vi.useFakeTimers();
-  });
+describe('実ROMでのmakeのみキーリピート結合', () => {
   afterEach(() => {
     vi.useRealTimers();
   });
 
-  const FRAME_MS = 1000 / 60;
-
-  /** LibretroHost.onPollと同じ「input_poll→input_state」の順を崩さないフレームループ。 */
-  function makeRunFrame(mod: CoreModule, keyRepeater: KeyRepeater): () => void {
-    return () => {
-      vi.advanceTimersByTime(FRAME_MS);
-      keyRepeater.notifyFramePolled();
-      mod._retro_run();
-    };
-  }
-
-  it('keydown相当の押しっぱなしで、KeyRepeater→SharedKeyInput→コアの配線を通してmakeコードが複数回積まれる', async () => {
-    const { mod, pressedKeys } = await initializeCore();
+  it('押しっぱなし中は300ms後から35ms間隔でmakeだけを5回追加し、解放時のbreakは1回だけ', async () => {
+    const { mod, pressedKeys } = await initializeCoreWithRealRom();
     const writePointer = mod._webx68k_keybuf_write_pointer!;
-    // main.tsの `new SharedKeyInput((retrok, down) => host?.setKey(retrok, down))` と
-    // 同じ関係になるよう、sinkの出力をコアが読むpressedKeysへ直結する。
     const sharedKeyInput = new SharedKeyInput((retrok, down) => {
       if (down) pressedKeys.add(retrok);
       else pressedKeys.delete(retrok);
     });
-    const keyRepeater = new KeyRepeater(sharedKeyInput);
-    const runFrame = makeRunFrame(mod, keyRepeater);
-
-    // main.tsのkeydownハンドラ相当: press してから isRepeatableKey ならリピート開始。
+    vi.useFakeTimers();
+    const repeater = new KeyRepeater(
+      (retrok) => mod._webx68k_send_key_make!(RETROK_TO_SCANCODE[retrok]),
+      { delayMs: 300, intervalMs: 35 },
+    );
     const source = 'physical:KeyA';
-    expect(isRepeatableKey(RETROK.a)).toBe(true);
+
+    const start = writePointer();
     sharedKeyInput.press(source, RETROK.a);
-    keyRepeater.start(source, RETROK.a);
+    repeater.start(source, RETROK.a);
+    mod._retro_run(); // 押下エッジによる最初のmake
 
-    const start = writePointer();
+    // t=300,335,370,405,440msの5回。t=475msの6回目より1ms手前で止める。
+    vi.advanceTimersByTime(474);
+    const heldEnd = writePointer();
+    const heldCodes = readKeyBuffer(mod, start, heldEnd);
+    expect(heldCodes.filter((code) => code === A_SCAN_CODE), '押しっぱなし中のmake回数').toHaveLength(6);
+    expect(heldCodes.filter((code) => code === (A_SCAN_CODE | 0x80)), '押しっぱなし中のbreak回数').toHaveLength(0);
+    expect(heldCodes, '押しっぱなし中に積まれたコード列').toEqual(Array(6).fill(A_SCAN_CODE));
 
-    // delayMs(500ms)はフレーム間隔1000/60msのちょうど30フレームぶん。よってフレーム30の
-    // notifyFramePolled()でrelease後1回目のポーリング(pollsSinceRelease=1、まだpressしない)、
-    // フレーム31で2回目のポーリング(pollsSinceRelease=2)に達してpressし直し、make再発。
-    // 以降はintervalMs(50ms)=ちょうど3フレームごとにrelease→次フレームでpressを繰り返す
-    // ため、makeはフレーム31,35,39,43,47で立つ(初回のフレーム1とあわせて計6回)。
-    // 51フレーム目で次の周期に入る前の49フレームで止め、6回ぴったりを確定させる。
-    for (let frame = 0; frame < 49; frame++) runFrame();
+    repeater.stop(source);
+    sharedKeyInput.release(source, RETROK.a);
+    mod._retro_run();
+    const releasedCodes = readKeyBuffer(mod, heldEnd, writePointer());
+    expect(releasedCodes.filter((code) => code === (A_SCAN_CODE | 0x80)), '解放時のbreak回数').toHaveLength(1);
+    expect(releasedCodes, '解放時に積まれたコード列').toEqual([A_SCAN_CODE | 0x80]);
+  }, 30_000);
+});
 
-    const end = writePointer();
-    const makeCount = countMakeCodes(mod, start, end);
-    expect(makeCount, 'KeyRepeater配線を通した49フレームぶんのmake回数').toBe(6);
-  });
+// SRAM先頭8バイトの機種シグネチャ「Ｘ68000W」(libretro-host.tsのSRAM_SIGNATUREと同じ値)。
+const SRAM_SIGNATURE = [0x82, 0x77, 0x36, 0x38, 0x30, 0x30, 0x30, 0x57];
 
-  it('isRepeatableKeyがfalseのキー(LSHIFT)は押しっぱなしでもリピートせず、KeyBuf書き込みは最初のmake1回だけ', async () => {
-    const { mod, pressedKeys } = await initializeCore();
-    const writePointer = mod._webx68k_keybuf_write_pointer!;
-    const sharedKeyInput = new SharedKeyInput((retrok, down) => {
-      if (down) pressedKeys.add(retrok);
-      else pressedKeys.delete(retrok);
-    });
-    const keyRepeater = new KeyRepeater(sharedKeyInput);
-    const runFrame = makeRunFrame(mod, keyRepeater);
+describe('実ROM起動後のSRAM読み出し(webx68k_sram_read/キーリピート設定)', () => {
+  it(
+    '実ROM起動後、SRAM先頭が機種シグネチャ「Ｘ68000W」になり、$ED003A/$ED003Bからキーリピート設定(開始500ms/間隔50ms)を読める。' +
+      '値はゲスト上でSWITCH.Xを実際に起動した表示(FIRST_KEY 3=500ms/NEXT_KEY 2=50ms)と一致することを確認済み。' +
+      'あわせて$ED0059/$ED005A(以前誤って読んでいた番地)が0/1という別の値であることも固定しておく。' +
+      'この2つはたまたま段階値の範囲(0..15)に収まる値だったため、シグネチャ照合・範囲チェックのどちらも' +
+      '素通りしてしまい、番地の取り違えを検出できなかった経緯があるため',
+    async () => {
+      const { mod } = await initializeCoreWithRealRom();
+      const sramRead = mod._webx68k_sram_read!;
 
-    // main.tsのkeydownハンドラと同じく、isRepeatableKeyがfalseならkeyRepeater.start()を
-    // そもそも呼ばない。
-    const source = 'physical:ShiftLeft';
-    expect(isRepeatableKey(RETROK.LSHIFT)).toBe(false);
-    sharedKeyInput.press(source, RETROK.LSHIFT);
+      const signature = Array.from({ length: SRAM_SIGNATURE.length }, (_, i) => sramRead(i));
+      expect(signature, 'SRAM先頭8バイト(機種シグネチャ)').toEqual(SRAM_SIGNATURE);
 
-    const start = writePointer();
-    for (let frame = 0; frame < 49; frame++) runFrame();
-    const end = writePointer();
+      const delayN = sramRead(0x3a);
+      const intervalN = sramRead(0x3b);
+      expect(delayN, 'SRAM $ED003A(キーリピート開始時間の段階値、FIRST_KEY)').toBe(3);
+      expect(intervalN, 'SRAM $ED003B(キーリピート間隔の段階値、NEXT_KEY)').toBe(2);
 
-    // LSHIFTの状態は一度も変化しないので、KeyBufへの書き込みは最初のmake1回だけのはず。
-    const writesCount = (end - start) & KEYBUF_MASK;
-    expect(writesCount, 'LSHIFTを押しっぱなしにした49フレームぶんのKeyBuf書き込み回数').toBe(1);
-  });
+      // readKeyRepeatConfig()相当: 段階値をX68000の式でmsへ変換する。
+      // SWITCH.Xの表示(FIRST_KEY 3 → 500ms、NEXT_KEY 2 → 50ms)と一致することを確認済み。
+      const delayMs = keyRepeatDelayMsFromSramValue(delayN);
+      const intervalMs = keyRepeatIntervalMsFromSramValue(intervalN);
+      expect(delayMs, 'キーリピート開始時間[ms]').toBe(500);
+      expect(intervalMs, 'キーリピート間隔[ms]').toBe(50);
+
+      // 以前誤って読んでいた $ED0059/$ED005A は、単なる別のSRAMバイトであり
+      // 意味を持たない値(0/1)である。ここが「たまたま0..15の範囲に収まる別の値」
+      // であることをテストとして固定しておくことで、「範囲チェックだけでは
+      // 番地の正しさは保証できない」という事実を残す。
+      const wrongOffsetDelayN = sramRead(0x59);
+      const wrongOffsetIntervalN = sramRead(0x5a);
+      expect(wrongOffsetDelayN, 'SRAM $ED0059(以前誤って読んでいた番地。値そのものに意味は無い)').toBe(0);
+      expect(
+        wrongOffsetIntervalN,
+        'SRAM $ED005A(以前誤って読んでいた番地。値そのものに意味は無い)',
+      ).toBe(1);
+    },
+    30_000,
+  );
 });

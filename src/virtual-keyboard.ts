@@ -1,7 +1,7 @@
 import { RETROK } from './keyboard';
 import type { VirtualKeyDef } from './kbd-layout';
 import { KBD_ROWS, KEYPAD_ROWS } from './kbd-layout';
-import { isRepeatableKey, KeyRepeater } from './key-repeat';
+import { isRepeatableKey, KeyRepeater, type SendKeyMake } from './key-repeat';
 
 export type { VirtualKeyDef } from './kbd-layout';
 export { KBD_ROWS, KEYPAD_ROWS } from './kbd-layout';
@@ -74,11 +74,11 @@ export function createVirtualKeyboard(
   input: SharedKeyInput,
   onVisibilityChanged?: (visible: boolean) => void,
   keyRepeater?: KeyRepeater,
+  sendKeyMake: SendKeyMake = () => {},
 ): VirtualKeyboard {
-  // 呼び出し元(main.ts)が物理キーボードと同じインスタンスを渡してこない場合は
-  // 内部で新規生成する。この場合host.onPollからのフレーム合図が届かないため、
-  // KeyRepeaterのfallbackGapMs経過での再pressにフォールバックする。
-  const repeater = keyRepeater ?? new KeyRepeater(input);
+  // 呼び出し元(main.ts)が物理キーボードと同じインスタンスを渡してこない場合も、
+  // 押下状態には触れず、渡されたmake注入コールバックだけを繰り返す。
+  const repeater = keyRepeater ?? new KeyRepeater(sendKeyMake);
   const main = document.createElement('div');
   main.className = 'virtual-keyboard-main';
   const keypad = document.createElement('div');
@@ -171,7 +171,16 @@ export function createVirtualKeyboard(
     button.addEventListener('pointerdown', (event) => {
       event.preventDefault();
       if (pointers.has(event.pointerId)) return;
-      button.setPointerCapture(event.pointerId);
+      // キャプチャの取得は「失敗しても入力自体は成立させる」扱いにする(virtual-pad.ts の
+      // handlePointerDown と同じ理由)。setPointerCapture() は指定 pointerId がアクティブでない
+      // 場合に NotFoundError を投げる仕様で、未捕捉のままだと押下処理(pointers への登録・
+      // input.press)が丸ごと飛ぶ。キャプチャは追従を良くするための最適化にすぎないので、
+      // 失敗は握りつぶして押下処理を続行する。
+      try {
+        button.setPointerCapture(event.pointerId);
+      } catch {
+        /* キャプチャできなくても押下自体は成立させる(上のコメント参照)。 */
+      }
       button.classList.add('pressed');
       const source = `vk:pointer:${event.pointerId}`;
       const state: PointerState = { button, def, source };
