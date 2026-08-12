@@ -610,8 +610,8 @@ document.addEventListener('visibilitychange', () => {
 // 物理・仮想・ブリッジ入力を入力元ごとに保持し、同じキーの片側だけが先に離れても
 // コア側の押下状態が消えないよう集約する。
 const sharedKeyInput = new SharedKeyInput((retrok, down) => host?.setKey(retrok, down));
-// 物理・仮想キーボードで同じインスタンスを共有し、host.onPollのフレーム合図を両方に届ける。
-const keyRepeater = new KeyRepeater(sharedKeyInput);
+// 物理・仮想キーボードで同じインスタンスを共有し、押下状態を保ったままmakeだけを注入する。
+const keyRepeater = new KeyRepeater((retrok) => host?.sendKeyMake(retrok));
 const virtualKeyboard = createVirtualKeyboard(
   virtualKeyboardPanel,
   sharedKeyInput,
@@ -2422,7 +2422,6 @@ async function bootCore(): Promise<void> {
   let keyRepeatPollFrameCount = 0;
   let lastKeyRepeatConfig: { delayMs: number; intervalMs: number } | null = null;
   host.onPoll = () => {
-    keyRepeater.notifyFramePolled();
     keyRepeatPollFrameCount++;
     if (keyRepeatPollFrameCount >= 60) {
       keyRepeatPollFrameCount = 0;
@@ -2735,6 +2734,11 @@ const physicalPressed = new Set<string>();
 const hostKeyPressed = new Map<string, Binding>();
 window.addEventListener('keydown', (e) => {
   if (document.activeElement !== canvas || !host) return;
+  // 自前のKeyRepeaterで刻むため、ブラウザ/OS由来のオートリピートはゲストへ渡さない。
+  if (e.repeat) {
+    e.preventDefault();
+    return;
+  }
   // ホストキー割当(ジョイスティック等への横取り)経路はここで早期returnするため、
   // 以降のkeyRepeater.start()に到達しない = 連打(リピート)対象にならない。
   const hostBinding = resolveHostKeyBinding(hostKeyStore, e.code);
@@ -2749,10 +2753,8 @@ window.addEventListener('keydown', (e) => {
   const firstPress = !physicalPressed.has(e.code);
   physicalPressed.add(e.code);
   sharedKeyInput.press(`physical:${e.code}`, code);
-  // ブラウザ自身のオートリピート(e.repeat===true)ではリピートを開始し直さない。
-  // 自前タイマ(KeyRepeater)で刻むことで、OSごとに異なるキーリピート間隔設定に
-  // 依存せず一定のリピート挙動にするのが狙い。
-  if (firstPress && !e.repeat && isRepeatableKey(code)) keyRepeater.start(`physical:${e.code}`, code);
+  // 自前タイマ(KeyRepeater)で刻み、OSごとに異なるキーリピート間隔設定へ依存させない。
+  if (firstPress && isRepeatableKey(code)) keyRepeater.start(`physical:${e.code}`, code);
   if (firstPress && code === RETROK.BROWSER_REFRESH) virtualKeyboard.togglePhysicalKanaLock();
   e.preventDefault();
 });

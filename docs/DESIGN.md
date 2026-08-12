@@ -275,27 +275,22 @@ canvas自体は引き続き`width/height:auto`なので固有の画素比を維�
 
 `key-repeat.ts` の `KeyRepeater` が物理・仮想キーボード共通のオートリピート機構を担う。
 px68k-libretro コア自体にはリピート機構が無く、`LibretroHost.keyState` は
-1エミュレートフレームにつき1回(`input_poll` 直後の `input_state` 読み出し)しか読まれない
-ため、ホスト側で make/break のパルス(release→press)を打ってリピートを模倣する。
+1エミュレートフレームにつき1回(`input_poll` 直後の `input_state` 読み出し)しか読まれない。
 
-**breakはフレーム基準で管理する。** release を `setTimeout` で起こしてすぐ press し直すと、
-コアがそのフレームでまだ `input_state` を呼んでいない場合は break が一度もコアに見えないまま
-press へ上書きされてしまう(retro_run内の順序は「onPoll(=input_poll) → input_state」で、
-JSのsetTimeoutはこの外側でしか起きない)。そのため `KeyRepeater.notifyFramePolled()`
-(`host.onPoll` から毎フレーム呼ぶ)を release 後 **2回** 数えてから press し直す
-— 1回目はそのフレームの `input_state` がこれから break を読む合図でしかなく、実際に
-読み終えるのは次のフレームの先頭だからである。コアが動いていない(仮想キーボード単体・
-テスト環境等)場合の固着防止に、壁時計ベースの `fallbackGapMs` も併用する。
+**実機のX68000キーボードは、リピート時にmakeだけを繰り返す。** 押下状態は指を離すまで
+立ったままで、breakは解放時の1回だけである。以前の実装はホストの押下状態を
+release→pressしてmake/breakパルスを作り、breakを1フレーム見せるため
+`notifyFramePolled()`を2回待っていたが、この方式は実機と異なり誤りだった。IOCSのBITSNS等で
+キーマトリクスの押下状態をポーリングするゲームには、リピートのたびにキーが離れたように見える。
+実際にテンキーで移動するゲームで、押しっぱなしにすると数秒後に移動が止まる不具合が発生した。
 
-**周期はパルス所要時間ぶんを差し引いて補正する。** release→press(パルス)にも実時間が
-かかる(フレーム基準の待ちにより最短でも1フレーム程度)ため、press後に単純に
-`intervalMs` だけ待って次のreleaseを起こすと、実際のpress→press周期が
-`intervalMs + パルス所要時間`になり指定値より遅くなる。`KeyRepeater` は直前の
-release→press実測時間を`pulseEstimateMs`として保持し、次のreleaseまでの待ちを
-`Math.max(0, intervalMs - pulseEstimateMs)`にすることで周期を`intervalMs`ちょうどへ
-補正する。最初のリピート(押下からのdelayMs)も同様に、初回だけは実測値が無いため
-初期推定(60fpsで2フレームぶん)を使って先に差し引いておく。時刻取得は`options.now`
-(既定`Date.now`)で注入できるため、vitestのfake timersでも決定的に検証できる。
+現在は `SharedKeyInput` / `LibretroHost.keyState` の押下状態を一切変更せず、
+`KeyRepeater` が `delayMs` 後から `intervalMs` ごとにmake注入コールバックだけを呼ぶ。
+`LibretroHost.sendKeyMake()` は `keyboard.ts` の `RETROK_TO_SCANCODE` でX68000スキャンコードへ
+変換し、core-shimの `webx68k_send_key_make()` を通してコアの `send_keycode(scancode, 2)` を
+直接呼ぶ。これによりリピート中はmakeだけがKeyBufへ追加され、物理・仮想キーボードの解放時に
+通常の押下状態エッジからbreakが1回だけ送られる。フレーム基準のbreak待ちとパルス時間の
+周期補正は不要になり、初回は単純に`delayMs`後、以降は`intervalMs`間隔で送る。
 
 **設定はSRAMから読み、X68000の式でmsへ変換する。** 実機のSWITCH.Xで設定するキーリピートの
 開始時間・間隔は、SRAM(ゲスト側 `$ED0000`-`$ED3FFF`)の `$ED003A`(開始段階値n、FIRST_KEY)・

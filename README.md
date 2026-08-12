@@ -235,7 +235,9 @@ Kana labels reflect the virtual keyboard's client-side state; if it differs from
 
 Long-press repeat delay/interval follow the X68000's own SRAM setting (the one
 SWITCH.X changes), for both the physical and virtual keyboard. Changing it via
-SWITCH.X while running is picked up live.
+SWITCH.X while running is picked up live. As on real hardware, repeat keeps the
+key held and emits make codes only; a single break code is sent when the key is
+actually released.
 
 SRAM (boot drive, memory size, key repeat, and other SWITCH.X settings) is
 automatically persisted to IndexedDB, so these settings survive a page reload.

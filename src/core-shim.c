@@ -336,3 +336,15 @@ int webx68k_sram_read(int offset)
     return -1;
   return SRAM_Read(0x00ed0000 + (uint32_t)offset);
 }
+
+/* px68k-libretro の libretro/keyboard.c にある。第2引数は 2=make(P6K_DOWN) / 1=break(P6K_UP)。 */
+extern void send_keycode(uint8_t code, int flag);
+
+/* 実機のキーリピートと同じく、押下状態を変えずにmakeだけをキーバッファへ追加する。 */
+__attribute__((used))
+void webx68k_send_key_make(int scancode)
+{
+  if (scancode < 0 || scancode > 0x7f)
+    return;
+  send_keycode((uint8_t)scancode, 2);
+}

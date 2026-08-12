@@ -5,6 +5,7 @@ import {
   keyRepeatDelayMsFromSramValue,
   keyRepeatIntervalMsFromSramValue,
 } from './key-repeat';
+import { RETROK_TO_SCANCODE } from './keyboard';
 import {
   extractTextScreenFromCore,
   MINIMUM_ANK_CGROM_SIZE,
@@ -122,6 +123,8 @@ export interface PX68KModule {
   // SRAM($ED0000-$ED3FFF)読み出し用(core-shim.c 経由でx68k/sram.cのSRAM_Read()を公開)。
   // 古いwasm(再ビルド前)でも落ちないよう任意プロパティにしている。
   _webx68k_sram_read?(offset: number): number;
+  // 実機と同じmakeのみのキーリピート注入用。古いwasmでも落ちないよう任意プロパティ。
+  _webx68k_send_key_make?(scancode: number): void;
 }
 
 /**
@@ -254,6 +257,14 @@ export class LibretroHost {
   setKey(retrok: number, down: boolean): void {
     if (down) this.keyState.add(retrok);
     else this.keyState.delete(retrok);
+  }
+
+  /** 押下状態を変えず、RETROKに対応するmakeだけをコアへ追加する。 */
+  sendKeyMake(retrok: number): void {
+    const sendMake = this.mod?._webx68k_send_key_make;
+    const scancode = RETROK_TO_SCANCODE[retrok];
+    if (!sendMake || scancode === undefined) return;
+    sendMake(scancode);
   }
 
   /** マウスの相対移動量を積む(ゲスト1ドット単位。呼び出し側で感度・表示倍率を換算済みの値を渡す) */
