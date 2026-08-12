@@ -17,6 +17,12 @@ class WebX68kAudioProcessor extends AudioWorkletProcessor {
     this._queue = [];
     this._queuedSamples = 0;
     this._readOffset = 0;
+    // アンダーラン時にゼロへ即落ちさせず、直近サンプルからフェードアウト/インさせて
+    // 波形の不連続によるプツ/ブブブ音を避けるための状態。約3ms相当。
+    this._fadeSamples = Math.max(1, Math.round(sampleRate * 0.003));
+    this._lastL = 0;
+    this._lastR = 0;
+    this._fade = 1;
     this.port.onmessage = (e) => {
       const chunk = e.data;
       // ステートロード直後など、溜まっている旧状態の音を捨てるための指示
@@ -24,6 +30,9 @@ class WebX68kAudioProcessor extends AudioWorkletProcessor {
         this._queue = [];
         this._queuedSamples = 0;
         this._readOffset = 0;
+        this._lastL = 0;
+        this._lastR = 0;
+        this._fade = 0;
         return;
       }
       if (chunk && chunk.length) {
@@ -66,13 +75,21 @@ class WebX68kAudioProcessor extends AudioWorkletProcessor {
 
     for (let i = 0; i < frames; i++) {
       if (this._queue.length === 0) {
-        left[i] = 0;
-        right[i] = 0;
+        this._fade = Math.max(0, this._fade - 1 / this._fadeSamples);
+        left[i] = this._lastL * this._fade;
+        right[i] = this._lastR * this._fade;
         continue;
       }
       const chunk = this._queue[0];
-      left[i] = chunk[this._readOffset];
-      right[i] = chunk[this._readOffset + 1];
+      const rawL = chunk[this._readOffset];
+      const rawR = chunk[this._readOffset + 1];
+      if (this._fade < 1) {
+        this._fade = Math.min(1, this._fade + 1 / this._fadeSamples);
+      }
+      left[i] = rawL * this._fade;
+      right[i] = rawR * this._fade;
+      this._lastL = rawL;
+      this._lastR = rawR;
       this._readOffset += 2;
       this._queuedSamples -= 1;
       if (this._readOffset >= chunk.length) {

@@ -1,5 +1,6 @@
 import './style.css';
 import { AudioEngine } from './audio';
+import { computeFrameBudget } from './frameBudget';
 import {
   createFormattedFd,
   createFormattedHdd,
@@ -3740,13 +3741,10 @@ function loop(t: number): void {
   const frameInterval = (1 / (fps * speedMultiplier)) * (1 + adjust);
   accumulator += dt;
 
-  // 補正が追いつかない急変(タブ復帰・重い処理からの復帰)に備えた保険。
-  // 倍率を上げたときは1ループtickあたりの上限フレーム数も比例して引き上げないと、
-  // frameIntervalが縮んでも budget が頭打ちになって速度が出ない。
-  let budgetBase = 2;
-  if (queued > AudioEngine.MAX_LATENCY_SEC * 0.8) budgetBase = 0;
-  else if (queued < AudioEngine.TARGET_LATENCY_SEC * 0.4) budgetBase = 3;
-  const budget = Math.ceil(budgetBase * speedMultiplier);
+  // 補正が追いつかない急変(タブ復帰・重い処理からの復帰)や rAF スロットリング
+  // (低電力モード/サーマルスロットリングで30Hz等に落ちる環境)に備えた保険。
+  // 固定値ではなく実測dtから必要フレーム数を導出する(src/frameBudget.ts)。
+  const budget = computeFrameBudget(dt, frameInterval, queued, speedMultiplier);
 
   let ran = 0;
   while (accumulator >= frameInterval && ran < budget) {
