@@ -710,6 +710,15 @@
               これらのキーが無いキーボードも多いので、その場合も仮想キーボードが便利です。
             </div>
             <p>
+              キーを押しっぱなしにするとリピート入力されます(物理キーボード・仮想キーボード
+              とも対応)。リピートの開始時間・間隔はゲスト側の設定ユーティリティ
+              <strong>SWITCH.X</strong> の設定に従い、変更内容はブラウザ内に保存されるため
+              リロード後も引き継がれます。ただし<strong>キークリック音とキーボードLEDの
+              制御はホスト側で未対応</strong>です。また<strong>メモリ容量</strong>は
+              SWITCH.X で変更しても、常に設定ダイアログ(または <code>?ram=</code>)側の
+              値が優先されます。
+            </p>
+            <p>
               物理キーボード・仮想キーボード・(MCP経由の)自動操作は、それぞれ入力元ごとに
               押下状態を数えており、同じキーを複数の入力元から押しても、最後の入力元が
               離すまでキーは離れたとみなされません。またタブ切り替えなどで画面がフォーカスを
@@ -781,6 +790,15 @@
               PrintScreen, ScrollLock, and PageDown/PageUp respectively, but many keyboards lack
               those keys too, so the virtual keyboard is handy for them as well.
             </div>
+            <p>
+              Holding a key down repeats it (works for both the physical and virtual keyboard).
+              The repeat delay and interval follow the guest-side <strong>SWITCH.X</strong>
+              configuration utility, and changes you make there are saved in the browser, so
+              they persist across reloads. However, <strong>key-click sound and keyboard LED
+              control are not supported</strong> on the host side. Also, changing the
+              <strong>memory size</strong> in SWITCH.X has no lasting effect — the value from
+              the settings dialog (or <code>?ram=</code>) always takes priority.
+            </p>
             <p>
               The physical keyboard, virtual keyboard, and automated input (e.g. via MCP) each
               keep their own reference count of pressed keys per input source, so pressing the

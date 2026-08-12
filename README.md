@@ -218,6 +218,9 @@ SWITCH.X while running is picked up live.
 
 SRAM (boot drive, memory size, key repeat, and other SWITCH.X settings) is
 automatically persisted to IndexedDB, so these settings survive a page reload.
+That said, key repeat is the only SWITCH.X setting the host emulates itself —
+key-click sound and keyboard LED control aren't supported, and the memory
+size always follows the settings dialog rather than SWITCH.X.
 
 ### Virtual pad (on-screen pad)
 
