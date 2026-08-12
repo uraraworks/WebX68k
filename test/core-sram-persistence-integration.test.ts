@@ -186,7 +186,7 @@ const SRAM_SIGNATURE = [0x82, 0x77, 0x36, 0x38, 0x30, 0x30, 0x30, 0x57];
 
 describe('SRAM永続化の往復(sram.dat書き込み → _webx68k_sram_read読み出し)', () => {
   it(
-    '1台目のコアで読んだSRAMのバイト列をoffset 0x59/0x5Aだけ書き換え、' +
+    '1台目のコアで読んだSRAMのバイト列をoffset 0x3a/0x3bだけ書き換え、' +
       '2台目の新しいコアインスタンスへretro_load_game()前に置いて起動すると、' +
       '書き換えた値がそのまま読める(バイト順が file==ゲスト順であることの実測)',
     async () => {
@@ -197,16 +197,21 @@ describe('SRAM永続化の往復(sram.dat書き込み → _webx68k_sram_read読�
       for (let i = 0; i < 0x4000; i++) baseline[i] = firstSramRead(i);
 
       // 前提: 1台目の時点でシグネチャと既定のキーリピート値が読めていること
-      // (core-key-repeat-integration.test.tsで確認済みの値=開始n:0/間隔n:1と同じはず)。
+      // (core-key-repeat-integration.test.tsで確認済みの値=開始n:3/間隔n:2と同じはず)。
       const baselineSignature = Array.from({ length: SRAM_SIGNATURE.length }, (_, i) => baseline[i]);
       expect(baselineSignature, '1台目: SRAM先頭8バイト(機種シグネチャ)').toEqual(SRAM_SIGNATURE);
 
-      // offset 0x59(開始段階値) を 3、0x5A(間隔段階値) を 2 へ書き換えたバイト列を作る。
+      // offset 0x3a(開始段階値) を 5、0x3b(間隔段階値) を 4 へ書き換えたバイト列を作る。
       // このoffsetは「_webx68k_sram_read/readKeyRepeatConfig()が読む側のオフセット」であり、
       // ファイルのバイト順がそれと同じなのかどうかを本テストで実測する。
+      // ここで既定値(3, 2)と必ず異なる値(5, 4)を選んでいるのは重要な設計判断:
+      // 既定値のまま書き換えたことにすると、往復後に読めた値が「本当に復元できた」のか
+      // 「単に何もしていなくても既定値のまま読めているだけ」なのかをこのテストだけでは
+      // 区別できなくなってしまう。既定値と異なる値を使うことで初めて、往復の実装が
+      // 実際に機能していることの証拠になる。
       const modified = baseline.slice();
-      modified[0x59] = 3;
-      modified[0x5a] = 2;
+      modified[0x3a] = 5;
+      modified[0x3b] = 4;
 
       // 2台目: 新しいコアインスタンスへ、retro_load_game()より前にmodifiedをsram.datとして置く。
       const second = await initializeCoreWithRealRom(modified);
@@ -220,16 +225,16 @@ describe('SRAM永続化の往復(sram.dat書き込み → _webx68k_sram_read読�
         SRAM_SIGNATURE,
       );
 
-      const restoredDelayN = secondSramRead(0x59);
-      const restoredIntervalN = secondSramRead(0x5a);
-      expect(restoredDelayN, '2台目: $ED0059(開始段階値)が書き換えた3のまま読めること').toBe(3);
-      expect(restoredIntervalN, '2台目: $ED005A(間隔段階値)が書き換えた2のまま読めること').toBe(2);
+      const restoredDelayN = secondSramRead(0x3a);
+      const restoredIntervalN = secondSramRead(0x3b);
+      expect(restoredDelayN, '2台目: $ED003A(開始段階値)が書き換えた5のまま読めること').toBe(5);
+      expect(restoredIntervalN, '2台目: $ED003B(間隔段階値)が書き換えた4のまま読めること').toBe(4);
 
-      // readKeyRepeatConfig()相当: 開始 500ms(200+100*3) / 間隔 50ms(30+5*2^2)。
+      // readKeyRepeatConfig()相当: 開始 700ms(200+100*5) / 間隔 110ms(30+5*4^2)。
       const delayMs = keyRepeatDelayMsFromSramValue(restoredDelayN);
       const intervalMs = keyRepeatIntervalMsFromSramValue(restoredIntervalN);
-      expect(delayMs, '開始時間[ms] = 200+100*3').toBe(500);
-      expect(intervalMs, '間隔[ms] = 30+5*2^2').toBe(50);
+      expect(delayMs, '開始時間[ms] = 200+100*5').toBe(700);
+      expect(intervalMs, '間隔[ms] = 30+5*4^2').toBe(110);
     },
     60_000,
   );

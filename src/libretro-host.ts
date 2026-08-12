@@ -298,8 +298,17 @@ export class LibretroHost {
 
   /**
    * SWITCH.Xで設定されたキーリピート設定をSRAMから読む。
-   * SRAM $ED0059 = 開始時間の段階値(n)、$ED005A = 間隔の段階値(n)で、それぞれ
-   * keyRepeatDelayMsFromSramValue/keyRepeatIntervalMsFromSramValueのX68000の式でmsへ変換する。
+   * SRAM $ED003A = 開始時間の段階値(n、FIRST_KEY)、$ED003B = 間隔の段階値(n、NEXT_KEY)で、
+   * それぞれkeyRepeatDelayMsFromSramValue/keyRepeatIntervalMsFromSramValueのX68000の式でmsへ変換する。
+   *
+   * この番地は資料の記憶ではなく実測で確定させたもの。ゲスト上でSWITCH.Xを実際に起動し、
+   * その表示(FIRST_KEY 3 → 500ms、NEXT_KEY 2 → 50ms、X68000の式 開始=200+100n /
+   * 間隔=30+5n^2 に一致)と、起動直後のSRAMダンプの $ED003A=0x03 / $ED003B=0x02 が
+   * 一致することを突き合わせて判明した。以前はここを $ED0059 / $ED005A だと誤って読んでいた。
+   * この誤りはシグネチャ照合(先頭8バイト一致)や下のnullチェック(段階値0..15の範囲内か)を
+   * どちらも素通りしてしまっていた。$ED0059=0 / $ED005A=1 がたまたま0..15に収まる値だった
+   * ため、「読めてはいるが番地が違う」状態を検出できず、ゲスト自身の表示と突き合わせて
+   * 初めて食い違いに気づけた。番地の正しさは範囲チェックでは保証できず、実測でしか確かめられない。
    * 次のいずれかに該当すればnullを返す(呼び出し側はKeyRepeaterの既定値のまま据え置くこと):
    *   - _webx68k_sram_read が無い(古いコア・再ビルド前のwasm)
    *   - SRAM先頭が機種シグネチャ「Ｘ68000W」と一致しない(SRAM未初期化・読み出し経路の異常)
@@ -312,8 +321,8 @@ export class LibretroHost {
     for (let i = 0; i < SRAM_SIGNATURE.length; i++) {
       if (sramRead(i) !== SRAM_SIGNATURE[i]) return null;
     }
-    const delayMs = keyRepeatDelayMsFromSramValue(sramRead(0x59));
-    const intervalMs = keyRepeatIntervalMsFromSramValue(sramRead(0x5a));
+    const delayMs = keyRepeatDelayMsFromSramValue(sramRead(0x3a));
+    const intervalMs = keyRepeatIntervalMsFromSramValue(sramRead(0x3b));
     if (delayMs === null || intervalMs === null) return null;
     return { delayMs, intervalMs };
   }

@@ -187,7 +187,7 @@ export class KeyRepeater {
  * X68000 のキーリピート仕様(SWITCH.Xで設定するn=0..15の段階値)から、押下開始から
  * 最初のリピートが出るまでの遅延[ms]を求める。式は公開されているX68000のキーリピート
  * 仕様そのもの: 開始時間 = 200 + 100×n [ms]。
- * このnはSRAMオフセット $ED0059(webx68k_sram_read(0x59))に格納されている。
+ * このnはSRAMオフセット $ED003A(webx68k_sram_read(0x3a))に格納されている。
  * nが0..15の整数でなければ(未初期化・壊れたSRAM等)nullを返す。
  */
 export function keyRepeatDelayMsFromSramValue(n: number): number | null {
@@ -197,8 +197,8 @@ export function keyRepeatDelayMsFromSramValue(n: number): number | null {
 
 /**
  * X68000 のキーリピート仕様から、リピート間隔[ms]を求める。
- * 式: 間隔 = 30 + 5×n² [ms]。このnはSRAMオフセット $ED005A
- * (webx68k_sram_read(0x5a))に格納されている。
+ * 式: 間隔 = 30 + 5×n² [ms]。このnはSRAMオフセット $ED003B
+ * (webx68k_sram_read(0x3b))に格納されている。
  * nが0..15の整数でなければnullを返す。
  */
 export function keyRepeatIntervalMsFromSramValue(n: number): number | null {

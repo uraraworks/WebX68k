@@ -377,7 +377,11 @@ const SRAM_SIGNATURE = [0x82, 0x77, 0x36, 0x38, 0x30, 0x30, 0x30, 0x57];
 
 describe('実ROM起動後のSRAM読み出し(webx68k_sram_read/キーリピート設定)', () => {
   it(
-    '実ROM起動後、SRAM先頭が機種シグネチャ「Ｘ68000W」になり、$ED0059/$ED005Aからキーリピート設定(開始200ms/間隔35ms)を読める',
+    '実ROM起動後、SRAM先頭が機種シグネチャ「Ｘ68000W」になり、$ED003A/$ED003Bからキーリピート設定(開始500ms/間隔50ms)を読める。' +
+      '値はゲスト上でSWITCH.Xを実際に起動した表示(FIRST_KEY 3=500ms/NEXT_KEY 2=50ms)と一致することを確認済み。' +
+      'あわせて$ED0059/$ED005A(以前誤って読んでいた番地)が0/1という別の値であることも固定しておく。' +
+      'この2つはたまたま段階値の範囲(0..15)に収まる値だったため、シグネチャ照合・範囲チェックのどちらも' +
+      '素通りしてしまい、番地の取り違えを検出できなかった経緯があるため',
     async () => {
       const mod = await initializeCoreWithRealRom();
       const sramRead = mod._webx68k_sram_read!;
@@ -385,16 +389,29 @@ describe('実ROM起動後のSRAM読み出し(webx68k_sram_read/キーリピー�
       const signature = Array.from({ length: SRAM_SIGNATURE.length }, (_, i) => sramRead(i));
       expect(signature, 'SRAM先頭8バイト(機種シグネチャ)').toEqual(SRAM_SIGNATURE);
 
-      const delayN = sramRead(0x59);
-      const intervalN = sramRead(0x5a);
-      expect(delayN, 'SRAM $ED0059(キーリピート開始時間の段階値)').toBe(0);
-      expect(intervalN, 'SRAM $ED005A(キーリピート間隔の段階値)').toBe(1);
+      const delayN = sramRead(0x3a);
+      const intervalN = sramRead(0x3b);
+      expect(delayN, 'SRAM $ED003A(キーリピート開始時間の段階値、FIRST_KEY)').toBe(3);
+      expect(intervalN, 'SRAM $ED003B(キーリピート間隔の段階値、NEXT_KEY)').toBe(2);
 
       // readKeyRepeatConfig()相当: 段階値をX68000の式でmsへ変換する。
+      // SWITCH.Xの表示(FIRST_KEY 3 → 500ms、NEXT_KEY 2 → 50ms)と一致することを確認済み。
       const delayMs = keyRepeatDelayMsFromSramValue(delayN);
       const intervalMs = keyRepeatIntervalMsFromSramValue(intervalN);
-      expect(delayMs, 'キーリピート開始時間[ms]').toBe(200);
-      expect(intervalMs, 'キーリピート間隔[ms]').toBe(35);
+      expect(delayMs, 'キーリピート開始時間[ms]').toBe(500);
+      expect(intervalMs, 'キーリピート間隔[ms]').toBe(50);
+
+      // 以前誤って読んでいた $ED0059/$ED005A は、単なる別のSRAMバイトであり
+      // 意味を持たない値(0/1)である。ここが「たまたま0..15の範囲に収まる別の値」
+      // であることをテストとして固定しておくことで、「範囲チェックだけでは
+      // 番地の正しさは保証できない」という事実を残す。
+      const wrongOffsetDelayN = sramRead(0x59);
+      const wrongOffsetIntervalN = sramRead(0x5a);
+      expect(wrongOffsetDelayN, 'SRAM $ED0059(以前誤って読んでいた番地。値そのものに意味は無い)').toBe(0);
+      expect(
+        wrongOffsetIntervalN,
+        'SRAM $ED005A(以前誤って読んでいた番地。値そのものに意味は無い)',
+      ).toBe(1);
     },
     30_000,
   );
