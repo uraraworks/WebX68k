@@ -69,8 +69,8 @@ Notes on `lib` (for sharing links to multi-disk collections):
 
 ### Toolbar
 
-Four buttons stay directly on the toolbar: Reset, Fullscreen, Virtual
-Keyboard, and Screenshot. Everything else lives behind the "..." (More)
+Five buttons stay directly on the toolbar: Reset, Fullscreen, Virtual
+Keyboard, Screenshot, and Speed. Everything else lives behind the "..." (More)
 button as a two-level menu: Display (4:3 display toggle), Input (mouse
 capture/resync, gamepad settings), Disk (Disk Library, file transfer), and
 State (save/load state) groups, plus Settings, Help, and the language toggle
@@ -202,6 +202,27 @@ The "Screenshot" toolbar button saves the current display as a PNG
 video resolution (it's resized in `handleVideoRefresh()` whenever the mode
 changes — 256x256 / 512x512 / 768x512 etc.), so the saved image is exactly
 the resolution currently being displayed, with no letterboxing to crop.
+
+### Emulation speed
+
+The toolbar's "Speed" button is an ON/OFF toggle. OFF (the default) runs at
+100% (normal) speed; ON runs at whatever multiplier is chosen in the
+settings panel (25% / 50% / 75% / 150% / 200% / 300% / 400%, default 200%).
+While ON, the button shows a badge with the current multiplier. The change
+takes effect immediately from the toggle itself — no reset needed — and
+audio pitch shifts along with it, like a tape running fast or slow (BGM
+speeds up too). The setting is not saved, so playback always starts at OFF
+(100%) on boot and after a reset.
+
+How fast it can actually go depends on your device's processing power. 400%
+is a selectable ceiling, not a guaranteed speed — the settings panel shows
+the measured speed you're actually getting, so you can see where it tops
+out.
+
+This is separate from the machine configuration's "CPU speed"
+(`px68k_cpuspeed`, 10-100MHz) setting: that one changes the emulated
+hardware's actual clock and needs a reset, while this one just changes the
+host's execution pace and applies immediately.
 
 ### Virtual keyboard
 
