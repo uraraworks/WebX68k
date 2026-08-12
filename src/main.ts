@@ -14,6 +14,7 @@ import {
   type FatEntry,
 } from './api/fat';
 import { loadBiosFile, saveBiosFile } from './bios-store';
+import { loadSramFile, saveSramFile } from './sram-store';
 import {
   classifyDiskBytes,
   classifyDiskKind,
@@ -2275,9 +2276,40 @@ async function bootCore(): Promise<void> {
   // そのポートのpadTypeに依存するため、コア起動時点の値を渡しておく(設定ダイアログで
   // 変更されたときは setPadType コールバック側で追従させる)。
   virtualPad.setPadType(gamepadStore.joyType[0]);
-  await host.init(biosIplBytes!, biosCgBytes!);
+  // リロード後もSWITCH.Xの設定(起動ドライブ・キーリピート等)が残るよう、前回保存したSRAMを
+  // retro_load_game()より前に渡す(無ければ未初期化のままIPLが既定値を書く=初回起動相当)。
+  const savedSram = await loadSramFile();
+  await host.init(biosIplBytes!, biosCgBytes!, savedSram ?? undefined);
+  host.startSramAutosave((bytes) => {
+    saveSramFile(bytes).catch((err) => console.warn('SRAMの保存に失敗しました', err));
+  });
+  // SWITCH.Xでの設定変更をKeyRepeaterへ追従させるためのSRAM監視状態。
+  // 毎フレーム読むのは無駄なので60フレーム(約1秒)おきに間引く。bootCore()呼び出し
+  // ごと(コア再起動ごと)にローカル変数として作り直されるので、古いコアの値を
+  // 次のコアへ引きずることはない。
+  let keyRepeatPollFrameCount = 0;
+  let lastKeyRepeatConfig: { delayMs: number; intervalMs: number } | null = null;
   host.onPoll = () => {
     keyRepeater.notifyFramePolled();
+    keyRepeatPollFrameCount++;
+    if (keyRepeatPollFrameCount >= 60) {
+      keyRepeatPollFrameCount = 0;
+      // SRAMが未初期化・古いコア等でnullのときはKeyRepeaterの既定値のまま据え置く
+      // (readKeyRepeatConfig()のコメント参照)。
+      const config = host!.readKeyRepeatConfig();
+      if (
+        config &&
+        (lastKeyRepeatConfig === null ||
+          config.delayMs !== lastKeyRepeatConfig.delayMs ||
+          config.intervalMs !== lastKeyRepeatConfig.intervalMs)
+      ) {
+        lastKeyRepeatConfig = config;
+        keyRepeater.setTiming(config.delayMs, config.intervalMs);
+        console.log(
+          `キーリピート設定を SRAM から取得: 開始 ${config.delayMs}ms / 間隔 ${config.intervalMs}ms`,
+        );
+      }
+    }
     const pads = gamepadsByPort();
     const [bits0, bits1] = pollBitsByPort(pads);
     // 物理パッド・バーチャルパッド・ホストキー(物理キーボード再割り当て)が同じポート(0)に
