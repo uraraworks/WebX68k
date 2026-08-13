@@ -17,6 +17,7 @@ const DEFAULT_CHROME = '/Applications/Google Chrome.app/Contents/MacOS/Google Ch
 const DEFAULT_POLL_INTERVAL_MS = 50;
 const REQUIRED_STABLE_POLLS = 3;
 const VALID_FAULTS = new Set(['no-disk', 'wrong-marker']);
+const VALID_MODES = new Set(['dev', 'prod']);
 const INTERVAL_LABELS = {
   clickToWasmFetchComplete: 'クリック→wasm取得完了',
   wasmFetchCompleteToCoreReady: 'wasm取得完了→コア稼働',
@@ -41,7 +42,7 @@ function parseArgs(argv) {
       values.help = true;
       continue;
     }
-    const match = /^--(port|runs|timeout|poll-interval|output|fault)=(.+)$/.exec(arg);
+    const match = /^--(mode|port|runs|timeout|poll-interval|output|fault)=(.+)$/.exec(arg);
     if (!match) throw new Error(`不明な引数です: ${arg}`);
     values[match[1]] = match[2];
   }
@@ -51,12 +52,15 @@ function parseArgs(argv) {
 function printHelp() {
   console.log(`Usage: node scripts/measure-boot.mjs [options]
 
-  --port=<number>       dev server のポート (既定: 5183)
+  --mode=<dev|prod>     配信モード (既定: dev)
+  --port=<number>       配信サーバーのポート (既定: dev 5183 / prod 5184)
   --runs=<number>       反復回数 (既定: 20)
   --timeout=<ms>        各試行のタイムアウト (既定: 60000)
   --poll-interval=<ms>  ページ内ポーリング間隔 (既定: 50)
   --output=<path>       JSON の保存先
   --fault=<name>        no-disk または wrong-marker
+
+prod モードは計測前に毎回 npm run build を実行します。
 
 環境変数: WEBX68K_PORT, WEBX68K_RUNS, WEBX68K_TIMEOUT_MS,
           WEBX68K_POLL_INTERVAL_MS,
@@ -69,10 +73,14 @@ function defaultOutputPath() {
 }
 
 function buildConfig(args) {
+  const mode = args.mode ?? 'dev';
+  if (!VALID_MODES.has(mode)) {
+    throw new Error(`mode は dev または prod を指定してください: ${mode}`);
+  }
   const urlFromEnv = process.env.WEBX68K_URL;
   const envUrl = urlFromEnv ? new URL(urlFromEnv) : null;
   const port = parsePositiveInteger(
-    args.port ?? process.env.WEBX68K_PORT ?? envUrl?.port ?? '5183',
+    args.port ?? process.env.WEBX68K_PORT ?? envUrl?.port ?? (mode === 'prod' ? '5184' : '5183'),
     'port',
   );
   const baseUrl = envUrl ?? new URL(`http://localhost:${port}`);
@@ -87,6 +95,7 @@ function buildConfig(args) {
   }
 
   return {
+    mode,
     baseUrl: baseUrl.href.replace(/\/$/, ''),
     port,
     runs: parsePositiveInteger(args.runs ?? process.env.WEBX68K_RUNS ?? '20', 'runs'),
@@ -106,34 +115,55 @@ function buildConfig(args) {
   };
 }
 
-/** `npm run dev` を専用ポートで起動し、Vite の ready 表示を待つ。 */
-async function startDevServer(port) {
-  const child = spawn('npm', ['run', 'dev', '--', '--port', String(port), '--strictPort'], {
+/**
+ * prod では比較対象と成果物の対応を曖昧にしないため、毎回ビルドし直す。
+ * 古い dist を誤って測る余地が生じるため、意図的に --skip-build は設けない。
+ */
+async function buildProduction() {
+  const child = spawn('npm', ['run', 'build'], {
+    cwd: REPO_ROOT,
+    stdio: 'inherit',
+  });
+  const result = await new Promise((resolveBuild, rejectBuild) => {
+    child.once('error', rejectBuild);
+    child.once('exit', (code, signal) => resolveBuild({ code, signal }));
+  });
+  if (result.code !== 0) {
+    const detail = result.signal ? `シグナル ${result.signal}` : `終了コード ${result.code}`;
+    throw new Error(`npm run build が失敗しました（${detail}）。計測を中断します`);
+  }
+}
+
+/** 選択した Vite サーバーを専用ポートで起動し、ready 表示を待つ。 */
+async function startServer(mode, port) {
+  const script = mode === 'prod' ? 'preview' : 'dev';
+  const child = spawn('npm', ['run', script, '--', '--port', String(port), '--strictPort'], {
     cwd: REPO_ROOT,
     stdio: 'pipe',
   });
   let ready = false;
   let startupError = '';
-  child.stdout.on('data', (buffer) => {
-    if (buffer.toString().includes('ready in')) ready = true;
-  });
-  child.stderr.on('data', (buffer) => {
-    startupError += buffer.toString();
-  });
+  const inspectOutput = (buffer) => {
+    const output = buffer.toString();
+    startupError += output;
+    if (output.includes('ready in') || /Local:\s+http/.test(output)) ready = true;
+  };
+  child.stdout.on('data', inspectOutput);
+  child.stderr.on('data', inspectOutput);
 
   const deadline = Date.now() + 20000;
   while (!ready && child.exitCode === null && Date.now() < deadline) await sleep(300);
   if (!ready) {
-    await stopDevServer(child);
+    await stopServer(child);
     throw new Error(
-      `dev server を起動できませんでした${startupError ? `: ${startupError.trim()}` : ''}`,
+      `${mode} server を起動できませんでした${startupError ? `: ${startupError.trim()}` : ''}`,
     );
   }
   await sleep(500);
   return child;
 }
 
-function stopDevServer(child) {
+function stopServer(child) {
   if (!child || child.exitCode !== null) return Promise.resolve();
   return new Promise((resolveStop) => {
     child.once('exit', resolveStop);
@@ -549,12 +579,13 @@ async function run() {
     return;
   }
   const config = buildConfig(args);
-  let devServer;
+  let server;
   let browser;
   let profile;
 
   try {
-    devServer = await startDevServer(config.port);
+    if (config.mode === 'prod') await buildProduction();
+    server = await startServer(config.mode, config.port);
     profile = await mkdtemp(join(tmpdir(), 'webx68k-measure-boot-'));
     browser = await puppeteer.launch({
       executablePath: config.executablePath,
@@ -623,8 +654,10 @@ async function run() {
     const result = {
       schemaVersion: 3,
       measuredAt: new Date().toISOString(),
+      mode: config.mode,
       measurement: '起動ボタンの実クリック直前からHuman68kプロンプト安定表示まで',
       config: {
+        mode: config.mode,
         baseUrl: config.baseUrl,
         port: config.port,
         runs: config.runs,
@@ -637,6 +670,7 @@ async function run() {
       attempts,
       positiveControl,
       summary: {
+        mode: config.mode,
         total: attempts.length,
         succeeded: samplesMs.length,
         failed: failures.length,
@@ -656,7 +690,7 @@ async function run() {
 
     const stats = result.summary;
     console.log(
-      `起動計測: 成功 ${stats.succeeded}/${stats.total}, 失敗 ${stats.failed}, ` +
+      `起動計測 (${config.mode}): 成功 ${stats.succeeded}/${stats.total}, 失敗 ${stats.failed}, ` +
         `中央値 ${stats.medianMs ?? '-'} ms, p95 ${stats.p95Ms ?? '-'} ms, ` +
         `p99 ${stats.p99Ms ?? '-'} ms, 出力 ${config.outputPath}`,
     );
@@ -694,7 +728,7 @@ async function run() {
   } finally {
     if (browser) await browser.close();
     if (profile) await rm(profile, { recursive: true, force: true });
-    await stopDevServer(devServer);
+    await stopServer(server);
   }
 }
 
