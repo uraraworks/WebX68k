@@ -33,8 +33,14 @@ X68000 エミュレータ [px68k-libretro](https://github.com/uraraworks/px68k-l
 
 `fd1`/`fd2`/`hdd` に関する注意点:
 
-- 指定するURLは **CORSが有効なオリジン**から配信されている必要があります。そうでないと
-  取得に失敗します。
+- 指定するURLは **CORSが有効なオリジン**から配信されている必要があります。GitHub raw /
+  GitHub Pages / 自前のCORS対応サーバなどはそのまま(直接fetchで)取得できます。
+- Google Drive / Dropbox は直接fetchではCORSに対応していないため取得に失敗しますが、
+  公開ページでは**中継サービス経由で自動的に再取得**されます(直接fetchが失敗した場合のみ
+  中継を試みます)。fork して自分でホストする場合は後述の `VITE_DISK_PROXY` の設定が必要です。
+- **OneDrive(`1drv.ms` / `onedrive.live.com` / `sharepoint.com`)の共有リンクは
+  仕様上ご利用いただけません**(中継を挟んでも取得できないことが確認済みです)。
+  Google DriveかDropboxをお使いください。
 - 同じURLで再訪した場合は**再ダウンロードせず**、ブラウザに保存済みのイメージ(ゲスト側で
   書き込んだ内容も含む)から復帰します。
 - URL先が **ZIPまたはLZHアーカイブ**の場合、ドロップ時と同様に展開されます(後述)。中に
@@ -376,6 +382,11 @@ npm install
 npm run dev     # 開発サーバー
 npm run build   # 型チェック + 本番ビルド (dist/)
 ```
+
+Google Drive / Dropbox の中継取得を使いたい場合は、ビルド時に環境変数 `VITE_DISK_PROXY` へ
+自前の中継サービスのURL(末尾の `/` なし)を設定してください。未設定(既定)なら中継は行われず、
+直接fetchが失敗した配布元はエラーになります(公開ページ用のGitHub Actionsでの設定方法は
+[.github/workflows/deploy.yml](.github/workflows/deploy.yml) のコメントを参照)。
 
 エミュレータ本体(px68k-libretro → WebAssembly)のビルドは `scripts/build-core.sh` で行います。
 ビルドの前提セットアップや FDD0/FDD1/HDD 同時搭載の仕組みなど詳細は

@@ -196,6 +196,20 @@ interface Dict {
   urlFetchFailedNetwork(args: { url: string }): string;
   /** fetchはできたがHTTPステータスが失敗を示す場合のエラーメッセージ本文。 */
   urlFetchFailedHttp(args: { url: string; status: number }): string;
+  /** 配信元がOneDrive(1drv.ms/onedrive.live.com/sharepoint.com)だった場合の案内(中継しても取得できないため即座に案内する)。 */
+  urlFetchFailedOneDrive(args: { url: string }): string;
+  /** 配信元がGoogle Drive/Dropboxで、かつ中継(VITE_DISK_PROXY)が未設定だった場合の案内。 */
+  urlFetchFailedNeedsProxy(args: { url: string }): string;
+  /** 中継サーバ経由の取得が失敗した場合のエラーメッセージ本文(中継側のエラーコードを反映)。 */
+  urlFetchFailedProxy(args: { url: string; reason: string }): string;
+  // --- 中継サーバ(VITE_DISK_PROXY)のエラーコード別の理由文言(urlFetchFailedProxy の reason に渡す) ---
+  urlProxyReasonBadUrl(): string;
+  urlProxyReasonOriginNotAllowed(): string;
+  urlProxyReasonHostNotAllowed(): string;
+  urlProxyReasonTooLarge(): string;
+  urlProxyReasonRateLimited(): string;
+  urlProxyReasonUpstreamFailed(): string;
+  urlProxyReasonUnknown(args: { status: number }): string;
   /** スロット単位の取得失敗を伝えるトースト(他スロットの読み込み/起動は継続する)。 */
   urlLoadFailedToast(args: { label: string; message: string }): string;
   /** 同梱システムディスク(?system=1)の取得に失敗したときのトースト。 */
@@ -587,6 +601,18 @@ const STRINGS: Record<Lang, Dict> = {
     urlFetchFailedNetwork: ({ url }) =>
       `ディスクイメージの取得に失敗しました: ${url}\n(取得先がCORSに対応していない可能性があります)`,
     urlFetchFailedHttp: ({ url, status }) => `ディスクイメージの取得に失敗しました: ${url} (HTTP ${status})`,
+    urlFetchFailedOneDrive: ({ url }) =>
+      `ディスクイメージの取得に失敗しました: ${url}\nOneDriveの共有リンクは仕様上ご利用いただけません。Google DriveかDropboxをお使いください。`,
+    urlFetchFailedNeedsProxy: ({ url }) =>
+      `ディスクイメージの取得に失敗しました: ${url}\nこの配信元は中継サーバ経由でのみ取得できますが、このビルドでは中継(VITE_DISK_PROXY)が設定されていません。自分でホストしている場合は VITE_DISK_PROXY を設定してください(詳細はREADME)。`,
+    urlFetchFailedProxy: ({ url, reason }) => `ディスクイメージの取得に失敗しました: ${url}\n${reason}`,
+    urlProxyReasonBadUrl: () => '中継サーバがURLを解釈できませんでした。',
+    urlProxyReasonOriginNotAllowed: () => '中継サーバがこのサイトからのリクエストを許可していません。',
+    urlProxyReasonHostNotAllowed: () => '中継サーバがこの配信元への転送を許可していません。',
+    urlProxyReasonTooLarge: () => 'ファイルサイズが中継サーバの上限を超えています。',
+    urlProxyReasonRateLimited: () => '中継サーバのリクエスト数が上限に達しています。しばらく待って再度お試しください。',
+    urlProxyReasonUpstreamFailed: () => '中継サーバから配信元への取得に失敗しました。',
+    urlProxyReasonUnknown: ({ status }) => `中継サーバでエラーが発生しました (HTTP ${status})。`,
     urlLoadFailedToast: ({ label, message }) => `${label}の読み込みに失敗しました: ${message}`,
     urlSystemFetchFailed: () => '同梱システムディスクの取得に失敗しました。',
     urlArchiveResumed: ({ label, count }) =>
@@ -898,6 +924,18 @@ const STRINGS: Record<Lang, Dict> = {
     urlFetchFailedNetwork: ({ url }) =>
       `Failed to fetch the disk image: ${url}\n(the origin may not support CORS)`,
     urlFetchFailedHttp: ({ url, status }) => `Failed to fetch the disk image: ${url} (HTTP ${status})`,
+    urlFetchFailedOneDrive: ({ url }) =>
+      `Failed to fetch the disk image: ${url}\nOneDrive share links can't be used due to OneDrive's own restrictions. Please use Google Drive or Dropbox instead.`,
+    urlFetchFailedNeedsProxy: ({ url }) =>
+      `Failed to fetch the disk image: ${url}\nThis source can only be fetched through the relay server, but this build has no relay (VITE_DISK_PROXY) configured. If you're hosting this yourself, set VITE_DISK_PROXY (see the README for details).`,
+    urlFetchFailedProxy: ({ url, reason }) => `Failed to fetch the disk image: ${url}\n${reason}`,
+    urlProxyReasonBadUrl: () => 'The relay server could not parse the URL.',
+    urlProxyReasonOriginNotAllowed: () => 'The relay server does not allow requests from this site.',
+    urlProxyReasonHostNotAllowed: () => 'The relay server does not allow forwarding to this source.',
+    urlProxyReasonTooLarge: () => 'The file exceeds the relay server\'s size limit.',
+    urlProxyReasonRateLimited: () => 'The relay server rate limit was reached. Please try again later.',
+    urlProxyReasonUpstreamFailed: () => 'The relay server failed to fetch from the source.',
+    urlProxyReasonUnknown: ({ status }) => `The relay server returned an error (HTTP ${status}).`,
     urlLoadFailedToast: ({ label, message }) => `Failed to load ${label}: ${message}`,
     urlSystemFetchFailed: () => 'Failed to fetch the bundled system disk.',
     urlArchiveResumed: ({ label, count }) =>

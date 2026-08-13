@@ -922,24 +922,57 @@ async function fetchBytes(url: string): Promise<Uint8Array | null> {
   }
 }
 
-/**
- * 進捗コールバック付きでURLからバイト列を取得する(WebNP2 の fetchWithProgress に準拠)。
- * fetch自体が失敗した場合(典型的にはCORS未対応オリジン)とHTTPステータスが失敗の場合とで
- * メッセージを分け、CORSが原因である可能性を利用者に伝える。
- */
-async function fetchBytesWithProgress(
-  url: string,
+// 中継サービスのベースURL(空文字なら中継しない=直接fetchのみ)。ビルド時に環境変数
+// VITE_DISK_PROXY から注入される(リポジトリ内の既定は空。詳細は .github/workflows/deploy.yml 参照)。
+const DISK_PROXY_BASE = (import.meta.env.VITE_DISK_PROXY ?? '').trim().replace(/\/+$/, '');
+
+// OneDriveの共有リンクは実測で中継しても取得できないことが判明しているため、中継を試さず
+// 即座に案内を出すためのホスト一覧。
+const ONEDRIVE_HOSTS = ['1drv.ms', 'onedrive.live.com', 'sharepoint.com'];
+// 中継を使えば取得できる(=中継未設定時のみ「直接取得できません」と案内する)配信元のホスト一覧。
+// dropbox.com を足すと hostMatches の「.<entry> で終わる」判定で www.dropbox.com も
+// 拾えるようになるが、www.dropbox.com は実際に貼られる頻度が高いため、完全一致で
+// 早期に判定できるよう明示的にも残す。
+const PROXY_CAPABLE_HOSTS = ['drive.google.com', 'docs.google.com', 'www.dropbox.com', 'dropbox.com'];
+
+/** URLのホスト名を取り出す。パース不可なら空文字を返す(呼び出し側は「一致なし」として扱う)。 */
+function urlHostname(url: string): string {
+  try {
+    return new URL(url).hostname;
+  } catch {
+    return '';
+  }
+}
+
+function hostMatches(hostname: string, list: string[]): boolean {
+  return list.some((h) => hostname === h || hostname.endsWith(`.${h}`));
+}
+
+/** 中継サーバのエラーJSON(`{"error":"host_not_allowed"}` 等)をHTTPステータスとあわせて利用者向け理由文言に変換する。 */
+function describeProxyError(status: number, code: string | undefined): string {
+  switch (code) {
+    case 'bad_url':
+      return t('urlProxyReasonBadUrl');
+    case 'origin_not_allowed':
+      return t('urlProxyReasonOriginNotAllowed');
+    case 'host_not_allowed':
+      return t('urlProxyReasonHostNotAllowed');
+    case 'too_large':
+      return t('urlProxyReasonTooLarge');
+    case 'rate_limited':
+      return t('urlProxyReasonRateLimited');
+    case 'upstream_failed':
+      return t('urlProxyReasonUpstreamFailed');
+    default:
+      return t('urlProxyReasonUnknown', { status });
+  }
+}
+
+/** fetch結果(成功時のResponse)をストリームで読み進め、進捗コールバックを呼びながらバイト列に組み立てる。 */
+async function readResponseWithProgress(
+  response: Response,
   onProgress: (loaded: number, total: number | null) => void,
 ): Promise<Uint8Array> {
-  let response: Response;
-  try {
-    response = await fetch(url);
-  } catch {
-    throw new Error(t('urlFetchFailedNetwork', { url }));
-  }
-  if (!response.ok) {
-    throw new Error(t('urlFetchFailedHttp', { url, status: response.status }));
-  }
   const totalHeader = response.headers.get('content-length');
   const total = totalHeader ? Number(totalHeader) : null;
 
@@ -968,6 +1001,62 @@ async function fetchBytesWithProgress(
     offset += chunk.byteLength;
   }
   return result;
+}
+
+/**
+ * 進捗コールバック付きでURLからバイト列を取得する(WebNP2 の fetchWithProgress に準拠)。
+ *
+ * まず指定URLへ直接fetchする(GitHub raw のようにCORS対応済みのURLに無駄な中継を挟まない
+ * ため)。直接取得に失敗した場合のみ、中継サービス(VITE_DISK_PROXY)経由での再取得を試みる。
+ * ただしOneDriveの共有リンクは実測で中継しても取得できないため中継を試さず即座に専用の
+ * 案内を出し、中継が未設定の場合はGoogle Drive/Dropboxのみ「直接取得できません」と案内する
+ * (それ以外は従来どおりCORS未対応の可能性を伝える)。
+ */
+async function fetchBytesWithProgress(
+  url: string,
+  onProgress: (loaded: number, total: number | null) => void,
+): Promise<Uint8Array> {
+  let directError: Error;
+  try {
+    const response = await fetch(url);
+    if (!response.ok) {
+      throw new Error(t('urlFetchFailedHttp', { url, status: response.status }));
+    }
+    return await readResponseWithProgress(response, onProgress);
+  } catch (err) {
+    directError = err instanceof Error && err.message ? err : new Error(t('urlFetchFailedNetwork', { url }));
+  }
+
+  const hostname = urlHostname(url);
+  if (hostMatches(hostname, ONEDRIVE_HOSTS)) {
+    throw new Error(t('urlFetchFailedOneDrive', { url }));
+  }
+
+  if (!DISK_PROXY_BASE) {
+    if (hostMatches(hostname, PROXY_CAPABLE_HOSTS)) {
+      throw new Error(t('urlFetchFailedNeedsProxy', { url }));
+    }
+    throw directError;
+  }
+
+  const proxyUrl = `${DISK_PROXY_BASE}/fetch?url=${encodeURIComponent(url)}`;
+  let proxyResponse: Response;
+  try {
+    proxyResponse = await fetch(proxyUrl);
+  } catch {
+    throw directError;
+  }
+  if (!proxyResponse.ok) {
+    let code: string | undefined;
+    try {
+      const body = (await proxyResponse.clone().json()) as { error?: string };
+      code = body.error;
+    } catch {
+      // 中継側がJSONを返さなかった場合はステータスのみで案内する。
+    }
+    throw new Error(t('urlFetchFailedProxy', { url, reason: describeProxyError(proxyResponse.status, code) }));
+  }
+  return await readResponseWithProgress(proxyResponse, onProgress);
 }
 
 /** URLの末尾ファイル名を、クエリ/フラグメントを除いた部分から取り出す(配布URLの拡張子判定に使う)。 */

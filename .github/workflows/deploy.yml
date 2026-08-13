@@ -29,6 +29,14 @@ jobs:
           cache: npm
       - run: npm ci
       - run: npm run build
+        env:
+          # CORS未対応の配布元(OneDrive除く)向けの中継サービスのURL。リポジトリ変数
+          # DISK_PROXY_URL が未設定でも空文字でビルドが通る(fork時の既定値)。
+          # ワークフロー内に直書きしない理由: 直書きするとforkしたリポジトリのビルドが
+          # そのままこちらのVPS宛の中継URLを埋め込んでしまい、他人の中継先に無関係な
+          # トラフィックを送りつけることになる。中継URLは各自のリポジトリ変数として
+          # 設定してもらう運用にし、未設定時は中継なし(直接fetchのみ)にフォールバックする。
+          VITE_DISK_PROXY: ${{ vars.DISK_PROXY_URL }}
       - uses: actions/upload-pages-artifact@v3
         with:
           path: dist

@@ -33,7 +33,15 @@ See [docs/DESIGN.md](docs/DESIGN.md) for design and implementation details.
 
 Notes on `fd1`/`fd2`/`hdd`:
 
-- The URL must be served from a **CORS-enabled origin**, or the fetch will fail.
+- The URL must be served from a **CORS-enabled origin**. GitHub raw, GitHub
+  Pages, and your own CORS-enabled server work directly (plain fetch).
+- Google Drive and Dropbox don't support CORS for a direct fetch, so it fails
+  at first, but the public page **automatically retries through a relay
+  service** (only when the direct fetch fails). If you fork and host this
+  yourself, you need to set `VITE_DISK_PROXY` (see below) to use this.
+- **OneDrive share links (`1drv.ms` / `onedrive.live.com` / `sharepoint.com`)
+  are not supported** — they don't work even through the relay (confirmed by
+  testing). Please use Google Drive or Dropbox instead.
 - Revisiting the same URL does **not** re-download it — the image already saved
   in the browser (including any edits made from the guest side) is reused.
 - If the URL points to a **ZIP or LZH archive**, it is fetched and extracted the
@@ -433,6 +441,13 @@ npm install
 npm run dev     # dev server
 npm run build   # type-check + production build (dist/)
 ```
+
+To enable relay fetching for Google Drive / Dropbox, set the `VITE_DISK_PROXY`
+environment variable at build time to the URL of your own relay service (no
+trailing `/`). If unset (the default), no relay is used and sources that the
+direct fetch fails for will simply error out. See the comment in
+[.github/workflows/deploy.yml](.github/workflows/deploy.yml) for how this is
+configured for the public GitHub Pages build.
 
 Building the emulator core itself (px68k-libretro → WebAssembly) is done via
 `scripts/build-core.sh`; see [docs/DESIGN.md](docs/DESIGN.md) for the full
