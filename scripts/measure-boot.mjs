@@ -14,9 +14,15 @@ import puppeteer from 'puppeteer-core';
 
 const REPO_ROOT = new URL('..', import.meta.url).pathname;
 const DEFAULT_CHROME = '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome';
-const POLL_INTERVAL_MS = 100;
+const DEFAULT_POLL_INTERVAL_MS = 50;
 const REQUIRED_STABLE_POLLS = 3;
 const VALID_FAULTS = new Set(['no-disk', 'wrong-marker']);
+const INTERVAL_LABELS = {
+  clickToWasmFetchComplete: 'クリック→wasm取得完了',
+  wasmFetchCompleteToCoreReady: 'wasm取得完了→コア稼働',
+  coreReadyToFirstGuestOutput: 'コア稼働→ゲスト初出力',
+  firstGuestOutputToPromptStable: 'ゲスト初出力→プロンプト安定',
+};
 
 const sleep = (ms) => new Promise((resolveSleep) => setTimeout(resolveSleep, ms));
 
@@ -35,7 +41,7 @@ function parseArgs(argv) {
       values.help = true;
       continue;
     }
-    const match = /^--(port|runs|timeout|output|fault)=(.+)$/.exec(arg);
+    const match = /^--(port|runs|timeout|poll-interval|output|fault)=(.+)$/.exec(arg);
     if (!match) throw new Error(`不明な引数です: ${arg}`);
     values[match[1]] = match[2];
   }
@@ -48,10 +54,12 @@ function printHelp() {
   --port=<number>       dev server のポート (既定: 5183)
   --runs=<number>       反復回数 (既定: 20)
   --timeout=<ms>        各試行のタイムアウト (既定: 60000)
+  --poll-interval=<ms>  ページ内ポーリング間隔 (既定: 50)
   --output=<path>       JSON の保存先
   --fault=<name>        no-disk または wrong-marker
 
 環境変数: WEBX68K_PORT, WEBX68K_RUNS, WEBX68K_TIMEOUT_MS,
+          WEBX68K_POLL_INTERVAL_MS,
           WEBX68K_MEASURE_OUTPUT, WEBX68K_URL, CHROME_PATH`);
 }
 
@@ -85,6 +93,12 @@ function buildConfig(args) {
     timeoutMs: parsePositiveInteger(
       args.timeout ?? process.env.WEBX68K_TIMEOUT_MS ?? '60000',
       'timeout',
+    ),
+    pollIntervalMs: parsePositiveInteger(
+      args['poll-interval'] ??
+        process.env.WEBX68K_POLL_INTERVAL_MS ??
+        String(DEFAULT_POLL_INTERVAL_MS),
+      'poll-interval',
     ),
     outputPath,
     executablePath: process.env.CHROME_PATH ?? DEFAULT_CHROME,
@@ -151,47 +165,302 @@ function summarize(samples) {
   };
 }
 
-/** TVRAM の行が「marker + 最大1文字」なら true。 */
-function isPromptLine(line, marker) {
-  return line.startsWith(marker) && Array.from(line.slice(marker.length)).length <= 1;
+/**
+ * 実クリック後の状態をページ内クロックだけで観測する。
+ * 間隔を短くすると時刻の上限誤差は減るが、stat/screenText の呼び出し負荷は増える。
+ */
+function observeBoot(page, buttonSelector, marker, timeoutMs, pollIntervalMs) {
+  return page.evaluate(
+    async ({ selector, expectedMarker, timeout, pollInterval, stablePolls }) => {
+      const observedResources = [];
+      let resourceObserverSupported = true;
+      let resourceObserverError = null;
+      let resourceObserver = null;
+      const serializeResource = (entry) => ({
+        name: entry.name,
+        initiatorType: entry.initiatorType,
+        startTime: entry.startTime,
+        responseEnd: entry.responseEnd,
+        transferSize: entry.transferSize,
+        encodedBodySize: entry.encodedBodySize,
+      });
+
+      try {
+        resourceObserver = new PerformanceObserver((list) => {
+          observedResources.push(...list.getEntries().map(serializeResource));
+        });
+        resourceObserver.observe({ type: 'resource', buffered: true });
+      } catch (error) {
+        resourceObserverSupported = false;
+        resourceObserverError = error instanceof Error ? error.message : String(error);
+      }
+
+      const button = document.querySelector(selector);
+      if (!button) throw new Error(`起動ボタンが見つかりません: ${selector}`);
+
+      const readDebugState = () => {
+        const debug = window.__webx68kDebug;
+        let statValue = null;
+        let statError = null;
+        try {
+          statValue = typeof debug?.stat === 'function' ? debug.stat() : null;
+        } catch (error) {
+          statError = error instanceof Error ? error.message : String(error);
+        }
+        // queuedSec は音声初期化だけで数値になり、コア生成前にも成立し得る。
+        // fetchAvInfo() 後に設定される fps の有限数だけをコア稼働の根拠にする。
+        const statValid = statValue !== null && Number.isFinite(statValue.fps);
+
+        let screenValue = null;
+        let screenError = null;
+        try {
+          screenValue = typeof debug?.screenText === 'function' ? debug.screenText() : null;
+        } catch (error) {
+          screenError = error instanceof Error ? error.message : String(error);
+        }
+        const nonEmptyLines =
+          screenValue?.available && Array.isArray(screenValue.lines)
+            ? screenValue.lines.filter((line) => line.length > 0)
+            : [];
+        const markerLine =
+          nonEmptyLines.filter((line) => line.startsWith(expectedMarker)).at(-1) ?? null;
+        const promptRemainderLength =
+          markerLine === null
+            ? Number.POSITIVE_INFINITY
+            : Array.from(markerLine.slice(expectedMarker.length)).length;
+
+        return {
+          debugDefined: debug !== undefined,
+          stat: { callable: typeof debug?.stat === 'function', value: statValue, error: statError },
+          screenText: {
+            callable: typeof debug?.screenText === 'function',
+            available: screenValue?.available === true,
+            error: screenError,
+          },
+          conditions: {
+            wasmFetchComplete: performance
+              .getEntriesByType('resource')
+              .some((entry) => /\.wasm(?:[?#]|$)/i.test(entry.name) && entry.responseEnd > 0),
+            coreReady: statValid,
+            firstGuestOutput: nonEmptyLines.length > 0,
+            promptStable: markerLine !== null && promptRemainderLength <= 1,
+          },
+        };
+      };
+
+      // クリック前から成立している判定は起動マイルストーンとして使えないため、
+      // 実クリック待受を設置する直前に全条件を一度記録して結果へ残す。
+      const preClickState = readDebugState();
+      const clickedAt = await new Promise((resolveClick) => {
+        button.addEventListener('click', () => resolveClick(performance.now()), {
+          capture: true,
+          once: true,
+        });
+      });
+
+      let coreReadyAt = null;
+      let firstGuestOutputAt = null;
+      let promptStableAt = null;
+      let consecutive = 0;
+      let lastNonEmptyLine = null;
+      let lastMarkerLine = null;
+      let lastAPromptLine = null;
+      let timedOut = false;
+
+      while (true) {
+        const now = performance.now();
+        const debug = window.__webx68kDebug;
+        if (coreReadyAt === null && typeof debug?.stat === 'function') {
+          try {
+            const stat = debug.stat();
+            if (stat !== null && Number.isFinite(stat.fps)) {
+              coreReadyAt = now;
+            }
+          } catch {
+            // stat がまだ有効な状態を返せない間は、次回ポーリングで再試行する。
+          }
+        }
+
+        let dump = null;
+        try {
+          dump = debug?.screenText?.() ?? null;
+        } catch {
+          // TVRAM がまだ利用不能なら、次回ポーリングで再試行する。
+        }
+        if (dump?.available && Array.isArray(dump.lines)) {
+          const nonEmptyLines = dump.lines.filter((line) => line.length > 0);
+          if (firstGuestOutputAt === null && nonEmptyLines.length > 0) {
+            firstGuestOutputAt = now;
+          }
+          lastNonEmptyLine = nonEmptyLines.at(-1) ?? null;
+          lastMarkerLine =
+            nonEmptyLines.filter((line) => line.startsWith(expectedMarker)).at(-1) ?? null;
+          lastAPromptLine = nonEmptyLines.filter((line) => line.startsWith('A>')).at(-1) ?? null;
+          const promptRemainderLength =
+            lastMarkerLine === null
+              ? Number.POSITIVE_INFINITY
+              : Array.from(lastMarkerLine.slice(expectedMarker.length)).length;
+          consecutive =
+            lastMarkerLine !== null && promptRemainderLength <= 1 ? consecutive + 1 : 0;
+          if (consecutive >= stablePolls) {
+            promptStableAt = now;
+            break;
+          }
+        } else {
+          // デバッグAPIやTVRAMがまだ利用不能なら、安定判定をリセットして待ち続ける。
+          consecutive = 0;
+        }
+
+        if (now - clickedAt >= timeout) {
+          timedOut = true;
+          break;
+        }
+        await new Promise((resolvePoll) => setTimeout(resolvePoll, pollInterval));
+      }
+
+      resourceObserver?.takeRecords().forEach((entry) => {
+        observedResources.push(serializeResource(entry));
+      });
+      resourceObserver?.disconnect();
+      const finalResources = performance.getEntriesByType('resource').map(serializeResource);
+      const uniqueResources = [...observedResources, ...finalResources].filter(
+        (entry, index, entries) =>
+          entries.findIndex(
+            (candidate) =>
+              candidate.name === entry.name &&
+              candidate.startTime === entry.startTime &&
+              candidate.responseEnd === entry.responseEnd,
+          ) === index,
+      );
+      const wasmResources = uniqueResources.filter((entry) =>
+        /\.wasm(?:[?#]|$)/i.test(entry.name),
+      );
+
+      return {
+        clickedAt,
+        preClickState,
+        observationEndedAt: performance.now(),
+        coreReadyAt,
+        firstGuestOutputAt,
+        promptStableAt,
+        timedOut,
+        lastNonEmptyLine,
+        lastMarkerLine,
+        lastAPromptLine,
+        wasmResources,
+        resourceObserver: {
+          supported: resourceObserverSupported,
+          error: resourceObserverError,
+        },
+      };
+    },
+    {
+      selector: buttonSelector,
+      expectedMarker: marker,
+      timeout: timeoutMs,
+      pollInterval: pollIntervalMs,
+      stablePolls: REQUIRED_STABLE_POLLS,
+    },
+  );
 }
 
-async function waitForStablePrompt(page, marker, startedAt, timeoutMs) {
-  let consecutive = 0;
-  let lastNonEmptyLine = null;
-  let lastMarkerLine = null;
-  let lastAPromptLine = null;
+const roundMs = (value) => (value === null ? null : Math.round(value * 1000) / 1000);
 
-  while (performance.now() - startedAt < timeoutMs) {
-    const dump = await page.evaluate(() => window.__webx68kDebug?.screenText?.() ?? null);
-    if (dump?.available && Array.isArray(dump.lines)) {
-      const nonEmptyLines = dump.lines.filter((line) => line.length > 0);
-      lastNonEmptyLine = nonEmptyLines.at(-1) ?? null;
-      lastMarkerLine = nonEmptyLines.filter((line) => line.startsWith(marker)).at(-1) ?? null;
-      lastAPromptLine = nonEmptyLines.filter((line) => line.startsWith('A>')).at(-1) ?? null;
-      consecutive =
-        lastMarkerLine !== null && isPromptLine(lastMarkerLine, marker) ? consecutive + 1 : 0;
-      if (consecutive >= REQUIRED_STABLE_POLLS) {
-        return {
-          elapsedMs: performance.now() - startedAt,
-          lastNonEmptyLine,
-          lastMarkerLine,
-          lastAPromptLine,
-        };
-      }
-    } else {
-      // デバッグAPIやTVRAMがまだ利用不能なら、安定判定をリセットして待ち続ける。
-      consecutive = 0;
+function buildTimingDetails(observed) {
+  const wasmFetchCompleteAt =
+    observed.wasmResources.length === 0
+      ? null
+      : Math.max(...observed.wasmResources.map((entry) => entry.responseEnd));
+  const milestones = {
+    click: { pageTimeMs: roundMs(observed.clickedAt), status: 'valid', reason: null },
+    wasmFetchComplete: {
+      pageTimeMs: roundMs(wasmFetchCompleteAt),
+      status: wasmFetchCompleteAt === null ? 'unavailable' : 'valid',
+      reason:
+        wasmFetchCompleteAt === null
+          ? 'Resource Timing に .wasm のエントリが見つからなかった'
+          : null,
+    },
+    coreReady: {
+      pageTimeMs: roundMs(observed.coreReadyAt),
+      status: observed.coreReadyAt === null ? 'unavailable' : 'valid',
+      reason:
+        observed.coreReadyAt === null
+          ? 'タイムアウトまでに __webx68kDebug.stat() が有限数の fps を返さなかった'
+          : null,
+    },
+    firstGuestOutput: {
+      pageTimeMs: roundMs(observed.firstGuestOutputAt),
+      status: observed.firstGuestOutputAt === null ? 'unavailable' : 'valid',
+      reason:
+        observed.firstGuestOutputAt === null
+          ? 'タイムアウトまでに TVRAM の非空行を観測できなかった'
+          : null,
+    },
+    promptStable: {
+      pageTimeMs: roundMs(observed.promptStableAt),
+      status: observed.promptStableAt === null ? 'unavailable' : 'valid',
+      reason: observed.promptStableAt === null ? 'プロンプト安定前にタイムアウトした' : null,
+    },
+  };
+  const invalidMilestones = new Set();
+  const interval = (fromName, toName) => {
+    const from = milestones[fromName].pageTimeMs;
+    const to = milestones[toName].pageTimeMs;
+    if (from === null || to === null) return null;
+    const value = roundMs(to - from);
+    if (value < 0) {
+      // 負の区間は時刻順序の逆転、つまり意図した事象を測れていない合図であり、
+      // 統計値として扱うと中央値等を誤らせるため、後側のマイルストーンを無効化する。
+      invalidMilestones.add(toName);
+      milestones[toName].status = 'invalid';
+      milestones[toName].invalid = true;
+      milestones[toName].reason = `${fromName} より前に観測されたため invalid`;
+      return null;
     }
-    await sleep(POLL_INTERVAL_MS);
-  }
-
+    return value;
+  };
+  const intervalReason = (fromName, toName) => {
+    const reasons = [milestones[fromName].reason, milestones[toName].reason].filter(Boolean);
+    return reasons.length === 0 ? null : reasons.join('; ');
+  };
+  const intervalsMs = {
+    clickToWasmFetchComplete: interval('click', 'wasmFetchComplete'),
+    wasmFetchCompleteToCoreReady: interval('wasmFetchComplete', 'coreReady'),
+    coreReadyToFirstGuestOutput: interval('coreReady', 'firstGuestOutput'),
+    firstGuestOutputToPromptStable: interval('firstGuestOutput', 'promptStable'),
+  };
   return {
-    elapsedMs: performance.now() - startedAt,
-    lastNonEmptyLine,
-    lastMarkerLine,
-    lastAPromptLine,
-    timedOut: true,
+    milestones,
+    invalidMilestones: [...invalidMilestones],
+    intervalsMs,
+    intervalReasons: {
+      clickToWasmFetchComplete: intervalReason('click', 'wasmFetchComplete'),
+      wasmFetchCompleteToCoreReady: intervalReason('wasmFetchComplete', 'coreReady'),
+      coreReadyToFirstGuestOutput: intervalReason('coreReady', 'firstGuestOutput'),
+      firstGuestOutputToPromptStable: intervalReason('firstGuestOutput', 'promptStable'),
+    },
+    wasmResources: observed.wasmResources.map((entry) => ({
+      ...entry,
+      startTime: roundMs(entry.startTime),
+      responseEnd: roundMs(entry.responseEnd),
+    })),
+  };
+}
+
+function emptyTimingDetails(reason) {
+  return {
+    milestones: Object.fromEntries(
+      ['click', 'wasmFetchComplete', 'coreReady', 'firstGuestOutput', 'promptStable'].map(
+        (name) => [name, { pageTimeMs: null, status: 'unavailable', reason }],
+      ),
+    ),
+    intervalsMs: Object.fromEntries(Object.keys(INTERVAL_LABELS).map((name) => [name, null])),
+    invalidMilestones: [],
+    intervalReasons: Object.fromEntries(
+      Object.keys(INTERVAL_LABELS).map((name) => [name, reason]),
+    ),
+    wasmResources: [],
   };
 }
 
@@ -210,18 +479,38 @@ async function measureOnce(browser, config, trial) {
     const buttonSelector = config.fault === 'no-disk' ? '#btn-boot-plain' : '#btn-boot-system';
     await page.waitForSelector(buttonSelector, { visible: true });
 
-    // Node 側の単調時計だけを使う。Puppeteer の実クリック要求を出す直前が始点。
-    const startedAt = performance.now();
-    await page.click(buttonSelector);
-
     const marker = config.fault === 'wrong-marker' ? 'Z>' : 'A>';
-    const observed = await waitForStablePrompt(page, marker, startedAt, config.timeoutMs);
-    const durationMs = Math.round(observed.elapsedMs * 1000) / 1000;
+    const observationPromise = observeBoot(
+      page,
+      buttonSelector,
+      marker,
+      config.timeoutMs,
+      config.pollIntervalMs,
+    );
+    // Node 側のクリック要求時刻と、ページ側の実クリックイベント時刻の対応は
+    // この1組だけを記録する。区間計算にはページ側時刻だけを使う。
+    const nodeClickCommandAt = performance.now();
+    const [observed] = await Promise.all([observationPromise, page.click(buttonSelector)]);
+    const timing = buildTimingDetails(observed);
+    const durationMs = roundMs(
+      (observed.promptStableAt ?? observed.observationEndedAt) - observed.clickedAt,
+    );
+    const common = {
+      durationMs,
+      preClickState: observed.preClickState,
+      clockMapping: {
+        nodeClickCommandPerformanceNowMs: roundMs(nodeClickCommandAt),
+        pageClickEventPerformanceNowMs: roundMs(observed.clickedAt),
+        note: '対応関係の記録のみ。区間計算は page performance.now() のみを使用',
+      },
+      ...timing,
+      resourceObserver: observed.resourceObserver,
+    };
     if (observed.timedOut) {
       return {
         trial,
         success: false,
-        durationMs,
+        ...common,
         reason: 'timeout',
         lastNonEmptyLine: observed.lastNonEmptyLine,
         lastAPromptLine: observed.lastAPromptLine ?? '該当行なし',
@@ -230,18 +519,23 @@ async function measureOnce(browser, config, trial) {
     return {
       trial,
       success: true,
-      durationMs,
+      ...common,
       marker,
       lastNonEmptyLine: observed.lastNonEmptyLine,
       lastMarkerLine: observed.lastMarkerLine,
     };
   } catch (error) {
+    const errorMessage = error instanceof Error ? error.message : String(error);
     return {
       trial,
       success: false,
       durationMs: null,
       reason: 'measurement-error',
-      error: error instanceof Error ? error.message : String(error),
+      error: errorMessage,
+      clockMapping: null,
+      ...emptyTimingDetails(`計測エラーのため取得不能: ${errorMessage}`),
+      resourceObserver: null,
+      preClickState: null,
     };
   } finally {
     await context.close();
@@ -307,8 +601,27 @@ async function run() {
                 : 'fault-not-detected',
         }
       : null;
+    const intervalSummary = Object.fromEntries(
+      Object.keys(INTERVAL_LABELS).map((name) => {
+        const samples = attempts
+          .map((attempt) => attempt.intervalsMs?.[name])
+          .filter((value) => Number.isFinite(value));
+        return [name, { sampleCount: samples.length, ...summarize(samples) }];
+      }),
+    );
+    const measuredTrials = [
+      ...(positiveControl ? [{ label: '陽性対照', value: positiveControl }] : []),
+      ...attempts.map((attempt) => ({ label: `試行 ${attempt.trial}`, value: attempt })),
+    ];
+    for (const measured of measuredTrials) {
+      for (const milestone of measured.value.invalidMilestones ?? []) {
+        console.log(
+          `警告: ${measured.label} のマイルストーン ${milestone} は時刻順序が逆転したため invalid`,
+        );
+      }
+    }
     const result = {
-      schemaVersion: 1,
+      schemaVersion: 3,
       measuredAt: new Date().toISOString(),
       measurement: '起動ボタンの実クリック直前からHuman68kプロンプト安定表示まで',
       config: {
@@ -316,7 +629,7 @@ async function run() {
         port: config.port,
         runs: config.runs,
         timeoutMs: config.timeoutMs,
-        pollIntervalMs: POLL_INTERVAL_MS,
+        pollIntervalMs: config.pollIntervalMs,
         requiredStablePolls: REQUIRED_STABLE_POLLS,
         fault: config.fault,
       },
@@ -329,8 +642,13 @@ async function run() {
         failed: failures.length,
         failureByReason,
         ...summarize(samplesMs),
+        intervals: intervalSummary,
       },
       faultCheck,
+      limitations: [
+        'wasm取得完了からコア稼働までにはwasmのコンパイルと初期化が含まれるが、ページ外観測だけでは分解できない',
+        'ポーリングで得るコア稼働・ゲスト初出力・プロンプト安定の時刻には最大で概ねpollIntervalMs分の観測遅延がある',
+      ],
     };
 
     await mkdir(dirname(config.outputPath), { recursive: true });
@@ -342,6 +660,18 @@ async function run() {
         `中央値 ${stats.medianMs ?? '-'} ms, p95 ${stats.p95Ms ?? '-'} ms, ` +
         `p99 ${stats.p99Ms ?? '-'} ms, 出力 ${config.outputPath}`,
     );
+    console.log('区間中央値（大きい順）:');
+    Object.entries(intervalSummary)
+      .sort(([, left], [, right]) => (right.medianMs ?? -Infinity) - (left.medianMs ?? -Infinity))
+      .forEach(([name, intervalStats]) => {
+        console.log(
+          `  ${INTERVAL_LABELS[name]}: 中央値 ${intervalStats.medianMs ?? '-'} ms, ` +
+            `p95 ${intervalStats.p95Ms ?? '-'} ms (${intervalStats.sampleCount}件)`,
+        );
+      });
+    attempts.forEach((attempt) => {
+      console.log(`試行 ${attempt.trial} preClickState: ${JSON.stringify(attempt.preClickState)}`);
+    });
     if (faultCheck) {
       console.log(
         `陽性対照: ${positiveControl.success ? '成功' : '失敗'}${
