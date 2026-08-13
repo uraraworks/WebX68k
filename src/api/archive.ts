@@ -2,6 +2,7 @@
 // 実際の解析・展開処理は lzh.ts / zip.ts に分割し、ここでは拡張子判定と振り分けのみ行う。
 
 import type { ArchiveEntry } from './archive-util.ts';
+import { isMetadataEntry } from './archive-util.ts';
 import { extractLzh } from './lzh.ts';
 import { extractZip } from './zip.ts';
 
@@ -12,15 +13,21 @@ export function isArchive(fileName: string): boolean {
   return /\.(lzh|zip)$/i.test(fileName);
 }
 
-/** アーカイブ(LZHまたはZIP)を展開し、格納されている各エントリを返す。 */
-export function extractArchive(fileName: string, bytes: Uint8Array): Promise<ArchiveEntry[]> {
+/**
+ * アーカイブ(LZHまたはZIP)を展開し、格納されている各エントリを返す。
+ * OS付随のメタデータエントリ(__MACOSX/、._ファイル、.DS_Store等)はここで一括除外する。
+ * ZIP/LZHいずれの展開結果も必ずこの関数を経由するため、両形式に等しく効く。
+ */
+export async function extractArchive(fileName: string, bytes: Uint8Array): Promise<ArchiveEntry[]> {
+  let entries: ArchiveEntry[];
   if (/\.lzh$/i.test(fileName)) {
-    return Promise.resolve(extractLzh(bytes));
+    entries = extractLzh(bytes);
+  } else if (/\.zip$/i.test(fileName)) {
+    entries = await extractZip(bytes);
+  } else {
+    throw new Error(`未対応のアーカイブ形式です: ${fileName}`);
   }
-  if (/\.zip$/i.test(fileName)) {
-    return extractZip(bytes);
-  }
-  return Promise.reject(new Error(`未対応のアーカイブ形式です: ${fileName}`));
+  return entries.filter((entry) => !isMetadataEntry(entry.name));
 }
 
 /**
