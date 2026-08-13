@@ -42,6 +42,11 @@ Notes on `fd1`/`fd2`/`hdd`:
 - **OneDrive share links (`1drv.ms` / `onedrive.live.com` / `sharepoint.com`)
   are not supported** — they don't work even through the relay (confirmed by
   testing). Please use Google Drive or Dropbox instead.
+- If you use Google Drive, sharing must be set to **"Anyone with the link"**
+  (leaving it "Restricted" redirects to a login page and fetching fails).
+  Also make sure you copy the **full share link without truncating it** —
+  links issued before 2021 carry a `resourcekey` query parameter, and
+  dropping it causes the same login-page redirect.
 - Revisiting the same URL does **not** re-download it — the image already saved
   in the browser (including any edits made from the guest side) is reused.
 - If the URL points to a **ZIP or LZH archive**, it is fetched and extracted the

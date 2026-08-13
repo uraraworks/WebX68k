@@ -963,6 +963,8 @@ function describeProxyError(status: number, code: string | undefined): string {
       return t('urlProxyReasonRateLimited');
     case 'upstream_failed':
       return t('urlProxyReasonUpstreamFailed');
+    case 'redirect_not_allowed':
+      return t('urlProxyReasonRedirectNotAllowed');
     default:
       return t('urlProxyReasonUnknown', { status });
   }

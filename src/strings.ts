@@ -209,6 +209,7 @@ interface Dict {
   urlProxyReasonTooLarge(): string;
   urlProxyReasonRateLimited(): string;
   urlProxyReasonUpstreamFailed(): string;
+  urlProxyReasonRedirectNotAllowed(): string;
   urlProxyReasonUnknown(args: { status: number }): string;
   /** スロット単位の取得失敗を伝えるトースト(他スロットの読み込み/起動は継続する)。 */
   urlLoadFailedToast(args: { label: string; message: string }): string;
@@ -612,6 +613,8 @@ const STRINGS: Record<Lang, Dict> = {
     urlProxyReasonTooLarge: () => 'ファイルサイズが中継サーバの上限を超えています。',
     urlProxyReasonRateLimited: () => '中継サーバのリクエスト数が上限に達しています。しばらく待って再度お試しください。',
     urlProxyReasonUpstreamFailed: () => '中継サーバから配信元への取得に失敗しました。',
+    urlProxyReasonRedirectNotAllowed: () =>
+      '配信元が別のサイト(ログイン画面など)へ転送しようとしたため中断しました。共有設定が「リンクを知っている全員が閲覧可」になっているか、共有リンクを省略せず全部コピーしているかご確認ください。',
     urlProxyReasonUnknown: ({ status }) => `中継サーバでエラーが発生しました (HTTP ${status})。`,
     urlLoadFailedToast: ({ label, message }) => `${label}の読み込みに失敗しました: ${message}`,
     urlSystemFetchFailed: () => '同梱システムディスクの取得に失敗しました。',
@@ -935,6 +938,8 @@ const STRINGS: Record<Lang, Dict> = {
     urlProxyReasonTooLarge: () => 'The file exceeds the relay server\'s size limit.',
     urlProxyReasonRateLimited: () => 'The relay server rate limit was reached. Please try again later.',
     urlProxyReasonUpstreamFailed: () => 'The relay server failed to fetch from the source.',
+    urlProxyReasonRedirectNotAllowed: () =>
+      'The source tried to redirect to another site (e.g. a login page), so the request was blocked. Check that sharing is set to "Anyone with the link" and that you copied the full share link.',
     urlProxyReasonUnknown: ({ status }) => `The relay server returned an error (HTTP ${status}).`,
     urlLoadFailedToast: ({ label, message }) => `Failed to load ${label}: ${message}`,
     urlSystemFetchFailed: () => 'Failed to fetch the bundled system disk.',
