@@ -2,7 +2,8 @@
 // 表示されるまでの所要時間を反復計測するスクリプト。
 // 完了条件を単純な `A>` の一致や前方一致にしないのは、点滅カーソルが末尾に1文字
 // 付いたり消えたりする一方、AUTOEXEC 実行中にも `A>ECHO OFF` が現れるためである。
-// 最終非空行を「`A>` + 最大1文字」に限定し、それを3回連続で観測して完了とする。
+// `A>` で始まる最後の行を「`A>` + 最大1文字」に限定し、それを3回連続で
+// 観測して完了とする。プロンプトより下の案内行は判定対象にしない。
 
 import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
@@ -150,23 +151,33 @@ function summarize(samples) {
   };
 }
 
-/** TVRAM の最終非空行が「marker + 最大1文字」なら true。 */
+/** TVRAM の行が「marker + 最大1文字」なら true。 */
 function isPromptLine(line, marker) {
   return line.startsWith(marker) && Array.from(line.slice(marker.length)).length <= 1;
 }
 
 async function waitForStablePrompt(page, marker, startedAt, timeoutMs) {
   let consecutive = 0;
-  let lastLine = null;
+  let lastNonEmptyLine = null;
+  let lastMarkerLine = null;
+  let lastAPromptLine = null;
 
   while (performance.now() - startedAt < timeoutMs) {
     const dump = await page.evaluate(() => window.__webx68kDebug?.screenText?.() ?? null);
     if (dump?.available && Array.isArray(dump.lines)) {
       const nonEmptyLines = dump.lines.filter((line) => line.length > 0);
-      lastLine = nonEmptyLines.at(-1) ?? null;
-      consecutive = lastLine !== null && isPromptLine(lastLine, marker) ? consecutive + 1 : 0;
+      lastNonEmptyLine = nonEmptyLines.at(-1) ?? null;
+      lastMarkerLine = nonEmptyLines.filter((line) => line.startsWith(marker)).at(-1) ?? null;
+      lastAPromptLine = nonEmptyLines.filter((line) => line.startsWith('A>')).at(-1) ?? null;
+      consecutive =
+        lastMarkerLine !== null && isPromptLine(lastMarkerLine, marker) ? consecutive + 1 : 0;
       if (consecutive >= REQUIRED_STABLE_POLLS) {
-        return { elapsedMs: performance.now() - startedAt, lastLine };
+        return {
+          elapsedMs: performance.now() - startedAt,
+          lastNonEmptyLine,
+          lastMarkerLine,
+          lastAPromptLine,
+        };
       }
     } else {
       // デバッグAPIやTVRAMがまだ利用不能なら、安定判定をリセットして待ち続ける。
@@ -175,7 +186,13 @@ async function waitForStablePrompt(page, marker, startedAt, timeoutMs) {
     await sleep(POLL_INTERVAL_MS);
   }
 
-  return { elapsedMs: performance.now() - startedAt, lastLine, timedOut: true };
+  return {
+    elapsedMs: performance.now() - startedAt,
+    lastNonEmptyLine,
+    lastMarkerLine,
+    lastAPromptLine,
+    timedOut: true,
+  };
 }
 
 async function measureOnce(browser, config, trial) {
@@ -206,7 +223,8 @@ async function measureOnce(browser, config, trial) {
         success: false,
         durationMs,
         reason: 'timeout',
-        lastNonEmptyLine: observed.lastLine,
+        lastNonEmptyLine: observed.lastNonEmptyLine,
+        lastAPromptLine: observed.lastAPromptLine ?? '該当行なし',
       };
     }
     return {
@@ -214,7 +232,8 @@ async function measureOnce(browser, config, trial) {
       success: true,
       durationMs,
       marker,
-      lastNonEmptyLine: observed.lastLine,
+      lastNonEmptyLine: observed.lastNonEmptyLine,
+      lastMarkerLine: observed.lastMarkerLine,
     };
   } catch (error) {
     return {
@@ -251,9 +270,14 @@ async function run() {
       args: ['--hide-scrollbars', '--force-device-scale-factor=2', '--window-size=1000,900'],
     });
 
+    const positiveControl = config.fault
+      ? await measureOnce(browser, { ...config, fault: null }, 1)
+      : null;
     const attempts = [];
-    for (let trial = 1; trial <= config.runs; trial++) {
-      attempts.push(await measureOnce(browser, config, trial));
+    if (!positiveControl || positiveControl.success) {
+      for (let trial = 1; trial <= config.runs; trial++) {
+        attempts.push(await measureOnce(browser, config, trial));
+      }
     }
 
     const samplesMs = attempts.filter((attempt) => attempt.success).map((attempt) => attempt.durationMs);
@@ -264,13 +288,23 @@ async function run() {
         failures.filter((failure) => failure.reason === reason).length,
       ]),
     );
+    const positiveControlPassed = positiveControl?.success ?? null;
     const faultCheck = config.fault
       ? {
           expectedFailure: 'timeout',
+          positiveControlPassed,
           passed:
+            positiveControlPassed === true &&
             samplesMs.length === 0 &&
             failures.length === config.runs &&
             failures.every((failure) => failure.reason === 'timeout'),
+          reason:
+            positiveControlPassed !== true
+              ? 'positive-control-failed'
+              : failures.length === config.runs &&
+                  failures.every((failure) => failure.reason === 'timeout')
+                ? null
+                : 'fault-not-detected',
         }
       : null;
     const result = {
@@ -288,8 +322,9 @@ async function run() {
       },
       samplesMs,
       attempts,
+      positiveControl,
       summary: {
-        total: config.runs,
+        total: attempts.length,
         succeeded: samplesMs.length,
         failed: failures.length,
         failureByReason,
@@ -308,7 +343,20 @@ async function run() {
         `p99 ${stats.p99Ms ?? '-'} ms, 出力 ${config.outputPath}`,
     );
     if (faultCheck) {
-      console.log(`故障注入 ${config.fault}: ${faultCheck.passed ? '期待どおり検出' : '検出失敗'}`);
+      console.log(
+        `陽性対照: ${positiveControl.success ? '成功' : '失敗'}${
+          positiveControl.durationMs === null ? '' : ` (${positiveControl.durationMs} ms)`
+        }`,
+      );
+      console.log(
+        `故障注入 ${config.fault}: ${
+          !positiveControl.success
+            ? '検出力を確認できない'
+            : faultCheck.passed
+              ? '期待どおり検出'
+              : '検出失敗'
+        }`,
+      );
       if (!faultCheck.passed) process.exitCode = 1;
     } else if (failures.length > 0) {
       process.exitCode = 1;
