@@ -172,6 +172,90 @@ function stopServer(child) {
   });
 }
 
+/**
+ * prod 計測だけで使う最小 WebSocket ブリッジを起動する。
+ * mcp/server.mjs 自体を子プロセス化すると stdio MCP サーバーまで同時に起動し、計測側から
+ * screen_text/status を直接要求する別経路も必要になる。ここでは計測に必要な要求転送だけを
+ * 実装したほうが構成と終了処理が小さく、MCP 固有処理を計測へ混ぜずに済むため、この方式を選ぶ。
+ */
+async function startMeasurementBridge() {
+  const { WebSocketServer } = await import('ws');
+  let activeClient = null;
+  let nextRequestId = 1;
+  const pending = new Map();
+  const wss = new WebSocketServer({ host: '127.0.0.1', port: 0 });
+
+  await new Promise((resolveListen, rejectListen) => {
+    wss.once('listening', resolveListen);
+    wss.once('error', rejectListen);
+  });
+
+  wss.on('connection', (ws) => {
+    ws.on('message', (data) => {
+      let message;
+      try {
+        message = JSON.parse(data.toString());
+      } catch {
+        return;
+      }
+      if (message?.type === 'hello' && message.role === 'webx68k') {
+        if (activeClient && activeClient !== ws) activeClient.close();
+        activeClient = ws;
+        return;
+      }
+      const entry = pending.get(message?.id);
+      if (!entry) return;
+      pending.delete(message.id);
+      clearTimeout(entry.timer);
+      if (message.ok) entry.resolve(message.result);
+      else entry.reject(new Error(String(message.error ?? 'bridge command failed')));
+    });
+    ws.on('close', () => {
+      if (activeClient === ws) activeClient = null;
+    });
+  });
+
+  const address = wss.address();
+  if (!address || typeof address === 'string') throw new Error('ブリッジの待受ポートを取得できません');
+
+  return {
+    port: address.port,
+    url: `ws://127.0.0.1:${address.port}`,
+    async waitForClient(timeoutMs = 8000) {
+      const deadline = Date.now() + timeoutMs;
+      while (Date.now() < deadline) {
+        if (activeClient?.readyState === activeClient.OPEN) return;
+        await sleep(50);
+      }
+      throw new Error('prod ページから計測用ブリッジへ接続されませんでした');
+    },
+    request(cmd, args = {}) {
+      return new Promise((resolveRequest, rejectRequest) => {
+        if (!activeClient || activeClient.readyState !== activeClient.OPEN) {
+          rejectRequest(new Error('計測用ブリッジに prod ページが接続されていません'));
+          return;
+        }
+        const id = nextRequestId++;
+        const timer = setTimeout(() => {
+          pending.delete(id);
+          rejectRequest(new Error(`ブリッジコマンド ${cmd} がタイムアウトしました`));
+        }, 5000);
+        pending.set(id, { resolve: resolveRequest, reject: rejectRequest, timer });
+        activeClient.send(JSON.stringify({ id, cmd, args }));
+      });
+    },
+    async close() {
+      for (const entry of pending.values()) {
+        clearTimeout(entry.timer);
+        entry.reject(new Error('計測用ブリッジを終了しました'));
+      }
+      pending.clear();
+      for (const client of wss.clients) client.terminate();
+      await new Promise((resolveClose) => wss.close(resolveClose));
+    },
+  };
+}
+
 function percentile(sorted, fraction) {
   if (sorted.length === 0) return null;
   const index = (sorted.length - 1) * fraction;
@@ -394,6 +478,190 @@ function observeBoot(page, buttonSelector, marker, timeoutMs, pollIntervalMs) {
   );
 }
 
+/** prod 専用。完了条件は observeBoot と同一で、TVRAM と fps の読み取りだけをブリッジへ替える。 */
+function observeBootThroughBridge(page, buttonSelector, marker, timeoutMs, pollIntervalMs) {
+  return page.evaluate(
+    async ({ selector, expectedMarker, timeout, pollInterval, stablePolls }) => {
+      const observedResources = [];
+      let resourceObserverSupported = true;
+      let resourceObserverError = null;
+      let resourceObserver = null;
+      const serializeResource = (entry) => ({
+        name: entry.name,
+        initiatorType: entry.initiatorType,
+        startTime: entry.startTime,
+        responseEnd: entry.responseEnd,
+        transferSize: entry.transferSize,
+        encodedBodySize: entry.encodedBodySize,
+      });
+
+      try {
+        resourceObserver = new PerformanceObserver((list) => {
+          observedResources.push(...list.getEntries().map(serializeResource));
+        });
+        resourceObserver.observe({ type: 'resource', buffered: true });
+      } catch (error) {
+        resourceObserverSupported = false;
+        resourceObserverError = error instanceof Error ? error.message : String(error);
+      }
+
+      const button = document.querySelector(selector);
+      if (!button) throw new Error(`起動ボタンが見つかりません: ${selector}`);
+      if (typeof window.__measureBridgeCommand !== 'function') {
+        throw new Error('計測用ブリッジ関数がページへ公開されていません');
+      }
+
+      const readBridgeState = async () => {
+        let statusValue = null;
+        let statusError = null;
+        let screenValue = null;
+        let screenError = null;
+        const [statusResult, screenResult] = await Promise.allSettled([
+          window.__measureBridgeCommand('status', {}),
+          window.__measureBridgeCommand('screen_text', {}),
+        ]);
+        if (statusResult.status === 'fulfilled') statusValue = statusResult.value;
+        else statusError = String(statusResult.reason);
+        if (screenResult.status === 'fulfilled') screenValue = screenResult.value;
+        else screenError = String(screenResult.reason);
+
+        const nonEmptyLines =
+          screenValue?.available && Array.isArray(screenValue.lines)
+            ? screenValue.lines.filter((line) => line.length > 0)
+            : [];
+        const markerLine =
+          nonEmptyLines.filter((line) => line.startsWith(expectedMarker)).at(-1) ?? null;
+        const promptRemainderLength =
+          markerLine === null
+            ? Number.POSITIVE_INFINITY
+            : Array.from(markerLine.slice(expectedMarker.length)).length;
+        return {
+          state: {
+            debugDefined: window.__webx68kDebug !== undefined,
+            observationPath: 'websocket-bridge',
+            stat: { callable: true, value: statusValue, error: statusError },
+            screenText: {
+              callable: true,
+              available: screenValue?.available === true,
+              error: screenError,
+            },
+            conditions: {
+              wasmFetchComplete: performance
+                .getEntriesByType('resource')
+                .some((entry) => /\.wasm(?:[?#]|$)/i.test(entry.name) && entry.responseEnd > 0),
+              coreReady: statusValue !== null && Number.isFinite(statusValue.fps),
+              firstGuestOutput: nonEmptyLines.length > 0,
+              promptStable: markerLine !== null && promptRemainderLength <= 1,
+            },
+          },
+          statusValue,
+          screenValue,
+        };
+      };
+
+      const preClickState = (await readBridgeState()).state;
+      const clickedAt = await new Promise((resolveClick) => {
+        button.addEventListener('click', () => resolveClick(performance.now()), {
+          capture: true,
+          once: true,
+        });
+      });
+
+      let coreReadyAt = null;
+      let firstGuestOutputAt = null;
+      let promptStableAt = null;
+      let consecutive = 0;
+      let lastNonEmptyLine = null;
+      let lastMarkerLine = null;
+      let lastAPromptLine = null;
+      let timedOut = false;
+
+      while (true) {
+        const now = performance.now();
+        let statusValue = null;
+        let dump = null;
+        const requests = [window.__measureBridgeCommand('screen_text', {})];
+        if (coreReadyAt === null) requests.push(window.__measureBridgeCommand('status', {}));
+        const results = await Promise.allSettled(requests);
+        if (results[0].status === 'fulfilled') dump = results[0].value;
+        if (results[1]?.status === 'fulfilled') statusValue = results[1].value;
+
+        if (coreReadyAt === null && statusValue !== null && Number.isFinite(statusValue.fps)) {
+          coreReadyAt = now;
+        }
+        if (dump?.available && Array.isArray(dump.lines)) {
+          const nonEmptyLines = dump.lines.filter((line) => line.length > 0);
+          if (firstGuestOutputAt === null && nonEmptyLines.length > 0) firstGuestOutputAt = now;
+          lastNonEmptyLine = nonEmptyLines.at(-1) ?? null;
+          lastMarkerLine =
+            nonEmptyLines.filter((line) => line.startsWith(expectedMarker)).at(-1) ?? null;
+          lastAPromptLine = nonEmptyLines.filter((line) => line.startsWith('A>')).at(-1) ?? null;
+          const promptRemainderLength =
+            lastMarkerLine === null
+              ? Number.POSITIVE_INFINITY
+              : Array.from(lastMarkerLine.slice(expectedMarker.length)).length;
+          consecutive =
+            lastMarkerLine !== null && promptRemainderLength <= 1 ? consecutive + 1 : 0;
+          if (consecutive >= stablePolls) {
+            promptStableAt = now;
+            break;
+          }
+        } else {
+          consecutive = 0;
+        }
+
+        if (now - clickedAt >= timeout) {
+          timedOut = true;
+          break;
+        }
+        await new Promise((resolvePoll) => setTimeout(resolvePoll, pollInterval));
+      }
+
+      resourceObserver?.takeRecords().forEach((entry) => {
+        observedResources.push(serializeResource(entry));
+      });
+      resourceObserver?.disconnect();
+      const finalResources = performance.getEntriesByType('resource').map(serializeResource);
+      const uniqueResources = [...observedResources, ...finalResources].filter(
+        (entry, index, entries) =>
+          entries.findIndex(
+            (candidate) =>
+              candidate.name === entry.name &&
+              candidate.startTime === entry.startTime &&
+              candidate.responseEnd === entry.responseEnd,
+          ) === index,
+      );
+
+      return {
+        clickedAt,
+        preClickState,
+        observationEndedAt: performance.now(),
+        coreReadyAt,
+        coreReadyUnavailableReason:
+          'タイムアウトまでにブリッジの status が有限数の fps を返さなかった',
+        firstGuestOutputAt,
+        promptStableAt,
+        timedOut,
+        lastNonEmptyLine,
+        lastMarkerLine,
+        lastAPromptLine,
+        wasmResources: uniqueResources.filter((entry) => /\.wasm(?:[?#]|$)/i.test(entry.name)),
+        resourceObserver: {
+          supported: resourceObserverSupported,
+          error: resourceObserverError,
+        },
+      };
+    },
+    {
+      selector: buttonSelector,
+      expectedMarker: marker,
+      timeout: timeoutMs,
+      pollInterval: pollIntervalMs,
+      stablePolls: REQUIRED_STABLE_POLLS,
+    },
+  );
+}
+
 const roundMs = (value) => (value === null ? null : Math.round(value * 1000) / 1000);
 
 function buildTimingDetails(observed) {
@@ -416,7 +684,8 @@ function buildTimingDetails(observed) {
       status: observed.coreReadyAt === null ? 'unavailable' : 'valid',
       reason:
         observed.coreReadyAt === null
-          ? 'タイムアウトまでに __webx68kDebug.stat() が有限数の fps を返さなかった'
+          ? observed.coreReadyUnavailableReason ??
+            'タイムアウトまでに __webx68kDebug.stat() が有限数の fps を返さなかった'
           : null,
     },
     firstGuestOutput: {
@@ -503,14 +772,25 @@ async function measureOnce(browser, config, trial) {
     const page = await context.newPage();
     await page.setViewport({ width: 900, height: 700, deviceScaleFactor: 2 });
     await page.bringToFront();
-    await page.goto(config.baseUrl, { waitUntil: 'networkidle2' });
+    let measurementUrl = config.baseUrl;
+    if (config.mode === 'prod') {
+      await page.exposeFunction('__measureBridgeCommand', (cmd, args) =>
+        config.measurementBridge.request(cmd, args),
+      );
+      const url = new URL(config.baseUrl);
+      url.searchParams.set('bridge', String(config.measurementBridge.port));
+      measurementUrl = url.href;
+    }
+    await page.goto(measurementUrl, { waitUntil: 'networkidle2' });
+    if (config.mode === 'prod') await config.measurementBridge.waitForClient();
     await page.bringToFront();
 
     const buttonSelector = config.fault === 'no-disk' ? '#btn-boot-plain' : '#btn-boot-system';
     await page.waitForSelector(buttonSelector, { visible: true });
 
     const marker = config.fault === 'wrong-marker' ? 'Z>' : 'A>';
-    const observationPromise = observeBoot(
+    const observe = config.mode === 'prod' ? observeBootThroughBridge : observeBoot;
+    const observationPromise = observe(
       page,
       buttonSelector,
       marker,
@@ -580,11 +860,16 @@ async function run() {
   }
   const config = buildConfig(args);
   let server;
+  let measurementBridge;
   let browser;
   let profile;
 
   try {
-    if (config.mode === 'prod') await buildProduction();
+    if (config.mode === 'prod') {
+      await buildProduction();
+      measurementBridge = await startMeasurementBridge();
+      config.measurementBridge = measurementBridge;
+    }
     server = await startServer(config.mode, config.port);
     profile = await mkdtemp(join(tmpdir(), 'webx68k-measure-boot-'));
     browser = await puppeteer.launch({
@@ -665,6 +950,18 @@ async function run() {
         pollIntervalMs: config.pollIntervalMs,
         requiredStablePolls: REQUIRED_STABLE_POLLS,
         fault: config.fault,
+        ...(config.mode === 'prod'
+          ? {
+              observationPath: 'websocket-bridge (screen_text/status)',
+              prodBridge: {
+                enabled: true,
+                urlParameter: { name: 'bridge', value: String(measurementBridge.port) },
+                resolvedWebSocketUrl: measurementBridge.url,
+                distributionDifference:
+                  '計測時だけ bridge URLパラメータを付け、ブリッジ接続状態にしている。実際に配布される通常構成とは異なる',
+              },
+            }
+          : {}),
       },
       samplesMs,
       attempts,
@@ -677,11 +974,22 @@ async function run() {
         failureByReason,
         ...summarize(samplesMs),
         intervals: intervalSummary,
+        ...(config.mode === 'prod'
+          ? {
+              distributionDifference:
+                'prod計測は bridge URLパラメータ付き・ブリッジ接続状態であり、実配布の通常構成とは異なる',
+            }
+          : {}),
       },
       faultCheck,
       limitations: [
         'wasm取得完了からコア稼働までにはwasmのコンパイルと初期化が含まれるが、ページ外観測だけでは分解できない',
         'ポーリングで得るコア稼働・ゲスト初出力・プロンプト安定の時刻には最大で概ねpollIntervalMs分の観測遅延がある',
+        ...(config.mode === 'prod'
+          ? [
+              'prod計測ではTVRAM取得のため bridge URLパラメータを付けており、ブリッジ未接続で配布される通常構成とは異なる',
+            ]
+          : []),
       ],
     };
 
@@ -694,6 +1002,11 @@ async function run() {
         `中央値 ${stats.medianMs ?? '-'} ms, p95 ${stats.p95Ms ?? '-'} ms, ` +
         `p99 ${stats.p99Ms ?? '-'} ms, 出力 ${config.outputPath}`,
     );
+    if (config.mode === 'prod') {
+      console.log(
+        '注意: prod計測は bridge URLパラメータ付き・ブリッジ接続状態であり、実際に配布される通常構成とは異なります',
+      );
+    }
     console.log('区間中央値（大きい順）:');
     Object.entries(intervalSummary)
       .sort(([, left], [, right]) => (right.medianMs ?? -Infinity) - (left.medianMs ?? -Infinity))
@@ -729,6 +1042,7 @@ async function run() {
     if (browser) await browser.close();
     if (profile) await rm(profile, { recursive: true, force: true });
     await stopServer(server);
+    if (measurementBridge) await measurementBridge.close();
   }
 }
 
