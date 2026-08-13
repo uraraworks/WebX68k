@@ -202,6 +202,8 @@ interface Dict {
   urlFetchFailedNeedsProxy(args: { url: string }): string;
   /** 中継サーバ経由の取得が失敗した場合のエラーメッセージ本文(中継側のエラーコードを反映)。 */
   urlFetchFailedProxy(args: { url: string; reason: string }): string;
+  /** 取得結果がディスクイメージではなくHTMLページ(共有リンクの閲覧ページ等)だった場合の案内。 */
+  urlFetchFailedHtmlPage(args: { url: string }): string;
   // --- 中継サーバ(VITE_DISK_PROXY)のエラーコード別の理由文言(urlFetchFailedProxy の reason に渡す) ---
   urlProxyReasonBadUrl(): string;
   urlProxyReasonOriginNotAllowed(): string;
@@ -607,6 +609,8 @@ const STRINGS: Record<Lang, Dict> = {
     urlFetchFailedNeedsProxy: ({ url }) =>
       `ディスクイメージの取得に失敗しました: ${url}\nこの配信元は中継サーバ経由でのみ取得できますが、このビルドでは中継(VITE_DISK_PROXY)が設定されていません。自分でホストしている場合は VITE_DISK_PROXY を設定してください(詳細はREADME)。`,
     urlFetchFailedProxy: ({ url, reason }) => `ディスクイメージの取得に失敗しました: ${url}\n${reason}`,
+    urlFetchFailedHtmlPage: ({ url }) =>
+      `ディスクイメージの取得に失敗しました: ${url}\n取得結果がディスクイメージではなくWebページでした。共有リンクの公開設定(リンクを知っている全員が閲覧可)を確認するか、ダウンロードしたファイルを画面へドラッグ&ドロップしてください。`,
     urlProxyReasonBadUrl: () => '中継サーバがURLを解釈できませんでした。',
     urlProxyReasonOriginNotAllowed: () => '中継サーバがこのサイトからのリクエストを許可していません。',
     urlProxyReasonHostNotAllowed: () => '中継サーバがこの配信元への転送を許可していません。',
@@ -932,6 +936,8 @@ const STRINGS: Record<Lang, Dict> = {
     urlFetchFailedNeedsProxy: ({ url }) =>
       `Failed to fetch the disk image: ${url}\nThis source can only be fetched through the relay server, but this build has no relay (VITE_DISK_PROXY) configured. If you're hosting this yourself, set VITE_DISK_PROXY (see the README for details).`,
     urlFetchFailedProxy: ({ url, reason }) => `Failed to fetch the disk image: ${url}\n${reason}`,
+    urlFetchFailedHtmlPage: ({ url }) =>
+      `Failed to fetch the disk image: ${url}\nThe fetch returned a web page instead of a disk image. Check that the share link is public ("Anyone with the link"), or drag and drop the downloaded file onto the screen instead.`,
     urlProxyReasonBadUrl: () => 'The relay server could not parse the URL.',
     urlProxyReasonOriginNotAllowed: () => 'The relay server does not allow requests from this site.',
     urlProxyReasonHostNotAllowed: () => 'The relay server does not allow forwarding to this source.',

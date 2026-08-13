@@ -35,9 +35,10 @@ X68000 エミュレータ [px68k-libretro](https://github.com/uraraworks/px68k-l
 
 - 指定するURLは **CORSが有効なオリジン**から配信されている必要があります。GitHub raw /
   GitHub Pages / 自前のCORS対応サーバなどはそのまま(直接fetchで)取得できます。
-- Google Drive / Dropbox は直接fetchではCORSに対応していないため取得に失敗しますが、
-  公開ページでは**中継サービス経由で自動的に再取得**されます(直接fetchが失敗した場合のみ
-  中継を試みます)。fork して自分でホストする場合は後述の `VITE_DISK_PROXY` の設定が必要です。
+- Google Drive / Dropbox の共有リンクは直接fetchすると(CORSエラーにはならず)共有ページの
+  HTMLが返ってきてしまうため、公開ページでは**最初から中継サービス経由で取得**します。
+  fork して自分でホストする場合は後述の `VITE_DISK_PROXY` の設定が必要です(未設定のまま
+  だと「直接取得できません」と案内されます)。
 - **OneDrive(`1drv.ms` / `onedrive.live.com` / `sharepoint.com`)の共有リンクは
   仕様上ご利用いただけません**(中継を挟んでも取得できないことが確認済みです)。
   Google DriveかDropboxをお使いください。

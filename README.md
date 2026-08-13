@@ -35,10 +35,12 @@ Notes on `fd1`/`fd2`/`hdd`:
 
 - The URL must be served from a **CORS-enabled origin**. GitHub raw, GitHub
   Pages, and your own CORS-enabled server work directly (plain fetch).
-- Google Drive and Dropbox don't support CORS for a direct fetch, so it fails
-  at first, but the public page **automatically retries through a relay
-  service** (only when the direct fetch fails). If you fork and host this
-  yourself, you need to set `VITE_DISK_PROXY` (see below) to use this.
+- Google Drive and Dropbox share links return an HTML viewer page instead of
+  the raw file when fetched directly (no CORS error, just the wrong content),
+  so the public page **fetches these hosts through a relay service from the
+  start**. If you fork and host this yourself, you need to set
+  `VITE_DISK_PROXY` (see below) to use this — without it, these hosts are
+  reported as unfetchable.
 - **OneDrive share links (`1drv.ms` / `onedrive.live.com` / `sharepoint.com`)
   are not supported** — they don't work even through the relay (confirmed by
   testing). Please use Google Drive or Dropbox instead.

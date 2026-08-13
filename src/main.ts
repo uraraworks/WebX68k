@@ -44,6 +44,7 @@ import { Bridge, resolveBridgeUrl, type BridgeHost } from './bridge';
 import { RETROK, charToKey, codeToRetrok } from './keyboard';
 import { LibretroHost } from './libretro-host';
 import { parseAspectModeParam, parseCpuSpeedParam, parseRamSizeParam } from './url-params';
+import { hostMatches, looksLikeHtml, PROXY_CAPABLE_HOSTS, shouldPreferProxy, urlHostname } from './disk-fetch';
 import {
   createResampleState,
   DEFAULT_SPEED_STEP,
@@ -929,24 +930,8 @@ const DISK_PROXY_BASE = (import.meta.env.VITE_DISK_PROXY ?? '').trim().replace(/
 // OneDriveの共有リンクは実測で中継しても取得できないことが判明しているため、中継を試さず
 // 即座に案内を出すためのホスト一覧。
 const ONEDRIVE_HOSTS = ['1drv.ms', 'onedrive.live.com', 'sharepoint.com'];
-// 中継を使えば取得できる(=中継未設定時のみ「直接取得できません」と案内する)配信元のホスト一覧。
-// dropbox.com を足すと hostMatches の「.<entry> で終わる」判定で www.dropbox.com も
-// 拾えるようになるが、www.dropbox.com は実際に貼られる頻度が高いため、完全一致で
-// 早期に判定できるよう明示的にも残す。
-const PROXY_CAPABLE_HOSTS = ['drive.google.com', 'docs.google.com', 'www.dropbox.com', 'dropbox.com'];
-
-/** URLのホスト名を取り出す。パース不可なら空文字を返す(呼び出し側は「一致なし」として扱う)。 */
-function urlHostname(url: string): string {
-  try {
-    return new URL(url).hostname;
-  } catch {
-    return '';
-  }
-}
-
-function hostMatches(hostname: string, list: string[]): boolean {
-  return list.some((h) => hostname === h || hostname.endsWith(`.${h}`));
-}
+// PROXY_CAPABLE_HOSTS / urlHostname / hostMatches / looksLikeHtml / shouldPreferProxy は
+// ./disk-fetch (単体テスト可能な純粋関数) からimportする。
 
 /** 中継サーバのエラーJSON(`{"error":"host_not_allowed"}` 等)をHTTPステータスとあわせて利用者向け理由文言に変換する。 */
 function describeProxyError(status: number, code: string | undefined): string {
@@ -1008,8 +993,18 @@ async function readResponseWithProgress(
 /**
  * 進捗コールバック付きでURLからバイト列を取得する(WebNP2 の fetchWithProgress に準拠)。
  *
- * まず指定URLへ直接fetchする(GitHub raw のようにCORS対応済みのURLに無駄な中継を挟まない
- * ため)。直接取得に失敗した場合のみ、中継サービス(VITE_DISK_PROXY)経由での再取得を試みる。
+ * 通常はまず指定URLへ直接fetchする(GitHub raw のようにCORS対応済みのURLに無駄な中継を挟まない
+ * ため)。ただし Google Drive/Dropbox の共有URLは、直接fetchしても生のファイルは絶対に返らず
+ * 共有ページのHTMLが(CORSエラーにもならず)200で返ってくることが実測で判明している
+ * (2026-08-13 curl実測: Googleが Origin をechoした access-control-allow-origin を付けて返す)。
+ * そのため中継(VITE_DISK_PROXY)が設定されている場合、これらのホストは直接fetchを試さず
+ * 最初から中継を使う(`shouldPreferProxy`)。
+ *
+ * 直接fetchを試した場合でも、取得結果が `looksLikeHtml` でHTMLに見えるときはディスクイメージ
+ * ではないとみなし、中継が設定されていればそちらで再取得を試みる(対象外ホストにも効く保険)。
+ * 中継経由でもHTMLだった場合、あるいは中継が未設定の場合は専用のエラーで案内する。
+ *
+ * それ以外の失敗(直接取得の失敗)は、中継が設定されていればそちらで再取得を試みる。
  * ただしOneDriveの共有リンクは実測で中継しても取得できないため中継を試さず即座に専用の
  * 案内を出し、中継が未設定の場合はGoogle Drive/Dropboxのみ「直接取得できません」と案内する
  * (それ以外は従来どおりCORS未対応の可能性を伝える)。
@@ -1018,27 +1013,41 @@ async function fetchBytesWithProgress(
   url: string,
   onProgress: (loaded: number, total: number | null) => void,
 ): Promise<Uint8Array> {
-  let directError: Error;
-  try {
-    const response = await fetch(url);
-    if (!response.ok) {
-      throw new Error(t('urlFetchFailedHttp', { url, status: response.status }));
-    }
-    return await readResponseWithProgress(response, onProgress);
-  } catch (err) {
-    directError = err instanceof Error && err.message ? err : new Error(t('urlFetchFailedNetwork', { url }));
-  }
-
   const hostname = urlHostname(url);
   if (hostMatches(hostname, ONEDRIVE_HOSTS)) {
     throw new Error(t('urlFetchFailedOneDrive', { url }));
   }
 
-  if (!DISK_PROXY_BASE) {
+  const hasProxy = DISK_PROXY_BASE !== '';
+  const preferProxy = shouldPreferProxy(url, hasProxy);
+
+  let directError: Error | null = null;
+  let directWasHtml = false;
+  if (!preferProxy) {
+    try {
+      const response = await fetch(url);
+      if (!response.ok) {
+        throw new Error(t('urlFetchFailedHttp', { url, status: response.status }));
+      }
+      const contentType = response.headers.get('content-type');
+      const bytes = await readResponseWithProgress(response, onProgress);
+      if (!looksLikeHtml(bytes, contentType)) {
+        return bytes;
+      }
+      directWasHtml = true;
+    } catch (err) {
+      directError = err instanceof Error && err.message ? err : new Error(t('urlFetchFailedNetwork', { url }));
+    }
+  }
+
+  if (!hasProxy) {
+    if (directWasHtml) {
+      throw new Error(t('urlFetchFailedHtmlPage', { url }));
+    }
     if (hostMatches(hostname, PROXY_CAPABLE_HOSTS)) {
       throw new Error(t('urlFetchFailedNeedsProxy', { url }));
     }
-    throw directError;
+    throw directError ?? new Error(t('urlFetchFailedNetwork', { url }));
   }
 
   const proxyUrl = `${DISK_PROXY_BASE}/fetch?url=${encodeURIComponent(url)}`;
@@ -1046,7 +1055,8 @@ async function fetchBytesWithProgress(
   try {
     proxyResponse = await fetch(proxyUrl);
   } catch {
-    throw directError;
+    if (directWasHtml) throw new Error(t('urlFetchFailedHtmlPage', { url }));
+    throw directError ?? new Error(t('urlFetchFailedNetwork', { url }));
   }
   if (!proxyResponse.ok) {
     let code: string | undefined;
@@ -1058,7 +1068,12 @@ async function fetchBytesWithProgress(
     }
     throw new Error(t('urlFetchFailedProxy', { url, reason: describeProxyError(proxyResponse.status, code) }));
   }
-  return await readResponseWithProgress(proxyResponse, onProgress);
+  const proxyContentType = proxyResponse.headers.get('content-type');
+  const proxyBytes = await readResponseWithProgress(proxyResponse, onProgress);
+  if (looksLikeHtml(proxyBytes, proxyContentType)) {
+    throw new Error(t('urlFetchFailedHtmlPage', { url }));
+  }
+  return proxyBytes;
 }
 
 /** URLの末尾ファイル名を、クエリ/フラグメントを除いた部分から取り出す(配布URLの拡張子判定に使う)。 */
@@ -1106,9 +1121,11 @@ async function resolveUrlToLibrary(url: string, label: string): Promise<UrlLibra
   const groupId = `arcurl:${url}`;
 
   // 展開済みのアーカイブ由来グループ(前回このURLを展開済み)があれば再ダウンロードせず復帰する。
+  // ただしバグ(HTML閲覧ページをディスクイメージとして誤保存してしまう不具合)を踏んで保存された
+  // 壊れたレコードは復帰の対象にしない(復帰させると修正後も壊れたHTMLが永久に復帰し続けるため)。
   const stored = await listDisks();
   const resumedDisks = stored
-    .filter((d) => d.sourceKey.startsWith(`${groupId}/`))
+    .filter((d) => d.sourceKey.startsWith(`${groupId}/`) && !looksLikeHtml(d.bytes))
     .map((d): RegisteredDisk => ({ name: d.name, sourceKey: d.sourceKey, data: d.bytes, kind: classifyDiskKind(d.name) ?? 'fd' }));
   if (resumedDisks.length > 0) {
     showToast(t('urlArchiveResumed', { label, count: resumedDisks.length }));
@@ -1116,8 +1133,10 @@ async function resolveUrlToLibrary(url: string, label: string): Promise<UrlLibra
   }
 
   // 非アーカイブの単体ディスクとして既に保存済みなら(従来どおり sourceKey===url)、そちらを使う。
+  // 同様にHTMLに見える壊れたレコードは復帰させず、下の再取得処理へフォールスルーする
+  // (再取得に成功すれば同じsourceKeyへ上書き保存され、壊れたレコードは自然に修復される)。
   const plainStored = await getDisk(url);
-  if (plainStored) {
+  if (plainStored && !looksLikeHtml(plainStored.bytes)) {
     showToast(t('urlDiskResumed', { label, name: plainStored.name }));
     return {
       disks: [{ name: plainStored.name, sourceKey: url, data: plainStored.bytes, kind: classifyDiskKind(plainStored.name) ?? 'fd' }],
