@@ -35,6 +35,15 @@ X68000 エミュレータ [px68k-libretro](https://github.com/uraraworks/px68k-l
 
 - 指定するURLは **CORSが有効なオリジン**から配信されている必要があります。GitHub raw /
   GitHub Pages / 自前のCORS対応サーバなどはそのまま(直接fetchで)取得できます。
+- GitHubの **blob URL**(`https://github.com/<owner>/<repo>/blob/<ref>/<path>`)や
+  **raw URL**(`.../raw/<ref>/<path>`)を指定した場合は、取得前に自動的に
+  `https://raw.githubusercontent.com/<owner>/<repo>/<ref>/<path>` へ書き換えてから
+  直接fetchします(`raw.githubusercontent.com` はCORS対応済みのため、中継サービスを
+  経由しません)。GitHubの当該URLへの直fetchは302リダイレクトにCORSヘッダが無く失敗するため、
+  ブラウザのアドレスバーからコピーした `blob` URLをそのまま貼り付けても問題ありません。
+  一方 **Release asset のURL**(`.../releases/download/<tag>/<asset>` や
+  `.../releases/latest/download/<asset>`)は `raw.githubusercontent.com` から取得できないため
+  書き換えの対象外で、従来どおり中継サービス経由(`VITE_DISK_PROXY` 未設定時は直接fetch)になります。
 - Google Drive / Dropbox の共有リンクは直接fetchすると(CORSエラーにはならず)共有ページの
   HTMLが返ってきてしまうため、公開ページでは**最初から中継サービス経由で取得**します。
   fork して自分でホストする場合は後述の `VITE_DISK_PROXY` の設定が必要です(未設定のまま

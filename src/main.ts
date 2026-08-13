@@ -44,7 +44,7 @@ import { Bridge, resolveBridgeUrl, type BridgeHost } from './bridge';
 import { RETROK, charToKey, codeToRetrok } from './keyboard';
 import { LibretroHost } from './libretro-host';
 import { parseAspectModeParam, parseCpuSpeedParam, parseRamSizeParam } from './url-params';
-import { hostMatches, looksLikeHtml, PROXY_CAPABLE_HOSTS, shouldPreferProxy, urlHostname } from './disk-fetch';
+import { hostMatches, looksLikeHtml, PROXY_CAPABLE_HOSTS, rewriteGithubBlobUrl, shouldPreferProxy, urlHostname } from './disk-fetch';
 import {
   createResampleState,
   DEFAULT_SPEED_STEP,
@@ -1018,6 +1018,11 @@ async function fetchBytesWithProgress(
     throw new Error(t('urlFetchFailedOneDrive', { url }));
   }
 
+  // raw.githubusercontent.com は CORS 対応なので、中継を通さず直接取得できる。
+  // github.com の 302 には ACAO が無いためブラウザの直fetchが失敗する。2026-08-14
+  // (Release asset の URL は rewriteGithubBlobUrl 内で除外され書き換わらない)
+  const fetchUrl = rewriteGithubBlobUrl(url);
+
   const hasProxy = DISK_PROXY_BASE !== '';
   const preferProxy = shouldPreferProxy(url, hasProxy);
 
@@ -1025,7 +1030,7 @@ async function fetchBytesWithProgress(
   let directWasHtml = false;
   if (!preferProxy) {
     try {
-      const response = await fetch(url);
+      const response = await fetch(fetchUrl);
       if (!response.ok) {
         throw new Error(t('urlFetchFailedHttp', { url, status: response.status }));
       }
@@ -1050,7 +1055,7 @@ async function fetchBytesWithProgress(
     throw directError ?? new Error(t('urlFetchFailedNetwork', { url }));
   }
 
-  const proxyUrl = `${DISK_PROXY_BASE}/fetch?url=${encodeURIComponent(url)}`;
+  const proxyUrl = `${DISK_PROXY_BASE}/fetch?url=${encodeURIComponent(fetchUrl)}`;
   let proxyResponse: Response;
   try {
     proxyResponse = await fetch(proxyUrl);

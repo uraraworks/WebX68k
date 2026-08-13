@@ -35,6 +35,18 @@ Notes on `fd1`/`fd2`/`hdd`:
 
 - The URL must be served from a **CORS-enabled origin**. GitHub raw, GitHub
   Pages, and your own CORS-enabled server work directly (plain fetch).
+- GitHub **blob URLs** (`https://github.com/<owner>/<repo>/blob/<ref>/<path>`)
+  and **raw URLs** (`.../raw/<ref>/<path>`) are automatically rewritten to
+  `https://raw.githubusercontent.com/<owner>/<repo>/<ref>/<path>` before
+  fetching, so they are fetched directly without going through the relay
+  service (`raw.githubusercontent.com` is CORS-enabled; the plain `github.com`
+  URL redirects there without CORS headers, so a direct fetch would fail).
+  You can paste a `blob` URL copied straight from the GitHub UI. **Release
+  asset URLs** (`.../releases/download/<tag>/<asset>` and
+  `.../releases/latest/download/<asset>`) are not rewritten, since
+  `raw.githubusercontent.com` cannot serve release assets — these still go
+  through the relay service as before (or direct fetch if `VITE_DISK_PROXY`
+  is unset).
 - Google Drive and Dropbox share links return an HTML viewer page instead of
   the raw file when fetched directly (no CORS error, just the wrong content),
   so the public page **fetches these hosts through a relay service from the

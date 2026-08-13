@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { hostMatches, looksLikeHtml, PROXY_CAPABLE_HOSTS, shouldPreferProxy, urlHostname } from '../src/disk-fetch';
+import { hostMatches, looksLikeHtml, PROXY_CAPABLE_HOSTS, rewriteGithubBlobUrl, shouldPreferProxy, urlHostname } from '../src/disk-fetch';
 
 describe('urlHostname', () => {
   it('URLからホスト名を取り出す', () => {
@@ -49,6 +49,62 @@ describe('shouldPreferProxy', () => {
     expect(PROXY_CAPABLE_HOSTS).toEqual(
       expect.arrayContaining(['drive.google.com', 'docs.google.com', 'www.dropbox.com', 'dropbox.com']),
     );
+  });
+});
+
+describe('rewriteGithubBlobUrl', () => {
+  it('blob URLをraw.githubusercontent.comへ書き換える', () => {
+    expect(rewriteGithubBlobUrl('https://github.com/foo/bar/blob/main/x.hdf')).toBe(
+      'https://raw.githubusercontent.com/foo/bar/main/x.hdf',
+    );
+  });
+
+  it('raw URLも同様に書き換える', () => {
+    expect(rewriteGithubBlobUrl('https://github.com/foo/bar/raw/main/x.hdf')).toBe(
+      'https://raw.githubusercontent.com/foo/bar/main/x.hdf',
+    );
+  });
+
+  it('多階層パスも書き換わる', () => {
+    expect(rewriteGithubBlobUrl('https://github.com/foo/bar/blob/main/disks/games/x.hdf')).toBe(
+      'https://raw.githubusercontent.com/foo/bar/main/disks/games/x.hdf',
+    );
+  });
+
+  it('ブランチ名にスラッシュを含まない前提でrefが1セグメントとして扱われる', () => {
+    expect(rewriteGithubBlobUrl('https://github.com/foo/bar/blob/v1.2.3/x.hdf')).toBe(
+      'https://raw.githubusercontent.com/foo/bar/v1.2.3/x.hdf',
+    );
+  });
+
+  it('/releases/download/ は書き換わらない(Release assetはrawで取得できないため中継が必要)', () => {
+    const url = 'https://github.com/foo/bar/releases/download/v1.0.0/x.hdf';
+    expect(rewriteGithubBlobUrl(url)).toBe(url);
+  });
+
+  it('/releases/latest/download/ も書き換わらない', () => {
+    const url = 'https://github.com/foo/bar/releases/latest/download/x.hdf';
+    expect(rewriteGithubBlobUrl(url)).toBe(url);
+  });
+
+  it('github.com以外のホスト(Google Drive)は変化しない', () => {
+    const url = 'https://drive.google.com/file/d/abc/view';
+    expect(rewriteGithubBlobUrl(url)).toBe(url);
+  });
+
+  it('github.com以外のホスト(Dropbox)は変化しない', () => {
+    const url = 'https://www.dropbox.com/s/abc/x.hdf?dl=1';
+    expect(rewriteGithubBlobUrl(url)).toBe(url);
+  });
+
+  it('github.com以外のホスト(任意のURL)は変化しない', () => {
+    const url = 'https://example.com/some/path/x.hdf';
+    expect(rewriteGithubBlobUrl(url)).toBe(url);
+  });
+
+  it('既にraw.githubusercontent.comのURLは変化しない', () => {
+    const url = 'https://raw.githubusercontent.com/foo/bar/main/x.hdf';
+    expect(rewriteGithubBlobUrl(url)).toBe(url);
   });
 });
 

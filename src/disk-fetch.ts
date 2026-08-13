@@ -30,6 +30,29 @@ export function shouldPreferProxy(url: string, hasProxy: boolean): boolean {
   return hostMatches(urlHostname(url), PROXY_CAPABLE_HOSTS);
 }
 
+// github.com の blob/raw URL(https://github.com/<owner>/<repo>/(blob|raw)/<ref>/<path...>)を
+// マッチさせる。第3セグメントが blob/raw であることを要求するため、
+// /releases/download/<tag>/<asset> や /releases/latest/download/<asset> のような
+// Release asset のURL(第3セグメントが releases)は元々この正規表現に一致しない
+// (Release assetは raw.githubusercontent.com からは取得できず、中継が必要なため書き換えない)。
+const GITHUB_BLOB_OR_RAW_RE = /^https:\/\/github\.com\/([^/]+)\/([^/]+)\/(?:blob|raw)\/([^/]+)\/(.+)$/;
+
+/**
+ * github.com の blob/raw URLを raw.githubusercontent.com へ書き換える。
+ * raw.githubusercontent.com は CORS 対応(access-control-allow-origin: *)なので、中継を通さず
+ * 直接取得できる。github.com の該当URLは302で raw.githubusercontent.com へリダイレクトするが、
+ * その302レスポンスには access-control-allow-origin が無いためブラウザの直fetchが失敗する。
+ * 2026-08-14
+ *
+ * github.com 以外のホスト、および Release asset の URL(上記正規表現が除外)はそのまま返す。
+ */
+export function rewriteGithubBlobUrl(url: string): string {
+  const m = GITHUB_BLOB_OR_RAW_RE.exec(url);
+  if (!m) return url;
+  const [, owner, repo, ref, path] = m;
+  return `https://raw.githubusercontent.com/${owner}/${repo}/${ref}/${path}`;
+}
+
 /**
  * 取得したバイト列がディスクイメージではなくHTMLページに見えるかどうかを判定する。
  * Google Driveの共有リンクを直接fetchすると、CORSエラーにはならずHTML閲覧ページが200で
