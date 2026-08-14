@@ -45,6 +45,13 @@ interface Dict {
   toolbarMouseCapture(): string;
   toolbarMouseRelease(): string;
   toolbarMouseResync(): string;
+  /** タッチマウス(タッチをマウス入力へ変換するモード)のトグルと切替トースト。 */
+  toolbarTouchMouseOn(): string;
+  toolbarTouchMouseOff(): string;
+  /** オーバーフローメニューのタッチマウス行専用ラベル(状態名。ON/OFFはチェックマークで示す)。 */
+  toolbarMenuTouchMouse(): string;
+  touchMouseEnabled(): string;
+  touchMouseDisabled(): string;
   toolbarFullscreen(): string;
   toolbarFullscreenExit(): string;
   toolbarFullscreenExitPseudo(): string;
@@ -464,6 +471,12 @@ const STRINGS: Record<Lang, Dict> = {
     toolbarMouseCapture: () => 'マウスキャプチャ(右ダブルクリック)',
     toolbarMouseRelease: () => 'マウスキャプチャを解除(Esc)',
     toolbarMouseResync: () => 'マウス再同期',
+    toolbarTouchMouseOn: () => 'タッチマウスを有効にする',
+    toolbarTouchMouseOff: () => 'タッチマウスを無効にする',
+    toolbarMenuTouchMouse: () => 'タッチマウス',
+    touchMouseEnabled: () =>
+      'タッチマウスを有効にしました。1本指で移動、タップで左クリック、2本指タップで右クリック、長押しでドラッグ。',
+    touchMouseDisabled: () => 'タッチマウスを無効にしました。',
     toolbarFullscreen: () => 'フルスクリーン',
     toolbarFullscreenExit: () => 'フルスクリーンを解除(Esc)',
     // 疑似フルスクリーン(CSSクラスのみ)はEscで抜けられない。Escはcanvas経由でX68000側の
@@ -791,6 +804,12 @@ const STRINGS: Record<Lang, Dict> = {
     toolbarMouseCapture: () => 'Capture mouse (right double-click)',
     toolbarMouseRelease: () => 'Release mouse (Esc)',
     toolbarMouseResync: () => 'Re-sync mouse',
+    toolbarTouchMouseOn: () => 'Enable touch mouse',
+    toolbarTouchMouseOff: () => 'Disable touch mouse',
+    toolbarMenuTouchMouse: () => 'Touch mouse',
+    touchMouseEnabled: () =>
+      'Touch mouse enabled. Drag to move, tap to left-click, two-finger tap to right-click, long-press to drag.',
+    touchMouseDisabled: () => 'Touch mouse disabled.',
     toolbarFullscreen: () => 'Fullscreen',
     toolbarFullscreenExit: () => 'Exit fullscreen (Esc)',
     // Pseudo-fullscreen (a CSS class only) cannot be exited with Esc. Esc is forwarded to the

@@ -40,6 +40,7 @@ import {
   type LibraryNode,
 } from './api/library';
 import { buildFileManagerDialog, type FmTarget } from './filemanager';
+import { TouchMouse, type TouchMouseButton } from './touch-mouse';
 import { Bridge, resolveBridgeUrl, type BridgeHost } from './bridge';
 import { RETROK, charToKey, codeToRetrok } from './keyboard';
 import { LibretroHost } from './libretro-host';
@@ -123,6 +124,7 @@ const btnSpeed = document.getElementById('btn-speed') as HTMLButtonElement;
 const btnSpeedBadge = document.getElementById('btn-speed-badge') as HTMLSpanElement;
 const btnMouseCapture = document.getElementById('btn-mouse-capture') as HTMLButtonElement;
 const btnMouseResync = document.getElementById('btn-mouse-resync') as HTMLButtonElement;
+const btnTouchMouse = document.getElementById('btn-touch-mouse') as HTMLButtonElement;
 const btnFullscreen = document.getElementById('btn-fullscreen') as HTMLButtonElement;
 const btnVirtualKeyboard = document.getElementById('btn-virtual-keyboard') as HTMLButtonElement;
 const btnAspect = document.getElementById('btn-aspect') as HTMLButtonElement;
@@ -2188,6 +2190,7 @@ function renderVpadProfileMenu(anchorEl: HTMLButtonElement): void {
 const OVERFLOW_MENU_LABEL_OVERRIDES = new Map<HTMLButtonElement, () => string>([
   [btnAspect, () => t('toolbarMenuAspect43')],
   [btnMouseCapture, () => t('toolbarMenuMouseCapture')],
+  [btnTouchMouse, () => t('toolbarMenuTouchMouse')],
   [btnLang, () => t('toolbarLanguage')],
 ]);
 
@@ -2210,7 +2213,7 @@ const OVERFLOW_GROUP_ORDER: OverflowGroupId[] = ['display', 'input', 'disk', 'st
 
 const OVERFLOW_GROUPS: Record<OverflowGroupId, OverflowGroup> = {
   display: { title: () => t('toolbarGroupDisplay'), actions: [btnAspect] },
-  input: { title: () => t('toolbarGroupInput'), actions: [btnMouseCapture, btnMouseResync, btnGamepad, btnHostKey] },
+  input: { title: () => t('toolbarGroupInput'), actions: [btnMouseCapture, btnMouseResync, btnTouchMouse, btnGamepad, btnHostKey] },
   disk: { title: () => t('toolbarGroupDisk'), actions: [btnDiskLibrary, btnFileManager] },
   state: { title: () => t('toolbarGroupState'), actions: [btnSaveState, btnLoadState] },
 };
@@ -2751,6 +2754,7 @@ function applyDocumentStrings(): void {
   updateSpeedButtonUi();
   btnMouseCapture.setAttribute('aria-label', t('toolbarMouseCapture'));
   btnMouseResync.setAttribute('aria-label', t('toolbarMouseResync'));
+  btnTouchMouse.setAttribute('aria-label', t('toolbarMenuTouchMouse'));
   updateMouseControls();
   updateFullscreenControl();
   syncInputPanelUi();
@@ -3034,6 +3038,7 @@ function stepMouseTracking(): void {
   const dy = targetY - cur.y;
   if (dx === 0 && dy === 0) {
     trackStallFrames = 0;
+    onMouseTrackConverged();
     return;
   }
 
@@ -3051,6 +3056,7 @@ function stepMouseTracking(): void {
   // 加速の下限(1ドット)未満しか誤差が無い軸は動かさない
   if (sendX === 0 && sendY === 0) {
     trackStallFrames = 0;
+    onMouseTrackConverged();
     return;
   }
 
@@ -3158,6 +3164,130 @@ window.addEventListener('mouseup', (e) => {
   else if (e.button === 2) host.setMouseButton('right', false);
 });
 
+// --- タッチマウス --------------------------------------------------------------
+// iOS Safari は Pointer Lock 非対応でキャプチャモードが成立しない。そこでタッチ位置を
+// 追従モードの目標(desiredRatio)へ直接流し込み、閉ループにカーソルを運ばせる。
+// ジェスチャの解釈(タップ/2本指タップ/長押しドラッグ)は touch-mouse.ts の純ロジックが受け持ち、
+// ここは DOM イベントの正規化と、クリックパルスのタイミング制御だけを行う。
+const TOUCH_MOUSE_KEY = 'webx68k.touchMouse';
+/**
+ * タップのクリックを「カーソルが目標へ収束するまで」待つ上限(ms)。着地前に押すと移動中の
+ * 座標でクリックされるため収束を待つが、IOCS ワークを使わないソフトでは収束を検知できない
+ * ので、期限切れで現在位置に送る保険を付ける。
+ */
+const TOUCH_CLICK_DEFER_MS = 400;
+/** クリックパルスの押下時間(ms)。コアは retro_run() 中に1回しかボタンを読まないため、数フレームぶん保持する。 */
+const TOUCH_CLICK_PULSE_MS = 100;
+/** 連続タップ(ダブルクリック)の押下間隔(ms)。間隔ゼロだと押しっぱなしと区別できない。 */
+const TOUCH_CLICK_GAP_MS = 60;
+
+let touchMouseEnabled = localStorage.getItem(TOUCH_MOUSE_KEY) === '1';
+/** 収束待ちのクリック。tap が来たら積み、収束(または期限切れ)でパルスにして流す。 */
+const touchClickQueue: TouchMouseButton[] = [];
+let touchClickBusy = false;
+let touchClickDeadline = 0;
+
+function isTouchMouseActive(): boolean {
+  return touchMouseEnabled && running && !isMouseCaptured();
+}
+
+function pumpTouchClickQueue(): void {
+  if (touchClickBusy) return;
+  const button = touchClickQueue.shift();
+  if (button === undefined) return;
+  touchClickBusy = true;
+  host?.setMouseButton(button, true);
+  window.setTimeout(() => {
+    host?.setMouseButton(button, false);
+    window.setTimeout(() => {
+      touchClickBusy = false;
+      pumpTouchClickQueue();
+    }, TOUCH_CLICK_GAP_MS);
+  }, TOUCH_CLICK_PULSE_MS);
+}
+
+/** 追従モードが目標へ着地したフレームで stepMouseTracking() から呼ばれる。 */
+function onMouseTrackConverged(): void {
+  if (touchClickQueue.length > 0) pumpTouchClickQueue();
+}
+
+const touchMouse = new TouchMouse({
+  moveTo: (x, y) => {
+    const rect = canvas.getBoundingClientRect();
+    if (rect.width <= 0 || rect.height <= 0) return;
+    desiredRatioX = Math.max(0, Math.min(1, x / rect.width));
+    desiredRatioY = Math.max(0, Math.min(1, y / rect.height));
+    hasDesiredRatio = true;
+  },
+  buttonDown: (button) => host?.setMouseButton(button, true),
+  buttonUp: (button) => host?.setMouseButton(button, false),
+  tap: (button) => {
+    touchClickQueue.push(button);
+    touchClickDeadline = performance.now() + TOUCH_CLICK_DEFER_MS;
+  },
+});
+
+/** フレームループから毎フレーム呼ぶ(長押し判定と、収束待ちクリックの期限切れ処理)。 */
+function stepTouchMouse(): void {
+  if (!touchMouseEnabled) return;
+  const now = performance.now();
+  touchMouse.update(now);
+  if (touchClickQueue.length > 0 && now > touchClickDeadline) pumpTouchClickQueue();
+}
+
+function touchMousePoint(e: PointerEvent): { x: number; y: number } {
+  const rect = canvas.getBoundingClientRect();
+  return { x: e.clientX - rect.left, y: e.clientY - rect.top };
+}
+
+// mouse は既存のキャプチャ/追従経路が受け持つので、タッチ(とペン)だけを解釈する
+canvas.addEventListener('pointerdown', (e) => {
+  if (!isTouchMouseActive() || e.pointerType === 'mouse') return;
+  // preventDefault で iOS の互換マウスイベント(タップ後に合成される mousedown/click)を抑止する。
+  // スクロール/ピンチの抑止は CSS の touch-action(setTouchMouseEnabled 参照)の責務。
+  e.preventDefault();
+  // 既に離れた指(イベント処理の遅延)や合成イベントでは InvalidPointerId で失敗するが、
+  // 捕捉できなくても canvas 外へ出た瞬間の追従が切れるだけなので握りつぶす
+  try {
+    canvas.setPointerCapture(e.pointerId);
+  } catch {
+    /* no-op */
+  }
+  canvas.focus();
+  const { x, y } = touchMousePoint(e);
+  touchMouse.pointerDown(e.pointerId, x, y, performance.now());
+});
+canvas.addEventListener('pointermove', (e) => {
+  if (!isTouchMouseActive() || e.pointerType === 'mouse') return;
+  const { x, y } = touchMousePoint(e);
+  touchMouse.pointerMove(e.pointerId, x, y);
+});
+// up/cancel はモード状態に関わらず認識器へ渡す(操作中に無効化されてもボタンを押しっぱなしにしない)
+canvas.addEventListener('pointerup', (e) => {
+  if (e.pointerType === 'mouse') return;
+  touchMouse.pointerUp(e.pointerId, performance.now());
+});
+canvas.addEventListener('pointercancel', (e) => {
+  if (e.pointerType === 'mouse') return;
+  touchMouse.reset();
+});
+
+function setTouchMouseEnabled(on: boolean): void {
+  if (touchMouseEnabled === on) return;
+  touchMouseEnabled = on;
+  localStorage.setItem(TOUCH_MOUSE_KEY, on ? '1' : '0');
+  // ON の間はブラウザのスクロール/ピンチ操作にタッチを渡さない
+  canvas.style.touchAction = on ? 'none' : '';
+  if (!on) {
+    touchMouse.reset();
+    touchClickQueue.length = 0;
+  }
+  showToast(t(on ? 'touchMouseEnabled' : 'touchMouseDisabled'));
+  updateMouseControls();
+}
+if (touchMouseEnabled) canvas.style.touchAction = 'none';
+btnTouchMouse.addEventListener('click', () => setTouchMouseEnabled(!touchMouseEnabled));
+
 /** マウス関連ボタンの活性・表示状態を現在のモードに合わせる。 */
 function updateMouseControls(): void {
   const captured = isMouseCaptured();
@@ -3168,6 +3298,10 @@ function updateMouseControls(): void {
   // 再同期は追従モード専用(キャプチャ中は基準という概念が無い)
   btnMouseResync.disabled = !running || captured;
   btnMouseResync.title = t('toolbarMouseResync');
+
+  btnTouchMouse.classList.toggle('active', touchMouseEnabled);
+  btnTouchMouse.setAttribute('aria-pressed', touchMouseEnabled ? 'true' : 'false');
+  btnTouchMouse.title = touchMouseEnabled ? t('toolbarTouchMouseOff') : t('toolbarTouchMouseOn');
 }
 
 btnMouseCapture.addEventListener('click', () => setMouseCaptured(!isMouseCaptured()));
@@ -3873,6 +4007,7 @@ function loop(t: number): void {
     pollDiskAccess(t);
     pollAutoSave(t);
     stepMouseTracking();
+    stepTouchMouse();
   }
   speedMeasureFrameCount += ran;
   updateSpeedActualDisplay(t);

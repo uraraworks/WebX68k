@@ -340,6 +340,14 @@ again) to release. The "Mouse Resync" entry in the same group re-anchors
 absolute-position tracking if the guest cursor and host cursor ever drift
 apart.
 
+On touch devices (where the Pointer Lock API is unavailable — e.g. iOS
+Safari), enable **Touch Mouse** in the same Input group instead. While it is
+on, touches on the screen are interpreted as mouse input: drag with one
+finger to move the cursor (the guest cursor lands exactly on the touched
+point via absolute-position tracking), tap for a left click, two-finger tap
+for a right click, and long-press to hold the left button for dragging. The
+toggle is saved to `localStorage`.
+
 ### Display mode (dot-for-dot / 4:3)
 
 WebX68k defaults to dot-for-dot: the core's native resolution drawn at
