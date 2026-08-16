@@ -1063,3 +1063,115 @@ X-BASICで次の1行を投入し `RUN` するだけで、以後は打鍵なし�
 - iOS実機での確認（画面ロック、バックグラウンド復帰、実スピーカー等、目的Bの範囲だが目的Aの一般化可能性にも関わる）。
 
 これらが揃うまでは、今回の4項目の実測値は「移行前の一時点のスナップショット」として扱い、移行後の値との単純比較による合否判定には使わないこととする。
+
+## 目的B実測：IndexedDBへのディスク全量書出し（実測）
+
+目的Aの4項目とは別に、「移行前の基準値：計測計画」目的B表の「IndexedDBへのディスク全量書出し」を実測した。この節は比較用の試作を必要としないため、現行構成をそのまま測った。
+
+### 計測点の追加
+
+現行コードには区間計測が無いため、`src/storage-probe.ts` を新規追加し、`src/disk-store.ts`（`putDisk()`/`saveDisk()`）と `src/main.ts`（`persistSlotToLibrary()`）に計測点を足した。
+
+- 始点は `persistSlotToLibrary()` が `readLiveSlotImage()` でMEMFSから吸い出し、`slice()` でコピーし終えた時刻（`bytesReadyAtMs`）。イメージ読出し呼出時でもUIへの保存要求時でもない。
+- 終点は `putDisk()` 内の IndexedDB transaction の `oncomplete`（`putCompleteAtMs`）。
+- `putDisk()` は計測時のみ `getKey()` で既存有無を確認し、初回追加(`isNewKey=true`)と同一key上書き(`isNewKey=false`)を分けて記録する。
+- すべて `import.meta.env.DEV && storageProbe.enabled` の内側でのみ動作し、既定は `enabled=false`。`storageProbe.enabled` を立てない限り、通常の保存経路（`saveDisk()`)への追加コストは無い（後述の「常時コストの有無」参照）。
+
+### 計測方法
+
+- `scripts/measure-disk-save.mjs`（新規、コミット対象）。dev server（Vite、`--port=5193`。既存の他セッションが使う5183とは別ポート）をヘッドフル Puppeteer で操作した。
+- UIの「ブランクHDDを作成(40MB・FAT16)」→「システムディスクで起動」で40MBのHDDをマウントし、`window.__webx68kDebug.storageProbeSaveSlot('hdd')` で `persistSlotToLibrary('hdd')` を直接叩いて反復した。
+- 初回追加は毎試行前に `storageProbeDeleteFromLibrary()` でキーを削除してから1回保存、直後にもう1回保存して上書きを取る、を20回繰り返した（同一ブラウザセッション内、`storageProbe.enabled=true`）。
+- rAF gap・long task は `PerformanceObserver({type:'longtask'})` と `requestAnimationFrame` ループをページ内で継続観測し、各試行の `[bytesReadyAtMs, putCompleteAtMs]` 区間に重なる分を切り出した。
+
+### 結果（40MB HDD、dev、Chrome、20試行）
+
+| | 初回追加 | 同一key上書き |
+| --- | ---: | ---: |
+| 成功 | 20/20 | 20/20 |
+| 全体時間 中央値 | 201.3 ms | 311.8 ms |
+| p95 | 348.7 ms | 460.5 ms |
+| p99 | 362.8 ms | 693.6 ms |
+| 最大 | 366.3 ms | 751.9 ms |
+| 実効 MiB/s 中央値 | 198.8 | 128.3 |
+| 同時期の最大rAF gap 中央値 | 66.0 ms | 83.3 ms |
+| 同時期の最大rAF gap p99 | 143.8 ms | 190.6 ms |
+| 同時期のlong task件数 中央値 | 1 | 1 |
+| 同時期のlong task件数 最大 | 2 | 6 |
+
+上書きが初回追加よりおよそ1.5倍遅い。`saveDisk()` は上書き時に既存メタデータ確認のため `getDisk()` を1回余分に呼んでおり（`src/disk-store.ts` 既存実装）、この差はその分と考えられるが、両者を分離した実測はしていない。
+
+### 測定系の検証
+
+- **陽性対照**: 故障を注入しない状態で `storageProbeSaveSlot('hdd')` を実行し、初回追加が37.4ms→37397ms台の実時間で成功、上書きも成功することを確認した（`_local/measure/disk-save-fault-abort.json` の `positiveControl`）。
+- **transactionのabort**: `storageProbe.abortNextPut=true` を立てて `tx.abort()` を意図的に呼ぶ故障を5回注入した。5/5とも `putCompleteAtMs=null`、`aborted=true`、`storageProbeSaveSlot()` の戻り値も `false` となり、「未完了を成功扱いしない」ことを確認した。
+  - 実装時に1点バグを見つけて修正した。当初 `tx.onerror` で `reject(tx.error)` していたが、`tx.abort()` 直後は `tx.error` がまだ `null` のことがあり、`aborted=false` のまま誤って「エラーなく終わった」ように記録されていた（`error: "null"` という文字列が出て気づいた）。終端判定を `oncomplete`/`onabort` の2つだけに絞り、`onerror` は記録専用にしたことで解消した。修正前後の差はコミット差分で確認できる。
+- **末尾1byte破損の検出**: `putDisk()` 自体は正常完了させ、別途IndexedDBへ書いた1024byteのテストレコードの末尾1byteだけを変えたコピーを作り、FNV-1a checksumで比較した。オリジナル `2214824389` に対し破損後 `4110695336` となり、不一致を検出した（`_local/measure/disk-save-fault-corrupt.json`）。
+- **quota不足の専用プロファイルによる故障注入は実施していない**。通常のブラウザプロファイルでquotaを再現よく枯渇させる手段がなく、専用プロファイル構築コストが計測本体に見合わないため省略した。
+
+### 常時コストの有無
+
+- `storageProbe.enabled=false`（既定）のとき、`putDisk()`/`persistSlotToLibrary()` の追加分岐はすべて `if` で素通りし、`getKey()` 呼び出しも発生しない。通常のディスク保存（オートセーブ含む）へのコスト追加は無い。
+- `enabled=true`（計測時のみ）のときは、上書き判定用の `getKey()` が1回余計なIndexedDBラウンドトリップとして乗る。この計測自体は数十msのオーダーで、40MB本体の書き込み(数百ms)に対して支配的ではない。
+
+## 目的B実測：起動時のRAM展開（実測）
+
+### 計測点の追加
+
+`src/storage-probe.ts` の `verifyBytes()`/`fnv1a()` と、`src/libretro-host.ts` に追加した `probedMemfsWrite()` で計測する。
+
+- 対象は ROM(IPLROM/CGROM、`host.init()` 内)と FDD1/HDD(`host.writeDiskImage()`、ファイル名 `fdd1_*`/`hdd_*` で判別)。
+- 始点は MEMFS `writeFile()` 呼び出し直前(`memfsWriteStartAtMs`)、終点はその戻り(`memfsWriteEndAtMs`)。加えて直後に `mod.FS.readFile()` で読み戻し、サイズ・末尾64byte・FNV-1a checksumの3系統で検査する(`verify`)。
+- FDD1/HDDについては、ライブラリ(IndexedDB)からのロード(`insertFromLibrary()`)側にも計測点を足し、`getDisk()` 呼出直前から結果bytesを受け取るまでを `idbGetStartAtMs`/`idbGetEndAtMs` として記録する。
+- すべて `import.meta.env.DEV && storageProbe.enabled` の内側。既定コストは無い（disk-save側と同じ作法）。
+
+### 計測方法
+
+- `scripts/measure-ram-expansion.mjs`（新規、コミット対象）。dev server `--port=5193` を使用。
+- 毎試行、新規 BrowserContext で FDD1(1.23MB)・HDD(40MB)のブランクを作成してライブラリへ保存し、`storageProbeEjectSlot()` でスロットから追い出してから `storageProbeLoadFromLibrary()` で改めてライブラリ経由(=`getDisk()`経由)でロードし、「システムディスクで起動」した。
+- **ツールのフォアグラウンド実行時間制約（Bashツールの上限10分）に収まるよう、反復回数を計画値の20回から8回に縮小した。** dev構成の1試行が新規BrowserContextでのcold起動(約24〜33秒、wasm取得・コンパイルとHuman68k起動を含む)を伴うため。
+
+### 結果（dev、Chrome、8試行）
+
+| 対象 | サイズ | MEMFS書込 中央値 | ms/MiB 中央値 | IndexedDB get 中央値 | 検証OK |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| ROM(IPLROM) | 128 KiB | 36.2 ms | 289.9 | 対象外(下記注) | 8/8 |
+| ROM(CGROM) | 768 KiB | 43.4 ms | 57.9 | 対象外(下記注) | 8/8 |
+| FDD1 | 1232 KiB | 2.1 ms | 1.7 | 15.7 ms | 8/8 |
+| HDD | 40 MiB | 49.2 ms | 1.2 | 231.9 ms | 8/8 |
+
+起動時間(クリック〜プロンプト安定)の中央値は 25,951.5 ms（p95 31,181 ms）。ROM/FDD1/HDDのMEMFS書込・IndexedDB get合計の中央値はおよそ **378 ms**で、起動時間中央値に占める割合はFDD1で0.07%、HDDで1.08%だった（合算すると約1.5%）。
+
+peak heap(`performance.memory.usedJSHeapSize`、Chrome限定の非標準API)は起動前後で中央値約49.6MiB増加した。ROM/FDD/HDD個別の寄与には分解していない。
+
+ROM(IPLROM)がFDD1やHDDよりms/MiBで大きい(289.9 vs 1.2〜1.7)のは、MEMFS初回書き込み(mod初期化直後、最初のFS操作)固有のウォームアップコストと考えられる。他の可能性を排除できておらず推測にとどまる。
+
+**ROMのIndexedDB get区間は測定していない。** 既定構成では同梱ROMをnetwork fetchするため、この経路を通らない。ユーザーが独自ROMをアップロード済みの場合の経路は未検証。
+
+### 測定系の検証
+
+各故障はROM(IPLROM)書込みを対象に、故障なしの最小起動(FDD1/HDD無し)を陽性対照として先に確認してから注入した。
+
+- **陽性対照**: `sizeMatch=true, tailMatch=true, checksumMatch=true`(`verify.ok=true`)を3回とも(各故障注入の直前に1回ずつ)確認した。
+- **MEMFS書込み省略(`skip-write`)**: 書込みをスキップして `readFile()` を試みると、ファイル自体が存在せず `verify.ok=false`(`actualByteLength=null`)を検出した。
+- **末尾切り詰め(`truncate-tail`)**: 最終1byteを切ったデータを書き込むと `sizeMatch=false, tailMatch=false`(checksumも不一致)を検出した。
+- **同サイズ別checksum(`corrupt-checksum`)**: 末尾64byte領域を避けて先頭寄りの1byteだけ反転させたデータを書き込むと、`sizeMatch=true, tailMatch=true` を保ったまま `checksumMatch=false` だけが単独で失敗し、checksum検査がサイズ・末尾検査と独立に機能することを確認した。
+- **共通の副次的発見**: 3種類の故障ともROM破損後は `waitForBootPrompt()` がタイムアウトし(20秒キャップ)、Human68kのプロンプトへ到達しなかった。検証・記録自体は `host.init()` 内の同期区間で書込み直後に完了しているため、プロンプト到達を待たずにログを読むことで検出できた。副次的に、ROM破損はコアの起動処理自体を止めうることが分かった。これは計測点を「起動完了」ではなく「MEMFS書込み・検査完了」の地点に置くべきというドキュメントの定義が実務的にも正しいことの裏付けになった。
+
+### 常時コストの有無
+
+`storageProbe.enabled=false`(既定)のとき、`probedMemfsWrite()` は分岐の先頭で `mod.FS.writeFile(path, data); return;` のみを実行し、通常の起動経路(`host.init()`・`writeDiskImage()`)へ追加コストは無い。
+
+### 未確認・限界
+
+- **反復回数は計画の20回でなく8回**。フォアグラウンド実行時間の制約による。20回への拡張は同スクリプトの `--runs=20` で可能だが、8試行の分布(p95/p99と中央値の乖離)を見る限り大きな裾は見えていない。
+- 起動時間中央値25.9秒は**dev serverでの値かつwasm取得・コンパイルを含む**。「基準値：起動所要時間」節と同じ制約であり、本番ビルドでの割合は別途測る必要がある。
+- peak heapはROM/FDD/HDD別に分解できていない。Wasmヒープ専用の値でもない(Chrome限定の`performance.memory`はJSヒープ全体)。
+- msPerMiBの試行間ばらつき(特にROM)の原因は推測のみで、直接検証(例: 2回目以降の書込みだけを測る等)は行っていない。
+
+## 結果から言えることと、まだ言えないこと
+
+- **OPFS化で削減できる起動時間の見積り**: 今回の構成(ROM/FDD1/HDD合計)では、MEMFS書込み+IndexedDB get区間の中央値合計は約378msで、起動時間中央値(25,951.5ms)の約1.5%にとどまる。**現状のRAM展開そのものは起動時間のボトルネックではない**。ただしこの起動時間はdevモードのネットワーク取得・wasmコンパイルに支配されており、本番ビルドでの割合(相対的に短くなる起動時間に対する同じ絶対値の比率)は別途測る必要がある。OPFS化による起動短縮効果は、本項目からは「大きくは見込めない」以上のことは言えない。
+- **保存中にframe eventを止める必要がある長さ**: IndexedDB全量書出し(HDD 40MB)は中央値200〜310ms、p99で690msに達し、同時期に最大190ms超のrAF gapとlong taskが観測された。これは体感できる一時停止の水準であり、Worker移行後も同等以上の一時停止(あるいはWorker内での長時間ブロック)が起きうる。OPFS化(セクタ単位の書込みへの置換)は、この40MB一括保存そのものをなくす効果が見込める。
+- **全量保存を残せるかの判断材料**: 上書き保存は初回追加よりp99で約1.9倍遅く(694ms vs 363ms)、この差は現行`saveDisk()`の追加`getDisk()`呼出によるものと考えられる(未分離)。全量保存を当面残す場合、この追加ラウンドトリップの要否は見直しの余地がある。
+- **測っていないことは断定しない**: 本番ビルドでの割合、iOS実機、A/A反復誤差、ROM独自アップロード時のIndexedDB get経路、20回規模での分布の裾は、いずれも今回のデータからは判断できない。

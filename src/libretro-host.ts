@@ -12,6 +12,58 @@ import {
   type TextScreenDump,
   unavailableTextScreenDump,
 } from './text-screen';
+import { storageProbe, verifyBytes, type RamExpansionKind } from './storage-probe';
+
+/**
+ * 目的B「起動時のRAM展開」計測(docs/STORAGE-SCSI.md参照)。DEVかつ storageProbe.enabled の
+ * ときだけ、MEMFS writeFile() の前後時刻とサイズ/末尾/checksum検証を記録する。
+ * storageProbe.nextRamFault が立っていれば、測定専用の1回だけの故障注入(書込み省略/末尾切詰め/
+ * 同サイズ破損)を行い、消費する。通常のビルド・通常の呼び出しではコストが乗らないよう、
+ * import.meta.env.DEV の判定を最初に置く。
+ */
+function probedMemfsWrite(
+  mod: PX68KModule,
+  kind: RamExpansionKind,
+  path: string,
+  data: Uint8Array,
+): void {
+  if (!import.meta.env.DEV || !storageProbe.enabled) {
+    mod.FS.writeFile(path, data);
+    return;
+  }
+  const fault = storageProbe.nextRamFault;
+  storageProbe.nextRamFault = null;
+  const writeData =
+    fault === 'truncate-tail'
+      ? data.subarray(0, Math.max(0, data.byteLength - 1))
+      : fault === 'corrupt-checksum'
+        ? (() => {
+            // 末尾64byte検査(verifyBytesのTAIL_LEN)を通り抜けさせ、checksum検査だけを
+            // 単独で失敗させるため、末尾ではなく先頭(または中央)のbyteを1つ反転する。
+            const copy = data.slice();
+            const idx = Math.max(0, copy.length - 1 - 64);
+            copy[idx] = (copy[idx] + 1) & 0xff;
+            return copy;
+          })()
+        : data;
+  const startAtMs = performance.now();
+  if (fault !== 'skip-write') mod.FS.writeFile(path, writeData);
+  const endAtMs = performance.now();
+  let readBack: Uint8Array | null = null;
+  try {
+    readBack = mod.FS.readFile(path);
+  } catch {
+    readBack = null;
+  }
+  storageProbe.ramExpansions.push({
+    kind,
+    fault,
+    byteLength: data.byteLength,
+    memfsWriteStartAtMs: startAtMs,
+    memfsWriteEndAtMs: endAtMs,
+    verify: verifyBytes(data, readBack),
+  });
+}
 
 // ---- RETRO_ENVIRONMENT_* (libretro.h より) ----
 const RETRO_ENVIRONMENT_GET_CAN_DUPE = 3;
@@ -502,10 +554,10 @@ export class LibretroHost {
     this.mkdirSafe('/save');
     this.mkdirSafe('/game');
 
-    mod.FS.writeFile('/system/keropi/iplrom.dat', biosIpl);
+    probedMemfsWrite(mod, 'rom-ipl', '/system/keropi/iplrom.dat', biosIpl);
     // 呼び出し元による後日の変更を遮断し、この同じ配列を FS 書き込みと逆引きの両方に使う。
     this.coreCgrom = biosCg.slice();
-    mod.FS.writeFile('/system/keropi/cgrom.dat', this.coreCgrom);
+    probedMemfsWrite(mod, 'rom-cg', '/system/keropi/cgrom.dat', this.coreCgrom);
 
     if (sram) {
       if (sram.byteLength === 0x4000) {
@@ -798,7 +850,26 @@ export class LibretroHost {
   /** ディスクイメージのバイト列を FS の /game 配下へ書き込み、パスを返す */
   writeDiskImage(filename: string, data: Uint8Array): string {
     const path = `/game/${filename}`;
-    this.writeFile(path, data);
+    // 目的B「起動時のRAM展開」の計測対象は fdd0_*/fdd1_*/hdd_* の命名(bootCore()参照)。
+    // ホットスワップ等の他の呼び出しも同じ命名を通るため、区別せずそのまま記録される
+    // (起動直後の1回目だけを見たい場合は測定スクリプト側で最初の1件を使う)。
+    const kind: RamExpansionKind | null = filename.startsWith('fdd0_')
+      ? 'fdd0'
+      : filename.startsWith('fdd1_')
+        ? 'fdd1'
+        : filename.startsWith('hdd_')
+          ? 'hdd'
+          : null;
+    if (kind && import.meta.env.DEV && storageProbe.enabled) {
+      try {
+        this.mod.FS.unlink(path);
+      } catch {
+        // 存在しなければ無視
+      }
+      probedMemfsWrite(this.mod, kind, path, data);
+    } else {
+      this.writeFile(path, data);
+    }
     return path;
   }
 

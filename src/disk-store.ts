@@ -2,6 +2,7 @@
 // WebNP2 (../PC98/WebNP2/src/storage/db.ts + src/api/library.ts) のディスクライブラリに準拠する。
 
 import { hasHuman68kPartitionSignature } from './api/fat';
+import { storageProbe } from './storage-probe';
 
 export interface StoredDisk {
   sourceKey: string;
@@ -52,14 +53,87 @@ export async function getDisk(sourceKey: string): Promise<StoredDisk | undefined
   return result;
 }
 
-export async function putDisk(disk: StoredDisk): Promise<void> {
+/**
+ * probeContext を渡すと(DEVビルドかつ storageProbe.enabled のときだけ)、目的B「IndexedDBへの
+ * ディスク全量書出し」の実測を storageProbe.diskSaves へ1件追記する。
+ * 通常経路への影響を避けるため、追加の存在確認クエリと結果記録は enabled 時だけ行う。
+ */
+export async function putDisk(
+  disk: StoredDisk,
+  probeContext?: { slot: string; bytesReadyAtMs: number },
+): Promise<void> {
   const db = await openDb();
-  await new Promise<void>((resolve, reject) => {
-    const tx = db.transaction(STORE_NAME, 'readwrite');
-    tx.objectStore(STORE_NAME).put(disk);
-    tx.oncomplete = () => resolve();
-    tx.onerror = () => reject(tx.error);
-  });
+  const probing = import.meta.env.DEV && storageProbe.enabled && probeContext !== undefined;
+
+  let isNewKey: boolean | null = null;
+  if (probing) {
+    // 初回追加/上書きの区別のためだけの存在確認。計測時のみ発生する追加ラウンドトリップ。
+    isNewKey = await new Promise<boolean>((resolve, reject) => {
+      const tx = db.transaction(STORE_NAME, 'readonly');
+      const req = tx.objectStore(STORE_NAME).getKey(disk.sourceKey);
+      req.onsuccess = () => resolve(req.result === undefined);
+      req.onerror = () => reject(req.error);
+    });
+  }
+
+  const putStartAtMs = probing ? performance.now() : 0;
+  let aborted = false;
+  let error: string | null = null;
+  try {
+    await new Promise<void>((resolve, reject) => {
+      const tx = db.transaction(STORE_NAME, 'readwrite');
+      const putReq = tx.objectStore(STORE_NAME).put(disk);
+      // 終端は必ず oncomplete/onabort の2つだけで決める。onerror は abort前に先に
+      // 発火することがあり、そこで reject すると tx.error がまだ null のまま
+      // 「未完了なのに aborted=false」という誤った記録になる(実測で確認済み)。
+      // request 側の error はここで拾って記録だけしておき、既定動作(自動abort)に任せる。
+      putReq.onerror = () => {
+        error = putReq.error ? putReq.error.message : String(putReq.error);
+      };
+      tx.oncomplete = () => resolve();
+      tx.onabort = () => {
+        aborted = true;
+        reject(tx.error ?? new Error('transaction aborted'));
+      };
+      if (probing && storageProbe.abortNextPut) {
+        // 測定系の検証(故障注入): tx.oncompleteの前に意図的にabortする。
+        // 「未完了を成功扱いしない」ことを確認するための専用経路で、通常の保存では通らない。
+        storageProbe.abortNextPut = false;
+        tx.abort();
+      }
+    });
+  } catch (err) {
+    error = err instanceof Error ? err.message : String(err);
+    if (probing) {
+      storageProbe.diskSaves.push({
+        slot: probeContext!.slot,
+        sourceKey: disk.sourceKey,
+        byteLength: disk.bytes.byteLength,
+        isNewKey: isNewKey ?? false,
+        bytesReadyAtMs: probeContext!.bytesReadyAtMs,
+        putStartAtMs,
+        putCompleteAtMs: null,
+        aborted,
+        error,
+      });
+    }
+    db.close();
+    throw err;
+  }
+
+  if (probing) {
+    storageProbe.diskSaves.push({
+      slot: probeContext!.slot,
+      sourceKey: disk.sourceKey,
+      byteLength: disk.bytes.byteLength,
+      isNewKey: isNewKey ?? false,
+      bytesReadyAtMs: probeContext!.bytesReadyAtMs,
+      putStartAtMs,
+      putCompleteAtMs: performance.now(),
+      aborted: false,
+      error: null,
+    });
+  }
   db.close();
 }
 
@@ -68,7 +142,10 @@ export async function putDisk(disk: StoredDisk): Promise<void> {
  * 既存レコードに何か1つでも設定済みならそれを常に優先する。D&D/ファイル選択・アーカイブの再取り込みの
  * たびに呼ばれるため、同じファイルを再登録してもユーザーが付けた表示名やグループ分けが消えないようにする。
  */
-export async function saveDisk(disk: Omit<StoredDisk, 'displayName'>): Promise<void> {
+export async function saveDisk(
+  disk: Omit<StoredDisk, 'displayName'>,
+  probeContext?: { slot: string; bytesReadyAtMs: number },
+): Promise<void> {
   const existing = await getDisk(disk.sourceKey);
   const hasMeta =
     !!existing &&
@@ -76,13 +153,16 @@ export async function saveDisk(disk: Omit<StoredDisk, 'displayName'>): Promise<v
       existing.group !== undefined ||
       existing.groupName !== undefined ||
       existing.groupIndex !== undefined);
-  await putDisk({
-    ...disk,
-    displayName: hasMeta ? existing!.displayName : undefined,
-    group: hasMeta ? existing!.group : disk.group,
-    groupName: hasMeta ? existing!.groupName : disk.groupName,
-    groupIndex: hasMeta ? existing!.groupIndex : disk.groupIndex,
-  });
+  await putDisk(
+    {
+      ...disk,
+      displayName: hasMeta ? existing!.displayName : undefined,
+      group: hasMeta ? existing!.group : disk.group,
+      groupName: hasMeta ? existing!.groupName : disk.groupName,
+      groupIndex: hasMeta ? existing!.groupIndex : disk.groupIndex,
+    },
+    probeContext,
+  );
 }
 
 /** ライブラリ内の全ディスクイメージを保存時刻の降順で返す。 */

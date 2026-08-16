@@ -15,6 +15,7 @@ import {
   type FatEntry,
 } from './api/fat';
 import { loadBiosFile, saveBiosFile } from './bios-store';
+import { storageProbe } from './storage-probe';
 import { loadSramFile, saveSramFile } from './sram-store';
 import {
   classifyDiskBytes,
@@ -1541,7 +1542,19 @@ async function insertFromLibrary(sourceKey: string, slot: SlotId): Promise<void>
     await insertDiskBytes(slot, BUNDLED_DISK_NAME, bytes, t('bundledDiskDisplayName'), sourceKey);
     return;
   }
+  // 目的B「起動時のRAM展開」のIndexedDB get区間(getDisk()のrequest発行側ではなく、
+  // 結果bytesを受け取った直後まで)。DEVかつstorageProbe.enabledのときだけ記録する。
+  const idbGetStartAtMs = import.meta.env.DEV && storageProbe.enabled ? performance.now() : 0;
   const stored = await getDisk(sourceKey);
+  if (import.meta.env.DEV && storageProbe.enabled && stored) {
+    storageProbe.libraryLoads.push({
+      sourceKey,
+      slot,
+      byteLength: stored.bytes.byteLength,
+      idbGetStartAtMs,
+      idbGetEndAtMs: performance.now(),
+    });
+  }
   if (!stored) return;
   await insertDiskBytes(slot, stored.name, stored.bytes, stored.displayName ?? stored.name, sourceKey);
 }
@@ -3589,9 +3602,15 @@ async function persistSlotToLibrary(slot: SlotId): Promise<boolean> {
   }
   if (!live) return false;
   const data = live.slice();
+  // 目的B「IndexedDBへのディスク全量書出し」の始点(MEMFSから末尾まで取得・検査できた地点)。
+  // import.meta.env.DEV && storageProbe.enabled のときだけ disk-store.ts 側で使われる。
+  const bytesReadyAtMs = import.meta.env.DEV ? performance.now() : 0;
 
   try {
-    await saveDisk({ sourceKey, name: pending.name, bytes: data, savedAt: Date.now() });
+    await saveDisk(
+      { sourceKey, name: pending.name, bytes: data, savedAt: Date.now() },
+      import.meta.env.DEV ? { slot, bytesReadyAtMs } : undefined,
+    );
   } catch (err) {
     console.error('ディスクライブラリへの書き戻しに失敗しました。', err);
     return false;
@@ -3702,6 +3721,41 @@ if (import.meta.env.DEV) {
         port1: { bits: bits1, raw: rawOf(pads[1]) },
       };
     },
+    // 目的B(docs/STORAGE-SCSI.md)「IndexedDBへのディスク全量書出し」「起動時のRAM展開」専用フック。
+    // scripts/measure-disk-save.mjs / scripts/measure-ram-expansion.mjs から呼ぶ。
+    // storageProbe.enabled を立てたときだけ各所の追加計測コードが動く(既定off)。
+    storageProbeEnable: (enabled: boolean) => {
+      storageProbe.enabled = enabled;
+    },
+    storageProbeReset: () => storageProbe.reset(),
+    storageProbeRead: () => ({
+      diskSaves: storageProbe.diskSaves,
+      ramExpansions: storageProbe.ramExpansions,
+      libraryLoads: storageProbe.libraryLoads,
+    }),
+    // IndexedDB全量書出しの測定系検証: 次回のputだけtx.abort()させる。
+    storageProbeAbortNextPut: () => {
+      storageProbe.abortNextPut = true;
+    },
+    // 起動時RAM展開の測定系検証: 次回のMEMFS writeFile()だけ故障注入する。
+    storageProbeSetNextRamFault: (fault: 'skip-write' | 'truncate-tail' | 'corrupt-checksum' | null) => {
+      storageProbe.nextRamFault = fault;
+    },
+    // 指定スロットを即座にライブラリ(IndexedDB)へ書き戻す(persistSlotToLibraryを直接叩く)。
+    // 戻り値は保存できたか(スロットが空/未マウントならfalse)。
+    storageProbeSaveSlot: (slot: SlotId) => persistSlotToLibrary(slot),
+    // ライブラリ(IndexedDB)のディスクを指定スロットへ読み込む(insertFromLibraryを直接叩く)。
+    storageProbeLoadFromLibrary: (sourceKey: string, slot: SlotId) => insertFromLibrary(sourceKey, slot),
+    // ライブラリから指定キーを削除する(次回のstorageProbeSaveSlotを「初回追加」にするための
+    // 測定用リセット。deleteDiskはUI操作を経由すると確認ダイアログ等が絡むため直接叩く)。
+    storageProbeDeleteFromLibrary: (sourceKey: string) => deleteDisk(sourceKey),
+    // 起動前にスロットを空にする(ejectSlotを直接叩く)。IndexedDB getを起動時RAM展開の
+    // 測定に含めるため、ブランク作成直後の「メモリに載ったまま」状態を一度払い落とす用途。
+    storageProbeEjectSlot: (slot: SlotId) => ejectSlot(slot),
+    // ライブラリ一覧(sourceKey/name/size)を返す。作成直後のブランクディスクのキーを
+    // 拾うのに使う。
+    storageProbeListLibrary: () => listDisks(),
+
     // TVRAM の文字画面をテキストで読む(ゲームパッドのキー割当検証等、末端(ゲスト側の受信結果)を
     // 実測するためのフック。?bridge=1 のMCPブリッジと同じ host.readTextScreen() を使う)。
     screenText: () => host?.readTextScreen() ?? null,
