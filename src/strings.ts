@@ -52,6 +52,12 @@ interface Dict {
   toolbarMenuTouchMouse(): string;
   touchMouseEnabled(): string;
   touchMouseDisabled(): string;
+  /** タッチマウスの移動方式(トラックパッド式)のトグルと切替トースト。 */
+  toolbarTouchMousePadOn(): string;
+  toolbarTouchMousePadOff(): string;
+  toolbarMenuTouchMousePad(): string;
+  touchMouseModeRelative(): string;
+  touchMouseModeAbsolute(): string;
   toolbarFullscreen(): string;
   toolbarFullscreenExit(): string;
   toolbarFullscreenExitPseudo(): string;
@@ -477,6 +483,12 @@ const STRINGS: Record<Lang, Dict> = {
     touchMouseEnabled: () =>
       'タッチマウスを有効にしました。1本指で移動、タップで左クリック、2本指タップで右クリック、長押しでドラッグ。',
     touchMouseDisabled: () => 'タッチマウスを無効にしました。',
+    toolbarTouchMousePadOn: () => 'トラックパッド式にする',
+    toolbarTouchMousePadOff: () => 'タッチ位置へ移動する方式に戻す',
+    toolbarMenuTouchMousePad: () => 'タッチマウス: トラックパッド式',
+    touchMouseModeRelative: () =>
+      'トラックパッド式にしました。指の移動量でカーソルが動くので、指の下に隠れません。タップは現在のカーソル位置をクリックします。',
+    touchMouseModeAbsolute: () => 'タッチした位置へカーソルが移動する方式にしました。',
     toolbarFullscreen: () => 'フルスクリーン',
     toolbarFullscreenExit: () => 'フルスクリーンを解除(Esc)',
     // 疑似フルスクリーン(CSSクラスのみ)はEscで抜けられない。Escはcanvas経由でX68000側の
@@ -810,6 +822,12 @@ const STRINGS: Record<Lang, Dict> = {
     touchMouseEnabled: () =>
       'Touch mouse enabled. Drag to move, tap to left-click, two-finger tap to right-click, long-press to drag.',
     touchMouseDisabled: () => 'Touch mouse disabled.',
+    toolbarTouchMousePadOn: () => 'Switch to trackpad style',
+    toolbarTouchMousePadOff: () => 'Switch back to move-to-touch style',
+    toolbarMenuTouchMousePad: () => 'Touch mouse: trackpad style',
+    touchMouseModeRelative: () =>
+      'Trackpad style enabled. The cursor follows finger movement, so it is never hidden under your finger. Taps click at the current cursor position.',
+    touchMouseModeAbsolute: () => 'Switched back to moving the cursor to the touched point.',
     toolbarFullscreen: () => 'Fullscreen',
     toolbarFullscreenExit: () => 'Exit fullscreen (Esc)',
     // Pseudo-fullscreen (a CSS class only) cannot be exited with Esc. Esc is forwarded to the

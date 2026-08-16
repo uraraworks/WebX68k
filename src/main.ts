@@ -125,6 +125,7 @@ const btnSpeedBadge = document.getElementById('btn-speed-badge') as HTMLSpanElem
 const btnMouseCapture = document.getElementById('btn-mouse-capture') as HTMLButtonElement;
 const btnMouseResync = document.getElementById('btn-mouse-resync') as HTMLButtonElement;
 const btnTouchMouse = document.getElementById('btn-touch-mouse') as HTMLButtonElement;
+const btnTouchMousePad = document.getElementById('btn-touch-mouse-pad') as HTMLButtonElement;
 const btnFullscreen = document.getElementById('btn-fullscreen') as HTMLButtonElement;
 const btnVirtualKeyboard = document.getElementById('btn-virtual-keyboard') as HTMLButtonElement;
 const btnAspect = document.getElementById('btn-aspect') as HTMLButtonElement;
@@ -2191,6 +2192,7 @@ const OVERFLOW_MENU_LABEL_OVERRIDES = new Map<HTMLButtonElement, () => string>([
   [btnAspect, () => t('toolbarMenuAspect43')],
   [btnMouseCapture, () => t('toolbarMenuMouseCapture')],
   [btnTouchMouse, () => t('toolbarMenuTouchMouse')],
+  [btnTouchMousePad, () => t('toolbarMenuTouchMousePad')],
   [btnLang, () => t('toolbarLanguage')],
 ]);
 
@@ -2213,7 +2215,7 @@ const OVERFLOW_GROUP_ORDER: OverflowGroupId[] = ['display', 'input', 'disk', 'st
 
 const OVERFLOW_GROUPS: Record<OverflowGroupId, OverflowGroup> = {
   display: { title: () => t('toolbarGroupDisplay'), actions: [btnAspect] },
-  input: { title: () => t('toolbarGroupInput'), actions: [btnMouseCapture, btnMouseResync, btnTouchMouse, btnGamepad, btnHostKey] },
+  input: { title: () => t('toolbarGroupInput'), actions: [btnMouseCapture, btnMouseResync, btnTouchMouse, btnTouchMousePad, btnGamepad, btnHostKey] },
   disk: { title: () => t('toolbarGroupDisk'), actions: [btnDiskLibrary, btnFileManager] },
   state: { title: () => t('toolbarGroupState'), actions: [btnSaveState, btnLoadState] },
 };
@@ -2755,6 +2757,7 @@ function applyDocumentStrings(): void {
   btnMouseCapture.setAttribute('aria-label', t('toolbarMouseCapture'));
   btnMouseResync.setAttribute('aria-label', t('toolbarMouseResync'));
   btnTouchMouse.setAttribute('aria-label', t('toolbarMenuTouchMouse'));
+  btnTouchMousePad.setAttribute('aria-label', t('toolbarMenuTouchMousePad'));
   updateMouseControls();
   updateFullscreenControl();
   syncInputPanelUi();
@@ -3182,6 +3185,14 @@ const TOUCH_CLICK_PULSE_MS = 100;
 const TOUCH_CLICK_GAP_MS = 60;
 
 let touchMouseEnabled = localStorage.getItem(TOUCH_MOUSE_KEY) === '1';
+/**
+ * 移動方式(touch-mouse.ts の TouchMouseMode 参照)。既定は absolute(タッチ位置へ移動)だが、
+ * カーソルが指の影に隠れて見えないという実使用上の指摘を受けてトラックパッド式(relative)を
+ * 追加した。relative では指の移動量をキャプチャモードと同じ換算(canvas拡大率×感度)で
+ * addMouseDelta へ送り、絶対位置の閉ループは使わない。
+ */
+const TOUCH_MOUSE_MODE_KEY = 'webx68k.touchMouseMode';
+let touchMouseRelative = localStorage.getItem(TOUCH_MOUSE_MODE_KEY) === 'relative';
 /** 収束待ちのクリック。tap が来たら積み、収束(または期限切れ)でパルスにして流す。 */
 const touchClickQueue: TouchMouseButton[] = [];
 let touchClickBusy = false;
@@ -3211,21 +3222,34 @@ function onMouseTrackConverged(): void {
   if (touchClickQueue.length > 0) pumpTouchClickQueue();
 }
 
-const touchMouse = new TouchMouse({
-  moveTo: (x, y) => {
-    const rect = canvas.getBoundingClientRect();
-    if (rect.width <= 0 || rect.height <= 0) return;
-    desiredRatioX = Math.max(0, Math.min(1, x / rect.width));
-    desiredRatioY = Math.max(0, Math.min(1, y / rect.height));
-    hasDesiredRatio = true;
+const touchMouse = new TouchMouse(
+  {
+    moveTo: (x, y) => {
+      const rect = canvas.getBoundingClientRect();
+      if (rect.width <= 0 || rect.height <= 0) return;
+      desiredRatioX = Math.max(0, Math.min(1, x / rect.width));
+      desiredRatioY = Math.max(0, Math.min(1, y / rect.height));
+      hasDesiredRatio = true;
+    },
+    moveBy: (dx, dy) => {
+      if (!host) return;
+      // キャプチャモードの mousemove と同じ換算(CSSピクセル→ゲスト1ドット、感度倍率)
+      const scaleX = canvas.clientWidth > 0 ? canvas.width / canvas.clientWidth : 1;
+      const scaleY = canvas.clientHeight > 0 ? canvas.height / canvas.clientHeight : 1;
+      host.addMouseDelta(dx * scaleX * mouseSensitivity, dy * scaleY * mouseSensitivity);
+      // 古い絶対位置の目標が残っていると閉ループが相対移動と綱引きするので捨てる
+      hasDesiredRatio = false;
+    },
+    buttonDown: (button) => host?.setMouseButton(button, true),
+    buttonUp: (button) => host?.setMouseButton(button, false),
+    tap: (button) => {
+      touchClickQueue.push(button);
+      // relative はカーソルが動いていないので収束待ち不要(次フレームで即パルス)
+      touchClickDeadline = performance.now() + (touchMouseRelative ? 0 : TOUCH_CLICK_DEFER_MS);
+    },
   },
-  buttonDown: (button) => host?.setMouseButton(button, true),
-  buttonUp: (button) => host?.setMouseButton(button, false),
-  tap: (button) => {
-    touchClickQueue.push(button);
-    touchClickDeadline = performance.now() + TOUCH_CLICK_DEFER_MS;
-  },
-});
+  touchMouseRelative ? 'relative' : 'absolute',
+);
 
 /** フレームループから毎フレーム呼ぶ(長押し判定と、収束待ちクリックの期限切れ処理)。 */
 function stepTouchMouse(): void {
@@ -3288,6 +3312,19 @@ function setTouchMouseEnabled(on: boolean): void {
 if (touchMouseEnabled) canvas.style.touchAction = 'none';
 btnTouchMouse.addEventListener('click', () => setTouchMouseEnabled(!touchMouseEnabled));
 
+function setTouchMouseRelative(relative: boolean): void {
+  if (touchMouseRelative === relative) return;
+  touchMouseRelative = relative;
+  localStorage.setItem(TOUCH_MOUSE_MODE_KEY, relative ? 'relative' : 'absolute');
+  touchMouse.setMode(relative ? 'relative' : 'absolute');
+  // absolute へ戻すときも、次のタッチまで古い目標で閉ループが動かないよう仕切り直す
+  hasDesiredRatio = false;
+  touchClickQueue.length = 0;
+  showToast(t(relative ? 'touchMouseModeRelative' : 'touchMouseModeAbsolute'));
+  updateMouseControls();
+}
+btnTouchMousePad.addEventListener('click', () => setTouchMouseRelative(!touchMouseRelative));
+
 /** マウス関連ボタンの活性・表示状態を現在のモードに合わせる。 */
 function updateMouseControls(): void {
   const captured = isMouseCaptured();
@@ -3302,6 +3339,11 @@ function updateMouseControls(): void {
   btnTouchMouse.classList.toggle('active', touchMouseEnabled);
   btnTouchMouse.setAttribute('aria-pressed', touchMouseEnabled ? 'true' : 'false');
   btnTouchMouse.title = touchMouseEnabled ? t('toolbarTouchMouseOff') : t('toolbarTouchMouseOn');
+
+  btnTouchMousePad.disabled = !touchMouseEnabled;
+  btnTouchMousePad.classList.toggle('active', touchMouseRelative);
+  btnTouchMousePad.setAttribute('aria-pressed', touchMouseRelative ? 'true' : 'false');
+  btnTouchMousePad.title = touchMouseRelative ? t('toolbarTouchMousePadOff') : t('toolbarTouchMousePadOn');
 }
 
 btnMouseCapture.addEventListener('click', () => setMouseCaptured(!isMouseCaptured()));

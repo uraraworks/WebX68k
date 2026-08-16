@@ -348,6 +348,13 @@ point via absolute-position tracking), tap for a left click, two-finger tap
 for a right click, and long-press to hold the left button for dragging. The
 toggle is saved to `localStorage`.
 
+Because the cursor sits right under your fingertip in this default
+(move-to-touch) style, it can be hard to see. The **Touch mouse: trackpad
+style** toggle in the same group switches to laptop-trackpad semantics
+instead: the cursor moves by the finger's motion (with the mouse
+sensitivity setting applied) and taps click at the current cursor
+position, so the cursor is never hidden under your finger.
+
 ### Display mode (dot-for-dot / 4:3)
 
 WebX68k defaults to dot-for-dot: the core's native resolution drawn at

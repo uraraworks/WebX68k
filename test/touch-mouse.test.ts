@@ -6,6 +6,7 @@ import {
   TouchMouse,
   TWO_FINGER_TAP_MAX_MS,
   type TouchMouseButton,
+  type TouchMouseMode,
 } from '../src/touch-mouse';
 
 // TouchMouse は src/touch-mouse.ts に切り出した DOM 非依存のジェスチャ認識。
@@ -14,19 +15,24 @@ import {
 
 interface Recorded {
   moves: Array<[number, number]>;
+  deltas: Array<[number, number]>;
   downs: TouchMouseButton[];
   ups: TouchMouseButton[];
   taps: TouchMouseButton[];
 }
 
-function makeRecorder(): { rec: Recorded; tm: TouchMouse } {
-  const rec: Recorded = { moves: [], downs: [], ups: [], taps: [] };
-  const tm = new TouchMouse({
-    moveTo: (x, y) => rec.moves.push([x, y]),
-    buttonDown: (b) => rec.downs.push(b),
-    buttonUp: (b) => rec.ups.push(b),
-    tap: (b) => rec.taps.push(b),
-  });
+function makeRecorder(mode: TouchMouseMode = 'absolute'): { rec: Recorded; tm: TouchMouse } {
+  const rec: Recorded = { moves: [], deltas: [], downs: [], ups: [], taps: [] };
+  const tm = new TouchMouse(
+    {
+      moveTo: (x, y) => rec.moves.push([x, y]),
+      moveBy: (dx, dy) => rec.deltas.push([dx, dy]),
+      buttonDown: (b) => rec.downs.push(b),
+      buttonUp: (b) => rec.ups.push(b),
+      tap: (b) => rec.taps.push(b),
+    },
+    mode,
+  );
   return { rec, tm };
 }
 
@@ -161,5 +167,70 @@ describe('タッチマウスのジェスチャ認識(src/touch-mouse.ts)', () =>
     tm.pointerDown(2, 101, 51, 150);
     tm.pointerUp(2, 230);
     expect(rec.taps).toEqual(['left', 'left']);
+  });
+});
+
+describe('トラックパッド式(relative)モード', () => {
+  it('接地ではカーソルを動かさない(moveToもmoveByも出ない)', () => {
+    const { rec, tm } = makeRecorder('relative');
+    tm.pointerDown(1, 100, 50, 0);
+    expect(rec.moves).toEqual([]);
+    expect(rec.deltas).toEqual([]);
+  });
+
+  it('指の移動が前回位置との差分(moveBy)になる', () => {
+    const { rec, tm } = makeRecorder('relative');
+    tm.pointerDown(1, 100, 50, 0);
+    tm.pointerMove(1, 110, 45);
+    tm.pointerMove(1, 130, 45);
+    expect(rec.deltas).toEqual([
+      [10, -5],
+      [20, 0],
+    ]);
+    expect(rec.moves).toEqual([]);
+  });
+
+  it('タップは左クリック、2本指タップは右クリック(absoluteと同じ)', () => {
+    const { rec, tm } = makeRecorder('relative');
+    tm.pointerDown(1, 100, 50, 0);
+    tm.pointerUp(1, 80);
+    tm.pointerDown(2, 100, 50, 200);
+    tm.pointerDown(3, 140, 50, 220);
+    tm.pointerUp(2, 300);
+    tm.pointerUp(3, 320);
+    expect(rec.taps).toEqual(['left', 'right']);
+  });
+
+  it('長押しドラッグでは押し込み中の移動も差分で届く', () => {
+    const { rec, tm } = makeRecorder('relative');
+    tm.pointerDown(1, 100, 50, 0);
+    tm.update(LONG_PRESS_MS + 10);
+    expect(rec.downs).toEqual(['left']);
+    tm.pointerMove(1, 90, 70);
+    expect(rec.deltas).toEqual([[-10, 20]]);
+    tm.pointerUp(1, LONG_PRESS_MS + 400);
+    expect(rec.ups).toEqual(['left']);
+  });
+
+  it('2本目の指はカーソルを動かさない', () => {
+    const { rec, tm } = makeRecorder('relative');
+    tm.pointerDown(1, 100, 50, 0);
+    tm.pointerDown(2, 200, 50, 20);
+    tm.pointerMove(2, 220, 60);
+    expect(rec.deltas).toEqual([]);
+  });
+
+  it('setMode()はストロークを仕切り直し、ドラッグ中のボタンを解放する', () => {
+    const { rec, tm } = makeRecorder('absolute');
+    tm.pointerDown(1, 100, 50, 0);
+    tm.update(LONG_PRESS_MS + 10);
+    expect(rec.downs).toEqual(['left']);
+    tm.setMode('relative');
+    expect(rec.ups).toEqual(['left']);
+    // 切替後は relative として動く
+    tm.pointerDown(2, 10, 10, 1000);
+    expect(rec.moves.length).toBe(1); // 最初の absolute 接地の1回だけ
+    tm.pointerMove(2, 20, 10);
+    expect(rec.deltas).toEqual([[10, 0]]);
   });
 });

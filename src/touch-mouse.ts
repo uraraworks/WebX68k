@@ -26,9 +26,21 @@
 
 export type TouchMouseButton = 'left' | 'right';
 
+/**
+ * 移動の解釈方式。
+ * - 'absolute' … タッチ位置そのものをカーソルの目標にする(moveTo)。直感的だが、
+ *   カーソルが常に指の真下に来るため指の影に隠れて見えない、という実使用上の難点がある。
+ * - 'relative' … トラックパッド式。指の移動量だけをカーソルへ加える(moveBy)。カーソルは
+ *   指と無関係な場所を動くので隠れず、細かい操作もしやすい。タップのクリックは
+ *   「カーソルが今いる位置」で行われる(トラックパッドの慣例どおり)。
+ */
+export type TouchMouseMode = 'absolute' | 'relative';
+
 export interface TouchMouseCallbacks {
-  /** カーソルの目標位置。canvas 左上基準の CSS ピクセル。 */
+  /** カーソルの目標位置(absolute)。canvas 左上基準の CSS ピクセル。 */
   moveTo(x: number, y: number): void;
+  /** カーソルの相対移動(relative)。CSS ピクセルの移動量。 */
+  moveBy(dx: number, dy: number): void;
   /** 長押しドラッグの押し込み/解放。 */
   buttonDown(button: TouchMouseButton): void;
   buttonUp(button: TouchMouseButton): void;
@@ -53,6 +65,9 @@ interface TrackedPointer {
   id: number;
   startX: number;
   startY: number;
+  /** 現在位置。relative モードで前回イベントとの差分(moveBy)を出すために追う。 */
+  x: number;
+  y: number;
   downAt: number;
   /** TAP_SLOP_PX を一度でも超えたか。超えた後に始点へ戻ってきてもタップにはしない。 */
   moved: boolean;
@@ -60,6 +75,7 @@ interface TrackedPointer {
 
 export class TouchMouse {
   private readonly callbacks: TouchMouseCallbacks;
+  private mode: TouchMouseMode = 'absolute';
   /** 現在接地中の指。1本目(カーソルを担う指)は primaryId で識別する。 */
   private pointers = new Map<number, TrackedPointer>();
   private primaryId: number | null = null;
@@ -72,8 +88,16 @@ export class TouchMouse {
   /** 長押しで左ボタンを押し込んでいる(ドラッグ中)か。 */
   private dragging = false;
 
-  constructor(callbacks: TouchMouseCallbacks) {
+  constructor(callbacks: TouchMouseCallbacks, mode: TouchMouseMode = 'absolute') {
     this.callbacks = callbacks;
+    this.mode = mode;
+  }
+
+  /** モード切替。操作の途中で切り替わっても矛盾しないよう、ストロークを仕切り直す。 */
+  setMode(mode: TouchMouseMode): void {
+    if (this.mode === mode) return;
+    this.reset();
+    this.mode = mode;
   }
 
   pointerDown(id: number, x: number, y: number, now: number): void {
@@ -81,13 +105,14 @@ export class TouchMouse {
     if (this.dragging) return;
     if (this.primaryId === null) {
       this.primaryId = id;
-      this.pointers.set(id, { id, startX: x, startY: y, downAt: now, moved: false });
-      // 接地した瞬間にカーソルを目標へ向かわせる(タップ時に「移動してからクリック」の順序を作る)
-      this.callbacks.moveTo(x, y);
+      this.pointers.set(id, { id, startX: x, startY: y, x, y, downAt: now, moved: false });
+      // absolute では接地した瞬間にカーソルを目標へ向かわせる(タップ時に「移動してから
+      // クリック」の順序を作る)。relative では接地は何も動かさない(トラックパッドの慣例)。
+      if (this.mode === 'absolute') this.callbacks.moveTo(x, y);
       return;
     }
     if (!this.pointers.has(id)) {
-      this.pointers.set(id, { id, startX: x, startY: y, downAt: now, moved: false });
+      this.pointers.set(id, { id, startX: x, startY: y, x, y, downAt: now, moved: false });
       this.multi = true;
       this.lastDownAt = now;
     }
@@ -96,12 +121,21 @@ export class TouchMouse {
   pointerMove(id: number, x: number, y: number): void {
     const p = this.pointers.get(id);
     if (!p) return;
+    const prevX = p.x;
+    const prevY = p.y;
+    p.x = x;
+    p.y = y;
     if (!p.moved && Math.hypot(x - p.startX, y - p.startY) > TAP_SLOP_PX) {
       p.moved = true;
       this.strokeMoved = true;
     }
     // カーソルを動かすのは1本目の指だけ。2本目はタップ判定(moved)のためだけに追う
-    if (id === this.primaryId) this.callbacks.moveTo(x, y);
+    if (id !== this.primaryId) return;
+    if (this.mode === 'absolute') {
+      this.callbacks.moveTo(x, y);
+    } else {
+      this.callbacks.moveBy(x - prevX, y - prevY);
+    }
   }
 
   pointerUp(id: number, now: number): void {

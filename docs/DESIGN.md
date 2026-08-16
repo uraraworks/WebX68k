@@ -485,6 +485,12 @@ iOS Safari は Pointer Lock API に対応しておらず、キャプチャモー
 - 検証(開発ビルドの `__webx68kDebug.mouse()` + 合成 PointerEvent で実測): 画面中央タップで
   ゲストカーソルが (384,256) へ誤差0で着地して `stat=1`(左)、2本指タップで `stat=2`(右)、
   長押し中は `stat=1` が保持され、離すと 0 へ戻ることを確認
+- 移動方式は2つあり `webx68k.touchMouseMode` で永続化する。既定の absolute(タッチ位置へ移動)は
+  カーソルが指の真下に来るため**指の影に隠れて見えない**という実使用上の難点があり、
+  トラックパッド式(relative)を追加した。relative は指の移動量をキャプチャモードの mousemove と
+  同じ換算(canvas拡大率×感度)で `addMouseDelta` へ送り、閉ループは使わない
+  (`hasDesiredRatio` を落として綱引きを防ぐ)。タップのクリックはカーソルが動いていないので
+  収束待ちも不要(期限0で即パルス)
 
 ### テストプログラム(MOUSETST.X)
 
