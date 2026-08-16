@@ -2983,6 +2983,15 @@ function sendAmountFor(distance: number): number {
   return distance < 0 ? -send : send;
 }
 
+/** sendAmountFor() が返した送信量が実際に動かす見込みのドット数(加速テーブルの逆方向)。 */
+function predictedMoveFor(send: number): number {
+  const abs = Math.abs(send);
+  for (const [candidate, move] of MOUSE_ACCEL_TABLE) {
+    if (candidate === abs) return send < 0 ? -move : move;
+  }
+  return 0;
+}
+
 /** ホスト側カーソルの canvas 内相対位置(0..1)。実際の目標座標はゲストの可動範囲から毎フレーム決める。 */
 let desiredRatioX = 0;
 let desiredRatioY = 0;
@@ -3143,6 +3152,11 @@ canvas.addEventListener('mousemove', (e) => {
     host.addMouseDelta(e.movementX * scaleX * mouseSensitivity, e.movementY * scaleY * mouseSensitivity);
     return;
   }
+  // タッチマウス(トラックパッド式)の間は追従モードの目標を更新しない。iOS Safari は
+  // pointerdown を preventDefault しても互換マウスイベント(タップ後の mousemove)を
+  // 発火することがあり、それを拾うと閉ループがカーソルをタップ位置へ勝手に運んでしまう
+  // (「タップしたらカーソルが消えた(飛んだ)」ように見える)。
+  if (isTouchMouseActive() && touchMouseRelative) return;
   // 追従モード: canvas 内の相対位置(0..1)だけ記録し、実際の送信は stepMouseTracking に任せる
   const rect = canvas.getBoundingClientRect();
   if (rect.width <= 0 || rect.height <= 0) return;
@@ -3199,6 +3213,9 @@ let touchMouseRelative = localStorage.getItem(TOUCH_MOUSE_MODE_KEY) !== 'absolut
 const touchClickQueue: TouchMouseButton[] = [];
 let touchClickBusy = false;
 let touchClickDeadline = 0;
+/** relative の加速逆補正で生じる送信残差(ドット)。指を離したら捨てる。 */
+let touchPadResidX = 0;
+let touchPadResidY = 0;
 
 function isTouchMouseActive(): boolean {
   return touchMouseEnabled && running && !isMouseCaptured();
@@ -3235,12 +3252,24 @@ const touchMouse = new TouchMouse(
     },
     moveBy: (dx, dy) => {
       if (!host) return;
-      // キャプチャモードの mousemove と同じ換算(CSSピクセル→ゲスト1ドット、感度倍率)
+      // キャプチャモードの mousemove と同じ換算(CSSピクセル→ゲスト1ドット、感度倍率)。
+      // ただしモバイルは canvas が縮小表示されて換算倍率が2倍超になり、1イベントぶんの
+      // 移動量が IOCS の加速域(16以上で最大7.5倍)に入りやすい。生のまま送るとカーソルが
+      // 画面端まで飛んで「消えた」ように見えるため、加速テーブルを逆引きして
+      // 「意図した移動量を超えない送信量」へ変換する(stepMouseTracking と同じ流儀)。
+      // 送信ぶんの予測移動量を残差から引き、取りこぼしは次のイベントへ繰り越す。
       const scaleX = canvas.clientWidth > 0 ? canvas.width / canvas.clientWidth : 1;
       const scaleY = canvas.clientHeight > 0 ? canvas.height / canvas.clientHeight : 1;
-      host.addMouseDelta(dx * scaleX * mouseSensitivity, dy * scaleY * mouseSensitivity);
+      touchPadResidX += dx * scaleX * mouseSensitivity;
+      touchPadResidY += dy * scaleY * mouseSensitivity;
+      const sendX = sendAmountFor(touchPadResidX);
+      const sendY = sendAmountFor(touchPadResidY);
       // 古い絶対位置の目標が残っていると閉ループが相対移動と綱引きするので捨てる
       hasDesiredRatio = false;
+      if (sendX === 0 && sendY === 0) return;
+      touchPadResidX -= predictedMoveFor(sendX);
+      touchPadResidY -= predictedMoveFor(sendY);
+      host.addMouseDelta(sendX, sendY);
     },
     buttonDown: (button) => host?.setMouseButton(button, true),
     buttonUp: (button) => host?.setMouseButton(button, false),
@@ -3292,10 +3321,15 @@ canvas.addEventListener('pointermove', (e) => {
 canvas.addEventListener('pointerup', (e) => {
   if (e.pointerType === 'mouse') return;
   touchMouse.pointerUp(e.pointerId, performance.now());
+  // ストロークの取りこぼし残差を次のストロークへ持ち越さない(初動が跳ねる)
+  touchPadResidX = 0;
+  touchPadResidY = 0;
 });
 canvas.addEventListener('pointercancel', (e) => {
   if (e.pointerType === 'mouse') return;
   touchMouse.reset();
+  touchPadResidX = 0;
+  touchPadResidY = 0;
 });
 
 function setTouchMouseEnabled(on: boolean): void {
@@ -3307,6 +3341,8 @@ function setTouchMouseEnabled(on: boolean): void {
   if (!on) {
     touchMouse.reset();
     touchClickQueue.length = 0;
+    touchPadResidX = 0;
+    touchPadResidY = 0;
   }
   showToast(t(on ? 'touchMouseEnabled' : 'touchMouseDisabled'));
   updateMouseControls();
@@ -3322,6 +3358,8 @@ function setTouchMouseRelative(relative: boolean): void {
   // absolute へ戻すときも、次のタッチまで古い目標で閉ループが動かないよう仕切り直す
   hasDesiredRatio = false;
   touchClickQueue.length = 0;
+  touchPadResidX = 0;
+  touchPadResidY = 0;
   showToast(t(relative ? 'touchMouseModeRelative' : 'touchMouseModeAbsolute'));
   updateMouseControls();
 }
