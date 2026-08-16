@@ -886,6 +886,11 @@ const urlSystem = urlParams.get('system') === '1';
 // lib=<url>: 複数指定可(ディスクライブラリへ登録するだけの共有リンク用)。
 // カンマ区切りにしないのはURL自体にカンマが含まれ得るため。複数指定は getAll で受け取る。
 const urlLib = urlParams.getAll('lib').filter((v) => v !== '');
+// audioProbe=1: dev限定の音声振幅プローブ(handleAudioBatch内の積算)を有効化する。
+// 既定offで、計測スクリプト(scripts/measure-audio.mjs)が明示的に指定したときだけ使う
+// (docs/STORAGE-SCSI.md「基準値：音声遅延」の作業0参照。常時onはdev計測全般にコストが
+// 乗るため既定を変更した)。
+const urlAudioProbe = urlParams.get('audioProbe') === '1';
 
 function setBiosStatus(el: HTMLSpanElement, state: 'user' | 'bundled' | 'none'): void {
   if (state === 'user') {
@@ -2370,6 +2375,7 @@ async function bootCore(): Promise<void> {
       speedMultiplier === 1 ? samples : resampleSpeed(samples, speedMultiplier, audioResampleState);
     audio?.push(out);
   });
+  if (import.meta.env.DEV) host.audioProbeEnabled = urlAudioProbe;
   // X68000 は画面モード変更で実行中に canvas の実解像度(width/height)が変わる。
   // ウィンドウ表示のリスケールは実解像度基準で倍率を決めるため、変わった直後に再計算させる。
   host.onResolutionChanged = () => rescale();
@@ -3708,6 +3714,15 @@ if (import.meta.env.DEV) {
     // queuedSecと違い、無音サンプルとの区別が付く。
     resetAudioProbe: () => host?.resetAudioProbe(),
     readAudioProbe: () => host?.readAudioProbe() ?? null,
+    // AudioWorklet内キュープローブ(計測計画「音声遅延」(1)、docs/STORAGE-SCSI.md
+    // 「基準値：音声遅延」参照)。送り側(audioPush呼出時刻)ではなくAudioWorklet自身が
+    // 報告するtickを時系列で貯める。scripts/measure-audio.mjs 専用。
+    startQueueProbe: () => audio?.startQueueProbe(),
+    stopQueueProbe: () => audio?.stopQueueProbe() ?? [],
+    readQueueProbeLog: () => audio?.readQueueProbeLog() ?? [],
+    // 計測専用の故障注入(本番ビルドには含まれない。上のAudioEngine実装参照)。
+    faultDropNextChunk: () => audio?.faultDropNextChunk(),
+    faultDelayReportSec: (sec: number) => audio?.faultDelayReportSec(sec),
     // 軸の較正状態(AxisCalibration)を実機で観測するためのフック。8BitDo M30 実機で
     // 「L/Rを離してもトリガ軸(axes[3]/[4])のON判定が固着する」報告の原因調査・再発防止用
     // (2026-08-08。実機のライブ表示観測で「一度も動かしていない間は0.00を報告し、一度動かすと

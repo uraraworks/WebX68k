@@ -201,6 +201,11 @@ export class LibretroHost {
   private audioProbeMaxAbs = 0;
   private audioProbeSampleCount = 0;
   private audioProbeNonSilentCount = 0;
+  // 既定オフ。計測スクリプト(scripts/measure-audio.mjs)が明示的にtrueへ設定したときだけ
+  // handleAudioBatch内の積算コストが乗る(作業0: プローブ有無での起動時間比較の結果、
+  // docs/STORAGE-SCSI.md「基準値：音声遅延」参照)。dev環境でも既定では通常のKeyBuf/起動/
+  // 3ドライブ計測に無関係なコストを乗せないため、常時onから既定offへ変更した。
+  audioProbeEnabled = false;
 
   // マウスは X68000 実機同様「相対移動量」で渡す(SCC が -128..127 のデルタを送る方式)。
   // コアは retro_run() 中に X/Y を1回ずつ読むので、読まれた分だけ差し引いて次フレームへ繰り越す。
@@ -732,8 +737,9 @@ export class LibretroHost {
       const sample = mod.HEAP16[base + i] / 32768;
       out[i] = sample;
       // dev限定・受動的な振幅プローブ。import.meta.env.DEVは静的定数のため本番ビルドでは
-      // この行ごとデッドコード除去される(上のフィールド宣言のコメント参照)。
-      if (import.meta.env.DEV) {
+      // この行ごとデッドコード除去される(上のフィールド宣言のコメント参照)。既定offの
+      // audioProbeEnabledも併せて見ることで、dev環境でも計測時以外はコストを乗せない。
+      if (import.meta.env.DEV && this.audioProbeEnabled) {
         const abs = sample < 0 ? -sample : sample;
         if (abs > this.audioProbeMaxAbs) this.audioProbeMaxAbs = abs;
         if (abs > AUDIO_PROBE_NON_SILENT_THRESHOLD) this.audioProbeNonSilentCount++;
