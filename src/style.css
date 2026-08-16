@@ -1332,12 +1332,25 @@ footer.app-footer a {
   color: var(--page-footer-text);
 }
 
+/* ビルド版表記(コミット日時+ハッシュ)。狭幅端末で他行を押し広げないよう小さめにし、
+   折り返し可能にしておく(長いURLではないが念のため overflow-wrap で保険をかける)。 */
+.footer-version {
+  display: inline-block;
+  margin-top: 2px;
+  font-size: 10px;
+  color: var(--page-footer-text);
+  opacity: 0.7;
+  overflow-wrap: anywhere;
+  word-break: break-word;
+}
+
 
 
 /* スマホ幅 */
 @media (width < 640px) {
   main { padding: 8px 4px; gap: 8px; }
   header.app-header { padding: 6px 10px; }
+  .footer-version { font-size: 9px; }
   header.app-header .app-tagline { display: none; }
   .console-footer { padding: 8px 6px; }
   .virtual-keyboard { gap: 3px; padding: 4px 2px; }

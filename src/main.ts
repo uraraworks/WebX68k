@@ -868,9 +868,12 @@ btnPanelPad.addEventListener('click', (e) => {
 // 同梱ROM/ディスク(public/system/)のパス。ユーザーが独自ファイルを設定した場合はそちらを優先する。
 // GitHub Pages のプロジェクトページ(https://<user>.github.io/WebX68k/)配下でも解決できるよう、
 // ルート絶対パスではなくドキュメント相対で指定すること(絶対パスだと /system/... を見に行き404になる)。
-const BUNDLED_IPL_URL = './system/iplrom.dat';
-const BUNDLED_CG_URL = './system/cgrom.dat';
-const BUNDLED_DISK_URL = './system/human302.xdf';
+// ?v=<buildId> はキャッシュバスティング用。BUNDLED_DISK_NAME/BUNDLED_DISK_SOURCE_KEY は
+// 別定数(このURLをそのまま使っていない)なので、クエリを足してもディスクライブラリの
+// 表示名やIndexedDBのキーには混ざらない(fetchBytes() で取得する時にだけ使われる)。
+const BUNDLED_IPL_URL = `./system/iplrom.dat?v=${__BUILD_ID__}`;
+const BUNDLED_CG_URL = `./system/cgrom.dat?v=${__BUILD_ID__}`;
+const BUNDLED_DISK_URL = `./system/human302.xdf?v=${__BUILD_ID__}`;
 const BUNDLED_DISK_NAME = 'human302.xdf';
 // 同梱ディスクはIndexedDBには保存せず、ディスクライブラリの先頭に固定表示する(削除不可)。
 const BUNDLED_DISK_SOURCE_KEY = 'bundled:human302';

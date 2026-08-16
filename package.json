@@ -9,7 +9,8 @@
     "build": "tsc && vite build",
     "preview": "vite preview",
     "test": "vitest run",
-    "capture-help": "node scripts/capture-help-shots.mjs"
+    "capture-help": "node scripts/capture-help-shots.mjs",
+    "verify:version": "node tools/verify_version_determinism.mjs"
   },
   "devDependencies": {
     "puppeteer-core": "^25.4.0",

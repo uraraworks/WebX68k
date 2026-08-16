@@ -459,7 +459,14 @@ export class LibretroHost {
    * ままIPLに既定値を書かせたほうが安全なため)。
    */
   async init(biosIpl: Uint8Array, biosCg: Uint8Array, sram?: Uint8Array): Promise<void> {
-    const mod = await window.PX68K({});
+    // .wasm 本体にビルドID(コミットハッシュ)をクエリとして付け、グルーJS更新時に
+    // 古いキャッシュのwasmを読ませないようにする。locateFile はデフォルトでは
+    // `scriptDirectory + path` を返すだけなので(public/core/px68k_libretro.js内、
+    // 未改変)、その挙動を壊さないよう連結だけ踏襲しつつ .wasm だけクエリを足す。
+    const mod = await window.PX68K({
+      locateFile: (path: string, scriptDirectory: string) =>
+        path.endsWith('.wasm') ? `${scriptDirectory}${path}?v=${__BUILD_ID__}` : `${scriptDirectory}${path}`,
+    });
     this.mod = mod;
 
     this.mkdirSafe('/system');
