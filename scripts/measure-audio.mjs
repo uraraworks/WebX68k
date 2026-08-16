@@ -34,6 +34,26 @@ for (let c = 97; c <= 122; c++) {
 }
 for (let d = 0; d <= 9; d++) CHAR_TO_CODE[String(d)] = `Digit${d}`;
 CHAR_TO_CODE['\\'] = 'Backslash';
+CHAR_TO_CODE[' '] = 'Space';
+// ':' はJIS配列でQuoteキー無シフト(src/keyboard.ts PLAIN_KEYS参照)。条件D用のBASICプログラム
+// 入力(`10 beep:goto 10`)で使う。
+CHAR_TO_CODE[':'] = 'Quote';
+
+// 条件D(打鍵なしで音が鳴り続ける対照。docs/STORAGE-SCSI.md「基準値：音声遅延」追記節
+// 「打鍵なしでBEEPを鳴らすfixture」参照)。`BEEP`単体は前の減衰を待たずに次のBEEPが
+// 再トリガするため、`10 BEEP:GOTO 10`をRUNするだけで実質的に鳴りっぱなしの連続音になる
+// ことを予備確認(振幅プローブ、nonSilentCount≒sampleCount)で確認済み。FOR/NEXTでウェイトを
+// 挟む案も試したが、この用途(打鍵ゼロで音を鳴らし続ける)には不要だった。
+// 別行(`20 FOR N=1 TO ...:NEXT N`)で試した際、NEXTに変数名を付けると
+// (`I`に限らず`N`でも)「文末の記述が誤っています」の構文エラーになる現象が確認できた
+// (原因未調査。`NEXT`単体=変数名なしなら通る)。1行で完結する`10 BEEP:GOTO 10`を採用した
+// ことで、この構文の癖を踏まずに済んでいる。
+const LOOP_BEEP_PROGRAM_LINE = '10 beep:goto 10';
+// プログラム投入(打鍵)とRUN実行後、計測窓(打鍵ゼロ)を開くまでの待ち。
+// 予備確認(_local/smoke.mjs、リポジトリには残していない使い捨てスクリプト)で、
+// RUN実行から3秒後の時点で振幅プローブが継続的な非無音を報告していることを複数回
+// (1秒間隔で6回)確認できたため、余裕を見て3000msとした。
+const LOOP_BEEP_SETTLE_MS = 3000;
 
 const sleep = (ms) => new Promise((resolveSleep) => setTimeout(resolveSleep, ms));
 const roundMs = (value) => (value === null || value === undefined ? null : Math.round(value * 1000) / 1000);
@@ -53,7 +73,7 @@ function parseArgs(argv) {
       values.help = true;
       continue;
     }
-    const match = /^--(port|beep-duration|idle-duration|beep-interval|boot-timeout|output|fault)=(.+)$/.exec(arg);
+    const match = /^--(port|beep-duration|idle-duration|beep-interval|boot-timeout|output|fault|loopbeep-duration|scenario)=(.+)$/.exec(arg);
     if (!match) throw new Error(`不明な引数です: ${arg}`);
     values[match[1]] = match[2];
   }
@@ -70,9 +90,11 @@ function printHelp() {
   --boot-timeout=<ms>      起動完了タイムアウト (既定: 90000)
   --output=<path>          JSON の保存先
   --fault=<delay-200ms|drop-chunk>  測定系の検証用故障注入。先に陽性対照を行う
+  --loopbeep-duration=<ms> 条件D(打鍵なしBEEPループ)の採取時間 (既定: 60000)
+  --scenario=d             条件D単体のみ実行する(既定の動作=beep/idleは変更しない)
 
 環境変数: WEBX68K_PORT, WEBX68K_AUDIO_BEEP_MS, WEBX68K_AUDIO_IDLE_MS,
-          WEBX68K_AUDIO_MEASURE_OUTPUT, WEBX68K_URL, CHROME_PATH`);
+          WEBX68K_AUDIO_LOOPBEEP_MS, WEBX68K_AUDIO_MEASURE_OUTPUT, WEBX68K_URL, CHROME_PATH`);
 }
 
 function defaultOutputPath(suffix) {
@@ -89,8 +111,14 @@ function buildConfig(args) {
   if (fault !== null && !VALID_FAULTS.has(fault)) {
     throw new Error(`fault は delay-200ms・drop-chunk のいずれかを指定してください: ${fault}`);
   }
+  const scenario = args.scenario ?? null;
+  if (scenario !== null && scenario !== 'd') {
+    throw new Error(`scenario は d のみ指定できます: ${scenario}`);
+  }
   const outputValue =
-    args.output ?? process.env.WEBX68K_AUDIO_MEASURE_OUTPUT ?? defaultOutputPath(fault ?? 'main');
+    args.output ??
+    process.env.WEBX68K_AUDIO_MEASURE_OUTPUT ??
+    defaultOutputPath(fault ?? (scenario === 'd' ? 'loopbeep' : 'main'));
   return {
     baseUrl: baseUrl.href.replace(/\/$/, ''),
     port,
@@ -104,9 +132,14 @@ function buildConfig(args) {
     ),
     beepIntervalMs: parsePositiveInteger(args['beep-interval'] ?? '3000', 'beep-interval'),
     bootTimeoutMs: parsePositiveInteger(args['boot-timeout'] ?? '90000', 'boot-timeout'),
+    loopBeepDurationMs: parsePositiveInteger(
+      args['loopbeep-duration'] ?? process.env.WEBX68K_AUDIO_LOOPBEEP_MS ?? '60000',
+      'loopbeep-duration',
+    ),
     outputPath: isAbsolute(outputValue) ? outputValue : resolve(REPO_ROOT, outputValue),
     executablePath: process.env.CHROME_PATH ?? DEFAULT_CHROME,
     fault,
+    scenario,
   };
 }
 
@@ -319,6 +352,51 @@ async function enterBasic(page, config) {
 }
 
 /**
+ * 条件D(打鍵なしでBEEPが鳴り続ける対照)のプログラムを投入してRUNする。
+ * `LOOP_BEEP_PROGRAM_LINE`定義のコメント参照。ここでの打鍵(プログラム投入・RUN)は
+ * 計測窓の外(startQueueProbe呼出前)で完結させ、投入後はLOOP_BEEP_SETTLE_MSだけ
+ * 待ってから返す(この待ちの根拠もLOOP_BEEP_SETTLE_MS定義のコメント参照)。
+ */
+async function startLoopBeepProgram(page) {
+  await typeLineAndEnter(page, LOOP_BEEP_PROGRAM_LINE, CHAR_TO_CODE);
+  await typeLineAndEnter(page, 'run', CHAR_TO_CODE);
+  await sleep(LOOP_BEEP_SETTLE_MS);
+}
+
+/**
+ * 条件Dの無限ループを止める(BREAKキー、DOM code='Pause' → src/keyboard.tsで
+ * RETROK.PAUSE→X68kスキャンコード0x61=BREAK)。予備確認で「breakしました」の表示と
+ * ともにOkプロンプトへ戻ることを確認済み。各試行は新規BrowserContextでcontext.close()
+ * するため機能的には不要だが、ログ上の後始末として呼ぶ。
+ */
+async function breakLoopBeepProgram(page) {
+  await page.evaluate(() => {
+    const dispatch = (type) =>
+      window.dispatchEvent(new KeyboardEvent(type, { code: 'Pause', key: 'Pause', bubbles: true, composed: true, cancelable: true }));
+    dispatch('keydown');
+  });
+  await sleep(80);
+  await page.evaluate(() => {
+    window.dispatchEvent(new KeyboardEvent('keyup', { code: 'Pause', key: 'Pause', bubbles: true, composed: true, cancelable: true }));
+  });
+}
+
+/**
+ * 条件D用のキュープローブ採取。startLoopBeepProgram()でプログラム投入・RUN・settleまで
+ * 済ませてから呼ぶこと。計測窓中(startQueueProbe〜stopQueueProbeの間)は一切の打鍵を
+ * 行わない(sleepのみ)。これがcollectQueueProbeの'beep'条件(打鍵ありBEEP)との違い。
+ */
+async function collectLoopBeepProbe(page, durationMs) {
+  const startedAtWall = Date.now();
+  await page.evaluate(() => window.__webx68kDebug?.startQueueProbe?.());
+  await sleep(durationMs);
+  const log = await page.evaluate(() => window.__webx68kDebug?.stopQueueProbe?.() ?? []);
+  const actualCapturedMs = Date.now() - startedAtWall;
+  await breakLoopBeepProgram(page);
+  return { log, actualCapturedMs };
+}
+
+/**
  * AudioWorklet内キュープローブを開始し、指定時間ぶん採取する。kindが'beep'なら
  * intervalMsごとにBEEPを実行し続ける(区間全体を通しての分布を見るため、鳴っている
  * 瞬間と鳴らし終えた後の両方を含める)。'idle'なら何もしない。
@@ -366,10 +444,17 @@ async function runMainScenario(browser, config, kind) {
     await page.bringToFront();
 
     const boot = await bootAndEnterBasic(page, config);
-    if (kind === 'beep') await enterBasic(page, config);
+    if (kind === 'beep' || kind === 'loop-beep') await enterBasic(page, config);
 
-    const durationMs = kind === 'beep' ? config.beepDurationMs : config.idleDurationMs;
-    const { log, actualCapturedMs } = await collectQueueProbe(page, kind, durationMs, config.beepIntervalMs, null);
+    const durationMs =
+      kind === 'beep' ? config.beepDurationMs : kind === 'loop-beep' ? config.loopBeepDurationMs : config.idleDurationMs;
+    const { log, actualCapturedMs } =
+      kind === 'loop-beep'
+        ? await (async () => {
+            await startLoopBeepProgram(page);
+            return collectLoopBeepProbe(page, durationMs);
+          })()
+        : await collectQueueProbe(page, kind, durationMs, config.beepIntervalMs, null);
 
     return { kind, success: true, boot: { ...boot, durationMs: roundMs(boot.durationMs) }, requestedDurationMs: durationMs, actualCapturedMs, ...summarizeQueueLog(log), rawLog: log };
   } catch (error) {
@@ -421,7 +506,27 @@ async function run() {
     });
 
     let result;
-    if (config.fault === 'delay-200ms') {
+    if (config.scenario === 'd') {
+      // 条件D単体: 打鍵なしでBEEPが鳴り続けるfixtureでのunderflow実測
+      // (docs/STORAGE-SCSI.md「基準値：音声遅延」追記節「打鍵なしでBEEPを鳴らすfixture」参照)。
+      const loopBeep = await runMainScenario(browser, config, 'loop-beep');
+      result = {
+        schemaVersion: 1,
+        measuredAt: new Date().toISOString(),
+        measurement:
+          '音声遅延(条件D): 打鍵なしでBEEPが鳴り続けるBASICループ(`10 BEEP:GOTO 10`)での' +
+          'AudioWorklet内未再生キュー時間の時系列・分布、underflow/上限超過/破棄回数。' +
+          '計測窓(startQueueProbe〜stopQueueProbeの間)は打鍵ゼロ。',
+        config,
+        loopBeepProgramLine: LOOP_BEEP_PROGRAM_LINE,
+        settleMs: LOOP_BEEP_SETTLE_MS,
+        scenario: stripRawLog(loopBeep),
+      };
+      console.log(
+        `loop-beep(条件D): 成功 ${loopBeep.success}, tick数 ${loopBeep.tickCount ?? 0}, 実採取 ${loopBeep.actualCapturedMs ?? '-'}ms, 中央値 ${loopBeep.queuedSec?.medianMs ?? '-'}ms, p99 ${loopBeep.queuedSec?.p99Ms ?? '-'}ms, underflow ${loopBeep.underflowFrames ?? '-'}, trim ${loopBeep.trimEvents ?? '-'}, dropped ${loopBeep.droppedSamples ?? '-'}`,
+      );
+      if (!loopBeep.success) process.exitCode = 1;
+    } else if (config.fault === 'delay-200ms') {
       // 陽性対照: 故障なしでidle区間を短く採取し、キュー時間の分布が正常な形(0以上、
       // MAX_LATENCY_SEC以下)で得られることを確認する。
       const shortMs = 8000;

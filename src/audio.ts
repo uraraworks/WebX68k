@@ -67,6 +67,11 @@ class WebX68kAudioProcessor extends AudioWorkletProcessor {
         this._probeUnderflow = 0;
         this._probeTrimEvents = 0;
         this._probeDropped = 0;
+        // リセット適用後にackを返す。AudioEngine.startQueueProbe()はこのackを待ってから
+        // ログ採取(queueProbeActive)を始めるため、リセット前の累積値を積んだtickが
+        // main->worklet->mainの往復レースでログに紛れ込むことがない
+        // (docs/STORAGE-SCSI.md「基準値：音声遅延」追記節、起動直後の巨大差分レースの修正)。
+        this.port.postMessage({ t: 'resetQueueProbeAck' });
         return;
       }
       if (AUDIO_QUEUE_PROBE && chunk && chunk.t === 'fault-drop-chunk') {
@@ -178,6 +183,8 @@ export class AudioEngine {
   // dev限定のキュープローブ。startQueueProbe()中だけ配列へ積む(通常運用時のメモリ増を防ぐ)。
   private queueProbeActive = false;
   private queueProbeLog: AudioQueueProbeSample[] = [];
+  // resetQueueProbeAckを待つ間のresolve(startQueueProbe参照)。
+  private queueProbeResetAckResolve: (() => void) | null = null;
   // dev限定・計測専用の故障注入(測定経路への既知の200ms遅延)。queuedSec(=main.tsの
   // フレームペース調整が読む実値)には一切足さず、ログへ積む値にだけ加算する。
   private faultDelayOffsetSec = 0;
@@ -257,6 +264,11 @@ export class AudioEngine {
           });
         }
         this.tickCb?.();
+      } else if (import.meta.env.DEV && e.data && e.data.t === 'resetQueueProbeAck') {
+        // startQueueProbe()参照。リセット適用後の最初のtickより前に必ず届く
+        // (同一方向のpostMessageは送出順で配送される)。
+        this.queueProbeResetAckResolve?.();
+        this.queueProbeResetAckResolve = null;
       }
     };
     node.connect(ctx.destination);
@@ -269,12 +281,23 @@ export class AudioEngine {
    * ワーカー側カウンタをresetQueueProbeでリセットし、以後のtickをJS側でも時系列として
    * 貯め始める。measure-audio.mjs がscreen越しに呼ぶ想定で、通常運用では呼ばれない
    * (呼ばれない限りqueueProbeLogへは積まないため、通常運用のメモリ増はない)。
+   *
+   * リセットのworklet側への反映を待たずにqueueProbeActive=trueにすると、reset前の
+   * 累積値を積んだtick(main<->worklet間の往復レースで既に送出済みだったもの)が1件
+   * ログに紛れ込む実装バグがあった(docs/STORAGE-SCSI.md「基準値：音声遅延」追記節)。
+   * resetQueueProbeAckを待ってからqueueProbeActiveを立てることで、reset適用前の値が
+   * ログへ混入しないようにする。
    */
-  startQueueProbe(): void {
+  async startQueueProbe(): Promise<void> {
     if (!import.meta.env.DEV) return;
     this.queueProbeLog = [];
+    this.queueProbeActive = false;
+    if (!this.node) return;
+    await new Promise<void>((resolve) => {
+      this.queueProbeResetAckResolve = resolve;
+      this.node?.port.postMessage({ t: 'resetQueueProbe' });
+    });
     this.queueProbeActive = true;
-    this.node?.port.postMessage({ t: 'resetQueueProbe' });
   }
 
   /** dev限定。採取を止め、これまでの時系列を返す(呼び出し後もログ配列は保持したまま)。 */
