@@ -308,6 +308,19 @@ export class LibretroHost {
   }
 
   /**
+   * KeyBuf(128バイトのリングバッファ)の書き込みポインタと、start から count バイトぶんを
+   * 読む。`test/core-keyboard-integration.test.ts` と同じ export
+   * (`_webx68k_keybuf_peek` / `_webx68k_keybuf_write_pointer`) を経由する受動的な読み取りのみで、
+   * 毎フレーム処理には一切関与しない。exportが無い古いwasmでは呼び出し側が判定できるよう null を返す。
+   */
+  readKeyBufWindow(start: number, count: number): { writePointer: number; bytes: number[] } | null {
+    if (!this.mod._webx68k_keybuf_peek || !this.mod._webx68k_keybuf_write_pointer) return null;
+    const bytes: number[] = [];
+    for (let i = 0; i < count; i++) bytes.push(this.mod._webx68k_keybuf_peek(start + i));
+    return { writePointer: this.mod._webx68k_keybuf_write_pointer(), bytes };
+  }
+
+  /**
    * SWITCH.Xで設定されたキーリピート設定をSRAMから読む。
    * SRAM $ED003A = 開始時間の段階値(n、FIRST_KEY)、$ED003B = 間隔の段階値(n、NEXT_KEY)で、
    * それぞれkeyRepeatDelayMsFromSramValue/keyRepeatIntervalMsFromSramValueのX68000の式でmsへ変換する。

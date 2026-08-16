@@ -3699,6 +3699,10 @@ if (import.meta.env.DEV) {
     // TVRAM の文字画面をテキストで読む(ゲームパッドのキー割当検証等、末端(ゲスト側の受信結果)を
     // 実測するためのフック。?bridge=1 のMCPブリッジと同じ host.readTextScreen() を使う)。
     screenText: () => host?.readTextScreen() ?? null,
+    // KeyBuf(wasm内128バイトリングバッファ)の書き込みポインタと指定範囲を読む。
+    // 計測スクリプト(scripts/measure-key.mjs)がブラウザ経路の末端到達を検証するためのフック。
+    // 呼ばれたときだけHEAPを読む受動的なAPIで、毎フレーム処理には一切関与しない。
+    keybuf: (start: number, count: number) => host?.readKeyBufWindow(start, count) ?? null,
     // 軸の較正状態(AxisCalibration)を実機で観測するためのフック。8BitDo M30 実機で
     // 「L/Rを離してもトリガ軸(axes[3]/[4])のON判定が固着する」報告の原因調査・再発防止用
     // (2026-08-08。実機のライブ表示観測で「一度も動かしていない間は0.00を報告し、一度動かすと
