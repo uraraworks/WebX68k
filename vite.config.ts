@@ -1,9 +1,9 @@
 import { defineConfig, type Plugin } from 'vite';
-import { computeBuildVersion } from './tools/build-version.mjs';
+import { computeBuildVersion } from './tools/compute-version.mjs';
 
 // git のコミット日時/ハッシュから求めた版表記(footer)とキャッシュバスティング用の
 // 短い識別子(buildId)。同じコミットからは常に同じ値になる(壁時計不使用。
-// 詳細は tools/build-version.mjs 参照)。
+// 詳細は tools/compute-version.mjs / tools/version.mjs 参照)。
 const { footer: buildVersionFooter, buildId } = computeBuildVersion(__dirname);
 
 // index.html に版表記を書き込み、固定名アセットのURLに ?v=<buildId> を付けるプラグイン。

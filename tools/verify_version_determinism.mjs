@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// tools/build-version.mjs の computeBuildVersion() が「壁時計を使わず、同じコミットから
+// tools/compute-version.mjs の computeBuildVersion() が「壁時計を使わず、同じコミットから
 // は常に同じ文字列を生成する」ことを検証する。FMSound の
 // tools/verify_version_determinism.mjs を WebX68k(vite/node, python3不使用)向けに移植。
 //
@@ -13,7 +13,7 @@
 import { execFileSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import path from 'node:path';
-import { computeBuildVersion } from './build-version.mjs';
+import { computeBuildVersion } from './compute-version.mjs';
 
 const REPO_ROOT = path.resolve(fileURLToPath(import.meta.url), '../..');
 
@@ -67,7 +67,7 @@ async function main() {
   // 実行環境のTZ設定次第で結果が変わってしまうため。
   function runInChildWithTz(tz) {
     const script = `
-      import('${pathToFileUrl(path.join(REPO_ROOT, 'tools', 'build-version.mjs'))}').then(({ computeBuildVersion }) => {
+      import('${pathToFileUrl(path.join(REPO_ROOT, 'tools', 'compute-version.mjs'))}').then(({ computeBuildVersion }) => {
         console.log(JSON.stringify(computeBuildVersion(${JSON.stringify(REPO_ROOT)})));
       });
     `;
