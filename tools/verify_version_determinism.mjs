@@ -12,6 +12,7 @@
 
 import { execFileSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
+import { readFileSync } from 'node:fs';
 import path from 'node:path';
 import { computeBuildVersion } from './compute-version.mjs';
 
@@ -107,6 +108,66 @@ async function main() {
     process.exit(1);
   }
   console.log('PASS: TZ環境変数を変えてもcomputeBuildVersion()の出力は変わらない(JSTを固定オフセットで扱っている)。');
+
+  // --- 実ビルド成果物の末端検査: クリーンなツリーからビルドしたdistにdirty印が付かないこと ---
+  //
+  // computeBuildVersion() を単体で呼ぶだけでは絶対に再現しない不具合がある: vite/vitest が
+  // TS設定ファイルを読む際にリポジトリ直下へ vite.config.ts.timestamp-*.mjs という一時
+  // ファイルを作り、git status --porcelain がその読み込みの最中に走るせいで、ワークツリーが
+  // 完全にクリーンでも dirty=true になってしまう(.gitignoreで無視していない場合)。
+  // これは実際に `npm run build` を実行し、生成された dist を見ないと検出できない。
+  await verifyCleanBuildHasNoDirtyMark();
+}
+
+async function verifyCleanBuildHasNoDirtyMark() {
+  const statusOut = execFileSync('git', ['status', '--porcelain'], {
+    cwd: REPO_ROOT,
+    encoding: 'utf8',
+  }).trim();
+
+  if (statusOut.length > 0) {
+    console.log('='.repeat(70));
+    console.log('[SKIP] 実ビルド末端検査: ワークツリーがクリーンではないため検査を実行しなかった。');
+    console.log('       (この検査はクリーンな状態でのみ意味を持つため、汚れている場合は');
+    console.log('        黙って通過させず、明示的にスキップしたことをここに出力している)');
+    console.log('--- git status --porcelain ---');
+    console.log(statusOut);
+    console.log('='.repeat(70));
+    return;
+  }
+
+  console.log('[実ビルド末端検査] ワークツリーはクリーン。npm run build を実行して dist を検査する...');
+  execFileSync('npm', ['run', 'build'], { cwd: REPO_ROOT, stdio: 'pipe' });
+
+  const indexHtmlPath = path.join(REPO_ROOT, 'dist', 'index.html');
+  const html = readFileSync(indexHtmlPath, 'utf8');
+
+  const footerMatch = html.match(/id="footer-version"[^>]*>([^<]*)</);
+  const footerText = footerMatch ? footerMatch[1] : '';
+  const versionQueryMatches = [...html.matchAll(/\?v=([A-Za-z0-9-]+)/g)].map((m) => m[1]);
+
+  const problems = [];
+  if (footerText.includes('+')) {
+    problems.push(`footer の版文字列に "+" が含まれている: "${footerText}"`);
+  }
+  const dirtyQueries = versionQueryMatches.filter((v) => v.includes('-dirty'));
+  if (dirtyQueries.length > 0) {
+    problems.push(`?v= の値に "-dirty" が含まれている: ${dirtyQueries.join(', ')}`);
+  }
+
+  if (problems.length > 0) {
+    console.error('FAIL: クリーンなワークツリーからビルドしたのに dist/index.html に dirty 印が付いた。');
+    for (const p of problems) console.error('  - ' + p);
+    console.error(
+      '原因の手がかり: ビルド中に生成される一時ファイル' +
+        '(vite.config.ts.timestamp-*.mjs 等)が git status を汚していないか .gitignore を確認すること。'
+    );
+    process.exit(1);
+  }
+
+  console.log(`[実ビルド末端検査] footer: "${footerText}"`);
+  console.log(`[実ビルド末端検査] ?v= の値: ${[...new Set(versionQueryMatches)].join(', ')}`);
+  console.log('PASS: クリーンなワークツリーからビルドした dist に dirty 印は付かなかった。');
 }
 
 main().catch((e) => {

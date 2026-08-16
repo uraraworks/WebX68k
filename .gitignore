@@ -7,3 +7,8 @@ _local/
 .DS_Store
 tools/gen-cgrom/fonts/
 mcp/node_modules/
+# vite/vitest がTSの設定ファイル(vite.config.ts/vitest.config.ts)を読み込む際に
+# リポジトリ直下へ作る一時ファイル。無視しないと git status --porcelain が
+# 設定読み込み中は常に非空になり、版表記のdirty判定(tools/compute-version.mjs)を
+# 汚染して、クリーンなツリーからビルドしても常に dirty 扱いになってしまう。
+*.timestamp-*.mjs
