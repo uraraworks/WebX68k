@@ -3703,6 +3703,11 @@ if (import.meta.env.DEV) {
     // 計測スクリプト(scripts/measure-key.mjs)がブラウザ経路の末端到達を検証するためのフック。
     // 呼ばれたときだけHEAPを読む受動的なAPIで、毎フレーム処理には一切関与しない。
     keybuf: (start: number, count: number) => host?.readKeyBufWindow(start, count) ?? null,
+    // 音声振幅プローブ(予備確認: docs/STORAGE-SCSI.md「音声遅延」参照)。resetAudioProbe()で
+    // 積算区間を開始し、readAudioProbe()で最大振幅・サンプル数・非無音サンプル数を読む。
+    // queuedSecと違い、無音サンプルとの区別が付く。
+    resetAudioProbe: () => host?.resetAudioProbe(),
+    readAudioProbe: () => host?.readAudioProbe() ?? null,
     // 軸の較正状態(AxisCalibration)を実機で観測するためのフック。8BitDo M30 実機で
     // 「L/Rを離してもトリガ軸(axes[3]/[4])のON判定が固着する」報告の原因調査・再発防止用
     // (2026-08-08。実機のライブ表示観測で「一度も動かしていない間は0.00を報告し、一度動かすと

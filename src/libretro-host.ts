@@ -155,6 +155,12 @@ export interface AvInfo {
 
 export type AudioPushFn = (samples: Float32Array) => void;
 
+// dev限定・受動的な音声振幅プローブ(予備確認: docs/STORAGE-SCSI.md「音声遅延」参照)が
+// 「非無音」とみなす絶対振幅のしきい値。float32変換の丸め誤差(-32768/32768換算)より
+// 十分大きく、通常の音声信号よりは十分小さい値として決め打ちした値であり、実測で
+// 校正したものではない。
+const AUDIO_PROBE_NON_SILENT_THRESHOLD = 1e-4;
+
 /**
  * 1回のポーリングでコアへ渡せる移動量は -128..127（SCC が送れる範囲）。
  * これを超える分をそのまま渡すと Mouse_SetData() のクランプで切り捨てられて消えてしまうため、
@@ -184,6 +190,17 @@ export class LibretroHost {
   private coreOptionPtrs = new Map<string, number>();
 
   private keyState = new Set<number>();
+
+  // dev限定・受動的な音声振幅プローブ(予備確認: docs/STORAGE-SCSI.md「音声遅延」参照)。
+  // handleAudioBatch が既に全サンプルをFloat32へ変換するループを回しているため、その場で
+  // 最大振幅と非無音サンプル数を積算するだけで済ませている。`import.meta.env.DEV` はViteの
+  // 静的定数置換によりビルド時に確定するため、本番ビルドではこの分岐ごとデッドコード除去され
+  // コストは残らない。一方dev環境では毎回のオーディオバッチ処理(概ね毎フレーム相当の頻度で
+  // 呼ばれる)に比較1回ぶんのコストが常時乗る。呼ばれたときだけ読むKeyBufプローブと異なり、
+  // 振幅は継続的な積算が要るため、この点はKeyBufプローブと性質が異なる(readMe参照)。
+  private audioProbeMaxAbs = 0;
+  private audioProbeSampleCount = 0;
+  private audioProbeNonSilentCount = 0;
 
   // マウスは X68000 実機同様「相対移動量」で渡す(SCC が -128..127 のデルタを送る方式)。
   // コアは retro_run() 中に X/Y を1回ずつ読むので、読まれた分だけ差し引いて次フレームへ繰り越す。
@@ -712,10 +729,45 @@ export class LibretroHost {
     const count = frames * 2;
     const out = new Float32Array(count);
     for (let i = 0; i < count; i++) {
-      out[i] = mod.HEAP16[base + i] / 32768;
+      const sample = mod.HEAP16[base + i] / 32768;
+      out[i] = sample;
+      // dev限定・受動的な振幅プローブ。import.meta.env.DEVは静的定数のため本番ビルドでは
+      // この行ごとデッドコード除去される(上のフィールド宣言のコメント参照)。
+      if (import.meta.env.DEV) {
+        const abs = sample < 0 ? -sample : sample;
+        if (abs > this.audioProbeMaxAbs) this.audioProbeMaxAbs = abs;
+        if (abs > AUDIO_PROBE_NON_SILENT_THRESHOLD) this.audioProbeNonSilentCount++;
+        this.audioProbeSampleCount++;
+      }
     }
     this.audioPush(out);
     return frames;
+  }
+
+  /**
+   * 音声振幅プローブを初期化する。予備確認(音声遅延の陰性/陽性対照)で、操作前後の
+   * 積算区間を切り分けるために使う。呼び出し自体はカウンタのリセットのみで、
+   * オーディオコールバックの動作には関与しない。
+   */
+  resetAudioProbe(): void {
+    this.audioProbeMaxAbs = 0;
+    this.audioProbeSampleCount = 0;
+    this.audioProbeNonSilentCount = 0;
+  }
+
+  /**
+   * 直前の resetAudioProbe() 以降にコアが生成した音声サンプルの最大振幅(絶対値、0..1)、
+   * サンプル総数、非無音サンプル数(しきい値 AUDIO_PROBE_NON_SILENT_THRESHOLD 超)を返す。
+   * queuedSec(AudioWorkletの未再生キュー時間)と異なり、無音サンプルもキューには積まれる
+   * ため区別できない問題を避けるための、コア出力そのものの受動的な読み取り。
+   */
+  readAudioProbe(): { maxAbs: number; sampleCount: number; nonSilentCount: number; threshold: number } {
+    return {
+      maxAbs: this.audioProbeMaxAbs,
+      sampleCount: this.audioProbeSampleCount,
+      nonSilentCount: this.audioProbeNonSilentCount,
+      threshold: AUDIO_PROBE_NON_SILENT_THRESHOLD,
+    };
   }
 
   /** 任意のバイト列を FS の指定パスへ書き込む(既存ファイルがあれば上書き) */
