@@ -125,14 +125,26 @@ export class TouchMouse {
     const prevY = p.y;
     p.x = x;
     p.y = y;
+    let justCrossedSlop = false;
     if (!p.moved && Math.hypot(x - p.startX, y - p.startY) > TAP_SLOP_PX) {
       p.moved = true;
       this.strokeMoved = true;
+      justCrossedSlop = true;
     }
     // カーソルを動かすのは1本目の指だけ。2本目はタップ判定(moved)のためだけに追う
     if (id !== this.primaryId) return;
     if (this.mode === 'absolute') {
       this.callbacks.moveTo(x, y);
+      return;
+    }
+    // relative: スロップ以内の微動ではカーソルを動かさない。タップ時の指の揺れ(数px)を
+    // そのまま送ると、クリックのたびにカーソルが標的からずれ、特にダブルタップは1回目と
+    // 2回目の位置が食い違ってゲスト側でダブルクリックとして成立しなくなる(実機の
+    // トラックパッドが必ず入れている抑制)。スロップを超えた瞬間に始点からの累積差分を
+    // まとめて送って距離の欠損を防ぎ、以降は前回イベントとの差分を送る。
+    if (!p.moved) return;
+    if (justCrossedSlop) {
+      this.callbacks.moveBy(x - p.startX, y - p.startY);
     } else {
       this.callbacks.moveBy(x - prevX, y - prevY);
     }

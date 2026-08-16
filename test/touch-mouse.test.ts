@@ -178,16 +178,25 @@ describe('トラックパッド式(relative)モード', () => {
     expect(rec.deltas).toEqual([]);
   });
 
-  it('指の移動が前回位置との差分(moveBy)になる', () => {
+  it('スロップを超えてからの指の移動が差分(moveBy)になる(超えた瞬間は始点からの累積)', () => {
     const { rec, tm } = makeRecorder('relative');
     tm.pointerDown(1, 100, 50, 0);
-    tm.pointerMove(1, 110, 45);
-    tm.pointerMove(1, 130, 45);
+    tm.pointerMove(1, 120, 45); // スロップ超え: 始点からの累積(20,-5)をまとめて送る
+    tm.pointerMove(1, 140, 45); // 以降は前回との差分
     expect(rec.deltas).toEqual([
-      [10, -5],
+      [20, -5],
       [20, 0],
     ]);
     expect(rec.moves).toEqual([]);
+  });
+
+  it('スロップ以内の微動ではカーソルを動かさない(タップのたびに標的からずれない)', () => {
+    const { rec, tm } = makeRecorder('relative');
+    tm.pointerDown(1, 100, 50, 0);
+    tm.pointerMove(1, 105, 53); // タップ中の指の揺れ相当
+    tm.pointerUp(1, 80);
+    expect(rec.deltas).toEqual([]);
+    expect(rec.taps).toEqual(['left']); // タップとしても成立する
   });
 
   it('タップは左クリック、2本指タップは右クリック(absoluteと同じ)', () => {
@@ -206,7 +215,7 @@ describe('トラックパッド式(relative)モード', () => {
     tm.pointerDown(1, 100, 50, 0);
     tm.update(LONG_PRESS_MS + 10);
     expect(rec.downs).toEqual(['left']);
-    tm.pointerMove(1, 90, 70);
+    tm.pointerMove(1, 90, 70); // スロップ(12px)超えの移動なので届く
     expect(rec.deltas).toEqual([[-10, 20]]);
     tm.pointerUp(1, LONG_PRESS_MS + 400);
     expect(rec.ups).toEqual(['left']);
@@ -230,7 +239,7 @@ describe('トラックパッド式(relative)モード', () => {
     // 切替後は relative として動く
     tm.pointerDown(2, 10, 10, 1000);
     expect(rec.moves.length).toBe(1); // 最初の absolute 接地の1回だけ
-    tm.pointerMove(2, 20, 10);
-    expect(rec.deltas).toEqual([[10, 0]]);
+    tm.pointerMove(2, 25, 10); // スロップ超え
+    expect(rec.deltas).toEqual([[15, 0]]);
   });
 });

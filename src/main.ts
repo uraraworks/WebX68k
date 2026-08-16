@@ -3192,7 +3192,9 @@ let touchMouseEnabled = localStorage.getItem(TOUCH_MOUSE_KEY) === '1';
  * addMouseDelta へ送り、絶対位置の閉ループは使わない。
  */
 const TOUCH_MOUSE_MODE_KEY = 'webx68k.touchMouseMode';
-let touchMouseRelative = localStorage.getItem(TOUCH_MOUSE_MODE_KEY) === 'relative';
+// 既定はトラックパッド式。absolute はカーソルが指に隠れる難点があるため、明示的に
+// 選んだ場合だけ使う(iPhone実機で試した結果、トラックパッド式のほうが実用的だった)。
+let touchMouseRelative = localStorage.getItem(TOUCH_MOUSE_MODE_KEY) !== 'absolute';
 /** 収束待ちのクリック。tap が来たら積み、収束(または期限切れ)でパルスにして流す。 */
 const touchClickQueue: TouchMouseButton[] = [];
 let touchClickBusy = false;

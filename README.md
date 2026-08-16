@@ -342,18 +342,20 @@ apart.
 
 On touch devices (where the Pointer Lock API is unavailable — e.g. iOS
 Safari), enable **Touch Mouse** in the same Input group instead. While it is
-on, touches on the screen are interpreted as mouse input: drag with one
-finger to move the cursor (the guest cursor lands exactly on the touched
-point via absolute-position tracking), tap for a left click, two-finger tap
-for a right click, and long-press to hold the left button for dragging. The
-toggle is saved to `localStorage`.
+on, touches on the screen are interpreted as mouse input with
+laptop-trackpad semantics by default: drag with one finger to move the
+cursor by the finger's motion (with the mouse sensitivity setting applied;
+small in-place jitter is ignored so taps do not nudge the cursor off its
+target), tap for a left click at the current cursor position, two-finger
+tap for a right click, and long-press to hold the left button for dragging.
+Because the cursor moves independently of the finger, it is never hidden
+under your fingertip.
 
-Because the cursor sits right under your fingertip in this default
-(move-to-touch) style, it can be hard to see. The **Touch mouse: trackpad
-style** toggle in the same group switches to laptop-trackpad semantics
-instead: the cursor moves by the finger's motion (with the mouse
-sensitivity setting applied) and taps click at the current cursor
-position, so the cursor is never hidden under your finger.
+Turning the **Touch mouse: trackpad style** toggle in the same group off
+switches to move-to-touch semantics instead: the guest cursor lands
+exactly on the touched point via absolute-position tracking and taps click
+there. This is more direct, but the cursor sits right under your finger
+and is easy to lose sight of. Both toggles are saved to `localStorage`.
 
 ### Display mode (dot-for-dot / 4:3)
 
