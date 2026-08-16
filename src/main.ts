@@ -15,7 +15,7 @@ import {
   type FatEntry,
 } from './api/fat';
 import { loadBiosFile, saveBiosFile } from './bios-store';
-import { storageProbe } from './storage-probe';
+import { storageProbe, frameProbe } from './storage-probe';
 import { loadSramFile, saveSramFile } from './sram-store';
 import {
   classifyDiskBytes,
@@ -3795,7 +3795,69 @@ if (import.meta.env.DEV) {
         axes: managerForPad(pad).describeAxes(pad),
       };
     },
+    // 目的B(docs/STORAGE-SCSI.md)「フレーム時間の分布」専用フック。
+    // scripts/measure-frame-timing.mjs から呼ぶ。frameProbe.enabled を立てたときだけ
+    // libretro-host.ts の runFrame()/handleVideoRefresh() と、下のrAF観測ループ・long task
+    // observerが動く(既定off)。
+    frameProbeEnable: (enabled: boolean) => setFrameProbeEnabled(enabled),
+    frameProbeSetBusyWaitFault: (enabled: boolean) => {
+      frameProbe.busyWaitFaultEnabled = enabled;
+    },
+    frameProbeReset: () => frameProbe.reset(),
+    frameProbeRead: () => ({
+      runEvents: frameProbe.runEvents,
+      videoEvents: frameProbe.videoEvents,
+      rafSamples: frameProbe.rafSamples,
+      longTasks: frameProbe.longTasks,
+      fps: host?.avInfo?.fps ?? null,
+    }),
   };
+}
+
+// --- 目的B「フレーム時間の分布」: 前面タブのrAF観測間隔とlong task ---
+// 駆動ループ(scheduleNext/enterLoop、rAFとsetTimeoutの競争)とは別の、観測専用の
+// 独立したrequestAnimationFrameチェーン。駆動用タイマーの発火順に影響されず、
+// 「前面タブが実際にrAFを発火できた間隔」だけを見るためにあえて分離する。
+let frameProbeRafId = 0;
+let longTaskObserver: PerformanceObserver | null = null;
+
+function frameProbeRafTick(): void {
+  if (!frameProbe.enabled) {
+    frameProbeRafId = 0;
+    return;
+  }
+  frameProbe.rafSamples.push(performance.now());
+  frameProbeRafId = requestAnimationFrame(frameProbeRafTick);
+}
+
+function setFrameProbeEnabled(enabled: boolean): void {
+  frameProbe.enabled = enabled;
+  if (enabled) {
+    if (frameProbeRafId === 0) frameProbeRafId = requestAnimationFrame(frameProbeRafTick);
+    if (longTaskObserver === null && typeof PerformanceObserver !== 'undefined') {
+      try {
+        longTaskObserver = new PerformanceObserver((list) => {
+          for (const entry of list.getEntries()) {
+            frameProbe.longTasks.push({ startAtMs: entry.startTime, durationMs: entry.duration });
+          }
+        });
+        longTaskObserver.observe({ entryTypes: ['longtask'] });
+      } catch {
+        // long task API 非対応ブラウザ。longTasksは空のまま(取得不可であって0件確定ではない旨は
+        // 呼び出し側=計測スクリプトが判定する)。
+        longTaskObserver = null;
+      }
+    }
+  } else {
+    if (frameProbeRafId !== 0) {
+      cancelAnimationFrame(frameProbeRafId);
+      frameProbeRafId = 0;
+    }
+    if (longTaskObserver !== null) {
+      longTaskObserver.disconnect();
+      longTaskObserver = null;
+    }
+  }
 }
 
 function loop(t: number): void {

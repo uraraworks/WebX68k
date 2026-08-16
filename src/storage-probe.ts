@@ -134,3 +134,66 @@ export const storageProbe = new StorageProbe();
 if (import.meta.env.DEV && typeof window !== 'undefined') {
   (window as unknown as { __webx68kStorageProbe?: StorageProbe }).__webx68kStorageProbe = storageProbe;
 }
+
+// 目的B(docs/STORAGE-SCSI.md「目的B」表「フレーム時間の分布」)専用の計測フック。
+// storageProbeと同じ作法: import.meta.env.DEV の内側でのみ有効化でき、既定 enabled=false。
+// 無効時は呼び出し元(libretro-host.ts runFrame()/handleVideoRefresh()、main.ts loop())が
+// `if (frameProbe.enabled)` で分岐し、計測コード自体を実行しない(常時コストを持ち込まない)。
+// scripts/measure-frame-timing.mjs から window.__webx68kDebug 経由で読み書きする。
+
+export interface FrameRunEvent {
+  frameIndex: number;
+  /** retro_run() 呼び出し直前・直後(戻り)の時刻。video callbackはこの区間内で同期的に発生する。 */
+  runStartAtMs: number;
+  runEndAtMs: number;
+  /** このフレームで測定系検証用の50ms busy waitを注入したか。 */
+  busyWaitInjectedMs: number;
+}
+
+export interface FrameVideoEvent {
+  frameIndex: number;
+  /** RETRO_ENVIRONMENT側がdata===0を渡した(=dupe frame。実際の再変換・putImageDataは発生しない)。 */
+  dupe: boolean;
+  width: number;
+  height: number;
+  fps: number | null;
+  /** RGB565→RGBA変換の開始・終了。dupeの場合はconvertStartAtMsのみ(コールバック到達時刻)。 */
+  convertStartAtMs: number;
+  convertEndAtMs: number | null;
+  /** putImageData() 呼び出し直前・復帰直後。canvas更新処理の復帰点(物理表示時刻ではない)。 */
+  putStartAtMs: number | null;
+  putEndAtMs: number | null;
+}
+
+export interface LongTaskSample {
+  startAtMs: number;
+  durationMs: number;
+}
+
+class FrameProbe {
+  enabled = false;
+  /** 60フレームごとに50msのbusy waitを注入する(測定系の検証専用。故障注入)。 */
+  busyWaitFaultEnabled = false;
+  /** runFrame()が呼ばれるたびに進める通しカウンタ。videoEventsとの対応付けに使う。 */
+  frameCounter = 0;
+  runEvents: FrameRunEvent[] = [];
+  videoEvents: FrameVideoEvent[] = [];
+  /** 前面タブのrAF観測間隔用。メインの駆動ループ(rAF/setTimeoutの競争)とは別に、
+   * 観測専用の独立したrequestAnimationFrameチェーンがperformance.now()を積む。 */
+  rafSamples: number[] = [];
+  longTasks: LongTaskSample[] = [];
+
+  reset(): void {
+    this.frameCounter = 0;
+    this.runEvents = [];
+    this.videoEvents = [];
+    this.rafSamples = [];
+    this.longTasks = [];
+  }
+}
+
+export const frameProbe = new FrameProbe();
+
+if (import.meta.env.DEV && typeof window !== 'undefined') {
+  (window as unknown as { __webx68kFrameProbe?: FrameProbe }).__webx68kFrameProbe = frameProbe;
+}

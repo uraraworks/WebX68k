@@ -12,7 +12,7 @@ import {
   type TextScreenDump,
   unavailableTextScreenDump,
 } from './text-screen';
-import { storageProbe, verifyBytes, type RamExpansionKind } from './storage-probe';
+import { storageProbe, verifyBytes, type RamExpansionKind, frameProbe } from './storage-probe';
 
 /**
  * 目的B「起動時のRAM展開」計測(docs/STORAGE-SCSI.md参照)。DEVかつ storageProbe.enabled の
@@ -737,7 +737,27 @@ export class LibretroHost {
   }
 
   private handleVideoRefresh(data: number, width: number, height: number, pitch: number): void {
-    if (data === 0 || width === 0 || height === 0) return; // dupe frame
+    const probing = import.meta.env.DEV && frameProbe.enabled;
+    // frameCounterはrunFrame()側で既にインクリメント済みなので、対応する直近フレームは-1。
+    const frameIndex = probing ? Math.max(0, frameProbe.frameCounter - 1) : 0;
+
+    if (data === 0 || width === 0 || height === 0) {
+      // dupe frame。実際の再変換・putImageDataは発生しないので、その旨だけ記録する。
+      if (probing) {
+        frameProbe.videoEvents.push({
+          frameIndex,
+          dupe: true,
+          width,
+          height,
+          fps: this.avInfo?.fps ?? null,
+          convertStartAtMs: performance.now(),
+          convertEndAtMs: null,
+          putStartAtMs: null,
+          putEndAtMs: null,
+        });
+      }
+      return;
+    }
 
     if (width !== this.lastWidth || height !== this.lastHeight) {
       this.canvas.width = width;
@@ -753,6 +773,8 @@ export class LibretroHost {
     const mod = this.mod;
     const img = this.imageData;
     if (!img) return;
+
+    const convertStartAtMs = probing ? performance.now() : 0;
 
     const src16 = mod.HEAPU16;
     const strideSamples = pitch >> 1; // pitch はバイト単位、RGB565は1pixel=2byte
@@ -776,7 +798,26 @@ export class LibretroHost {
       }
     }
 
+    if (!probing) {
+      this.ctx2d.putImageData(img, 0, 0);
+      return;
+    }
+
+    const convertEndAtMs = performance.now();
+    const putStartAtMs = performance.now();
     this.ctx2d.putImageData(img, 0, 0);
+    const putEndAtMs = performance.now();
+    frameProbe.videoEvents.push({
+      frameIndex,
+      dupe: false,
+      width,
+      height,
+      fps: this.avInfo?.fps ?? null,
+      convertStartAtMs,
+      convertEndAtMs,
+      putStartAtMs,
+      putEndAtMs,
+    });
   }
 
   private handleAudioBatch(data: number, frames: number): number {
@@ -984,6 +1025,26 @@ export class LibretroHost {
   }
 
   runFrame(): void {
+    // 目的B「フレーム時間の分布」計測(docs/STORAGE-SCSI.md参照)。DEVかつ frameProbe.enabled の
+    // ときだけ計測コードを実行する。無効時はこの分岐自体を通らず、常時コストを持ち込まない。
+    if (import.meta.env.DEV && frameProbe.enabled) {
+      const frameIndex = frameProbe.frameCounter++;
+      const runStartAtMs = performance.now();
+      this.mod._retro_run();
+      const runEndAtMs = performance.now();
+      // 測定系の検証専用: 60フレームごとに50msのbusy waitを注入し、rAF間隔・canvas末端時間・
+      // long task・予算超過率のすべてに裾が現れることを確認する(本番ビルドには含まれない)。
+      let busyWaitInjectedMs = 0;
+      if (frameProbe.busyWaitFaultEnabled && frameIndex % 60 === 0) {
+        busyWaitInjectedMs = 50;
+        const until = performance.now() + busyWaitInjectedMs;
+        while (performance.now() < until) {
+          /* 意図的な同期busy wait(測定専用の故障注入) */
+        }
+      }
+      frameProbe.runEvents.push({ frameIndex, runStartAtMs, runEndAtMs, busyWaitInjectedMs });
+      return;
+    }
     this.mod._retro_run();
   }
 
