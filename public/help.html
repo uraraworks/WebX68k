@@ -759,6 +759,11 @@
               マウスの感度設定は、ブラウザの localStorage キー
               <code>webx68k.mouseSensitivity</code> に保存されます。
             </p>
+            <div class="note-box">
+              <strong>注意:</strong> iOS Safari は Pointer Lock API に対応しておらず、
+              上記のキャプチャによるマウス操作ができません。タッチデバイスでマウスを操作するには、
+              後述の<strong>バーチャルトラックパッド</strong>(入力パネルの🖱)を使ってください。
+            </div>
           </div>
           <div class="lang-en">
             <h2>Keyboard and mouse</h2>
@@ -842,6 +847,12 @@
               The mouse sensitivity setting is stored under the browser's localStorage key
               <code>webx68k.mouseSensitivity</code>.
             </p>
+            <div class="note-box">
+              <strong>Note:</strong> iOS Safari doesn't support the Pointer Lock API, so the
+              capture-based mouse control above isn't available there. To use the mouse on a
+              touch device, use the <strong>virtual trackpad</strong> (the 🖱 chip on the input
+              panel), described below.
+            </div>
           </div>
         </section>
 
@@ -938,9 +949,9 @@
           <div class="lang-ja">
             <h2>バーチャルパッド(スマホでゲームを遊ぶ)</h2>
             <p>
-              ツールバーの「入力パネル」ボタンを押すと、画面下に仮想キーボードまたはバーチャル
-              パッドが表示されます(排他)。入力パネルが表示されている間は⌨/🎮の小さなチップが
-              現れ、そこで表示を切り替えられます。方向入力は<strong>アナログスティック風</strong>
+              ツールバーの「入力パネル」ボタンを押すと、画面下に仮想キーボード・バーチャルパッド・
+              バーチャルトラックパッドのいずれかが表示されます(排他)。入力パネルが表示されている間は
+              ⌨/🎮/🖱の小さなチップが現れ、そこで表示を切り替えられます。方向入力は<strong>アナログスティック風</strong>
               (固定ベース＋ノブ、8方向スナップ)で、円の端をちょんと押すだけで方向が出ます。
             </p>
             <img src="./help/virtualpad.png" alt="縦持ちで画面下にバーチャルパッドがパネル配置で表示された状態" />
@@ -975,9 +986,9 @@
           <div class="lang-en">
             <h2>Virtual pad (playing on a phone)</h2>
             <p>
-              Pressing the toolbar's "Input Panel" button shows either the virtual keyboard or the
-              virtual pad at the bottom of the screen (mutually exclusive). While a panel is shown,
-              small ⌨/🎮 chips appear so you can switch between them. Directional input is
+              Pressing the toolbar's "Input Panel" button shows the virtual keyboard, the virtual
+              pad, or the virtual trackpad at the bottom of the screen (mutually exclusive). While a
+              panel is shown, small ⌨/🎮/🖱 chips appear so you can switch between them. Directional input is
               <strong>analog-stick-style</strong> (a fixed base with a knob, snapping to 8
               directions) — a light tap near the edge of the circle is enough to get a direction out.
             </p>
@@ -1010,6 +1021,53 @@
               creates a copy — the built-in itself is never changed.
             </p>
             <img src="./help/vpad-editor-en.png" alt="Virtual pad's edit-assignments dialog" />
+          </div>
+        </section>
+
+        <!-- 7.65 バーチャルトラックパッド -->
+        <section class="help-card">
+          <div class="lang-ja">
+            <h2>バーチャルトラックパッド(タッチでマウス操作)</h2>
+            <p>
+              iOS Safari は Pointer Lock API に対応しておらず、通常のマウスキャプチャが
+              成立しません。その代わりとして、入力パネルの3種類目にバーチャルトラックパッドが
+              あります。ツールバーの「入力パネル」ボタンでパネルを開き、⌨/🎮/🖱 のチップから
+              🖱 を選ぶと表示されます。
+            </p>
+            <img src="./help/trackpad.png" alt="画面とツールバーの間にバーチャルトラックパッドの操作面が表示された状態" />
+            <p>
+              操作面は<strong>画面とツールバーの間の帯</strong>に置かれ、画面には重なりません
+              (操作中に指がゲスト画面を隠さないようにするためです)。1本指ドラッグでカーソルを
+              移動します(ノートPCのトラックパッドと同じ相対移動で、マウス感度設定が適用されます)。
+              タップは左クリック、2本指タップは右クリック、長押し(450ms)すると左ボタンを押した
+              ままドラッグできます。
+            </p>
+            <div class="note-box">
+              <strong>注意:</strong> X68000のマウスは左右2ボタンのみでホイールという概念が
+              無いため、2本指ドラッグ(ホイール相当)には対応していません。
+            </div>
+          </div>
+          <div class="lang-en">
+            <h2>Virtual trackpad (mouse control via touch)</h2>
+            <p>
+              iOS Safari doesn't support the Pointer Lock API, so the usual mouse-capture flow
+              doesn't work there. As a substitute, the input panel has a third kind: the virtual
+              trackpad. Open the input panel with the toolbar's "Input Panel" button, then pick 🖱
+              from the ⌨/🎮/🖱 chips.
+            </p>
+            <img src="./help/trackpad-en.png" alt="The virtual trackpad's surface shown in the strip between the screen and the toolbar" />
+            <p>
+              The surface sits in the <strong>strip between the screen and the toolbar</strong> and
+              never overlaps the screen (so your finger doesn't cover the guest display while
+              you're using it). A one-finger drag moves the cursor (relative movement, just like a
+              laptop trackpad, with the mouse sensitivity setting applied). A tap is a left click, a
+              two-finger tap is a right click, and a long press (450ms) holds the left button down
+              so you can drag.
+            </p>
+            <div class="note-box">
+              <strong>Note:</strong> The X68000 mouse only has left/right buttons and no concept of
+              a wheel, so a two-finger drag (which would be a wheel gesture) isn't supported.
+            </div>
           </div>
         </section>
 
@@ -1416,14 +1474,14 @@
             ja: '入力パネル',
             en: 'Input Panel',
             descJa:
-              '画面下に入力パネル(仮想キーボードまたはバーチャルパッド)を表示/非表示します。' +
-              'パネル表示中に現れる⌨/🎮の小さなチップでどちらを出すか切り替えられ、最後に選んだ側が' +
-              '次回このボタンで開きます。仮想キーボードとバーチャルパッドは同時には出せません。',
+              '画面下に入力パネル(仮想キーボード・バーチャルパッド・バーチャルトラックパッドの' +
+              'いずれか)を表示/非表示します。パネル表示中に現れる⌨/🎮/🖱の小さなチップでどれを' +
+              '出すか切り替えられ、最後に選んだ側が次回このボタンで開きます。3種類は同時には出せません。',
             descEn:
-              'Shows/hides the input panel (either the virtual keyboard or the virtual pad) at the' +
-              ' bottom of the screen. While a panel is showing, small ⌨/🎮 chips let you switch which' +
-              ' one, and this button reopens whichever you picked last. The virtual keyboard and the' +
-              ' virtual pad are mutually exclusive.',
+              'Shows/hides the input panel (the virtual keyboard, the virtual pad, or the virtual' +
+              ' trackpad) at the bottom of the screen. While a panel is showing, small ⌨/🎮/🖱 chips' +
+              ' let you switch which one, and this button reopens whichever you picked last. The' +
+              ' three are mutually exclusive.',
           },
           {
             icon: 'M4 8h3l2-3h6l2 3h3a1 1 0 0 1 1 1v10a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1V9a1 1 0 0 1 1-1z M12 17a3.5 3.5 0 1 0 0-7 3.5 3.5 0 0 0 0 7z',
