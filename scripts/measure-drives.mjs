@@ -20,7 +20,10 @@ const DEFAULT_CHROME = '/Applications/Google Chrome.app/Contents/MacOS/Google Ch
 const REQUIRED_STABLE_POLLS = 3;
 const RECOVERY_MAX_ATTEMPTS = 2;
 const RECOVERY_TIMEOUT_MS = 5000;
-const VALID_FAULTS = new Set(['no-fdd1', 'no-hdd']);
+const VALID_FAULTS = new Set(['no-fdd1', 'no-hdd', 'drop-enter']);
+// drop-enter 故障の対象ドライブ。D: は最後に実行されるため、Enter取りこぼしで
+// タイムアウト・復帰が起きても後続ドライブへの波及を避けられる。
+const DROP_ENTER_TARGET_DRIVE = 'D';
 const DRIVE_LETTERS = ['A', 'B', 'C', 'D'];
 const KEY_SPECS = [
   { code: 'KeyD', key: 'd' },
@@ -100,7 +103,9 @@ function printHelp() {
   --key-gap=<ms>                キー解放後、次の押下までの間隔 (既定: 70)
   --input-retries=<number>      コマンド行不一致時の再試行回数 (既定: 3)
   --output=<path>               JSON の保存先
-  --fault=<no-fdd1|no-hdd>      故障注入。先に故障なしの陽性対照を1回行う
+  --fault=<no-fdd1|no-hdd|drop-enter>  故障注入。先に故障なしの陽性対照を1回行う
+                                 (drop-enter: ${DROP_ENTER_TARGET_DRIVE}: のコマンドでEnterの
+                                 合成キーイベントを1回だけ送らない)
 
 環境変数: WEBX68K_PORT, WEBX68K_DRIVE_RUNS, WEBX68K_DRIVE_TIMEOUT_MS,
           WEBX68K_DRIVE_COMMAND_TIMEOUT_MS, WEBX68K_DRIVE_POLL_INTERVAL_MS,
@@ -126,7 +131,7 @@ function buildConfig(args) {
     args.output ?? process.env.WEBX68K_DRIVE_MEASURE_OUTPUT ?? defaultOutputPath();
   const fault = args.fault ?? null;
   if (fault !== null && !VALID_FAULTS.has(fault)) {
-    throw new Error(`fault は no-fdd1 または no-hdd を指定してください: ${fault}`);
+    throw new Error(`fault は no-fdd1 、no-hdd 、drop-enter のいずれかを指定してください: ${fault}`);
   }
   return {
     baseUrl: baseUrl.href.replace(/\/$/, ''),
@@ -379,7 +384,10 @@ async function recoverPrompt(page, config) {
  * それぞれ十分に空ける。応答時間は Enter の keydown と、そのドライブ固有の最初の識別出力を
  * TVRAMで観測した時刻との差で、すべてページ内 performance.now() を使う。
  */
-async function executeDir(page, letter, config) {
+async function executeDir(page, letter, config, fault) {
+  // 陽性対照(measureOnce に fault=null で呼ばれる)では故障を注入しない。config.fault は
+  // CLI引数のまま(drop-enterのまま)なので、必ずこの呼び出し単位のfaultを見る。
+  const dropEnter = fault === 'drop-enter' && letter === DROP_ENTER_TARGET_DRIVE;
   return page.evaluate(
     async ({
       driveLetter,
@@ -390,6 +398,7 @@ async function executeDir(page, letter, config) {
       keyHold,
       keyGap,
       inputRetries,
+      dropEnter,
     }) => {
       const keyByCode = new Map(allKeySpecs.map((spec) => [spec.code, spec]));
       const release = () => {
@@ -510,6 +519,7 @@ async function executeDir(page, letter, config) {
           completionMs: null,
           timedOut: false,
           responseEvidenceFound: false,
+          enterDropped: false,
           observedLines: readLines(),
           lastAPromptLine: latestPromptLine(),
         };
@@ -526,25 +536,29 @@ async function executeDir(page, letter, config) {
       try {
         const enterSpec = keyByCode.get('Enter');
         enterAt = performance.now();
-        window.dispatchEvent(
-          new KeyboardEvent('keydown', {
-            code: enterSpec.code,
-            key: enterSpec.key,
-            bubbles: true,
-            composed: true,
-            cancelable: true,
-          }),
-        );
-        await wait(keyHold);
-        window.dispatchEvent(
-          new KeyboardEvent('keyup', {
-            code: enterSpec.code,
-            key: enterSpec.key,
-            bubbles: true,
-            composed: true,
-            cancelable: true,
-          }),
-        );
+        // drop-enter 故障注入: keydown/keyupごと送らない。コマンド行の文字入力は
+        // 上のループで正常に送信済みで、ここだけEnterの合成キーイベントを欠落させる。
+        if (!dropEnter) {
+          window.dispatchEvent(
+            new KeyboardEvent('keydown', {
+              code: enterSpec.code,
+              key: enterSpec.key,
+              bubbles: true,
+              composed: true,
+              cancelable: true,
+            }),
+          );
+          await wait(keyHold);
+          window.dispatchEvent(
+            new KeyboardEvent('keyup', {
+              code: enterSpec.code,
+              key: enterSpec.key,
+              bubbles: true,
+              composed: true,
+              cancelable: true,
+            }),
+          );
+        }
 
         while (performance.now() - enterAt < timeout) {
           await nextFrame();
@@ -589,6 +603,7 @@ async function executeDir(page, letter, config) {
         completionMs: completedAt === null ? null : completedAt - enterAt,
         timedOut: completedAt === null,
         responseEvidenceFound: responseAt !== null,
+        enterDropped: dropEnter,
         observedLines: [...observedLineSet],
         lastAPromptLine,
       };
@@ -602,6 +617,7 @@ async function executeDir(page, letter, config) {
       keyHold: config.keyHoldMs,
       keyGap: config.keyGapMs,
       inputRetries: config.inputRetries,
+      dropEnter,
     },
   );
 }
@@ -681,6 +697,19 @@ function makeSkippedDrive(letter, reason) {
   };
 }
 
+// コマンド行の入力照合(inputFailed)はEnter送出より前の状態しか見ていない。Enter送出後に
+// 応答が一切観測されずタイムアウトし、かつ復帰処理の最初の1手(Enter再送)だけで A> に戻れた
+// 場合は、媒体側の識別条件を満たさなかった(driveJudgementFailed)のではなく、Enterの合成
+// キーイベント自体が失われた可能性が高い。両者は原因も対処も異なるため分離する。
+function isEnterLostCandidate(raw, recovery) {
+  if (raw.input.passed !== true) return false;
+  if (!raw.timedOut) return false;
+  if (raw.responseEvidenceFound) return false;
+  if (!recovery || !recovery.recovered) return false;
+  const firstAttempt = recovery.attempts[0];
+  return firstAttempt?.method === 'Enter' && firstAttempt?.prompt?.success === true;
+}
+
 // 環境収集(scripts/measure-env.mjs)は最初の試行のページが開いている間・context.close()の
 // 前に1回だけ行う(envCapture.valueがundefinedの間だけ実行)。
 async function measureOnce(browser, config, trial, fault, envCapture) {
@@ -723,7 +752,7 @@ async function measureOnce(browser, config, trial, fault, envCapture) {
         drives[letter] = makeSkippedDrive(letter, commandBlockedReason);
         continue;
       }
-      const raw = await executeDir(page, letter, config);
+      const raw = await executeDir(page, letter, config, fault);
       const identity = raw.input.passed
         ? judgeIdentity(letter, raw.observedLines, raw.responseEvidenceFound)
         : {
@@ -735,6 +764,7 @@ async function measureOnce(browser, config, trial, fault, envCapture) {
           };
       let recovery = null;
       if (raw.timedOut) recovery = await recoverPrompt(page, config);
+      const enterLost = isEnterLostCandidate(raw, recovery);
       const judgement = raw.input.passed === false || !identity.passed ? 'failed' : 'passed';
       drives[letter] = {
         ...raw,
@@ -745,6 +775,7 @@ async function measureOnce(browser, config, trial, fault, envCapture) {
         completionMs: roundMs(raw.completionMs),
         skipped: false,
         judgement,
+        enterLost,
         recovery,
         identity,
       };
@@ -753,10 +784,16 @@ async function measureOnce(browser, config, trial, fault, envCapture) {
       }
     }
     const inputFailedDrives = DRIVE_LETTERS.filter((letter) => drives[letter].input.passed === false);
+    const enterLostDrives = DRIVE_LETTERS.filter((letter) => drives[letter].enterLost === true);
+    // driveJudgementFailed は「入力もEnterも届いたが媒体識別条件を満たさなかった」場合に限る。
+    // Enter取りこぼしと判定できた分は enterLostDrives 側にのみ計上し、二重計上しない。
     const driveJudgementFailedDrives = DRIVE_LETTERS.filter(
-      (letter) => drives[letter].input.passed === true && !drives[letter].identity.passed,
+      (letter) =>
+        drives[letter].input.passed === true && !drives[letter].identity.passed && !drives[letter].enterLost,
     );
-    const failedDrives = [...new Set([...inputFailedDrives, ...driveJudgementFailedDrives])];
+    const failedDrives = [
+      ...new Set([...inputFailedDrives, ...enterLostDrives, ...driveJudgementFailedDrives]),
+    ];
     const indeterminateDrives = DRIVE_LETTERS.filter(
       (letter) => drives[letter].judgement === 'indeterminate',
     );
@@ -767,6 +804,7 @@ async function measureOnce(browser, config, trial, fault, envCapture) {
       success: failedDrives.length === 0 && indeterminateDrives.length === 0,
       validMeasurement,
       inputFailedDrives,
+      enterLostDrives,
       driveJudgementFailedDrives,
       failedDrives,
       indeterminateDrives,
@@ -783,6 +821,7 @@ async function measureOnce(browser, config, trial, fault, envCapture) {
       success: false,
       validMeasurement: false,
       inputFailedDrives: [],
+      enterLostDrives: [],
       driveJudgementFailedDrives: [],
       failedDrives: [],
       indeterminateDrives: [...DRIVE_LETTERS],
@@ -838,8 +877,9 @@ function buildDriveSummaries(attempts) {
             (drive) => drive.input.passed === true && drive.identity.passed,
           ).length,
           driveJudgementFailed: validAttemptResults.filter(
-            (drive) => drive.input.passed === true && !drive.identity.passed,
+            (drive) => drive.input.passed === true && !drive.identity.passed && !drive.enterLost,
           ).length,
+          enterLost: validAttemptResults.filter((drive) => drive.enterLost === true).length,
           responseSampleCount: samplesMs.length,
           samplesMs,
           ...summarize(samplesMs),
@@ -851,14 +891,21 @@ function buildDriveSummaries(attempts) {
 
 function buildFaultCheck(fault, positiveControl, attempts) {
   if (!fault) return null;
-  const expectedFailedDrive = fault === 'no-fdd1' ? 'B' : 'C';
+  const isDropEnter = fault === 'drop-enter';
+  const expectedFailedDrive =
+    fault === 'no-fdd1' ? 'B' : fault === 'no-hdd' ? 'C' : DROP_ENTER_TARGET_DRIVE;
+  // drop-enter は「入力側の失敗(enterLostDrives)」として分類されることが合格条件であり、
+  // media識別失敗(driveJudgementFailedDrives)に入っていたら誤分類として不合格にする。
+  const targetCategory = isDropEnter ? 'enterLostDrives' : 'driveJudgementFailedDrives';
   const positiveControlPassed = positiveControl?.success === true;
   const inputFailurePresent =
     (positiveControl?.inputFailedDrives?.length ?? 0) > 0 ||
     attempts.some((attempt) => attempt.inputFailedDrives.length > 0);
   const attemptChecks = attempts.map((attempt) => {
     const judgementPossible = attempt.inputFailedDrives.length === 0;
-    const targetFailed = attempt.driveJudgementFailedDrives.includes(expectedFailedDrive);
+    const targetFailed = attempt[targetCategory].includes(expectedFailedDrive);
+    const misclassifiedAsDriveJudgementFailed =
+      isDropEnter && attempt.driveJudgementFailedDrives.includes(expectedFailedDrive);
     const unaffectedFailedDrives = attempt.failedDrives.filter(
       (letter) => letter !== expectedFailedDrive,
     );
@@ -871,23 +918,27 @@ function buildFaultCheck(fault, positiveControl, attempts) {
       failedDrives: attempt.failedDrives,
       indeterminateDrives: attempt.indeterminateDrives,
       inputFailedDrives: attempt.inputFailedDrives,
+      enterLostDrives: attempt.enterLostDrives,
       driveJudgementFailedDrives: attempt.driveJudgementFailedDrives,
       judgementPossible,
       targetFailed,
+      misclassifiedAsDriveJudgementFailed,
       unaffectedFailedDrives,
       unaffectedDrivesPassed,
       noUnaffectedDriveFailed,
       onlyFaultedTargetFailed:
-        judgementPossible && targetFailed && noUnaffectedDriveFailed,
+        judgementPossible && targetFailed && noUnaffectedDriveFailed && !misclassifiedAsDriveJudgementFailed,
     };
   });
   const onlyFaultedTargetFailed =
     attempts.length > 0 && attemptChecks.every((check) => check.onlyFaultedTargetFailed);
   const allDrivesFailed = attemptChecks.some((check) => check.failedDrives.length === DRIVE_LETTERS.length);
+  const anyMisclassified = attemptChecks.some((check) => check.misclassifiedAsDriveJudgementFailed);
   const passed = !inputFailurePresent && positiveControlPassed && onlyFaultedTargetFailed;
   return {
     fault,
     expectedFailedDrive,
+    targetCategory,
     positiveControlPassed,
     positiveControlIndeterminateDrives: positiveControl?.indeterminateDrives ?? [],
     inputFailurePresent,
@@ -908,7 +959,9 @@ function buildFaultCheck(fault, positiveControl, attempts) {
         ? null
         : allDrivesFailed
           ? '判定が粗すぎる: 全ドライブが失敗した試行がある'
-          : `故障対象 ${expectedFailedDrive}: だけの失敗を確認できない`,
+          : anyMisclassified
+            ? `故障対象 ${expectedFailedDrive}: がドライブ判定失敗に誤分類された`
+            : `故障対象 ${expectedFailedDrive}: だけの失敗を確認できない`,
   };
 }
 
@@ -982,6 +1035,7 @@ async function run() {
           successCondition: '起動完了判定と同じ条件で A> が安定して現れること',
         },
         fault: config.fault,
+        dropEnterTargetDrive: config.fault === 'drop-enter' ? DROP_ENTER_TARGET_DRIVE : null,
         headless: false,
         contextIsolation: '試行ごとに新規 BrowserContext',
       },
@@ -1001,6 +1055,17 @@ async function run() {
         passed: 'DIR を実行し、媒体識別条件を満たした',
         failed: 'DIR の入力または媒体識別条件に失敗した',
         indeterminate: '先行DIRのタイムアウトから復帰できず、未実行のため判定不能',
+      },
+      failureCategoryClassification: {
+        inputFailedDrives:
+          'コマンド行入力照合(Enter送出より前)が一致しなかったドライブ。commandLineMatches不一致',
+        enterLostDrives:
+          'コマンド行入力は一致したが、Enter送出後に応答が一切観測されずタイムアウトし、' +
+          '復帰処理の最初の1手(Enter再送)だけで A> に戻れたドライブ。Enterの合成キーイベント' +
+          '自体が失われた可能性が高く、媒体識別失敗とは区別する',
+        driveJudgementFailedDrives:
+          '入力・Enterとも届いたが、媒体識別条件(必須ディレクトリ・ボリューム表示・容量・' +
+          '無効ドライブ表示)を満たさなかったドライブ。enterLostDrivesに分類された分は含まない',
       },
       identityRules: {
         A: { medium: 'FDD0 システムディスク', requiredDirectories: A_DIRECTORIES },
@@ -1039,6 +1104,10 @@ async function run() {
       (count, attempt) => count + attempt.inputFailedDrives.length,
       0,
     );
+    const enterLostCount = attempts.reduce(
+      (count, attempt) => count + attempt.enterLostDrives.length,
+      0,
+    );
     const driveJudgementFailureCount = attempts.reduce(
       (count, attempt) => count + attempt.driveJudgementFailedDrives.length,
       0,
@@ -1053,6 +1122,7 @@ async function run() {
     );
     console.log(
       `失敗内訳: 入力失敗 ${inputFailureCount}件, ` +
+        `Enter取りこぼし ${enterLostCount}件, ` +
         `ドライブ判定失敗 ${driveJudgementFailureCount}件, ` +
         `判定不能（未実行） ${indeterminateCount}件`,
     );
@@ -1063,6 +1133,7 @@ async function run() {
           `試行無効化 ${summary.invalidatedByTrialInputFailure}, ` +
           `分類 成功 ${summary.passed}/失敗 ${summary.failed}/判定不能 ${summary.indeterminate}, ` +
           `ドライブ判定 成功 ${summary.driveJudgementPassed}/失敗 ${summary.driveJudgementFailed}, ` +
+          `Enter取りこぼし ${summary.enterLost}, ` +
           `中央値 ${summary.medianMs ?? '-'} ms, p95 ${summary.p95Ms ?? '-'} ms, ` +
           `最小 ${summary.minMs ?? '-'} ms, 最大 ${summary.maxMs ?? '-'} ms`,
       );
