@@ -4021,6 +4021,9 @@ btnBootSystem.addEventListener('click', () => void startFromOverlay(true));
 // 避けるため、startFromOverlay() と同じ流儀でエラーを通知する(ここではリロードを促す)。
 btnReset.addEventListener('click', () => {
   if (btnReset.disabled) return;
+  // 実行中のリセットは誤タップ(特にタッチ操作)でゲームの進行を丸ごと失う事故に直結する
+  // ため、排出と同じく確認を挟む。
+  if (host && running && !confirm(t('resetConfirmRunning'))) return;
   btnReset.disabled = true;
   showToast(t('toastResetting'), null);
   restartCore()
