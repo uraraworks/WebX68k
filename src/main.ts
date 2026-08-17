@@ -40,7 +40,7 @@ import {
   type LibraryNode,
 } from './api/library';
 import { buildFileManagerDialog, type FmTarget } from './filemanager';
-import { TouchMouse, type TouchMouseButton } from './touch-mouse';
+import type { TouchMouseButton } from './touch-mouse';
 import { Bridge, resolveBridgeUrl, type BridgeHost } from './bridge';
 import { RETROK, charToKey, codeToRetrok } from './keyboard';
 import { LibretroHost } from './libretro-host';
@@ -74,6 +74,7 @@ import { buildHostKeyDialog } from './hostkey-ui';
 import { createVirtualKeyboard, SharedKeyInput } from './virtual-keyboard';
 import { isRepeatableKey, KeyRepeater } from './key-repeat';
 import { createVirtualPad, type VpadPlacement, type VpadSideBoxes } from './virtual-pad';
+import { createVirtualTrackpad, type VirtualTrackpad } from './virtual-trackpad';
 import {
   activeProfile,
   BUILTIN_CURSOR_SPACE_ID,
@@ -124,17 +125,17 @@ const btnSpeed = document.getElementById('btn-speed') as HTMLButtonElement;
 const btnSpeedBadge = document.getElementById('btn-speed-badge') as HTMLSpanElement;
 const btnMouseCapture = document.getElementById('btn-mouse-capture') as HTMLButtonElement;
 const btnMouseResync = document.getElementById('btn-mouse-resync') as HTMLButtonElement;
-const btnTouchMouse = document.getElementById('btn-touch-mouse') as HTMLButtonElement;
-const btnTouchMousePad = document.getElementById('btn-touch-mouse-pad') as HTMLButtonElement;
 const btnFullscreen = document.getElementById('btn-fullscreen') as HTMLButtonElement;
 const btnVirtualKeyboard = document.getElementById('btn-virtual-keyboard') as HTMLButtonElement;
 const btnAspect = document.getElementById('btn-aspect') as HTMLButtonElement;
 const btnToolbarOverflow = document.getElementById('btn-toolbar-overflow') as HTMLButtonElement;
 const virtualKeyboardPanel = document.getElementById('virtual-keyboard') as HTMLDivElement;
 const virtualPadPanel = document.getElementById('virtual-pad') as HTMLDivElement;
+const virtualTrackpadPanel = document.getElementById('virtual-trackpad') as HTMLDivElement;
 const inputPanelSwitchEl = document.getElementById('input-panel-switch') as HTMLDivElement;
 const btnPanelKeyboard = document.getElementById('btn-panel-keyboard') as HTMLButtonElement;
 const btnPanelPad = document.getElementById('btn-panel-pad') as HTMLButtonElement;
+const btnPanelTrackpad = document.getElementById('btn-panel-trackpad') as HTMLButtonElement;
 const stageEl = document.querySelector('.stage') as HTMLDivElement;
 // .stage を囲む領域確保用ラッパ(style.css の .stage-frame 参照)。4:3切替でレイアウトが
 // 動かないよう、rescale() が常に「4:3時のサイズ」をここへインラインで指定する。
@@ -685,7 +686,7 @@ function applyVpadPlacement(next: VpadPlacement, panelHeight: number, sidesBoxes
 }
 
 const INPUT_PANEL_STORAGE_KEY = 'webx68k.inputPanel';
-type InputPanelKind = 'keyboard' | 'pad';
+type InputPanelKind = 'keyboard' | 'pad' | 'trackpad';
 
 /** 保存が無い初回だけ、粗いポインタ(タッチ主体の端末)ならパッド優先で始める。 */
 function defaultInputPanelKind(): InputPanelKind {
@@ -694,7 +695,7 @@ function defaultInputPanelKind(): InputPanelKind {
 
 function loadInputPanelPref(): InputPanelKind {
   const v = localStorage.getItem(INPUT_PANEL_STORAGE_KEY);
-  return v === 'keyboard' || v === 'pad' ? v : defaultInputPanelKind();
+  return v === 'keyboard' || v === 'pad' || v === 'trackpad' ? v : defaultInputPanelKind();
 }
 
 function saveInputPanelPref(kind: InputPanelKind): void {
@@ -804,9 +805,9 @@ const hostKeyDialog = buildHostKeyDialog(
 );
 btnHostKey.addEventListener('click', () => hostKeyDialog.open());
 
-/** ツールバーボタンの見た目・チップの表示/非表示をまとめて同期する(両パネル共通の唯一の情報源)。 */
+/** ツールバーボタンの見た目・チップの表示/非表示をまとめて同期する(3パネル共通の唯一の情報源)。 */
 function syncInputPanelUi(): void {
-  const anyVisible = virtualKeyboard.isVisible() || virtualPad.isVisible();
+  const anyVisible = virtualKeyboard.isVisible() || virtualPad.isVisible() || virtualTrackpad.isVisible();
   btnVirtualKeyboard.classList.toggle('active', anyVisible);
   btnVirtualKeyboard.setAttribute('aria-pressed', anyVisible ? 'true' : 'false');
   btnVirtualKeyboard.title = anyVisible ? t('toolbarInputPanelHide') : t('toolbarInputPanel');
@@ -815,9 +816,10 @@ function syncInputPanelUi(): void {
   inputPanelSwitchEl.classList.toggle('hidden', !anyVisible);
   btnPanelKeyboard.setAttribute('aria-pressed', virtualKeyboard.isVisible() ? 'true' : 'false');
   btnPanelPad.setAttribute('aria-pressed', virtualPad.isVisible() ? 'true' : 'false');
+  btnPanelTrackpad.setAttribute('aria-pressed', virtualTrackpad.isVisible() ? 'true' : 'false');
 }
 
-/** 両パネルを閉じる。閉じる側は必ず releaseAll() を呼び、押しっぱなしの固着を防ぐ。 */
+/** 3パネルすべてを閉じる。閉じる側は必ず releaseAll() を呼び、押しっぱなしの固着を防ぐ。 */
 function closeInputPanels(): void {
   if (virtualKeyboard.isVisible()) {
     virtualKeyboard.setVisible(false);
@@ -826,22 +828,26 @@ function closeInputPanels(): void {
   if (virtualPad.isVisible()) {
     virtualPad.setVisible(false); // 内部で releaseAllInternal() を呼ぶ(virtual-pad.ts 参照)。
   }
+  if (virtualTrackpad.isVisible()) {
+    virtualTrackpad.setVisible(false); // 内部で reset()+strokeEnd() を呼ぶ(virtual-trackpad.ts 参照)。
+  }
   syncInputPanelUi();
   rescale();
 }
 
-/** 指定した側だけを開く(もう片方は必ず閉じて releaseAll() する)。選んだ側を既定として保存する。 */
+/** 指定した1種類だけを開く(残り2種は必ず閉じて releaseAll() する)。選んだ種類を既定として保存する。 */
 function openInputPanel(kind: InputPanelKind): void {
-  if (kind === 'keyboard') {
-    if (virtualPad.isVisible()) virtualPad.setVisible(false);
-    virtualKeyboard.setVisible(true);
-  } else {
-    if (virtualKeyboard.isVisible()) {
-      virtualKeyboard.setVisible(false);
-      virtualKeyboard.releaseAll();
-    }
-    virtualPad.setVisible(true);
+  if (virtualKeyboard.isVisible() && kind !== 'keyboard') {
+    virtualKeyboard.setVisible(false);
+    virtualKeyboard.releaseAll();
   }
+  if (virtualPad.isVisible() && kind !== 'pad') virtualPad.setVisible(false);
+  if (virtualTrackpad.isVisible() && kind !== 'trackpad') virtualTrackpad.setVisible(false);
+
+  if (kind === 'keyboard') virtualKeyboard.setVisible(true);
+  else if (kind === 'pad') virtualPad.setVisible(true);
+  else virtualTrackpad.setVisible(true);
+
   inputPanelPref = kind;
   saveInputPanelPref(kind);
   syncInputPanelUi();
@@ -849,11 +855,11 @@ function openInputPanel(kind: InputPanelKind): void {
 }
 
 btnVirtualKeyboard.addEventListener('click', () => {
-  if (virtualKeyboard.isVisible() || virtualPad.isVisible()) closeInputPanels();
+  if (virtualKeyboard.isVisible() || virtualPad.isVisible() || virtualTrackpad.isVisible()) closeInputPanels();
   else openInputPanel(inputPanelPref);
 });
 btnPanelKeyboard.addEventListener('click', () => openInputPanel('keyboard'));
-// 🎮 は状態で役割が変わる: 仮想キーボード表示中はパッドへの即切替(ゲーム中に素早く出す用途を
+// 🎮 は状態で役割が変わる: 他のパネル表示中はパッドへの即切替(ゲーム中に素早く出す用途を
 // 優先しメニューは出さない)、バーチャルパッドが既に表示中ならプロファイル選択メニューを開く。
 btnPanelPad.addEventListener('click', (e) => {
   if (virtualPad.isVisible()) {
@@ -867,6 +873,7 @@ btnPanelPad.addEventListener('click', (e) => {
     openInputPanel('pad');
   }
 });
+btnPanelTrackpad.addEventListener('click', () => openInputPanel('trackpad'));
 
 // 同梱ROM/ディスク(public/system/)のパス。ユーザーが独自ファイルを設定した場合はそちらを優先する。
 // GitHub Pages のプロジェクトページ(https://<user>.github.io/WebX68k/)配下でも解決できるよう、
@@ -2191,8 +2198,6 @@ function renderVpadProfileMenu(anchorEl: HTMLButtonElement): void {
 const OVERFLOW_MENU_LABEL_OVERRIDES = new Map<HTMLButtonElement, () => string>([
   [btnAspect, () => t('toolbarMenuAspect43')],
   [btnMouseCapture, () => t('toolbarMenuMouseCapture')],
-  [btnTouchMouse, () => t('toolbarMenuTouchMouse')],
-  [btnTouchMousePad, () => t('toolbarMenuTouchMousePad')],
   [btnLang, () => t('toolbarLanguage')],
 ]);
 
@@ -2215,7 +2220,7 @@ const OVERFLOW_GROUP_ORDER: OverflowGroupId[] = ['display', 'input', 'disk', 'st
 
 const OVERFLOW_GROUPS: Record<OverflowGroupId, OverflowGroup> = {
   display: { title: () => t('toolbarGroupDisplay'), actions: [btnAspect] },
-  input: { title: () => t('toolbarGroupInput'), actions: [btnMouseCapture, btnMouseResync, btnTouchMouse, btnTouchMousePad, btnGamepad, btnHostKey] },
+  input: { title: () => t('toolbarGroupInput'), actions: [btnMouseCapture, btnMouseResync, btnGamepad, btnHostKey] },
   disk: { title: () => t('toolbarGroupDisk'), actions: [btnDiskLibrary, btnFileManager] },
   state: { title: () => t('toolbarGroupState'), actions: [btnSaveState, btnLoadState] },
 };
@@ -2756,13 +2761,12 @@ function applyDocumentStrings(): void {
   updateSpeedButtonUi();
   btnMouseCapture.setAttribute('aria-label', t('toolbarMouseCapture'));
   btnMouseResync.setAttribute('aria-label', t('toolbarMouseResync'));
-  btnTouchMouse.setAttribute('aria-label', t('toolbarMenuTouchMouse'));
-  btnTouchMousePad.setAttribute('aria-label', t('toolbarMenuTouchMousePad'));
   updateMouseControls();
   updateFullscreenControl();
   syncInputPanelUi();
   btnPanelKeyboard.setAttribute('aria-label', t('inputPanelSwitchKeyboard'));
   btnPanelPad.setAttribute('aria-label', t('inputPanelSwitchPad'));
+  btnPanelTrackpad.setAttribute('aria-label', t('inputPanelSwitchTrackpad'));
   updateAspectControl();
   btnSaveState.title = t('toolbarSaveState');
   btnSaveState.setAttribute('aria-label', t('toolbarSaveState'));
@@ -3050,7 +3054,6 @@ function stepMouseTracking(): void {
   const dy = targetY - cur.y;
   if (dx === 0 && dy === 0) {
     trackStallFrames = 0;
-    onMouseTrackConverged();
     return;
   }
 
@@ -3068,7 +3071,6 @@ function stepMouseTracking(): void {
   // 加速の下限(1ドット)未満しか誤差が無い軸は動かさない
   if (sendX === 0 && sendY === 0) {
     trackStallFrames = 0;
-    onMouseTrackConverged();
     return;
   }
 
@@ -3152,11 +3154,6 @@ canvas.addEventListener('mousemove', (e) => {
     host.addMouseDelta(e.movementX * scaleX * mouseSensitivity, e.movementY * scaleY * mouseSensitivity);
     return;
   }
-  // タッチマウス(トラックパッド式)の間は追従モードの目標を更新しない。iOS Safari は
-  // pointerdown を preventDefault しても互換マウスイベント(タップ後の mousemove)を
-  // 発火することがあり、それを拾うと閉ループがカーソルをタップ位置へ勝手に運んでしまう
-  // (「タップしたらカーソルが消えた(飛んだ)」ように見える)。
-  if (isTouchMouseActive() && touchMouseRelative) return;
   // 追従モード: canvas 内の相対位置(0..1)だけ記録し、実際の送信は stepMouseTracking に任せる
   const rect = canvas.getBoundingClientRect();
   if (rect.width <= 0 || rect.height <= 0) return;
@@ -3181,45 +3178,31 @@ window.addEventListener('mouseup', (e) => {
   else if (e.button === 2) host.setMouseButton('right', false);
 });
 
-// --- タッチマウス --------------------------------------------------------------
-// iOS Safari は Pointer Lock 非対応でキャプチャモードが成立しない。そこでタッチ位置を
-// 追従モードの目標(desiredRatio)へ直接流し込み、閉ループにカーソルを運ばせる。
-// ジェスチャの解釈(タップ/2本指タップ/長押しドラッグ)は touch-mouse.ts の純ロジックが受け持ち、
-// ここは DOM イベントの正規化と、クリックパルスのタイミング制御だけを行う。
-const TOUCH_MOUSE_KEY = 'webx68k.touchMouse';
-/**
- * タップのクリックを「カーソルが目標へ収束するまで」待つ上限(ms)。着地前に押すと移動中の
- * 座標でクリックされるため収束を待つが、IOCS ワークを使わないソフトでは収束を検知できない
- * ので、期限切れで現在位置に送る保険を付ける。
- */
-const TOUCH_CLICK_DEFER_MS = 400;
+// --- バーチャルトラックパッド --------------------------------------------------
+// iOS Safari は Pointer Lock 非対応でキャプチャモードが成立しない。バーチャルトラックパッド
+// (入力パネルの第3の種類、virtual-trackpad.ts)はその代替として、専用の操作面での指の
+// 相対移動をマウス移動量へ変換する。ジェスチャの解釈(タップ/2本指タップ/長押しドラッグ)は
+// touch-mouse.ts の純ロジックが受け持ち、ここは CSSピクセル→ゲストのドット数への換算
+// (加速テーブルの逆引き含む)と、クリックパルスのタイミング制御だけを行う。
 /** クリックパルスの押下時間(ms)。コアは retro_run() 中に1回しかボタンを読まないため、数フレームぶん保持する。 */
 const TOUCH_CLICK_PULSE_MS = 100;
 /** 連続タップ(ダブルクリック)の押下間隔(ms)。間隔ゼロだと押しっぱなしと区別できない。 */
 const TOUCH_CLICK_GAP_MS = 60;
-
-let touchMouseEnabled = localStorage.getItem(TOUCH_MOUSE_KEY) === '1';
-/**
- * 移動方式(touch-mouse.ts の TouchMouseMode 参照)。既定は absolute(タッチ位置へ移動)だが、
- * カーソルが指の影に隠れて見えないという実使用上の指摘を受けてトラックパッド式(relative)を
- * 追加した。relative では指の移動量をキャプチャモードと同じ換算(canvas拡大率×感度)で
- * addMouseDelta へ送り、絶対位置の閉ループは使わない。
- */
-const TOUCH_MOUSE_MODE_KEY = 'webx68k.touchMouseMode';
-// 既定はトラックパッド式。absolute はカーソルが指に隠れる難点があるため、明示的に
-// 選んだ場合だけ使う(iPhone実機で試した結果、トラックパッド式のほうが実用的だった)。
-let touchMouseRelative = localStorage.getItem(TOUCH_MOUSE_MODE_KEY) !== 'absolute';
-/** 収束待ちのクリック。tap が来たら積み、収束(または期限切れ)でパルスにして流す。 */
+/** クリック待ち行列。tap が来たら積み、フレームループ(stepTouchTrackpad)からパルスにして流す。 */
 const touchClickQueue: TouchMouseButton[] = [];
 let touchClickBusy = false;
-let touchClickDeadline = 0;
-/** relative の加速逆補正で生じる送信残差(ドット)。指を離したら捨てる。 */
+/**
+ * 指のCSSピクセル移動量→ゲストのドット数への換算倍率。canvas の表示倍率
+ * (canvas.width / canvas.clientWidth)は使わない。トラックパッドは canvas と無関係な
+ * 専用の操作面であり、モバイルでは canvas の表示倍率が2倍を超えることがあって、これを
+ * そのまま使うと1イベントぶんの移動量が IOCS の加速域(16以上で最大7.5倍)に入って
+ * カーソルが飛ぶ(stepMouseTrackingのコメント参照)。固定倍率にすることでこの問題を
+ * 構造的に避ける。
+ */
+const TRACKPAD_SCALE = 1.5;
+/** トラックパッド操作中の加速逆補正で生じる送信残差(ドット)。指を離したら捨てる。 */
 let touchPadResidX = 0;
 let touchPadResidY = 0;
-
-function isTouchMouseActive(): boolean {
-  return touchMouseEnabled && running && !isMouseCaptured();
-}
 
 function pumpTouchClickQueue(): void {
   if (touchClickBusy) return;
@@ -3236,134 +3219,43 @@ function pumpTouchClickQueue(): void {
   }, TOUCH_CLICK_PULSE_MS);
 }
 
-/** 追従モードが目標へ着地したフレームで stepMouseTracking() から呼ばれる。 */
-function onMouseTrackConverged(): void {
+/** virtual-trackpad.ts からの相対移動(CSSピクセル)をゲストのドット数へ換算して送る。 */
+function trackpadMoveBy(dx: number, dy: number): void {
+  if (!host) return;
+  // キャプチャモードの mousemove と同じ考え方(感度倍率)だが、換算倍率は canvas 表示倍率
+  // ではなく TRACKPAD_SCALE 固定(上記コメント参照)。
+  touchPadResidX += dx * TRACKPAD_SCALE * mouseSensitivity;
+  touchPadResidY += dy * TRACKPAD_SCALE * mouseSensitivity;
+  const sendX = sendAmountFor(touchPadResidX);
+  const sendY = sendAmountFor(touchPadResidY);
+  // 古い絶対位置の目標(マウスの追従モード側)が残っていると閉ループが相対移動と
+  // 綱引きするので捨てる。
+  hasDesiredRatio = false;
+  if (sendX === 0 && sendY === 0) return;
+  touchPadResidX -= predictedMoveFor(sendX);
+  touchPadResidY -= predictedMoveFor(sendY);
+  host.addMouseDelta(sendX, sendY);
+}
+
+/** ストローク終了(全指離れた/キャンセル/パネルを閉じた)の通知。次のストロークへ残差を持ち越さない。 */
+function trackpadStrokeEnd(): void {
+  touchPadResidX = 0;
+  touchPadResidY = 0;
+}
+
+const virtualTrackpad: VirtualTrackpad = createVirtualTrackpad(virtualTrackpadPanel, {
+  moveBy: trackpadMoveBy,
+  buttonDown: (button) => host?.setMouseButton(button, true),
+  buttonUp: (button) => host?.setMouseButton(button, false),
+  tap: (button) => touchClickQueue.push(button),
+  strokeEnd: trackpadStrokeEnd,
+});
+
+/** フレームループから毎フレーム呼ぶ(長押し判定はvirtual-trackpad.tsのstep()、クリックパルスはここ)。 */
+function stepTouchTrackpad(): void {
+  virtualTrackpad.step(performance.now());
   if (touchClickQueue.length > 0) pumpTouchClickQueue();
 }
-
-const touchMouse = new TouchMouse(
-  {
-    moveTo: (x, y) => {
-      const rect = canvas.getBoundingClientRect();
-      if (rect.width <= 0 || rect.height <= 0) return;
-      desiredRatioX = Math.max(0, Math.min(1, x / rect.width));
-      desiredRatioY = Math.max(0, Math.min(1, y / rect.height));
-      hasDesiredRatio = true;
-    },
-    moveBy: (dx, dy) => {
-      if (!host) return;
-      // キャプチャモードの mousemove と同じ換算(CSSピクセル→ゲスト1ドット、感度倍率)。
-      // ただしモバイルは canvas が縮小表示されて換算倍率が2倍超になり、1イベントぶんの
-      // 移動量が IOCS の加速域(16以上で最大7.5倍)に入りやすい。生のまま送るとカーソルが
-      // 画面端まで飛んで「消えた」ように見えるため、加速テーブルを逆引きして
-      // 「意図した移動量を超えない送信量」へ変換する(stepMouseTracking と同じ流儀)。
-      // 送信ぶんの予測移動量を残差から引き、取りこぼしは次のイベントへ繰り越す。
-      const scaleX = canvas.clientWidth > 0 ? canvas.width / canvas.clientWidth : 1;
-      const scaleY = canvas.clientHeight > 0 ? canvas.height / canvas.clientHeight : 1;
-      touchPadResidX += dx * scaleX * mouseSensitivity;
-      touchPadResidY += dy * scaleY * mouseSensitivity;
-      const sendX = sendAmountFor(touchPadResidX);
-      const sendY = sendAmountFor(touchPadResidY);
-      // 古い絶対位置の目標が残っていると閉ループが相対移動と綱引きするので捨てる
-      hasDesiredRatio = false;
-      if (sendX === 0 && sendY === 0) return;
-      touchPadResidX -= predictedMoveFor(sendX);
-      touchPadResidY -= predictedMoveFor(sendY);
-      host.addMouseDelta(sendX, sendY);
-    },
-    buttonDown: (button) => host?.setMouseButton(button, true),
-    buttonUp: (button) => host?.setMouseButton(button, false),
-    tap: (button) => {
-      touchClickQueue.push(button);
-      // relative はカーソルが動いていないので収束待ち不要(次フレームで即パルス)
-      touchClickDeadline = performance.now() + (touchMouseRelative ? 0 : TOUCH_CLICK_DEFER_MS);
-    },
-  },
-  touchMouseRelative ? 'relative' : 'absolute',
-);
-
-/** フレームループから毎フレーム呼ぶ(長押し判定と、収束待ちクリックの期限切れ処理)。 */
-function stepTouchMouse(): void {
-  if (!touchMouseEnabled) return;
-  const now = performance.now();
-  touchMouse.update(now);
-  if (touchClickQueue.length > 0 && now > touchClickDeadline) pumpTouchClickQueue();
-}
-
-function touchMousePoint(e: PointerEvent): { x: number; y: number } {
-  const rect = canvas.getBoundingClientRect();
-  return { x: e.clientX - rect.left, y: e.clientY - rect.top };
-}
-
-// mouse は既存のキャプチャ/追従経路が受け持つので、タッチ(とペン)だけを解釈する
-canvas.addEventListener('pointerdown', (e) => {
-  if (!isTouchMouseActive() || e.pointerType === 'mouse') return;
-  // preventDefault で iOS の互換マウスイベント(タップ後に合成される mousedown/click)を抑止する。
-  // スクロール/ピンチの抑止は CSS の touch-action(setTouchMouseEnabled 参照)の責務。
-  e.preventDefault();
-  // 既に離れた指(イベント処理の遅延)や合成イベントでは InvalidPointerId で失敗するが、
-  // 捕捉できなくても canvas 外へ出た瞬間の追従が切れるだけなので握りつぶす
-  try {
-    canvas.setPointerCapture(e.pointerId);
-  } catch {
-    /* no-op */
-  }
-  canvas.focus();
-  const { x, y } = touchMousePoint(e);
-  touchMouse.pointerDown(e.pointerId, x, y, performance.now());
-});
-canvas.addEventListener('pointermove', (e) => {
-  if (!isTouchMouseActive() || e.pointerType === 'mouse') return;
-  const { x, y } = touchMousePoint(e);
-  touchMouse.pointerMove(e.pointerId, x, y);
-});
-// up/cancel はモード状態に関わらず認識器へ渡す(操作中に無効化されてもボタンを押しっぱなしにしない)
-canvas.addEventListener('pointerup', (e) => {
-  if (e.pointerType === 'mouse') return;
-  touchMouse.pointerUp(e.pointerId, performance.now());
-  // ストロークの取りこぼし残差を次のストロークへ持ち越さない(初動が跳ねる)
-  touchPadResidX = 0;
-  touchPadResidY = 0;
-});
-canvas.addEventListener('pointercancel', (e) => {
-  if (e.pointerType === 'mouse') return;
-  touchMouse.reset();
-  touchPadResidX = 0;
-  touchPadResidY = 0;
-});
-
-function setTouchMouseEnabled(on: boolean): void {
-  if (touchMouseEnabled === on) return;
-  touchMouseEnabled = on;
-  localStorage.setItem(TOUCH_MOUSE_KEY, on ? '1' : '0');
-  // ON の間はブラウザのスクロール/ピンチ操作にタッチを渡さない
-  canvas.style.touchAction = on ? 'none' : '';
-  if (!on) {
-    touchMouse.reset();
-    touchClickQueue.length = 0;
-    touchPadResidX = 0;
-    touchPadResidY = 0;
-  }
-  showToast(t(on ? 'touchMouseEnabled' : 'touchMouseDisabled'));
-  updateMouseControls();
-}
-if (touchMouseEnabled) canvas.style.touchAction = 'none';
-btnTouchMouse.addEventListener('click', () => setTouchMouseEnabled(!touchMouseEnabled));
-
-function setTouchMouseRelative(relative: boolean): void {
-  if (touchMouseRelative === relative) return;
-  touchMouseRelative = relative;
-  localStorage.setItem(TOUCH_MOUSE_MODE_KEY, relative ? 'relative' : 'absolute');
-  touchMouse.setMode(relative ? 'relative' : 'absolute');
-  // absolute へ戻すときも、次のタッチまで古い目標で閉ループが動かないよう仕切り直す
-  hasDesiredRatio = false;
-  touchClickQueue.length = 0;
-  touchPadResidX = 0;
-  touchPadResidY = 0;
-  showToast(t(relative ? 'touchMouseModeRelative' : 'touchMouseModeAbsolute'));
-  updateMouseControls();
-}
-btnTouchMousePad.addEventListener('click', () => setTouchMouseRelative(!touchMouseRelative));
 
 /** マウス関連ボタンの活性・表示状態を現在のモードに合わせる。 */
 function updateMouseControls(): void {
@@ -3375,15 +3267,6 @@ function updateMouseControls(): void {
   // 再同期は追従モード専用(キャプチャ中は基準という概念が無い)
   btnMouseResync.disabled = !running || captured;
   btnMouseResync.title = t('toolbarMouseResync');
-
-  btnTouchMouse.classList.toggle('active', touchMouseEnabled);
-  btnTouchMouse.setAttribute('aria-pressed', touchMouseEnabled ? 'true' : 'false');
-  btnTouchMouse.title = touchMouseEnabled ? t('toolbarTouchMouseOff') : t('toolbarTouchMouseOn');
-
-  btnTouchMousePad.disabled = !touchMouseEnabled;
-  btnTouchMousePad.classList.toggle('active', touchMouseRelative);
-  btnTouchMousePad.setAttribute('aria-pressed', touchMouseRelative ? 'true' : 'false');
-  btnTouchMousePad.title = touchMouseRelative ? t('toolbarTouchMousePadOff') : t('toolbarTouchMousePadOn');
 }
 
 btnMouseCapture.addEventListener('click', () => setMouseCaptured(!isMouseCaptured()));
@@ -4089,7 +3972,7 @@ function loop(t: number): void {
     pollDiskAccess(t);
     pollAutoSave(t);
     stepMouseTracking();
-    stepTouchMouse();
+    stepTouchTrackpad();
   }
   speedMeasureFrameCount += ran;
   updateSpeedActualDisplay(t);

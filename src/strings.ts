@@ -45,19 +45,6 @@ interface Dict {
   toolbarMouseCapture(): string;
   toolbarMouseRelease(): string;
   toolbarMouseResync(): string;
-  /** タッチマウス(タッチをマウス入力へ変換するモード)のトグルと切替トースト。 */
-  toolbarTouchMouseOn(): string;
-  toolbarTouchMouseOff(): string;
-  /** オーバーフローメニューのタッチマウス行専用ラベル(状態名。ON/OFFはチェックマークで示す)。 */
-  toolbarMenuTouchMouse(): string;
-  touchMouseEnabled(): string;
-  touchMouseDisabled(): string;
-  /** タッチマウスの移動方式(トラックパッド式)のトグルと切替トースト。 */
-  toolbarTouchMousePadOn(): string;
-  toolbarTouchMousePadOff(): string;
-  toolbarMenuTouchMousePad(): string;
-  touchMouseModeRelative(): string;
-  touchMouseModeAbsolute(): string;
   toolbarFullscreen(): string;
   toolbarFullscreenExit(): string;
   toolbarFullscreenExitPseudo(): string;
@@ -374,6 +361,8 @@ interface Dict {
   inputPanelSwitchKeyboard(): string;
   /** stage右上の切り替えチップ、バーチャルパッド側ボタンのaria-label。 */
   inputPanelSwitchPad(): string;
+  /** stage右上の切り替えチップ、バーチャルトラックパッド側ボタンのaria-label。 */
+  inputPanelSwitchTrackpad(): string;
   /** バーチャルパッドの組み込みプロファイル表示名。 */
   vpadProfileJoy2Button(): string;
   vpadProfileCursorSpace(): string;
@@ -477,18 +466,6 @@ const STRINGS: Record<Lang, Dict> = {
     toolbarMouseCapture: () => 'マウスキャプチャ(右ダブルクリック)',
     toolbarMouseRelease: () => 'マウスキャプチャを解除(Esc)',
     toolbarMouseResync: () => 'マウス再同期',
-    toolbarTouchMouseOn: () => 'タッチマウスを有効にする',
-    toolbarTouchMouseOff: () => 'タッチマウスを無効にする',
-    toolbarMenuTouchMouse: () => 'タッチマウス',
-    touchMouseEnabled: () =>
-      'タッチマウスを有効にしました。1本指で移動、タップで左クリック、2本指タップで右クリック、長押しでドラッグ。',
-    touchMouseDisabled: () => 'タッチマウスを無効にしました。',
-    toolbarTouchMousePadOn: () => 'トラックパッド式にする',
-    toolbarTouchMousePadOff: () => 'タッチ位置へ移動する方式に戻す',
-    toolbarMenuTouchMousePad: () => 'タッチマウス: トラックパッド式',
-    touchMouseModeRelative: () =>
-      'トラックパッド式にしました。指の移動量でカーソルが動くので、指の下に隠れません。タップは現在のカーソル位置をクリックします。',
-    touchMouseModeAbsolute: () => 'タッチした位置へカーソルが移動する方式にしました。',
     toolbarFullscreen: () => 'フルスクリーン',
     toolbarFullscreenExit: () => 'フルスクリーンを解除(Esc)',
     // 疑似フルスクリーン(CSSクラスのみ)はEscで抜けられない。Escはcanvas経由でX68000側の
@@ -733,6 +710,7 @@ const STRINGS: Record<Lang, Dict> = {
     toolbarInputPanelHide: () => '入力パネルを隠す',
     inputPanelSwitchKeyboard: () => '仮想キーボードに切替',
     inputPanelSwitchPad: () => 'バーチャルパッドに切替',
+    inputPanelSwitchTrackpad: () => 'バーチャルトラックパッドに切替',
     vpadProfileJoy2Button: () => 'ジョイスティック(2ボタン)',
     vpadProfileCursorSpace: () => 'カーソルキー + スペース',
     vpadProfileTenkey: () => 'テンキー',
@@ -816,18 +794,6 @@ const STRINGS: Record<Lang, Dict> = {
     toolbarMouseCapture: () => 'Capture mouse (right double-click)',
     toolbarMouseRelease: () => 'Release mouse (Esc)',
     toolbarMouseResync: () => 'Re-sync mouse',
-    toolbarTouchMouseOn: () => 'Enable touch mouse',
-    toolbarTouchMouseOff: () => 'Disable touch mouse',
-    toolbarMenuTouchMouse: () => 'Touch mouse',
-    touchMouseEnabled: () =>
-      'Touch mouse enabled. Drag to move, tap to left-click, two-finger tap to right-click, long-press to drag.',
-    touchMouseDisabled: () => 'Touch mouse disabled.',
-    toolbarTouchMousePadOn: () => 'Switch to trackpad style',
-    toolbarTouchMousePadOff: () => 'Switch back to move-to-touch style',
-    toolbarMenuTouchMousePad: () => 'Touch mouse: trackpad style',
-    touchMouseModeRelative: () =>
-      'Trackpad style enabled. The cursor follows finger movement, so it is never hidden under your finger. Taps click at the current cursor position.',
-    touchMouseModeAbsolute: () => 'Switched back to moving the cursor to the touched point.',
     toolbarFullscreen: () => 'Fullscreen',
     toolbarFullscreenExit: () => 'Exit fullscreen (Esc)',
     // Pseudo-fullscreen (a CSS class only) cannot be exited with Esc. Esc is forwarded to the
@@ -1072,6 +1038,7 @@ const STRINGS: Record<Lang, Dict> = {
     toolbarInputPanelHide: () => 'Hide input panel',
     inputPanelSwitchKeyboard: () => 'Switch to virtual keyboard',
     inputPanelSwitchPad: () => 'Switch to virtual pad',
+    inputPanelSwitchTrackpad: () => 'Switch to virtual trackpad',
     vpadProfileJoy2Button: () => 'Joystick (2 buttons)',
     vpadProfileCursorSpace: () => 'Cursor keys + Space',
     vpadProfileTenkey: () => 'Tenkey',

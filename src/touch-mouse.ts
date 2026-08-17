@@ -1,45 +1,34 @@
 /**
  * タッチマウス(タッチ操作をX68000のマウス入力へ変換する)のジェスチャ認識。
  *
- * iOS Safari は Pointer Lock API に対応しておらず、キャプチャモードが成立しない。
- * 一方で追従モード(閉ループ絶対位置追従)は「目標位置(desiredRatio)」さえ与えれば
- * Pointer Lock なしで動くため、タッチ位置をそのまま目標位置として流し込めば
- * タッチデバイスでもマウス操作が成立する。このモジュールはその「タッチ列 → マウス操作」の
+ * iOS Safari は Pointer Lock API に対応しておらず、キャプチャモードが成立しない。かといって
+ * タッチ位置をそのままカーソルの目標位置にする方式(絶対位置追従)は、カーソルが常に指の
+ * 真下に来て指の影に隠れて見えないという実使用上の難点があり、廃止した(旧実装は absolute
+ * モードとして持っていたが、iPhone実機で試した結果トラックパッド式のほうが実用的だったため、
+ * トラックパッド式(相対移動)専用に絞った)。このモジュールはその「タッチ列 → マウス操作」の
  * 解釈だけを受け持つ。
  *
- * DOM/BOM には一切触れない純ロジックとして main.ts から分離した(platform.ts と同じ流儀。
- * タッチ実機なしで vitest からジェスチャ判定を検証するため)。座標は canvas の CSS ピクセル、
- * 時刻は performance.now() 相当のミリ秒を呼び出し側から渡す。
+ * DOM/BOM には一切触れない純ロジックとして呼び出し側(virtual-trackpad.ts)から分離した
+ * (platform.ts と同じ流儀。タッチ実機なしで vitest からジェスチャ判定を検証するため)。
+ * 座標は操作面の CSS ピクセル、時刻は performance.now() 相当のミリ秒を呼び出し側から渡す。
  *
  * ジェスチャ割当(iOS の AssistiveTouch や RDP クライアント等の慣例に合わせた):
- * - 1本指の接地/移動 … カーソル移動(moveTo。追従モードの desiredRatio へ配線する)
- * - 1本指の短いタップ … 左クリック(tap('left'))
+ * - 1本指の接地/移動 … カーソルの相対移動(moveBy)。トラックパッドの慣例どおり、接地しただけでは
+ *   何も動かさず、指が動いた分だけカーソルを動かす
+ * - 1本指の短いタップ … 左クリック(tap('left')。カーソルが今いる位置で行う)
  * - 2本指の短いタップ … 右クリック(tap('right'))
  * - 長押し(動かさず LONG_PRESS_MS) … 左ボタンを押し込む(buttonDown)。そのまま指を動かすと
  *   ドラッグ、離すと解放(buttonUp)
  *
- * クリックを tap コールバックにしてボタン操作(buttonDown/Up)と分けているのは、追従モードの
- * カーソルが目標へ収束するまで数フレームかかるため。タップ位置に着地する前にボタンを押すと
- * 移動中の座標でクリックされてしまうので、パルスのタイミング制御(収束待ち)は呼び出し側の
- * 責務にしている(main.ts の stepMouseTracking() 参照)。
+ * 2本指ドラッグ(トラックパッドの慣例でホイール相当に使われる操作)は実装しない。X68000の
+ * マウスは左右2ボタンのみでホイールという概念自体が無く、px68k側(libretro/mouse.c)も
+ * left/rightしか読んでいないため、実装しても受け取り先が無い。
  */
 
 export type TouchMouseButton = 'left' | 'right';
 
-/**
- * 移動の解釈方式。
- * - 'absolute' … タッチ位置そのものをカーソルの目標にする(moveTo)。直感的だが、
- *   カーソルが常に指の真下に来るため指の影に隠れて見えない、という実使用上の難点がある。
- * - 'relative' … トラックパッド式。指の移動量だけをカーソルへ加える(moveBy)。カーソルは
- *   指と無関係な場所を動くので隠れず、細かい操作もしやすい。タップのクリックは
- *   「カーソルが今いる位置」で行われる(トラックパッドの慣例どおり)。
- */
-export type TouchMouseMode = 'absolute' | 'relative';
-
 export interface TouchMouseCallbacks {
-  /** カーソルの目標位置(absolute)。canvas 左上基準の CSS ピクセル。 */
-  moveTo(x: number, y: number): void;
-  /** カーソルの相対移動(relative)。CSS ピクセルの移動量。 */
+  /** カーソルの相対移動。CSS ピクセルの移動量。 */
   moveBy(dx: number, dy: number): void;
   /** 長押しドラッグの押し込み/解放。 */
   buttonDown(button: TouchMouseButton): void;
@@ -58,14 +47,19 @@ export const TAP_MAX_MS = 250;
 export const TWO_FINGER_TAP_MAX_MS = 300;
 /** これ以上動いたらタップではなく移動とみなす距離(CSSピクセル)。指の震え(~10px)より広め。 */
 export const TAP_SLOP_PX = 12;
-/** 長押し判定(ms)。iOS の長押しメニュー(500ms)より少し早め(待たされ感を減らす)。 */
-export const LONG_PRESS_MS = 400;
+/**
+ * 長押し判定(ms)。iOS の長押しメニュー(500ms)より少し早めにして待たされ感を減らしつつ、
+ * 同じ作者の WebPaint98(PC-98版ペイントソフトのWeb実装)が実機で詰めた
+ * TOUCH_LONG_PRESS_MS = 450 に合わせている。あちらも「タッチでドラッグを開始する」
+ * 同種の操作で、指の感覚は機種ではなく人に属するので値を揃えたほうが迷わない。
+ */
+export const LONG_PRESS_MS = 450;
 
 interface TrackedPointer {
   id: number;
   startX: number;
   startY: number;
-  /** 現在位置。relative モードで前回イベントとの差分(moveBy)を出すために追う。 */
+  /** 現在位置。前回イベントとの差分(moveBy)を出すために追う。 */
   x: number;
   y: number;
   downAt: number;
@@ -75,7 +69,6 @@ interface TrackedPointer {
 
 export class TouchMouse {
   private readonly callbacks: TouchMouseCallbacks;
-  private mode: TouchMouseMode = 'absolute';
   /** 現在接地中の指。1本目(カーソルを担う指)は primaryId で識別する。 */
   private pointers = new Map<number, TrackedPointer>();
   private primaryId: number | null = null;
@@ -88,16 +81,8 @@ export class TouchMouse {
   /** 長押しで左ボタンを押し込んでいる(ドラッグ中)か。 */
   private dragging = false;
 
-  constructor(callbacks: TouchMouseCallbacks, mode: TouchMouseMode = 'absolute') {
+  constructor(callbacks: TouchMouseCallbacks) {
     this.callbacks = callbacks;
-    this.mode = mode;
-  }
-
-  /** モード切替。操作の途中で切り替わっても矛盾しないよう、ストロークを仕切り直す。 */
-  setMode(mode: TouchMouseMode): void {
-    if (this.mode === mode) return;
-    this.reset();
-    this.mode = mode;
   }
 
   pointerDown(id: number, x: number, y: number, now: number): void {
@@ -106,9 +91,7 @@ export class TouchMouse {
     if (this.primaryId === null) {
       this.primaryId = id;
       this.pointers.set(id, { id, startX: x, startY: y, x, y, downAt: now, moved: false });
-      // absolute では接地した瞬間にカーソルを目標へ向かわせる(タップ時に「移動してから
-      // クリック」の順序を作る)。relative では接地は何も動かさない(トラックパッドの慣例)。
-      if (this.mode === 'absolute') this.callbacks.moveTo(x, y);
+      // 接地は何も動かさない(トラックパッドの慣例)。カーソルが動くのは指が動いた分だけ。
       return;
     }
     if (!this.pointers.has(id)) {
@@ -133,15 +116,11 @@ export class TouchMouse {
     }
     // カーソルを動かすのは1本目の指だけ。2本目はタップ判定(moved)のためだけに追う
     if (id !== this.primaryId) return;
-    if (this.mode === 'absolute') {
-      this.callbacks.moveTo(x, y);
-      return;
-    }
-    // relative: スロップ以内の微動ではカーソルを動かさない。タップ時の指の揺れ(数px)を
-    // そのまま送ると、クリックのたびにカーソルが標的からずれ、特にダブルタップは1回目と
-    // 2回目の位置が食い違ってゲスト側でダブルクリックとして成立しなくなる(実機の
-    // トラックパッドが必ず入れている抑制)。スロップを超えた瞬間に始点からの累積差分を
-    // まとめて送って距離の欠損を防ぎ、以降は前回イベントとの差分を送る。
+    // スロップ以内の微動ではカーソルを動かさない。タップ時の指の揺れ(数px)をそのまま送ると、
+    // クリックのたびにカーソルが標的からずれ、特にダブルタップは1回目と2回目の位置が
+    // 食い違ってゲスト側でダブルクリックとして成立しなくなる(実機のトラックパッドが必ず
+    // 入れている抑制)。スロップを超えた瞬間に始点からの累積差分をまとめて送って距離の欠損を
+    // 防ぎ、以降は前回イベントとの差分を送る。
     if (!p.moved) return;
     if (justCrossedSlop) {
       this.callbacks.moveBy(x - p.startX, y - p.startY);
@@ -195,7 +174,7 @@ export class TouchMouse {
     }
   }
 
-  /** pointercancel やモード切替時の後始末。押し込み中のボタンを必ず離す。 */
+  /** pointercancel 等の後始末。押し込み中のボタンを必ず離す。 */
   reset(): void {
     if (this.dragging) this.callbacks.buttonUp('left');
     this.pointers.clear();
