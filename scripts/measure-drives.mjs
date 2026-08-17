@@ -13,6 +13,7 @@ import { tmpdir } from 'node:os';
 import { dirname, isAbsolute, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import puppeteer from 'puppeteer-core';
+import { collectEnvironment } from './measure-env.mjs';
 
 const REPO_ROOT = fileURLToPath(new URL('..', import.meta.url));
 const DEFAULT_CHROME = '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome';
@@ -680,7 +681,9 @@ function makeSkippedDrive(letter, reason) {
   };
 }
 
-async function measureOnce(browser, config, trial, fault) {
+// 環境収集(scripts/measure-env.mjs)は最初の試行のページが開いている間・context.close()の
+// 前に1回だけ行う(envCapture.valueがundefinedの間だけ実行)。
+async function measureOnce(browser, config, trial, fault, envCapture) {
   // IndexedDB と各スロットの状態を試行間で持ち越さないため、毎回新規 BrowserContext を使う。
   const context = await browser.createBrowserContext();
   let page = null;
@@ -799,6 +802,9 @@ async function measureOnce(browser, config, trial, fault) {
       } catch {
         // ページ自体が壊れている場合も context.close() は必ず続行する。
       }
+    }
+    if (envCapture && envCapture.value === undefined && page) {
+      envCapture.value = await collectEnvironment(page).catch(() => null);
     }
     await context.close();
   }
@@ -929,11 +935,25 @@ async function run() {
 
     // 故障注入前に必ず正常系を成功として検出できることを確認する。常に失敗する検出器は
     // 故障注入だけなら通るため、陽性対照が失敗した場合は注入試行を行わない。
-    const positiveControl = config.fault ? await measureOnce(browser, config, 1, null) : null;
+    // 環境収集は全試行を通して1回だけ行う(measure-boot.mjsと同じ方式。measureOnce内の
+    // finallyで、envCapture.valueがundefinedの間だけ最初に開いたページ上で捕捉する)。
+    const envCapture = { value: undefined };
+    const positiveControl = config.fault
+      ? await measureOnce(browser, config, 1, null, envCapture)
+      : null;
     const attempts = [];
     if (!positiveControl || positiveControl.success) {
       for (let trial = 1; trial <= config.runs; trial++) {
-        attempts.push(await measureOnce(browser, config, trial, config.fault));
+        attempts.push(await measureOnce(browser, config, trial, config.fault, envCapture));
+      }
+    }
+    if (envCapture.value === undefined) {
+      const fallbackContext = await browser.createBrowserContext();
+      try {
+        const fallbackPage = await fallbackContext.newPage();
+        envCapture.value = await collectEnvironment(fallbackPage).catch(() => null);
+      } finally {
+        await fallbackContext.close();
       }
     }
 
@@ -942,6 +962,7 @@ async function run() {
     const result = {
       schemaVersion: 3,
       measuredAt: new Date().toISOString(),
+      environment: envCapture.value ?? null,
       measurement: 'Human68k の DIR A:/B:/C:/D: による3ドライブ認識とTVRAM応答時間',
       config: {
         baseUrl: config.baseUrl,

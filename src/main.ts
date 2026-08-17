@@ -3688,6 +3688,8 @@ document.addEventListener('visibilitychange', () => {
 if (import.meta.env.DEV) {
   (window as unknown as Record<string, unknown>).__webx68kDebug = {
     stat: () => ({ queuedSec: audio?.queuedSeconds ?? null, fps: host?.avInfo?.fps ?? null }),
+    // 計測環境記録(scripts/measure-env.mjs)用。AudioContext未生成ならnull。
+    audioEnv: () => audio?.audioEnv() ?? null,
     mouse: () => ({ captured: isMouseCaptured(), tracking: isMouseTracking(), ratio: { x: desiredRatioX, y: desiredRatioY }, pending: host?.hasPendingMouseDelta() ?? null, cursor: host?.readGuestCursor() ?? null, sensitivity: mouseSensitivity, core: host?.readMouseState() ?? null }),
     // Pointer Lock を経由せずに相対移動/ボタンを注入する。自動テスト用で、
     // 将来の MCP ブリッジ(mouse_move 相当)もこの経路をそのまま使う想定。

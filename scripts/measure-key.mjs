@@ -17,6 +17,7 @@ import { tmpdir } from 'node:os';
 import { dirname, isAbsolute, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import puppeteer from 'puppeteer-core';
+import { collectEnvironment } from './measure-env.mjs';
 
 const REPO_ROOT = fileURLToPath(new URL('..', import.meta.url));
 const DEFAULT_CHROME = '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome';
@@ -590,7 +591,9 @@ function classifyStimulus(spec, wrongSpec, faultKind, raw) {
   };
 }
 
-async function measureOnce(browser, config, trial, faultKind, stimulusCount) {
+// 環境収集(scripts/measure-env.mjs)は最初の試行のページが開いている間・context.close()の
+// 前に1回だけ行う(envCapture.valueがundefinedの間だけ実行)。
+async function measureOnce(browser, config, trial, faultKind, stimulusCount, envCapture) {
   const context = await browser.createBrowserContext();
   let page = null;
   try {
@@ -683,6 +686,9 @@ async function measureOnce(browser, config, trial, faultKind, stimulusCount) {
         // ページが壊れていても context.close() は必ず続行する。
       }
     }
+    if (envCapture && envCapture.value === undefined && page) {
+      envCapture.value = await collectEnvironment(page).catch(() => null);
+    }
     await context.close();
   }
 }
@@ -768,16 +774,27 @@ async function run() {
     let positiveControl = null;
     let faultTrial = null;
     let mainTrial = null;
+    // 環境収集は全試行を通して1回だけ行う(measure-boot.mjsと同じ方式)。
+    const envCapture = { value: undefined };
 
     if (config.fault) {
       // 故障注入の前に、故障なしの正常系が成功として検出できることを必ず確認する。
       // 常に失敗する検出器も故障注入だけなら通過してしまうため。
-      positiveControl = await measureOnce(browser, config, 0, null, config.faultRuns);
+      positiveControl = await measureOnce(browser, config, 0, null, config.faultRuns, envCapture);
       if (positiveControl.success) {
-        faultTrial = await measureOnce(browser, config, 1, config.fault, config.faultRuns);
+        faultTrial = await measureOnce(browser, config, 1, config.fault, config.faultRuns, envCapture);
       }
     } else {
-      mainTrial = await measureOnce(browser, config, 1, null, config.runs);
+      mainTrial = await measureOnce(browser, config, 1, null, config.runs, envCapture);
+    }
+    if (envCapture.value === undefined) {
+      const fallbackContext = await browser.createBrowserContext();
+      try {
+        const fallbackPage = await fallbackContext.newPage();
+        envCapture.value = await collectEnvironment(fallbackPage).catch(() => null);
+      } finally {
+        await fallbackContext.close();
+      }
     }
 
     const faultCheck = config.fault ? buildFaultCheck(config.fault, positiveControl, faultTrial) : null;
@@ -787,6 +804,7 @@ async function run() {
       result = {
         schemaVersion: 1,
         measuredAt: new Date().toISOString(),
+        environment: envCapture.value ?? null,
         measurement: 'キー入力の末端到達(KeyBuf経路・TVRAM経路)の測定系検証(故障注入)',
         config,
         positiveControl,
@@ -806,6 +824,7 @@ async function run() {
       result = {
         schemaVersion: 1,
         measuredAt: new Date().toISOString(),
+        environment: envCapture.value ?? null,
         measurement:
           'キー入力の末端到達: 合成KeyboardEventからKeyBuf到達(コア末端)・TVRAMエコーバック(アプリ末端)までの時間',
         config,

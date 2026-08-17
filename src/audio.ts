@@ -207,6 +207,21 @@ export class AudioEngine {
     return this.ctx;
   }
 
+  /**
+   * 計測環境記録(scripts/measure-env.mjs)用。AudioContext未生成ならnull。
+   * baseLatency/outputLatencyは未対応ブラウザではundefinedになるため、0にせずnullへ変換する
+   * (0は「遅延ゼロ」という意味を持ってしまい、未取得と区別できなくなる)。
+   */
+  audioEnv(): { sampleRate: number; baseLatency: number | null; outputLatency: number | null; state: AudioContextState } | null {
+    if (!this.ctx) return null;
+    return {
+      sampleRate: this.ctx.sampleRate,
+      baseLatency: this.ctx.baseLatency ?? null,
+      outputLatency: this.ctx.outputLatency ?? null,
+      state: this.ctx.state,
+    };
+  }
+
   get ready(): boolean {
     return this.node !== null;
   }

@@ -11,6 +11,7 @@ import { dirname, isAbsolute, join, resolve } from 'node:path';
 import { performance } from 'node:perf_hooks';
 import { spawn } from 'node:child_process';
 import puppeteer from 'puppeteer-core';
+import { collectEnvironment } from './measure-env.mjs';
 
 const REPO_ROOT = new URL('..', import.meta.url).pathname;
 const DEFAULT_CHROME = '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome';
@@ -763,13 +764,17 @@ function emptyTimingDetails(reason) {
   };
 }
 
-async function measureOnce(browser, config, trial) {
+// 環境収集(scripts/measure-env.mjs)は、この関数を呼ぶ最初の試行のページが開いている間に
+// 1回だけ行う(envCapture.valueがundefinedの間だけ実行)。計測窓の外・かつ context.close()
+// より前で行うことで、rAF計測用の1秒間が実測値へ混ざらず、かつページが確実に生きている。
+async function measureOnce(browser, config, trial, envCapture) {
   // 各試行を新しい BrowserContext に分離する。IndexedDB を個別に削除する方式では、
   // ページが開いた接続により削除が待たされる可能性があるためである。新コンテキストなら
   // IndexedDB を含む同一オリジンの状態を確実に持ち越さず、ページも毎回新規ロードになる。
   const context = await browser.createBrowserContext();
+  let page;
   try {
-    const page = await context.newPage();
+    page = await context.newPage();
     await page.setViewport({ width: 900, height: 700, deviceScaleFactor: 2 });
     await page.bringToFront();
     let measurementUrl = config.baseUrl;
@@ -848,6 +853,9 @@ async function measureOnce(browser, config, trial) {
       preClickState: null,
     };
   } finally {
+    if (envCapture && envCapture.value === undefined && page) {
+      envCapture.value = await collectEnvironment(page).catch(() => null);
+    }
     await context.close();
   }
 }
@@ -880,13 +888,28 @@ async function run() {
       args: ['--hide-scrollbars', '--force-device-scale-factor=2', '--window-size=1000,900'],
     });
 
+    // 環境収集(build/host/browser/page/audio)は全試行を通して1回だけ行う。
+    // どの試行が最初に実ページを開くかに関わらず envCapture.value が
+    // undefined の間だけ捕捉されるため、ここでは陽性対照/本計測のどちらにも同じ
+    // envCapture を渡すだけでよい(measureOnce内のfinally参照)。
+    const envCapture = { value: undefined };
     const positiveControl = config.fault
-      ? await measureOnce(browser, { ...config, fault: null }, 1)
+      ? await measureOnce(browser, { ...config, fault: null }, 1, envCapture)
       : null;
     const attempts = [];
     if (!positiveControl || positiveControl.success) {
       for (let trial = 1; trial <= config.runs; trial++) {
-        attempts.push(await measureOnce(browser, config, trial));
+        attempts.push(await measureOnce(browser, config, trial, envCapture));
+      }
+    }
+    // 試行が1件も走らなかった場合(陽性対照失敗など)のフォールバック: 専用ページを開いて収集する。
+    if (envCapture.value === undefined) {
+      const fallbackContext = await browser.createBrowserContext();
+      try {
+        const fallbackPage = await fallbackContext.newPage();
+        envCapture.value = await collectEnvironment(fallbackPage).catch(() => null);
+      } finally {
+        await fallbackContext.close();
       }
     }
 
@@ -939,6 +962,7 @@ async function run() {
     const result = {
       schemaVersion: 3,
       measuredAt: new Date().toISOString(),
+      environment: envCapture.value ?? null,
       mode: config.mode,
       measurement: '起動ボタンの実クリック直前からHuman68kプロンプト安定表示まで',
       config: {

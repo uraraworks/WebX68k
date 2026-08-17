@@ -19,6 +19,7 @@ import { tmpdir } from 'node:os';
 import { dirname, isAbsolute, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import puppeteer from 'puppeteer-core';
+import { collectEnvironment } from './measure-env.mjs';
 
 const REPO_ROOT = fileURLToPath(new URL('..', import.meta.url));
 const DEFAULT_CHROME = '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome';
@@ -434,10 +435,16 @@ function summarizeQueueLog(log) {
   };
 }
 
-async function runMainScenario(browser, config, kind) {
+// 環境収集(scripts/measure-env.mjs)は各試行のキュープローブ採取(stopQueueProbe)が
+// 終わった後・context.close()の前に行う。rAFを1秒回すため、キュー計測窓の中では
+// 絶対に呼ばない。envCapture.valueがundefinedの間だけ、最初に開いたページ上で捕捉する
+// (このタイミングなら起動済みでAudioContextが実在するため、他スクリプトと違いaudioが
+// nullにならず実測できる)。
+async function runMainScenario(browser, config, kind, envCapture) {
   const context = await browser.createBrowserContext();
+  let page;
   try {
-    const page = await context.newPage();
+    page = await context.newPage();
     await page.setViewport({ width: 900, height: 700, deviceScaleFactor: 2 });
     await page.bringToFront();
     await page.goto(config.baseUrl, { waitUntil: 'networkidle2' });
@@ -460,14 +467,18 @@ async function runMainScenario(browser, config, kind) {
   } catch (error) {
     return { kind, success: false, error: error instanceof Error ? error.message : String(error), rawLog: [] };
   } finally {
+    if (envCapture && envCapture.value === undefined && page) {
+      envCapture.value = await collectEnvironment(page).catch(() => null);
+    }
     await context.close();
   }
 }
 
-async function runFaultTrial(browser, config, kind, faultSetup, durationMs) {
+async function runFaultTrial(browser, config, kind, faultSetup, durationMs, envCapture) {
   const context = await browser.createBrowserContext();
+  let page;
   try {
-    const page = await context.newPage();
+    page = await context.newPage();
     await page.setViewport({ width: 900, height: 700, deviceScaleFactor: 2 });
     await page.bringToFront();
     await page.goto(config.baseUrl, { waitUntil: 'networkidle2' });
@@ -481,6 +492,9 @@ async function runFaultTrial(browser, config, kind, faultSetup, durationMs) {
   } catch (error) {
     return { success: false, error: error instanceof Error ? error.message : String(error), rawLog: [] };
   } finally {
+    if (envCapture && envCapture.value === undefined && page) {
+      envCapture.value = await collectEnvironment(page).catch(() => null);
+    }
     await context.close();
   }
 }
@@ -505,14 +519,17 @@ async function run() {
       args: ['--hide-scrollbars', '--force-device-scale-factor=2', '--window-size=1000,900'],
     });
 
+    // 環境収集は全試行を通して1回だけ行う(runMainScenario/runFaultTrial内のfinally参照)。
+    const envCapture = { value: undefined };
     let result;
     if (config.scenario === 'd') {
       // 条件D単体: 打鍵なしでBEEPが鳴り続けるfixtureでのunderflow実測
       // (docs/STORAGE-SCSI.md「基準値：音声遅延」追記節「打鍵なしでBEEPを鳴らすfixture」参照)。
-      const loopBeep = await runMainScenario(browser, config, 'loop-beep');
+      const loopBeep = await runMainScenario(browser, config, 'loop-beep', envCapture);
       result = {
         schemaVersion: 1,
         measuredAt: new Date().toISOString(),
+        environment: envCapture.value ?? null,
         measurement:
           '音声遅延(条件D): 打鍵なしでBEEPが鳴り続けるBASICループ(`10 BEEP:GOTO 10`)での' +
           'AudioWorklet内未再生キュー時間の時系列・分布、underflow/上限超過/破棄回数。' +
@@ -530,7 +547,7 @@ async function run() {
       // 陽性対照: 故障なしでidle区間を短く採取し、キュー時間の分布が正常な形(0以上、
       // MAX_LATENCY_SEC以下)で得られることを確認する。
       const shortMs = 8000;
-      const positiveControl = await runMainScenario(browser, { ...config, idleDurationMs: shortMs }, 'idle');
+      const positiveControl = await runMainScenario(browser, { ...config, idleDurationMs: shortMs }, 'idle', envCapture);
       let faultTrial = null;
       let faultCheck;
       if (positiveControl.success && positiveControl.queuedSec.sampleCount > 0) {
@@ -540,6 +557,7 @@ async function run() {
           'idle',
           (page) => page.evaluate(() => window.__webx68kDebug?.faultDelayReportSec?.(0.2)),
           shortMs,
+          envCapture,
         );
         if (faultTrial.success && faultTrial.queuedSec.sampleCount > 0) {
           const shiftMs = faultTrial.queuedSec.medianMs - positiveControl.queuedSec.medianMs;
@@ -551,7 +569,7 @@ async function run() {
       } else {
         faultCheck = { fault: 'delay-200ms', positiveControlPassed: false, passed: false, reason: `陽性対照が成功しなかった: ${positiveControl.error ?? '標本数0'}` };
       }
-      result = { schemaVersion: 1, measuredAt: new Date().toISOString(), measurement: '音声遅延: 測定経路(AudioWorklet tick報告)への既知200ms遅延注入検証', config, positiveControl: stripRawLog(positiveControl), faultTrial: faultTrial ? stripRawLog(faultTrial) : null, faultCheck };
+      result = { schemaVersion: 1, measuredAt: new Date().toISOString(), environment: envCapture.value ?? null, measurement: '音声遅延: 測定経路(AudioWorklet tick報告)への既知200ms遅延注入検証', config, positiveControl: stripRawLog(positiveControl), faultTrial: faultTrial ? stripRawLog(faultTrial) : null, faultCheck };
       console.log(`陽性対照: ${positiveControl.success ? '成功' : '失敗'} (標本数 ${positiveControl.queuedSec?.sampleCount ?? 0})`);
       console.log(`故障注入 delay-200ms: 移動幅 ${faultCheck.shiftMs ?? '-'} ms -> ${faultCheck.passed ? '期待どおり検出' : `検出失敗(${faultCheck.reason})`}`);
       if (!faultCheck.passed) process.exitCode = 1;
@@ -560,7 +578,7 @@ async function run() {
       const shortInterval = 2000;
       // 陽性対照: 故障なしでBEEP区間を短く採取し、droppedSamplesが0のまま(自然発生の
       // 誤検出が無い)ことを確認する。
-      const positiveControl = await runMainScenario(browser, { ...config, beepDurationMs: shortMs, beepIntervalMs: shortInterval }, 'beep');
+      const positiveControl = await runMainScenario(browser, { ...config, beepDurationMs: shortMs, beepIntervalMs: shortInterval }, 'beep', envCapture);
       let faultTrial = null;
       let faultCheck;
       const positiveClean = positiveControl.success && positiveControl.droppedSamples === 0;
@@ -571,6 +589,7 @@ async function run() {
           'beep',
           (page) => page.evaluate(() => window.__webx68kDebug?.faultDropNextChunk?.()),
           shortMs,
+          envCapture,
         );
         const dropped = faultTrial.success ? faultTrial.droppedSamples : 0;
         const passed = faultTrial.success && dropped > 0;
@@ -578,16 +597,17 @@ async function run() {
       } else {
         faultCheck = { fault: 'drop-chunk', positiveControlPassed: false, passed: false, reason: `陽性対照でdroppedSamplesが既に非0、または失敗: ${positiveControl.error ?? positiveControl.droppedSamples}` };
       }
-      result = { schemaVersion: 1, measuredAt: new Date().toISOString(), measurement: '音声遅延: 1チャンク破棄による欠音カウンタ検出検証', config, positiveControl: stripRawLog(positiveControl), faultTrial: faultTrial ? stripRawLog(faultTrial) : null, faultCheck };
+      result = { schemaVersion: 1, measuredAt: new Date().toISOString(), environment: envCapture.value ?? null, measurement: '音声遅延: 1チャンク破棄による欠音カウンタ検出検証', config, positiveControl: stripRawLog(positiveControl), faultTrial: faultTrial ? stripRawLog(faultTrial) : null, faultCheck };
       console.log(`陽性対照: ${positiveClean ? '成功(dropped=0)' : '失敗'} `);
       console.log(`故障注入 drop-chunk: droppedSamples ${faultCheck.faultDroppedSamples ?? 0} -> ${faultCheck.passed ? '期待どおり検出' : `検出失敗(${faultCheck.reason})`}`);
       if (!faultCheck.passed) process.exitCode = 1;
     } else {
-      const beep = await runMainScenario(browser, config, 'beep');
-      const idle = await runMainScenario(browser, config, 'idle');
+      const beep = await runMainScenario(browser, config, 'beep', envCapture);
+      const idle = await runMainScenario(browser, config, 'idle', envCapture);
       result = {
         schemaVersion: 1,
         measuredAt: new Date().toISOString(),
+        environment: envCapture.value ?? null,
         measurement: '音声遅延(1): AudioWorklet内未再生キュー時間の時系列・分布、underflow/上限超過/破棄回数',
         config,
         scenarios: { beep: stripRawLog(beep), idle: stripRawLog(idle) },
@@ -600,6 +620,18 @@ async function run() {
       console.log(`beep: 成功 ${beep.success}, tick数 ${beep.tickCount ?? 0}, 実採取 ${beep.actualCapturedMs ?? '-'}ms, 中央値 ${beep.queuedSec?.medianMs ?? '-'}ms, p99 ${beep.queuedSec?.p99Ms ?? '-'}ms, underflow ${beep.underflowFrames ?? '-'}, trim ${beep.trimEvents ?? '-'}, dropped ${beep.droppedSamples ?? '-'}`);
       console.log(`idle: 成功 ${idle.success}, tick数 ${idle.tickCount ?? 0}, 実採取 ${idle.actualCapturedMs ?? '-'}ms, 中央値 ${idle.queuedSec?.medianMs ?? '-'}ms, p99 ${idle.queuedSec?.p99Ms ?? '-'}ms, underflow ${idle.underflowFrames ?? '-'}, trim ${idle.trimEvents ?? '-'}, dropped ${idle.droppedSamples ?? '-'}`);
       if (!beep.success || !idle.success) process.exitCode = 1;
+    }
+
+    // 試行が1件も走らなかった場合のフォールバック: 専用ページを開いて収集する。
+    if (envCapture.value === undefined) {
+      const fallbackContext = await browser.createBrowserContext();
+      try {
+        const fallbackPage = await fallbackContext.newPage();
+        envCapture.value = await collectEnvironment(fallbackPage).catch(() => null);
+      } finally {
+        await fallbackContext.close();
+      }
+      if (result) result.environment = envCapture.value ?? null;
     }
 
     await mkdir(dirname(config.outputPath), { recursive: true });
