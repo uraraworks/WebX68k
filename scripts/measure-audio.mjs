@@ -14,9 +14,9 @@
 // 「予備確認：音を出す固定操作の有無」で確定済みのものをそのまま使う。
 
 import { spawn } from 'node:child_process';
-import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { dirname, isAbsolute, join, resolve } from 'node:path';
+import { basename, dirname, isAbsolute, join, relative, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import puppeteer from 'puppeteer-core';
 import { collectEnvironment } from './measure-env.mjs';
@@ -93,6 +93,10 @@ function printHelp() {
   --fault=<delay-200ms|drop-chunk>  測定系の検証用故障注入。先に陽性対照を行う
   --loopbeep-duration=<ms> 条件D(打鍵なしBEEPループ)の採取時間 (既定: 60000)
   --scenario=d             条件D単体のみ実行する(既定の動作=beep/idleは変更しない)
+
+生ログ: 各試行のAudioWorklet tick時系列(rawLog)は、結果JSONとは別に
+        "<結果ファイル名>-rawlog-<kind>.json" として同じディレクトリへ保存される
+        (結果JSON側にはrawLogPathのみ記録)。
 
 環境変数: WEBX68K_PORT, WEBX68K_AUDIO_BEEP_MS, WEBX68K_AUDIO_IDLE_MS,
           WEBX68K_AUDIO_LOOPBEEP_MS, WEBX68K_AUDIO_MEASURE_OUTPUT, WEBX68K_URL, CHROME_PATH`);
@@ -526,6 +530,7 @@ async function run() {
       // 条件D単体: 打鍵なしでBEEPが鳴り続けるfixtureでのunderflow実測
       // (docs/STORAGE-SCSI.md「基準値：音声遅延」追記節「打鍵なしでBEEPを鳴らすfixture」参照)。
       const loopBeep = await runMainScenario(browser, config, 'loop-beep', envCapture);
+      const loopBeepFinal = await finalizeTrial(config.outputPath, 'loop-beep', loopBeep);
       result = {
         schemaVersion: 1,
         measuredAt: new Date().toISOString(),
@@ -537,7 +542,7 @@ async function run() {
         config,
         loopBeepProgramLine: LOOP_BEEP_PROGRAM_LINE,
         settleMs: LOOP_BEEP_SETTLE_MS,
-        scenario: stripRawLog(loopBeep),
+        scenario: loopBeepFinal,
       };
       console.log(
         `loop-beep(条件D): 成功 ${loopBeep.success}, tick数 ${loopBeep.tickCount ?? 0}, 実採取 ${loopBeep.actualCapturedMs ?? '-'}ms, 中央値 ${loopBeep.queuedSec?.medianMs ?? '-'}ms, p99 ${loopBeep.queuedSec?.p99Ms ?? '-'}ms, underflow ${loopBeep.underflowFrames ?? '-'}, trim ${loopBeep.trimEvents ?? '-'}, dropped ${loopBeep.droppedSamples ?? '-'}`,
@@ -569,7 +574,9 @@ async function run() {
       } else {
         faultCheck = { fault: 'delay-200ms', positiveControlPassed: false, passed: false, reason: `陽性対照が成功しなかった: ${positiveControl.error ?? '標本数0'}` };
       }
-      result = { schemaVersion: 1, measuredAt: new Date().toISOString(), environment: envCapture.value ?? null, measurement: '音声遅延: 測定経路(AudioWorklet tick報告)への既知200ms遅延注入検証', config, positiveControl: stripRawLog(positiveControl), faultTrial: faultTrial ? stripRawLog(faultTrial) : null, faultCheck };
+      const positiveControlFinal = await finalizeTrial(config.outputPath, 'positive-control', positiveControl);
+      const faultTrialFinal = faultTrial ? await finalizeTrial(config.outputPath, 'fault', faultTrial) : null;
+      result = { schemaVersion: 1, measuredAt: new Date().toISOString(), environment: envCapture.value ?? null, measurement: '音声遅延: 測定経路(AudioWorklet tick報告)への既知200ms遅延注入検証', config, positiveControl: positiveControlFinal, faultTrial: faultTrialFinal, faultCheck };
       console.log(`陽性対照: ${positiveControl.success ? '成功' : '失敗'} (標本数 ${positiveControl.queuedSec?.sampleCount ?? 0})`);
       console.log(`故障注入 delay-200ms: 移動幅 ${faultCheck.shiftMs ?? '-'} ms -> ${faultCheck.passed ? '期待どおり検出' : `検出失敗(${faultCheck.reason})`}`);
       if (!faultCheck.passed) process.exitCode = 1;
@@ -597,20 +604,24 @@ async function run() {
       } else {
         faultCheck = { fault: 'drop-chunk', positiveControlPassed: false, passed: false, reason: `陽性対照でdroppedSamplesが既に非0、または失敗: ${positiveControl.error ?? positiveControl.droppedSamples}` };
       }
-      result = { schemaVersion: 1, measuredAt: new Date().toISOString(), environment: envCapture.value ?? null, measurement: '音声遅延: 1チャンク破棄による欠音カウンタ検出検証', config, positiveControl: stripRawLog(positiveControl), faultTrial: faultTrial ? stripRawLog(faultTrial) : null, faultCheck };
+      const positiveControlFinal = await finalizeTrial(config.outputPath, 'positive-control', positiveControl);
+      const faultTrialFinal = faultTrial ? await finalizeTrial(config.outputPath, 'fault', faultTrial) : null;
+      result = { schemaVersion: 1, measuredAt: new Date().toISOString(), environment: envCapture.value ?? null, measurement: '音声遅延: 1チャンク破棄による欠音カウンタ検出検証', config, positiveControl: positiveControlFinal, faultTrial: faultTrialFinal, faultCheck };
       console.log(`陽性対照: ${positiveClean ? '成功(dropped=0)' : '失敗'} `);
       console.log(`故障注入 drop-chunk: droppedSamples ${faultCheck.faultDroppedSamples ?? 0} -> ${faultCheck.passed ? '期待どおり検出' : `検出失敗(${faultCheck.reason})`}`);
       if (!faultCheck.passed) process.exitCode = 1;
     } else {
       const beep = await runMainScenario(browser, config, 'beep', envCapture);
       const idle = await runMainScenario(browser, config, 'idle', envCapture);
+      const beepFinal = await finalizeTrial(config.outputPath, 'beep', beep);
+      const idleFinal = await finalizeTrial(config.outputPath, 'idle', idle);
       result = {
         schemaVersion: 1,
         measuredAt: new Date().toISOString(),
         environment: envCapture.value ?? null,
         measurement: '音声遅延(1): AudioWorklet内未再生キュー時間の時系列・分布、underflow/上限超過/破棄回数',
         config,
-        scenarios: { beep: stripRawLog(beep), idle: stripRawLog(idle) },
+        scenarios: { beep: beepFinal, idle: idleFinal },
         shortenedNote: `計画の目安(定常区間5分以上)に対し、beep=${config.beepDurationMs}ms・idle=${config.idleDurationMs}msへ短縮した。実際の採取時間はactualCapturedMsに記録している。`,
         limitations: [
           '(2)物理スピーカー出力の端点間遅延は本スクリプトでは計測していない(docs/STORAGE-SCSI.mdの手順参照)。',
@@ -634,8 +645,9 @@ async function run() {
       if (result) result.environment = envCapture.value ?? null;
     }
 
+    // 生ログ(rawLog)は各試行ごとに既に別ファイルへ保存済み(finalizeTrial参照、結果本体を
+    // 軽くするため)。ここで書き出すresultにはrawLogPath(リポジトリ相対パス)のみが載る。
     await mkdir(dirname(config.outputPath), { recursive: true });
-    // 生ログ(rawLog)は別ファイルへ保存する(結果本体を軽くするため)。
     await writeFile(config.outputPath, `${JSON.stringify(result, null, 2)}\n`, 'utf8');
     console.log(`出力: ${config.outputPath}`);
   } finally {
@@ -649,6 +661,51 @@ function stripRawLog(trial) {
   if (!trial) return trial;
   const { rawLog, ...rest } = trial;
   return { ...rest, rawLogSampleCount: rawLog?.length ?? 0 };
+}
+
+// rawLog(AudioWorkletが報告するtick時系列。1試行で5000件超になりうる)を結果JSONの
+// 外側の独立ファイルへ丸ごと保存する。間引き・丸めは行わない。
+// 保存先は結果ファイルと同じディレクトリ、命名は「<結果ファイルのベース名>-rawlog-<kind>.json」。
+function rawLogFilePath(outputPath, kind) {
+  const dir = dirname(outputPath);
+  const base = basename(outputPath).replace(/\.json$/i, '');
+  return join(dir, `${base}-rawlog-${kind}.json`);
+}
+
+// rawLogファイルを書き出し、直後に読み戻して件数が一致することを確認する(自己検査)。
+// 一致しない場合は黙って続行せず、process.exitCodeを1にしてコンソールへ明示する。
+// samplesが空配列(試行が失敗した等)でもファイルは作り、sampleCount: 0で区別できるようにする。
+async function saveRawLog(outputPath, kind, samples) {
+  const filePath = rawLogFilePath(outputPath, kind);
+  const payload = {
+    schemaVersion: 1,
+    measuredAt: new Date().toISOString(),
+    kind,
+    sampleCount: samples.length,
+    resultPath: relative(REPO_ROOT, outputPath),
+    samples,
+  };
+  await mkdir(dirname(filePath), { recursive: true });
+  await writeFile(filePath, `${JSON.stringify(payload, null, 2)}\n`, 'utf8');
+
+  const readBack = JSON.parse(await readFile(filePath, 'utf8'));
+  if (!Array.isArray(readBack.samples) || readBack.samples.length !== samples.length) {
+    console.error(
+      `[rawLog自己検査失敗] ${filePath}: 書き戻したsamples数(${readBack.samples?.length ?? 'なし'})が` +
+        `書き出した件数(${samples.length})と不一致。生ログの保存が壊れている可能性がある。`,
+    );
+    process.exitCode = 1;
+  }
+  return relative(REPO_ROOT, filePath);
+}
+
+// trial(runMainScenario/runFaultTrialの戻り値)からrawLogを別ファイルへ保存し、
+// stripRawLogした本体にrawLogPath(リポジトリ相対)を足したものを返す。
+async function finalizeTrial(outputPath, kind, trial) {
+  if (!trial) return trial;
+  const samples = trial.rawLog ?? [];
+  const rawLogPath = await saveRawLog(outputPath, kind, samples);
+  return { ...stripRawLog(trial), rawLogPath };
 }
 
 run().catch((error) => {
