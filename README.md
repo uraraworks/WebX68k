@@ -275,8 +275,9 @@ size always follows the settings dialog rather than SWITCH.X.
 ### Virtual pad (on-screen pad)
 
 For playing games on a phone, the "Show Input Panel" toolbar button (also
-toggled by the ⌨/🎮 chip once a panel is open) can show a touch virtual pad
-instead of the virtual keyboard — they're mutually exclusive. Directional
+toggled by the ⌨/🎮/🖱 chip once a panel is open) can show a touch virtual pad
+instead of the virtual keyboard or virtual trackpad — they're mutually
+exclusive. Directional
 input is an analog-stick-style control (a fixed base with a knob, snapping to
 8 directions), so a light tap near the edge of the circle is enough to get a
 direction out.
@@ -341,21 +342,21 @@ absolute-position tracking if the guest cursor and host cursor ever drift
 apart.
 
 On touch devices (where the Pointer Lock API is unavailable — e.g. iOS
-Safari), enable **Touch Mouse** in the same Input group instead. While it is
-on, touches on the screen are interpreted as mouse input with
-laptop-trackpad semantics by default: drag with one finger to move the
-cursor by the finger's motion (with the mouse sensitivity setting applied;
-small in-place jitter is ignored so taps do not nudge the cursor off its
-target), tap for a left click at the current cursor position, two-finger
-tap for a right click, and long-press to hold the left button for dragging.
-Because the cursor moves independently of the finger, it is never hidden
-under your fingertip.
+Safari), open the **virtual trackpad** instead, via the 🖱 option on the
+⌨/🎮/🖱 input-panel chip (or the "Show Input Panel" toolbar button). It's
+the third kind of input panel alongside the virtual keyboard and virtual
+pad, and it sits in the same strip between the screen and the toolbar
+rather than over the screen — so your finger never covers the guest
+display while you operate it.
 
-Turning the **Touch mouse: trackpad style** toggle in the same group off
-switches to move-to-touch semantics instead: the guest cursor lands
-exactly on the touched point via absolute-position tracking and taps click
-there. This is more direct, but the cursor sits right under your finger
-and is easy to lose sight of. Both toggles are saved to `localStorage`.
+Operation is laptop-trackpad style: drag with one finger to move the
+cursor by the finger's motion (with the mouse sensitivity setting
+applied), tap for a left click at the current cursor position, two-finger
+tap for a right click, and long-press (450ms) to hold the left button
+down, then drag to drag. Because the cursor moves independently of the
+finger, it is never hidden under your fingertip. Two-finger drag (the
+usual trackpad gesture for scrolling/wheel) is not supported — the X68000
+mouse only has left/right buttons, with no wheel concept to map it to.
 
 ### Display mode (dot-for-dot / 4:3)
 
