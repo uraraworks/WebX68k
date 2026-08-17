@@ -24,7 +24,10 @@ import { collectEnvironment } from './measure-env.mjs';
 const REPO_ROOT = fileURLToPath(new URL('..', import.meta.url));
 const DEFAULT_CHROME = '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome';
 const REQUIRED_STABLE_POLLS = 3;
-const VALID_FAULTS = new Set(['delay-200ms', 'drop-chunk']);
+const VALID_FAULTS = new Set(['delay-200ms', 'drop-chunk', 'stall-main']);
+// stall-main故障注入(欠音の「イベント単位」集計が実際に機能することの検証用)でメイン
+// スレッドを止める長さ。300ms止めれば44.1kHzで13000サンプル以上の欠音が確実に起きる。
+const STALL_MAIN_MS = 300;
 
 // BASIC2\BASIC 起動後の "Ok" プロンプト検出、A> プロンプト検出で共有する。
 // 半角記号の入力は Backslash コードを使う(src/keyboard.ts の CODE_TO_RETROK 参照)。
@@ -90,7 +93,7 @@ function printHelp() {
   --beep-interval=<ms>     BEEP実行の間隔 (既定: 3000)
   --boot-timeout=<ms>      起動完了タイムアウト (既定: 90000)
   --output=<path>          JSON の保存先
-  --fault=<delay-200ms|drop-chunk>  測定系の検証用故障注入。先に陽性対照を行う
+  --fault=<delay-200ms|drop-chunk|stall-main>  測定系の検証用故障注入。先に陽性対照を行う
   --loopbeep-duration=<ms> 条件D(打鍵なしBEEPループ)の採取時間 (既定: 60000)
   --scenario=d             条件D単体のみ実行する(既定の動作=beep/idleは変更しない)
 
@@ -114,7 +117,7 @@ function buildConfig(args) {
   baseUrl.port = String(port);
   const fault = args.fault ?? null;
   if (fault !== null && !VALID_FAULTS.has(fault)) {
-    throw new Error(`fault は delay-200ms・drop-chunk のいずれかを指定してください: ${fault}`);
+    throw new Error(`fault は delay-200ms・drop-chunk・stall-main のいずれかを指定してください: ${fault}`);
   }
   const scenario = args.scenario ?? null;
   if (scenario !== null && scenario !== 'd') {
@@ -427,7 +430,77 @@ async function collectQueueProbe(page, kind, durationMs, intervalMs, faultSetup)
   return { log, actualCapturedMs };
 }
 
-function summarizeQueueLog(log) {
+// underflow(累積フレーム数)が増加している連続tickの並びを1件の欠音イベントとみなす。
+// 背景: 同一日・同一ビルドのidle 60秒計測でunderflow計が9919/0/8368と二値的に振れ、
+// 累積値どうしの大小比較が成立しなかった。生ログを見るとunderflowは60秒に散らばって
+// おらず、1回のバーストに固まっていた(q=0.0ms uf=0→303→815→1071のように一瞬で積み上がり、
+// 増分は512の倍数=ワークレットの処理単位)。件数の大小でなく「何回・何ms分の欠音が
+// 起きたか」をイベント単位で見えるようにする(docs/STORAGE-SCSI.md「基準値：音声遅延」)。
+//
+// sampleRateが不明(古い生ログにワークレット時刻が無い等)でもクラッシュしないこと。
+// その場合はlostMs側をnullにし、件数(count)とframesLostだけで扱えるようにする。
+function detectUnderflowEvents(log, sampleRate) {
+  const events = [];
+  let prevUnderflow = 0;
+  let current = null;
+  for (let i = 0; i < log.length; i++) {
+    const sample = log[i];
+    const underflow = sample.underflow ?? 0;
+    const delta = underflow - prevUnderflow;
+    if (delta > 0) {
+      if (!current) {
+        // イベント直前のキュー滞留量(ms)。バースト最初のtick自身は既に欠音発生後の
+        // 値なので、1つ前のtick(無ければ自分自身)を「直前」として使う。
+        const prevSample = log[i - 1] ?? sample;
+        current = {
+          startTMs: sample.tMs ?? null,
+          startWorkletFrame: sample.workletFrame ?? null,
+          framesLost: 0,
+          queuedMsBefore: roundMs((prevSample.qSec ?? 0) * 1000),
+        };
+      }
+      current.framesLost += delta;
+    } else if (current) {
+      events.push(finalizeUnderflowEvent(current, sampleRate));
+      current = null;
+    }
+    prevUnderflow = underflow;
+  }
+  if (current) events.push(finalizeUnderflowEvent(current, sampleRate));
+  return events;
+}
+
+function finalizeUnderflowEvent(current, sampleRate) {
+  return {
+    startTMs: current.startTMs,
+    startWorkletFrame: current.startWorkletFrame,
+    framesLost: current.framesLost,
+    lostMs: sampleRate ? roundMs((current.framesLost / sampleRate) * 1000) : null,
+    queuedMsBeforeMs: current.queuedMsBefore,
+  };
+}
+
+function summarizeUnderflowEvents(log, sampleRate) {
+  const events = detectUnderflowEvents(log, sampleRate);
+  if (events.length === 0) {
+    return { count: 0, totalLostMs: 0, maxLostMs: 0, medianLostMs: 0, events };
+  }
+  const lostMsValues = events.map((e) => e.lostMs);
+  if (lostMsValues.some((v) => v === null)) {
+    // sampleRate不明でms換算できない場合。件数・生の欠損フレーム数は events 側に残す。
+    return { count: events.length, totalLostMs: null, maxLostMs: null, medianLostMs: null, events };
+  }
+  const sorted = [...lostMsValues].sort((left, right) => left - right);
+  return {
+    count: events.length,
+    totalLostMs: roundMs(lostMsValues.reduce((sum, value) => sum + value, 0)),
+    maxLostMs: sorted.at(-1),
+    medianLostMs: percentile(sorted, 0.5),
+    events,
+  };
+}
+
+function summarizeQueueLog(log, sampleRate) {
   const qSamplesMs = log.map((s) => s.qSec * 1000);
   const lastEntry = log.at(-1) ?? null;
   return {
@@ -436,6 +509,7 @@ function summarizeQueueLog(log) {
     underflowFrames: lastEntry?.underflow ?? 0,
     trimEvents: lastEntry?.trimEvents ?? 0,
     droppedSamples: lastEntry?.dropped ?? 0,
+    underflowEvents: summarizeUnderflowEvents(log, sampleRate ?? null),
   };
 }
 
@@ -466,8 +540,13 @@ async function runMainScenario(browser, config, kind, envCapture) {
             return collectLoopBeepProbe(page, durationMs);
           })()
         : await collectQueueProbe(page, kind, durationMs, config.beepIntervalMs, null);
+    // 欠損時間(ms)算出用のsampleRate。ハードコードせず、実際のAudioContextから読む
+    // (audioEnv()はsrc/audio.tsのAudioEngine.audioEnv()、環境収集(measure-env.mjs)が
+    // 使うのと同じ経路)。取得できない場合はnullのままsummarizeQueueLogへ渡し、
+    // lostMs側だけnullにして件数集計はそのまま行う。
+    const sampleRate = await page.evaluate(() => window.__webx68kDebug?.audioEnv?.()?.sampleRate ?? null).catch(() => null);
 
-    return { kind, success: true, boot: { ...boot, durationMs: roundMs(boot.durationMs) }, requestedDurationMs: durationMs, actualCapturedMs, ...summarizeQueueLog(log), rawLog: log };
+    return { kind, success: true, boot: { ...boot, durationMs: roundMs(boot.durationMs) }, requestedDurationMs: durationMs, actualCapturedMs, ...summarizeQueueLog(log, sampleRate), rawLog: log };
   } catch (error) {
     return { kind, success: false, error: error instanceof Error ? error.message : String(error), rawLog: [] };
   } finally {
@@ -492,7 +571,8 @@ async function runFaultTrial(browser, config, kind, faultSetup, durationMs, envC
     await enterBasic(page, config);
 
     const { log, actualCapturedMs } = await collectQueueProbe(page, kind, durationMs, config.beepIntervalMs, faultSetup);
-    return { success: true, boot: { ...boot, durationMs: roundMs(boot.durationMs) }, actualCapturedMs, ...summarizeQueueLog(log), rawLog: log };
+    const sampleRate = await page.evaluate(() => window.__webx68kDebug?.audioEnv?.()?.sampleRate ?? null).catch(() => null);
+    return { success: true, boot: { ...boot, durationMs: roundMs(boot.durationMs) }, actualCapturedMs, ...summarizeQueueLog(log, sampleRate), rawLog: log };
   } catch (error) {
     return { success: false, error: error instanceof Error ? error.message : String(error), rawLog: [] };
   } finally {
@@ -501,6 +581,24 @@ async function runFaultTrial(browser, config, kind, faultSetup, durationMs, envC
     }
     await context.close();
   }
+}
+
+/**
+ * 故障注入 --fault=stall-main 用。メインスレッドを既知の時間(STALL_MAIN_MS)だけ
+ * 同期的にビジーウェイトさせ、実際にメインスレッドを止める(本物の故障)。
+ * 「欠音イベント集計が本当に働くか」を既知の入力で確かめるためのもの
+ * (「値が変わらない測定は採用しない」規律。累積underflow計だけを見ていた頃、
+ * idle60秒で9919/0/8368と二値的に振れて大小比較が成立しなかった経緯への対応)。
+ * 故障注入コードはこのファイル(計測スクリプト側)にのみ置き、src/には触れない。
+ */
+async function faultStallMain(page) {
+  await page.evaluate((ms) => {
+    const until = performance.now() + ms;
+    // eslint 等の空ループ警告は無視してよい: メインスレッドを本当に占有するのが目的。
+    while (performance.now() < until) {
+      /* busy wait */
+    }
+  }, STALL_MAIN_MS);
 }
 
 async function run() {
@@ -609,6 +707,51 @@ async function run() {
       result = { schemaVersion: 1, measuredAt: new Date().toISOString(), environment: envCapture.value ?? null, measurement: '音声遅延: 1チャンク破棄による欠音カウンタ検出検証', config, positiveControl: positiveControlFinal, faultTrial: faultTrialFinal, faultCheck };
       console.log(`陽性対照: ${positiveClean ? '成功(dropped=0)' : '失敗'} `);
       console.log(`故障注入 drop-chunk: droppedSamples ${faultCheck.faultDroppedSamples ?? 0} -> ${faultCheck.passed ? '期待どおり検出' : `検出失敗(${faultCheck.reason})`}`);
+      if (!faultCheck.passed) process.exitCode = 1;
+    } else if (config.fault === 'stall-main') {
+      // 陽性対照: 故障なしでidle区間を短く採取し、正常に完走することを確認する
+      // (idleは自然発生の欠音イベントが0件とは限らないため、drop-chunkと違い
+      // 「イベント0件」までは陽性対照の条件にしない)。
+      const shortMs = 8000;
+      const positiveControl = await runMainScenario(browser, { ...config, idleDurationMs: shortMs }, 'idle', envCapture);
+      let faultTrial = null;
+      let faultCheck;
+      if (positiveControl.success && positiveControl.queuedSec.sampleCount > 0) {
+        faultTrial = await runFaultTrial(browser, config, 'idle', (page) => faultStallMain(page), shortMs, envCapture);
+        if (faultTrial.success) {
+          const events = faultTrial.underflowEvents;
+          const passed = events.count >= 1 && events.totalLostMs !== null && events.totalLostMs > 0;
+          faultCheck = {
+            fault: 'stall-main',
+            positiveControlPassed: true,
+            eventCount: events.count,
+            totalLostMs: events.totalLostMs,
+            passed,
+            reason: passed ? null : `欠音イベントが検出されなかった: count=${events.count}, totalLostMs=${events.totalLostMs}`,
+          };
+        } else {
+          faultCheck = { fault: 'stall-main', positiveControlPassed: true, passed: false, reason: `故障注入試行が完走しなかった: ${faultTrial.error ?? '不明'}` };
+        }
+      } else {
+        faultCheck = { fault: 'stall-main', positiveControlPassed: false, passed: false, reason: `陽性対照が成功しなかった: ${positiveControl.error ?? '標本数0'}` };
+      }
+      const positiveControlFinal = await finalizeTrial(config.outputPath, 'positive-control', positiveControl);
+      const faultTrialFinal = faultTrial ? await finalizeTrial(config.outputPath, 'fault', faultTrial) : null;
+      result = {
+        schemaVersion: 1,
+        measuredAt: new Date().toISOString(),
+        environment: envCapture.value ?? null,
+        measurement: `音声遅延: メインスレッドを${STALL_MAIN_MS}msブロックする故障注入による欠音イベント集計の検証`,
+        config,
+        stallMainMs: STALL_MAIN_MS,
+        positiveControl: positiveControlFinal,
+        faultTrial: faultTrialFinal,
+        faultCheck,
+      };
+      console.log(`陽性対照: ${positiveControl.success ? '成功' : '失敗'} (標本数 ${positiveControl.queuedSec?.sampleCount ?? 0})`);
+      console.log(
+        `故障注入 stall-main: イベント件数 ${faultCheck.eventCount ?? '-'}, 欠損時間合計 ${faultCheck.totalLostMs ?? '-'}ms -> ${faultCheck.passed ? '期待どおり検出' : `検出失敗(${faultCheck.reason})`}`,
+      );
       if (!faultCheck.passed) process.exitCode = 1;
     } else {
       const beep = await runMainScenario(browser, config, 'beep', envCapture);

@@ -121,6 +121,10 @@ class WebX68kAudioProcessor extends AudioWorkletProcessor {
         msg.u = this._probeUnderflow;
         msg.x = this._probeTrimEvents;
         msg.d = this._probeDropped;
+        // ワークレット自身の時計(サンプル単位、AudioWorkletGlobalScope.currentFrame)。
+        // メインスレッド受信時刻(tMs)はメインが止まっている間のtickを復帰後に
+        // 一斉に同一時刻へ丸めてしまうため、停止の開始・継続時間を測るにはこちらが要る。
+        msg.wf = currentFrame;
       }
       this.port.postMessage(msg);
     }
@@ -173,6 +177,12 @@ export interface AudioQueueProbeSample {
   trimEvents: number;
   /** resetQueueProbe以降の累積破棄サンプル数(trimまたはfault-drop-chunkによる)。 */
   dropped: number;
+  /**
+   * ワークレット自身の時計(AudioWorkletGlobalScope.currentFrame、サンプル単位)。
+   * tickメッセージにワークレット時刻が載っていない場合(このプロパティを追加する前に
+   * 採取された生ログを読み込んだ場合など)はnull。
+   */
+  workletFrame: number | null;
 }
 
 export class AudioEngine {
@@ -276,6 +286,7 @@ export class AudioEngine {
             underflow: e.data.u ?? 0,
             trimEvents: e.data.x ?? 0,
             dropped: e.data.d ?? 0,
+            workletFrame: e.data.wf ?? null,
           });
         }
         this.tickCb?.();
