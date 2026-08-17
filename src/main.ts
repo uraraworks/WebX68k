@@ -1421,9 +1421,16 @@ async function insertDiskBytes(
   }
 }
 
-function ejectSlot(slot: SlotId): void {
+function ejectSlot(slot: SlotId, confirmIfRunning = true): void {
   if (isSlotLocked(slot)) {
     alert(t('slotLockedWhileRunning'));
+    return;
+  }
+  // 実行中の排出は、ディスクを読んでいるゲストがそのままフリーズする事故に直結する
+  // (特にタッチ操作ではドライブ行の誤タップが起きやすい)。ディスク交換は排出を経ずに
+  // 挿入(ホットスワップ)でできるため、実行中にこのボタンが必要な場面は稀 — 確認を挟む。
+  // MCPブリッジ経由(明示的な操作)は confirmIfRunning=false で従来どおり即排出する。
+  if (confirmIfRunning && host && running && slots[slot] && !confirm(t('slotEjectConfirmRunning'))) {
     return;
   }
   // 抜く前にゲストの書き込みを回収する(吸い出しは同期なので、ここを抜ける時点で取得済み)。
@@ -3687,7 +3694,9 @@ async function persistSlotToLibrary(slot: SlotId): Promise<boolean> {
   const pending = slots[slot];
   if (!host || !running || !pending) return false;
   const { sourceKey } = pending;
-  if (!sourceKey || sourceKey === BUNDLED_DISK_SOURCE_KEY) return false;
+  // 同梱システムディスクは意図的に回収しない(リセットしても常にプリスチンな状態で起動し直す。
+  // ライブラリ先頭の固定エントリで差し替えもできない)。
+  if (sourceKey === BUNDLED_DISK_SOURCE_KEY) return false;
 
   const drive = fddDriveOf(slot);
   host.clearDirty(drive === null ? { hdd: true } : { fddDrive: drive });
@@ -3701,6 +3710,16 @@ async function persistSlotToLibrary(slot: SlotId): Promise<boolean> {
   }
   if (!live) return false;
   const data = live.slice();
+  // 吸い出したバイト列は同期のうちにスロットへ反映する。restartCore() は flushAllSlots() の
+  // 直後に bootCore() が slots[].data からディスクを書き直すため、反映を下の IndexedDB 書き込み
+  // 完了後に回すと、書き込みが終わる前に再マウントが走って**古いバイト列で起動し直す**
+  // (=リセットでセーブデータが巻き戻る)。IndexedDB の遅い iOS Safari では特に競合に負けやすい。
+  // ここは冒頭で pending を読んだのと同じ同期区間なので、排出・差し替えと競合しない。
+  slots[slot] = { ...pending, data };
+
+  // ライブラリに実体を持たないディスク(MCPブリッジからの挿入等、sourceKey 無し)は
+  // IndexedDB へは書き戻せないが、上のスロット反映によりリセットを跨いでは保持される。
+  if (!sourceKey) return false;
 
   try {
     await saveDisk({ sourceKey, name: pending.name, bytes: data, savedAt: Date.now() });
@@ -3709,9 +3728,6 @@ async function persistSlotToLibrary(slot: SlotId): Promise<boolean> {
     return false;
   }
 
-  // 待っている間に排出・差し替えが起きているかもしれないので、同じディスクのままの
-  // ときだけスロット側も更新する(そうしないと排出済みスロットを復活させてしまう)。
-  if (slots[slot]?.sourceKey === sourceKey) slots[slot] = { ...slots[slot]!, data };
   if (!libraryBackdrop.classList.contains('hidden')) void refreshLibraryList();
   return true;
 }
@@ -4485,7 +4501,7 @@ const bridgeHost: BridgeHost = {
   insertDisk: async (slot, name, bytes) => {
     await insertDiskBytes(toSlotId(slot), name, bytes);
   },
-  ejectDisk: (slot) => ejectSlot(toSlotId(slot)),
+  ejectDisk: (slot) => ejectSlot(toSlotId(slot), false),
   diskListFiles: async (slot, path) => {
     const { entries } = await fmListDir({ kind: 'slot', ref: toSlotId(slot), label: slot, mounted: true, editable: true }, path);
     return entries.map((e) => ({ name: e.name, size: e.size, isDir: e.isDir, mtime: e.mtime }));
