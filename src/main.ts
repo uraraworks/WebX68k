@@ -44,7 +44,15 @@ import { Bridge, resolveBridgeUrl, type BridgeHost } from './bridge';
 import { RETROK, charToKey, codeToRetrok } from './keyboard';
 import { LibretroHost } from './libretro-host';
 import { parseAspectModeParam, parseCpuSpeedParam, parseRamSizeParam } from './url-params';
-import { hostMatches, looksLikeHtml, PROXY_CAPABLE_HOSTS, rewriteGithubBlobUrl, shouldPreferProxy, urlHostname } from './disk-fetch';
+import {
+  hostMatches,
+  looksLikeHtml,
+  PROXY_CAPABLE_HOSTS,
+  rewriteDropboxUrl,
+  rewriteGithubBlobUrl,
+  shouldPreferProxy,
+  urlHostname,
+} from './disk-fetch';
 import {
   createResampleState,
   DEFAULT_SPEED_STEP,
@@ -997,11 +1005,16 @@ async function readResponseWithProgress(
  * 進捗コールバック付きでURLからバイト列を取得する(WebNP2 の fetchWithProgress に準拠)。
  *
  * 通常はまず指定URLへ直接fetchする(GitHub raw のようにCORS対応済みのURLに無駄な中継を挟まない
- * ため)。ただし Google Drive/Dropbox の共有URLは、直接fetchしても生のファイルは絶対に返らず
+ * ため)。ただし Google Drive の共有URLは、直接fetchしても生のファイルは絶対に返らず
  * 共有ページのHTMLが(CORSエラーにもならず)200で返ってくることが実測で判明している
  * (2026-08-13 curl実測: Googleが Origin をechoした access-control-allow-origin を付けて返す)。
- * そのため中継(VITE_DISK_PROXY)が設定されている場合、これらのホストは直接fetchを試さず
- * 最初から中継を使う(`shouldPreferProxy`)。
+ * そのため中継(VITE_DISK_PROXY)が設定されている場合、このホスト(`PROXY_ONLY_HOSTS`)は
+ * 直接fetchを試さず最初から中継を使う(`shouldPreferProxy`)。
+ * Dropboxは中継優先(skipDirect)対象から外れ、`rewriteDropboxUrl` でホスト名を
+ * `dl.dropboxusercontent.com` に置換したうえで直接取得を試みる(2026-08-18、FMSoundでの
+ * ブラウザ実測の移植。WebX68kのディスクイメージURLでの実リンク実測は未実施)。中継に渡すURLは
+ * 利用者が入力した元のURL(`fetchUrl`、置換前)のままにする(中継はサーバ側から取得するため
+ * 置換不要で、元の共有URLで実績があるため)。
  *
  * 直接fetchを試した場合でも、取得結果が `looksLikeHtml` でHTMLに見えるときはディスクイメージ
  * ではないとみなし、中継が設定されていればそちらで再取得を試みる(対象外ホストにも効く保険)。
@@ -1032,8 +1045,11 @@ async function fetchBytesWithProgress(
   let directError: Error | null = null;
   let directWasHtml = false;
   if (!preferProxy) {
+    // Dropboxの共有URLはホスト名だけ置換して直接取得を試みる(中継に渡すfetchUrlは
+    // 元のまま)。Dropbox以外のホストは何も変わらない。
+    const directUrl = rewriteDropboxUrl(fetchUrl);
     try {
-      const response = await fetch(fetchUrl);
+      const response = await fetch(directUrl);
       if (!response.ok) {
         throw new Error(t('urlFetchFailedHttp', { url, status: response.status }));
       }

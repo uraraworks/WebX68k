@@ -47,12 +47,18 @@ Notes on `fd1`/`fd2`/`hdd`:
   `raw.githubusercontent.com` cannot serve release assets — these still go
   through the relay service as before (or direct fetch if `VITE_DISK_PROXY`
   is unset).
-- Google Drive and Dropbox share links return an HTML viewer page instead of
-  the raw file when fetched directly (no CORS error, just the wrong content),
-  so the public page **fetches these hosts through a relay service from the
-  start**. If you fork and host this yourself, you need to set
-  `VITE_DISK_PROXY` (see below) to use this — without it, these hosts are
-  reported as unfetchable.
+- Google Drive share links return an HTML viewer page instead of the raw file
+  when fetched directly (no CORS error, just the wrong content), so the
+  public page **fetches this host through a relay service from the start**.
+  If you fork and host this yourself, you need to set `VITE_DISK_PROXY` (see
+  below) to use this — without it, this host is reported as unfetchable.
+- Dropbox share links are fetched **directly**: the app automatically
+  rewrites just the hostname before fetching, so you can paste the URL
+  exactly as copied ("Copy link", with `dl=0` left as-is — no need to change
+  it to `dl=1`). This works even without a relay service configured. Only
+  file-level share links (`/scl/fi/...`) have been verified; folder shares
+  and password-protected links are untested. If direct fetch fails, it falls
+  back to the relay service as before (when one is configured).
 - **OneDrive share links (`1drv.ms` / `onedrive.live.com` / `sharepoint.com`)
   are not supported** — they don't work even through the relay (confirmed by
   testing). Please use Google Drive or Dropbox instead.
@@ -461,12 +467,15 @@ npm run dev     # dev server
 npm run build   # type-check + production build (dist/)
 ```
 
-To enable relay fetching for Google Drive / Dropbox, set the `VITE_DISK_PROXY`
+To enable relay fetching for Google Drive, set the `VITE_DISK_PROXY`
 environment variable at build time to the URL of your own relay service (no
 trailing `/`). If unset (the default), no relay is used and sources that the
 direct fetch fails for will simply error out. See the comment in
 [.github/workflows/deploy.yml](.github/workflows/deploy.yml) for how this is
-configured for the public GitHub Pages build.
+configured for the public GitHub Pages build. Dropbox does not need this
+setting — it is fetched directly via an automatic hostname rewrite (falling
+back to the relay, when configured, only if direct fetch fails for an
+unverified share format).
 
 Building the emulator core itself (px68k-libretro → WebAssembly) is done via
 `scripts/build-core.sh`; see [docs/DESIGN.md](docs/DESIGN.md) for the full

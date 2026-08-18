@@ -1,5 +1,14 @@
 import { describe, expect, it } from 'vitest';
-import { hostMatches, looksLikeHtml, PROXY_CAPABLE_HOSTS, rewriteGithubBlobUrl, shouldPreferProxy, urlHostname } from '../src/disk-fetch';
+import {
+  hostMatches,
+  looksLikeHtml,
+  PROXY_CAPABLE_HOSTS,
+  PROXY_ONLY_HOSTS,
+  rewriteDropboxUrl,
+  rewriteGithubBlobUrl,
+  shouldPreferProxy,
+  urlHostname,
+} from '../src/disk-fetch';
 
 describe('urlHostname', () => {
   it('URLからホスト名を取り出す', () => {
@@ -30,10 +39,17 @@ describe('hostMatches', () => {
 });
 
 describe('shouldPreferProxy', () => {
-  it.each(['https://drive.google.com/file/d/abc/view', 'https://docs.google.com/uc?id=abc', 'https://www.dropbox.com/s/abc/x.hdf?dl=1', 'https://dl.dropbox.com/s/abc/x.hdf'])(
+  it.each(['https://drive.google.com/file/d/abc/view', 'https://docs.google.com/uc?id=abc'])(
     '中継が設定済みで共有ホスト(%s)なら直接fetchより中継を優先する',
     (url) => {
       expect(shouldPreferProxy(url, true)).toBe(true);
+    },
+  );
+
+  it.each(['https://www.dropbox.com/s/abc/x.hdf?dl=1', 'https://dl.dropbox.com/s/abc/x.hdf'])(
+    'Dropbox(%s)はホスト置換で直接取得できるため中継を優先しない',
+    (url) => {
+      expect(shouldPreferProxy(url, true)).toBe(false);
     },
   );
 
@@ -45,10 +61,65 @@ describe('shouldPreferProxy', () => {
     expect(shouldPreferProxy('https://raw.githubusercontent.com/foo/bar/main/x.hdf', true)).toBe(false);
   });
 
-  it('PROXY_CAPABLE_HOSTSに列挙されたホストで判定している', () => {
+  it('PROXY_ONLY_HOSTSに列挙されたホスト(Google Driveのみ)で判定している', () => {
+    expect(PROXY_ONLY_HOSTS).toEqual(['drive.google.com', 'docs.google.com']);
+    expect(hostMatches('www.dropbox.com', PROXY_ONLY_HOSTS)).toBe(false);
+  });
+
+  it('PROXY_CAPABLE_HOSTSは案内文言用にDropboxを含んだまま残る', () => {
     expect(PROXY_CAPABLE_HOSTS).toEqual(
       expect.arrayContaining(['drive.google.com', 'docs.google.com', 'www.dropbox.com', 'dropbox.com']),
     );
+  });
+});
+
+describe('rewriteDropboxUrl', () => {
+  it('www.dropbox.comをdl.dropboxusercontent.comへ置換する(/scl/fi/形式)', () => {
+    expect(rewriteDropboxUrl('https://www.dropbox.com/scl/fi/abc/x.zip?rlkey=xyz&dl=0')).toBe(
+      'https://dl.dropboxusercontent.com/scl/fi/abc/x.zip?rlkey=xyz&dl=0',
+    );
+  });
+
+  it('rlkey等のクエリを保持する(落とすと権限エラーになるため)', () => {
+    const result = rewriteDropboxUrl('https://www.dropbox.com/scl/fi/abc/x.zip?rlkey=xyz&dl=0');
+    expect(new URL(result).searchParams.get('rlkey')).toBe('xyz');
+  });
+
+  it('dl=0のままでも置換する(dl=1への書き換えは不要)', () => {
+    expect(rewriteDropboxUrl('https://www.dropbox.com/scl/fi/abc/x.zip?rlkey=xyz&dl=0')).toContain('dl=0');
+  });
+
+  it('www無しのdropbox.comも置換する', () => {
+    expect(rewriteDropboxUrl('https://dropbox.com/s/abc/x.hdf')).toBe('https://dl.dropboxusercontent.com/s/abc/x.hdf');
+  });
+
+  it('既にdl.dropboxusercontent.comなら変化しない(冪等)', () => {
+    const url = 'https://dl.dropboxusercontent.com/scl/fi/abc/x.zip?rlkey=xyz';
+    expect(rewriteDropboxUrl(url)).toBe(url);
+  });
+
+  it('Google Driveは変化しない', () => {
+    const url = 'https://drive.google.com/file/d/abc/view';
+    expect(rewriteDropboxUrl(url)).toBe(url);
+  });
+
+  it('GitHubは変化しない', () => {
+    const url = 'https://github.com/foo/bar/blob/main/x.hdf';
+    expect(rewriteDropboxUrl(url)).toBe(url);
+  });
+
+  it('任意のURLは変化しない', () => {
+    const url = 'https://example.com/some/path/x.hdf';
+    expect(rewriteDropboxUrl(url)).toBe(url);
+  });
+
+  it('前方一致だけの偽陽性は起こさない(evildropbox.comは置換されない)', () => {
+    const url = 'https://evildropbox.com/scl/fi/abc/x.zip';
+    expect(rewriteDropboxUrl(url)).toBe(url);
+  });
+
+  it('パース不可な文字列は変化しない', () => {
+    expect(rewriteDropboxUrl('not a url')).toBe('not a url');
   });
 });
 

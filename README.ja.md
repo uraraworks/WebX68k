@@ -44,10 +44,16 @@ X68000 エミュレータ [px68k-libretro](https://github.com/uraraworks/px68k-l
   一方 **Release asset のURL**(`.../releases/download/<tag>/<asset>` や
   `.../releases/latest/download/<asset>`)は `raw.githubusercontent.com` から取得できないため
   書き換えの対象外で、従来どおり中継サービス経由(`VITE_DISK_PROXY` 未設定時は直接fetch)になります。
-- Google Drive / Dropbox の共有リンクは直接fetchすると(CORSエラーにはならず)共有ページの
-  HTMLが返ってきてしまうため、公開ページでは**最初から中継サービス経由で取得**します。
-  fork して自分でホストする場合は後述の `VITE_DISK_PROXY` の設定が必要です(未設定のまま
-  だと「直接取得できません」と案内されます)。
+- Google Drive の共有リンクは直接fetchすると(CORSエラーにはならず)共有ページのHTMLが
+  返ってきてしまうため、公開ページでは**最初から中継サービス経由で取得**します。fork して
+  自分でホストする場合は後述の `VITE_DISK_PROXY` の設定が必要です(未設定のままだと
+  「直接取得できません」と案内されます)。
+- Dropbox の共有リンクは、URLのホスト名だけをアプリ側で自動的に置換して**直接取得**します
+  (「リンクをコピー」で得た `dl=0` のままのURLをそのまま貼り付けて構いません。`dl=1` への
+  書き換えは不要です)。中継サービスが未設定でも利用できます。検証済みなのはファイル単位の
+  共有リンク(`/scl/fi/...` 形式)のみで、フォルダ共有・パスワード付きリンクは未検証です。
+  直接取得に失敗した場合は、中継サービスが設定されていれば従来どおりそちらへフォールバック
+  します。
 - **OneDrive(`1drv.ms` / `onedrive.live.com` / `sharepoint.com`)の共有リンクは
   仕様上ご利用いただけません**(中継を挟んでも取得できないことが確認済みです)。
   Google DriveかDropboxをお使いください。
@@ -397,10 +403,12 @@ npm run dev     # 開発サーバー
 npm run build   # 型チェック + 本番ビルド (dist/)
 ```
 
-Google Drive / Dropbox の中継取得を使いたい場合は、ビルド時に環境変数 `VITE_DISK_PROXY` へ
-自前の中継サービスのURL(末尾の `/` なし)を設定してください。未設定(既定)なら中継は行われず、
+Google Drive の中継取得を使いたい場合は、ビルド時に環境変数 `VITE_DISK_PROXY` へ自前の
+中継サービスのURL(末尾の `/` なし)を設定してください。未設定(既定)なら中継は行われず、
 直接fetchが失敗した配布元はエラーになります(公開ページ用のGitHub Actionsでの設定方法は
-[.github/workflows/deploy.yml](.github/workflows/deploy.yml) のコメントを参照)。
+[.github/workflows/deploy.yml](.github/workflows/deploy.yml) のコメントを参照)。Dropbox は
+ホスト名の自動置換で直接取得するため中継設定は不要です(未検証の共有形式で直接取得が
+失敗した場合のみ、設定されていれば中継へフォールバックします)。
 
 エミュレータ本体(px68k-libretro → WebAssembly)のビルドは `scripts/build-core.sh` で行います。
 ビルドの前提セットアップや FDD0/FDD1/HDD 同時搭載の仕組みなど詳細は
