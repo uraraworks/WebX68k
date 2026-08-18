@@ -41,6 +41,7 @@ import {
 } from './api/library';
 import { buildFileManagerDialog, type FmTarget } from './filemanager';
 import type { TouchMouseButton } from './touch-mouse';
+import { createDiskPersistence } from './disk-persist';
 import { Bridge, resolveBridgeUrl, type BridgeHost } from './bridge';
 import { RETROK, charToKey, codeToRetrok } from './keyboard';
 import { LibretroHost } from './libretro-host';
@@ -2641,14 +2642,13 @@ async function bootCore(): Promise<void> {
 
 /** 実行中のコアを破棄して作り直す */
 async function restartCore(): Promise<void> {
-  // 載せ直すと slots[].data から書き直すことになるので、その前にゲストの書き込みを回収する
-  // (設定変更でCPU速度を変えただけでセーブデータが消える、という事故を防ぐ)。
-  flushAllSlots();
-  running = false;
-  cancelScheduled();
-  host?.dispose();
-  host = null;
-  await bootCore();
+  await diskPersistence.restartWithFlush(async () => {
+    running = false;
+    cancelScheduled();
+    host?.dispose();
+    host = null;
+    await bootCore();
+  });
 }
 
 // ドライブ行の挿入ボタン・ライブラリ/ブランクボタン・D&D配線(WebNP2 の FDスロット行と同じ流儀)。
@@ -3798,68 +3798,46 @@ function isFileManagerOpen(): boolean {
   return fileManagerRoot.querySelector('.fm-modal-backdrop:not(.hidden)') !== null;
 }
 
+// ディスクの吸い出しロジック本体は src/disk-persist.ts へ切り出した(DOM/wasm非依存。
+// restartCore() が flushAll → teardown+boot の「順序」を壊さないことを vitest で検証するため)。
+// ここでの各依存は main.ts 側の実体(host/slots等)への薄いアダプタ。
+const diskPersistence = createDiskPersistence(
+  {
+    getSlot: (slot) => slots[slot],
+    setSlot: (slot, entry) => {
+      slots[slot] = entry;
+    },
+    isLive: () => host !== null && running,
+    clearDirty: (slot) => {
+      const drive = fddDriveOf(slot);
+      host!.clearDirty(drive === null ? { hdd: true } : { fddDrive: drive });
+    },
+    readLiveImage: (slot) => readLiveSlotImage(slot),
+    saveDisk: (args) => saveDisk(args),
+    readDirtyState: () => host!.readDirtyState(),
+    fddDriveOf: (slot) => fddDriveOf(slot),
+    onSaved: () => {
+      if (!libraryBackdrop.classList.contains('hidden')) void refreshLibraryList();
+    },
+    now: () => Date.now(),
+  },
+  SLOT_IDS,
+);
+
 /**
  * スロットの現在の内容(ゲストの書き込み反映後)をディスクライブラリへ書き戻す。
- *
- * 同梱ディスクはライブラリ先頭の固定エントリで差し替えできないため対象外。
- * ダーティフラグのクリアは吸い出しの「前」に行う(後にすると、吸い出し中に発生した
- * 書き込みまで一緒に消えて、その分が二度と保存されなくなる)。
+ * 本体は src/disk-persist.ts。ここは既存呼び出し元(ejectSlot/pollAutoSave等)向けの薄いラッパ。
  */
 async function persistSlotToLibrary(slot: SlotId): Promise<boolean> {
-  const pending = slots[slot];
-  if (!host || !running || !pending) return false;
-  const { sourceKey } = pending;
-  // 同梱システムディスクは意図的に回収しない(リセットしても常にプリスチンな状態で起動し直す。
-  // ライブラリ先頭の固定エントリで差し替えもできない)。
-  if (sourceKey === BUNDLED_DISK_SOURCE_KEY) return false;
-
-  const drive = fddDriveOf(slot);
-  host.clearDirty(drive === null ? { hdd: true } : { fddDrive: drive });
-
-  let live: Uint8Array | null = null;
-  try {
-    live = readLiveSlotImage(slot);
-  } catch (err) {
-    console.error('ディスクの吸い出しに失敗しました。', err);
-    return false;
-  }
-  if (!live) return false;
-  const data = live.slice();
-  // 吸い出したバイト列は同期のうちにスロットへ反映する。restartCore() は flushAllSlots() の
-  // 直後に bootCore() が slots[].data からディスクを書き直すため、反映を下の IndexedDB 書き込み
-  // 完了後に回すと、書き込みが終わる前に再マウントが走って**古いバイト列で起動し直す**
-  // (=リセットでセーブデータが巻き戻る)。IndexedDB の遅い iOS Safari では特に競合に負けやすい。
-  // ここは冒頭で pending を読んだのと同じ同期区間なので、排出・差し替えと競合しない。
-  slots[slot] = { ...pending, data };
-
-  // ライブラリに実体を持たないディスク(MCPブリッジからの挿入等、sourceKey 無し)は
-  // IndexedDB へは書き戻せないが、上のスロット反映によりリセットを跨いでは保持される。
-  if (!sourceKey) return false;
-
-  try {
-    await saveDisk({ sourceKey, name: pending.name, bytes: data, savedAt: Date.now() });
-  } catch (err) {
-    console.error('ディスクライブラリへの書き戻しに失敗しました。', err);
-    return false;
-  }
-
-  if (!libraryBackdrop.classList.contains('hidden')) void refreshLibraryList();
-  return true;
+  return diskPersistence.persistSlot(slot);
 }
 
 /**
  * 全スロットを即座に書き戻す(排出・コア再起動・ページ離脱の直前用)。
- * readLiveSlotImage() による吸い出しは同期なので、await しなくてもバイト列の取得だけは
- * この関数を抜ける前に終わっている。IndexedDB への書き込みだけが非同期で後を追う。
+ * 本体は src/disk-persist.ts。
  */
 function flushAllSlots(): void {
-  if (!host || !running) return;
-  const dirty = host.readDirtyState();
-  for (const slot of SLOT_IDS) {
-    const drive = fddDriveOf(slot);
-    const isDirty = drive === null ? dirty.hdd : (dirty.fddMask & (1 << drive)) !== 0;
-    if (isDirty) void persistSlotToLibrary(slot);
-  }
+  diskPersistence.flushAll();
 }
 
 function pollAutoSave(now: number): void {
