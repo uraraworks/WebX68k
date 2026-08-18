@@ -78,8 +78,6 @@ interface Dict {
   slotLockedWhileRunning(): string;
   /** 実行中にFDを排出しようとしたときの確認(誤タップでゲストがフリーズする事故の防止)。 */
   slotEjectConfirmRunning(): string;
-  /** 実行中にリセットしようとしたときの確認(誤タップで進行を失う事故の防止)。 */
-  resetConfirmRunning(): string;
   /** ドライブアクセスランプのスクリーンリーダー向けラベル。 */
   diskLampLabel(args: { drive: string }): string;
   /** スロットの「ライブラリから挿入」ボタン(ツールチップ)。 */
@@ -504,7 +502,6 @@ const STRINGS: Record<Lang, Dict> = {
     slotLockedWhileRunning: () => '起動中はHDDを交換できません(ページを再読み込みしてから操作してください)',
     slotEjectConfirmRunning: () =>
       '実行中のディスクを取り出しますか？ソフトがディスクを読んでいる場合、フリーズすることがあります。\n(ディスク交換は、取り出さずにそのまま次のディスクを挿入すればできます)',
-    resetConfirmRunning: () => '実行中のX68000をリセットしますか？保存していない進行は失われます。',
     diskLampLabel: ({ drive }) => `${drive} アクセスランプ`,
     slotInsertFromLibrary: () => 'ライブラリから挿入',
     slotInsertFromLibraryTitle: ({ drive }) => `${drive} へ挿入`,
@@ -834,7 +831,6 @@ const STRINGS: Record<Lang, Dict> = {
     slotLockedWhileRunning: () => 'The HDD cannot be swapped while running (reload the page first)',
     slotEjectConfirmRunning: () =>
       'Eject the disk while the machine is running? Software reading the disk may freeze.\n(To swap disks, just insert the next disk without ejecting.)',
-    resetConfirmRunning: () => 'Reset the running X68000? Unsaved progress will be lost.',
     diskLampLabel: ({ drive }) => `${drive} access lamp`,
     slotInsertFromLibrary: () => 'Insert from library',
     slotInsertFromLibraryTitle: ({ drive }) => `Insert into ${drive}`,
