@@ -407,6 +407,50 @@ main {
 }
 
 /*
+ * バーチャルトラックパッド(仮想キーボード/バーチャルパッドに次ぐ「入力パネル」の第3の種類。
+ * src/virtual-trackpad.ts 参照)。バーチャルパッドのオーバーレイモード(.vpad-overlay)と
+ * 同じく .stage に重ねて置く: トラックパッドはバーチャルパッドと違いパネル/サイド等の
+ * 置き場所切り替えを持たず常にこの1種類だけなので、専用の帯を新設せず画面下部に重ねるだけで
+ * 足りる。幅は .stage いっぱい、高さは aspect-ratio で決め、縦長画面で伸びすぎないよう
+ * max-height で頭打ちにする。
+ */
+.virtual-trackpad {
+  /* 仮想キーボードと同じ「画面とツールバーの間の帯」に置く。.stage へ重ねない理由は、
+     操作中の指がゲスト画面を隠さないようにすることがこの機能の目的そのものだから
+     (canvas を直接タッチの受け口にしていた旧実装の難点がまさにそれだった)。 */
+  position: relative;
+  box-sizing: border-box;
+  height: min(34vh, 240px);
+  padding: 8px;
+  background: linear-gradient(var(--footer-bg-top), var(--footer-bg-bottom));
+  border-top: 1px solid var(--footer-border);
+  touch-action: none;
+  user-select: none;
+  -webkit-user-select: none;
+  -webkit-touch-callout: none;
+  overscroll-behavior: contain;
+}
+
+/* 操作面であることが一目で分かるよう、内側をわずかに明るくしたうえで一段凹ませる
+   (左上を影・右下をハイライトにする定番の陰影)。実機のトラックパッドと同じく
+   「ここを触る」と説明なしで伝わる形にするための装飾で、当たり判定は親要素が持つ。 */
+.virtual-trackpad::before {
+  content: '';
+  position: absolute;
+  inset: 8px;
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.07);
+  box-shadow:
+    inset 2px 2px 3px rgba(0, 0, 0, 0.55),
+    inset -2px -2px 3px rgba(255, 255, 255, 0.11);
+  pointer-events: none;
+}
+
+.virtual-trackpad.hidden {
+  display: none;
+}
+
+/*
  * アナログスティック風UI(見た目のみ。意味は方向入力=dpadのまま。virtual-pad.ts 参照)。
  * ベース円は固定位置で、ノブだけが JS(virtual-pad.ts の updateKnobVisual())の
  * transform:translate() で動く(left/topではなく transform にするのは、レイアウトの

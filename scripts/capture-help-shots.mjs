@@ -487,7 +487,25 @@ async function run() {
       console.log(`  wrote vpad-editor${suffix}.png`);
       await page.keyboard.press('Escape');
       await sleep(300);
+
+      // --- trackpad: バーチャルトラックパッド(入力パネル第3の種類) ---
+      // バーチャルパッドがまだ表示中なので、🖱チップを押してトラックパッドへ切り替える。
+      // 🖱チップは⌨/🎮と違って状態依存の役割を持たない(main.ts の btnPanelTrackpad ハンドラ
+      // 参照: 常に openInputPanel('trackpad') を呼ぶだけ)が、念のため virtualpad ショットと
+      // 同じ「実際に表示されているかをDOMで見てから必要な場合だけ押す」方式に揃える。
+      await page.setViewport({ width: 375, height: 812, deviceScaleFactor: 2 });
+      const trackpadAlreadyShown = await page.evaluate(() => {
+        const el = document.getElementById('virtual-trackpad');
+        return !!el && !el.classList.contains('hidden');
+      });
+      if (!trackpadAlreadyShown) {
+        await clickToolbarButton(page, 'btn-panel-trackpad'); // 🖱側へ切替
+      }
+      await sleep(300);
+      await shoot(page, '.console-card', `trackpad${suffix}.png`);
+
       await clickToolbarButton(page, 'btn-virtual-keyboard'); // 入力パネルを閉じる(後続に影響させない)
+      await page.setViewport(VIEWPORT); // 後続(hostkeyショット等)へ影響させない
 
       // --- hostkey: 物理キーボード→ジョイスティック割当ダイアログ ---
       await clickToolbarButton(page, 'btn-hostkey');

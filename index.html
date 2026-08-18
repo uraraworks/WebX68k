@@ -53,6 +53,11 @@
           </div>
         </div>
         <div id="virtual-keyboard" class="virtual-keyboard hidden" aria-label="X68000 仮想キーボード"></div>
+        <!-- バーチャルトラックパッド。canvas を直接タッチの受け口にしていた旧実装から
+             専用の操作面へ切り出した。画面に重ねず仮想キーボードと同じ帯に置くのは、
+             操作中の指がゲスト画面を隠さないようにするため(この配置自体が目的)。
+             詳細は src/virtual-trackpad.ts 参照。 -->
+        <div id="virtual-trackpad" class="virtual-trackpad hidden" aria-label="バーチャルトラックパッド"></div>
         <div class="console-footer">
           <div class="toolbar">
             <!-- 常設4種(リセット/フルスクリーン/仮想キーボード/スクリーンショット)+「…」オーバーフロー。
@@ -74,6 +79,7 @@
             <div id="input-panel-switch" class="input-panel-switch hidden">
               <button id="btn-panel-keyboard" type="button" class="icon-btn panel-switch-btn" aria-pressed="false">⌨</button>
               <button id="btn-panel-pad" type="button" class="icon-btn panel-switch-btn" aria-pressed="false">🎮</button>
+              <button id="btn-panel-trackpad" type="button" class="icon-btn panel-switch-btn" aria-pressed="false">🖱</button>
             </div>
             <button id="btn-screenshot" type="button" class="icon-btn" title="スクリーンショット" aria-label="スクリーンショット" disabled>
               <svg class="btn-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 8h3l2-3h6l2 3h3a1 1 0 0 1 1 1v10a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1V9a1 1 0 0 1 1-1z M12 17a3.5 3.5 0 1 0 0-7 3.5 3.5 0 0 0 0 7z"/></svg>

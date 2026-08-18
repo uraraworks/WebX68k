@@ -361,6 +361,8 @@ interface Dict {
   inputPanelSwitchKeyboard(): string;
   /** stage右上の切り替えチップ、バーチャルパッド側ボタンのaria-label。 */
   inputPanelSwitchPad(): string;
+  /** stage右上の切り替えチップ、バーチャルトラックパッド側ボタンのaria-label。 */
+  inputPanelSwitchTrackpad(): string;
   /** バーチャルパッドの組み込みプロファイル表示名。 */
   vpadProfileJoy2Button(): string;
   vpadProfileCursorSpace(): string;
@@ -708,6 +710,7 @@ const STRINGS: Record<Lang, Dict> = {
     toolbarInputPanelHide: () => '入力パネルを隠す',
     inputPanelSwitchKeyboard: () => '仮想キーボードに切替',
     inputPanelSwitchPad: () => 'バーチャルパッドに切替',
+    inputPanelSwitchTrackpad: () => 'バーチャルトラックパッドに切替',
     vpadProfileJoy2Button: () => 'ジョイスティック(2ボタン)',
     vpadProfileCursorSpace: () => 'カーソルキー + スペース',
     vpadProfileTenkey: () => 'テンキー',
@@ -1035,6 +1038,7 @@ const STRINGS: Record<Lang, Dict> = {
     toolbarInputPanelHide: () => 'Hide input panel',
     inputPanelSwitchKeyboard: () => 'Switch to virtual keyboard',
     inputPanelSwitchPad: () => 'Switch to virtual pad',
+    inputPanelSwitchTrackpad: () => 'Switch to virtual trackpad',
     vpadProfileJoy2Button: () => 'Joystick (2 buttons)',
     vpadProfileCursorSpace: () => 'Cursor keys + Space',
     vpadProfileTenkey: () => 'Tenkey',
