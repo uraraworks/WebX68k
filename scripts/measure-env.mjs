@@ -315,6 +315,12 @@ function parseEtimeToSeconds(etime) {
  * 上位 limit 件を返す。計測窓の「外」(開始直前・終了直後)で1回ずつ呼ぶ用途であり、
  * 計測窓の中では呼ばない(サブプロセス起動そのものが負荷になるため)。
  * 取得不能なら null(空配列と区別する)。
+ *
+ * 上位 limit 件に加えて、comm に 'vite' を含むプロセスは(CPU使用率に関わらず)必ず
+ * 含める。vite preview は接続がなければCPUをほぼ使わず「上位10件」から漏れうるが、
+ * 残存プロセスの検出(competitor条件(b))そのものがCPU使用率と無関係であるべき
+ * ため、この2種の抽出は別ロジックにしてある(2026-08-19実測: 実際に上位10件には
+ * 入らずvite単体では検出できなかった)。
  */
 export async function snapshotProcesses(limit = 10) {
   try {
@@ -334,7 +340,10 @@ export async function snapshotProcesses(limit = 10) {
         comm: comm.trim(),
       });
     }
-    return parsed.slice(0, limit);
+    const top = parsed.slice(0, limit);
+    const topPids = new Set(top.map((proc) => proc.pid));
+    const viteMatches = parsed.filter((proc) => !topPids.has(proc.pid) && /vite/i.test(proc.comm));
+    return [...top, ...viteMatches];
   } catch {
     return null;
   }
@@ -351,20 +360,73 @@ function round2(value) {
   return value === null ? null : Math.round(value * 100) / 100;
 }
 
+// 2026-08-19 の実測で判明した問題: WindowServer(常時30〜45%CPU・経過107日)のような
+// macOSの常駐プロセスは competitor 条件(a)に恒久的に該当し、verdict が常に "contended"
+// に張り付いていた。これはこちらが止められるものではなく、良条件(16:12〜16:17、
+// loadavg1正規化0.34〜0.40、起動中央値24,150ms)でも悪条件(15:22〜15:48、
+// loadavg1正規化0.54〜0.76、起動中央値36,658ms)でも同様に動いていたため、
+// 悪化の説明にもならない。そこで「止められない常駐プロセス」と「計測を駆動している
+// Claudeデスクトップアプリ本体(このスクリプトを動かしている当人)」を許可リストで
+// competitor 判定から除外する。ただし消すと「そのとき何が動いていたか」の記録が
+// 失われるため、systemBackground という別枠へ退避して記録する(除外≠不可視化)。
+//
+// 一方、Chromeレンダラは今回の真犯人(悪条件で新たに現れたCPU31%・経過1日6時間の
+// 放置タブ)そのものであり、除外しない。ブラウザのレンダラプロセスは検体アプリ
+// (Chrome/Brave/Edge等)側のヘルパーであって、OS常駐プロセスでも計測ツール本体でも
+// ないため、意図的にこの許可リストへは入れない。
+const SYSTEM_BACKGROUND_ALLOWLIST = [
+  // macOS の常駐プロセス(ユーザーが止める対象ではない)
+  /WindowServer$/,
+  /WindowManager\.app/,
+  /fseventsd$/,
+  /NotificationCenter\.app/,
+  /locationd$/,
+  /knowledge-agent$|knowledgeconstructiond$|knowledged$/,
+  /sysmond$/,
+  /launchd$/,
+  /kernel_task$/,
+  /opendirectoryd$/,
+  /coreauthd$/,
+  /searchpartyd$/,
+  /CursorUIViewService|TextInputUIMacHelper/,
+  /EcosystemAnalytics\.framework|ecosystemanalyticsd$/,
+  /IntelligencePlatformCompute/,
+  /BiomeStreams\.framework|biomed$|biomesyncd$|biometrickitd$/,
+  // 計測を駆動しているClaudeデスクトップアプリ本体(Claude.app / claude-code CLI)。
+  // 計測対象や「余計なもの」ではなく計測ツールそのもの。
+  /\/Claude\.app\//,
+  /\/claude-code\//,
+];
+
+function isSystemBackground(proc) {
+  if (!proc || typeof proc.comm !== 'string') return false;
+  return SYSTEM_BACKGROUND_ALLOWLIST.some((pattern) => pattern.test(proc.comm));
+}
+
 /**
  * 計測を汚しうるプロセスの判定:
- *  (a) pcpu が10%以上、かつ経過時間が10分(600秒)以上
+ *  (a) pcpu が10%以上、かつ経過時間が10分(600秒)以上 — 元の実インシデント
+ *      (放置Chromeタブ: CPU31%・経過1日6時間)を捉えるための長時間居座り検出
+ *  (a') pcpu が80%以上(経過時間は問わない) — 単一コアをほぼ張り付かせている
+ *      プロセスは経過時間によらず計測を汚しうる。(a)は「長く居座る中負荷」を
+ *      捉える設計だが、起動直後の高負荷プロセス(例: 故障注入テストで意図的に
+ *      並走させるCPUスピナー)は経過600秒に達する前に計測が終わってしまい
+ *      検出できない。反復試行の外で1回ずつしか ps を撮らない設計(このモジュール
+ *      冒頭のコメント参照)上、経過時間に依存しない独立した基準が要る
  *  (b) comm に 'vite' を含む(大文字小文字を区別しない)
+ * ただし SYSTEM_BACKGROUND_ALLOWLIST に該当するものは対象外(systemBackground側に記録)。
  */
 function isCompetitor(proc) {
   if (!proc) return false;
+  if (isSystemBackground(proc)) return false;
   const heavyAndLongRunning =
     Number.isFinite(proc.pcpu) &&
     proc.pcpu >= 10 &&
     Number.isFinite(proc.etimeSeconds) &&
     proc.etimeSeconds >= 600;
+  const heavyBurst = Number.isFinite(proc.pcpu) && proc.pcpu >= 80;
   const isVite = typeof proc.comm === 'string' && /vite/i.test(proc.comm);
-  return heavyAndLongRunning || isVite;
+  return heavyAndLongRunning || heavyBurst || isVite;
 }
 
 /**
@@ -372,7 +434,7 @@ function isCompetitor(proc) {
  * そのまま載せる load レポートを組み立てる。判定基準(verdictReason)は文字列として
  * ここで書き出し、結果ファイル自身から判定根拠が読めるようにする。
  */
-export function buildLoadReport({ sampler, processesBefore, processesAfter }) {
+export function buildLoadReport({ sampler, processesBefore, processesAfter, selfPid = process.pid }) {
   const rawSamples = sampler?.samples ?? [];
   const cpuCount = sampler?.cpuCount ?? null;
   const sorted = [...rawSamples].sort((a, b) => a - b);
@@ -394,12 +456,29 @@ export function buildLoadReport({ sampler, processesBefore, processesAfter }) {
   };
 
   const competitorMap = new Map();
+  const systemBackgroundMap = new Map();
   for (const proc of [...(processesBefore ?? []), ...(processesAfter ?? [])]) {
+    // 計測スクリプト自身のnodeプロセス(puppeteer起動やawait処理でCPUが瞬間的に
+    // 跳ねうる)は「止められる余計なもの」ではなく計測ツールそのものであるため、
+    // Claude.appと同様にsystemBackground側へ退避する(heavyBurst基準の自己検出を防ぐ)。
+    const isSelf = selfPid != null && proc?.pid === selfPid;
+    if (isSystemBackground(proc) || isSelf) {
+      if (!systemBackgroundMap.has(proc.pid)) systemBackgroundMap.set(proc.pid, proc);
+      continue;
+    }
     if (isCompetitor(proc) && !competitorMap.has(proc.pid)) {
       competitorMap.set(proc.pid, proc);
     }
   }
   const competitors = [...competitorMap.values()];
+  const systemBackground = [...systemBackgroundMap.values()];
+
+  // 閾値0.5(正規化loadavg1)の根拠: 2026-08-19の実測2条件の間に設定した。
+  //   良(16:12〜16:17): loadavg1正規化 0.34〜0.40、起動中央値 24,150ms
+  //   悪(15:22〜15:48): loadavg1正規化 0.54〜0.76、起動中央値 36,658ms(同条件6試行)
+  const THRESHOLD_BASIS =
+    '閾値0.5は2026-08-19の実測2条件(良: loadavg1正規化0.34-0.40/起動中央値24,150ms、' +
+    '悪: loadavg1正規化0.54-0.76/起動中央値36,658ms)の間に設定した';
 
   let verdict;
   let verdictReason;
@@ -414,18 +493,19 @@ export function buildLoadReport({ sampler, processesBefore, processesAfter }) {
       'loadavgサンプルまたはプロセススナップショット(ps)の取得に失敗したため判定不能';
   } else if ((samplesReport.medianNormalized ?? Infinity) < 0.5 && competitors.length === 0) {
     verdict = 'quiet';
-    verdictReason = 'loadavg1 の median が cpuCount の 0.5 倍未満、かつ competitors が空';
+    verdictReason = `loadavg1 の median が cpuCount の 0.5 倍未満、かつ competitors が空。${THRESHOLD_BASIS}`;
   } else {
     verdict = 'contended';
     verdictReason =
       `loadavg1 の median (正規化 ${samplesReport.medianNormalized}) が cpuCount の0.5倍以上、` +
-      `または competitors が ${competitors.length} 件検出された`;
+      `または competitors が ${competitors.length} 件検出された。${THRESHOLD_BASIS}`;
   }
 
   return {
     samples: samplesReport,
     processesBefore: processesBefore ?? null,
     processesAfter: processesAfter ?? null,
+    systemBackground,
     competitors,
     verdict,
     verdictReason,
