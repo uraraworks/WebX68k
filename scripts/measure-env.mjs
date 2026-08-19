@@ -239,6 +239,199 @@ async function collectAudio(page) {
   }
 }
 
+// --- 負荷の記録 ------------------------------------------------------------
+//
+// 背景: 2026-08-19、同一ビルド(アセット5件のSHA-256一致)にもかかわらず起動計測の
+// 中央値が悪化した。原因はCPUを食う無関係プロセス(古いChromeレンダラ・残存vite
+// preview)との取り合いであり、結果ファイルには「そのとき何が同時に動いていたか」が
+// 一切記録されていなかった。以下は既存の collectEnvironment とは別に、計測の
+// 全区間(反復試行すべてを含む)にわたって負荷を記録するための独立した仕組み。
+//
+// collectEnvironment 側の収集(build/host/browser/page/audio)は計測窓の外で1回
+// 行えば足りるが、負荷はその瞬間だけ静かで前後が汚れているケースを取り逃すため、
+// 計測窓の「中」で継続サンプリングしないと意味がない。サブプロセスを起動する
+// 方式(ps等)は毎回起動コストがあり、それ自体が負荷になり得るため、区間中の
+// 継続サンプリングには os.loadavg() のみを使う(同期・プロセス起動なし)。
+
+const DEFAULT_LOAD_SAMPLE_INTERVAL_MS = 5000;
+
+/**
+ * os.loadavg() を一定間隔でサンプリングし続けるサンプラーを起動する。
+ * サブプロセスは一切起動しない(loadavgはOSがカーネル内で保持する値を読むだけ)。
+ * stop() を呼ぶまで動き続けるが、setInterval には unref() を掛けてあるため、
+ * 呼び忘れてもプロセスの終了自体はブロックしない(ただし明示的に stop() すること)。
+ */
+export function startLoadSampler(options = {}) {
+  const intervalMs = options.intervalMs ?? DEFAULT_LOAD_SAMPLE_INTERVAL_MS;
+  const cpuCount = safeCall(() => os.cpus()?.length ?? null);
+  const samples = [];
+
+  const sampleOnce = () => {
+    try {
+      const value = os.loadavg()[0];
+      if (Number.isFinite(value)) samples.push(value);
+    } catch {
+      // 取得不能ならサンプルを増やさない(0で埋めない)
+    }
+  };
+
+  sampleOnce();
+  const timer = setInterval(sampleOnce, intervalMs);
+  if (typeof timer.unref === 'function') timer.unref();
+
+  let stopped = false;
+  return {
+    stop() {
+      if (!stopped) {
+        clearInterval(timer);
+        stopped = true;
+      }
+      return { samples: [...samples], intervalMs, cpuCount };
+    },
+  };
+}
+
+/**
+ * [[dd-]hh:]mm:ss 形式の `ps -o etime` 出力を秒数へ変換する。パース不能なら null。
+ */
+function parseEtimeToSeconds(etime) {
+  if (typeof etime !== 'string' || etime.length === 0) return null;
+  const dayMatch = /^(\d+)-(.+)$/.exec(etime);
+  const days = dayMatch ? Number(dayMatch[1]) : 0;
+  const rest = dayMatch ? dayMatch[2] : etime;
+  const parts = rest.split(':').map(Number);
+  if (parts.length < 2 || parts.length > 3 || parts.some((n) => !Number.isFinite(n))) return null;
+  let seconds;
+  if (parts.length === 3) {
+    seconds = parts[0] * 3600 + parts[1] * 60 + parts[2];
+  } else {
+    seconds = parts[0] * 60 + parts[1];
+  }
+  return days * 86400 + seconds;
+}
+
+/**
+ * `ps -Ao pid,pcpu,etime,comm -r`(CPU降順)で全プロセスを1回だけスナップショットし、
+ * 上位 limit 件を返す。計測窓の「外」(開始直前・終了直後)で1回ずつ呼ぶ用途であり、
+ * 計測窓の中では呼ばない(サブプロセス起動そのものが負荷になるため)。
+ * 取得不能なら null(空配列と区別する)。
+ */
+export async function snapshotProcesses(limit = 10) {
+  try {
+    const { stdout } = await execFileAsync('ps', ['-Ao', 'pid,pcpu,etime,comm', '-r']);
+    const lines = stdout.split('\n').filter((line) => line.trim().length > 0);
+    lines.shift(); // ヘッダ行
+    const parsed = [];
+    for (const line of lines) {
+      const match = /^\s*(\d+)\s+([\d.]+)\s+(\S+)\s+(.*)$/.exec(line);
+      if (!match) continue;
+      const [, pidStr, pcpuStr, etime, comm] = match;
+      parsed.push({
+        pid: Number(pidStr),
+        pcpu: Number(pcpuStr),
+        etime,
+        etimeSeconds: parseEtimeToSeconds(etime),
+        comm: comm.trim(),
+      });
+    }
+    return parsed.slice(0, limit);
+  } catch {
+    return null;
+  }
+}
+
+function median(sortedAsc) {
+  const n = sortedAsc.length;
+  if (n === 0) return null;
+  const mid = Math.floor(n / 2);
+  return n % 2 === 0 ? (sortedAsc[mid - 1] + sortedAsc[mid]) / 2 : sortedAsc[mid];
+}
+
+function round2(value) {
+  return value === null ? null : Math.round(value * 100) / 100;
+}
+
+/**
+ * 計測を汚しうるプロセスの判定:
+ *  (a) pcpu が10%以上、かつ経過時間が10分(600秒)以上
+ *  (b) comm に 'vite' を含む(大文字小文字を区別しない)
+ */
+function isCompetitor(proc) {
+  if (!proc) return false;
+  const heavyAndLongRunning =
+    Number.isFinite(proc.pcpu) &&
+    proc.pcpu >= 10 &&
+    Number.isFinite(proc.etimeSeconds) &&
+    proc.etimeSeconds >= 600;
+  const isVite = typeof proc.comm === 'string' && /vite/i.test(proc.comm);
+  return heavyAndLongRunning || isVite;
+}
+
+/**
+ * サンプラーの停止結果とプロセススナップショット(計測窓の前後)から、結果JSONへ
+ * そのまま載せる load レポートを組み立てる。判定基準(verdictReason)は文字列として
+ * ここで書き出し、結果ファイル自身から判定根拠が読めるようにする。
+ */
+export function buildLoadReport({ sampler, processesBefore, processesAfter }) {
+  const rawSamples = sampler?.samples ?? [];
+  const cpuCount = sampler?.cpuCount ?? null;
+  const sorted = [...rawSamples].sort((a, b) => a - b);
+  const minLoadavg1 = sorted.length ? sorted[0] : null;
+  const maxLoadavg1 = sorted.length ? sorted[sorted.length - 1] : null;
+  const medianLoadavg1 = median(sorted);
+  const normalize = (value) => (value !== null && cpuCount ? value / cpuCount : null);
+
+  const samplesReport = {
+    intervalMs: sampler?.intervalMs ?? null,
+    sampleCount: rawSamples.length,
+    minLoadavg1: round2(minLoadavg1),
+    medianLoadavg1: round2(medianLoadavg1),
+    maxLoadavg1: round2(maxLoadavg1),
+    cpuCount,
+    minNormalized: round2(normalize(minLoadavg1)),
+    medianNormalized: round2(normalize(medianLoadavg1)),
+    maxNormalized: round2(normalize(maxLoadavg1)),
+  };
+
+  const competitorMap = new Map();
+  for (const proc of [...(processesBefore ?? []), ...(processesAfter ?? [])]) {
+    if (isCompetitor(proc) && !competitorMap.has(proc.pid)) {
+      competitorMap.set(proc.pid, proc);
+    }
+  }
+  const competitors = [...competitorMap.values()];
+
+  let verdict;
+  let verdictReason;
+  if (
+    rawSamples.length === 0 ||
+    cpuCount === null ||
+    processesBefore === null ||
+    processesAfter === null
+  ) {
+    verdict = 'unknown';
+    verdictReason =
+      'loadavgサンプルまたはプロセススナップショット(ps)の取得に失敗したため判定不能';
+  } else if ((samplesReport.medianNormalized ?? Infinity) < 0.5 && competitors.length === 0) {
+    verdict = 'quiet';
+    verdictReason = 'loadavg1 の median が cpuCount の 0.5 倍未満、かつ competitors が空';
+  } else {
+    verdict = 'contended';
+    verdictReason =
+      `loadavg1 の median (正規化 ${samplesReport.medianNormalized}) が cpuCount の0.5倍以上、` +
+      `または competitors が ${competitors.length} 件検出された`;
+  }
+
+  return {
+    samples: samplesReport,
+    processesBefore: processesBefore ?? null,
+    processesAfter: processesAfter ?? null,
+    competitors,
+    verdict,
+    verdictReason,
+  };
+}
+
 /**
  * 計測環境をまとめて収集する。page が null の場合は node 側(build/host)だけを返し、
  * browser/page/audio は null にする。個々の項目の取得失敗は全体を落とさず null にする。

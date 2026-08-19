@@ -11,7 +11,7 @@ import { dirname, isAbsolute, join, resolve } from 'node:path';
 import { performance } from 'node:perf_hooks';
 import { spawn } from 'node:child_process';
 import puppeteer from 'puppeteer-core';
-import { collectEnvironment } from './measure-env.mjs';
+import { collectEnvironment, startLoadSampler, snapshotProcesses, buildLoadReport } from './measure-env.mjs';
 
 const REPO_ROOT = new URL('..', import.meta.url).pathname;
 const DEFAULT_CHROME = '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome';
@@ -871,8 +871,13 @@ async function run() {
   let measurementBridge;
   let browser;
   let profile;
+  let loadSampler;
 
   try {
+    // 負荷の記録: 計測の全区間(反復試行すべて)にわたって os.loadavg() を継続
+    // サンプリングする。計測窓の「外」の前後1回だけプロセススナップショットを取る。
+    const processesBefore = await snapshotProcesses();
+    loadSampler = startLoadSampler();
     if (config.mode === 'prod') {
       await buildProduction();
       measurementBridge = await startMeasurementBridge();
@@ -911,6 +916,21 @@ async function run() {
       } finally {
         await fallbackContext.close();
       }
+    }
+
+    // 負荷の記録: 反復試行がすべて終わった時点でサンプラーを止め、終了直後のプロセス
+    // スナップショットを取って load レポートを組み立てる。environment が取得できて
+    // いれば load を差し込み、取得できていなければ load だけの環境情報として残す。
+    const processesAfter = await snapshotProcesses();
+    const loadReport = buildLoadReport({
+      sampler: loadSampler.stop(),
+      processesBefore,
+      processesAfter,
+    });
+    if (envCapture.value) {
+      envCapture.value.load = loadReport;
+    } else {
+      envCapture.value = { load: loadReport };
     }
 
     const samplesMs = attempts.filter((attempt) => attempt.success).map((attempt) => attempt.durationMs);
@@ -1063,6 +1083,8 @@ async function run() {
       process.exitCode = 1;
     }
   } finally {
+    // 例外発生時にもサンプラーが残らないよう、ここでも念のため止める(冪等)。
+    if (loadSampler) loadSampler.stop();
     if (browser) await browser.close();
     if (profile) await rm(profile, { recursive: true, force: true });
     await stopServer(server);

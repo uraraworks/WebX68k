@@ -19,7 +19,7 @@ import { tmpdir } from 'node:os';
 import { basename, dirname, isAbsolute, join, relative, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import puppeteer from 'puppeteer-core';
-import { collectEnvironment } from './measure-env.mjs';
+import { collectEnvironment, startLoadSampler, snapshotProcesses, buildLoadReport } from './measure-env.mjs';
 
 const REPO_ROOT = fileURLToPath(new URL('..', import.meta.url));
 const DEFAULT_CHROME = '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome';
@@ -611,7 +611,12 @@ async function run() {
   let server = null;
   let browser = null;
   let profile = null;
+  let loadSampler = null;
   try {
+    // 負荷の記録: 計測の全区間(反復試行すべて)にわたって os.loadavg() を継続
+    // サンプリングする。計測窓の「外」の前後1回だけプロセススナップショットを取る。
+    const processesBefore = await snapshotProcesses();
+    loadSampler = startLoadSampler();
     server = await startServer(config.port);
     profile = await mkdtemp(join(tmpdir(), 'webx68k-measure-audio-'));
     browser = await puppeteer.launch({
@@ -788,12 +793,31 @@ async function run() {
       if (result) result.environment = envCapture.value ?? null;
     }
 
+    // 負荷の記録: 反復試行がすべて終わった時点でサンプラーを止め、終了直後のプロセス
+    // スナップショットを取って load レポートを組み立てる。result.environment は
+    // envCapture.value への参照を持つため、ここで envCapture.value を更新すれば
+    // (または result.environment を明示的に張り替えれば)result 側にも反映される。
+    const processesAfter = await snapshotProcesses();
+    const loadReport = buildLoadReport({
+      sampler: loadSampler.stop(),
+      processesBefore,
+      processesAfter,
+    });
+    if (envCapture.value) {
+      envCapture.value.load = loadReport;
+    } else {
+      envCapture.value = { load: loadReport };
+    }
+    if (result) result.environment = envCapture.value;
+
     // 生ログ(rawLog)は各試行ごとに既に別ファイルへ保存済み(finalizeTrial参照、結果本体を
     // 軽くするため)。ここで書き出すresultにはrawLogPath(リポジトリ相対パス)のみが載る。
     await mkdir(dirname(config.outputPath), { recursive: true });
     await writeFile(config.outputPath, `${JSON.stringify(result, null, 2)}\n`, 'utf8');
     console.log(`出力: ${config.outputPath}`);
   } finally {
+    // 例外発生時にもサンプラーが残らないよう、ここでも念のため止める(冪等)。
+    if (loadSampler) loadSampler.stop();
     if (browser) await browser.close();
     if (profile) await rm(profile, { recursive: true, force: true });
     await stopServer(server);
