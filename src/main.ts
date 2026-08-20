@@ -4406,16 +4406,15 @@ async function fmListTargets(): Promise<FmTarget[]> {
     targets.push({ kind: 'slot', ref: slot, label, mounted: !!pending, editable });
   }
 
-  const stored = await listDisks();
-  for (const item of stored) {
-    const kind = classifyDiskKind(item.name);
-    if (kind === null) continue;
-    const editable = kind === 'hdd' || (kind === 'fd' && isFmEditableFdName(item.name));
+  // ライブラリ側はライブラリ一覧/スロットメニューと同じ並び(グループごとにまとまり、表示名の自然順)にする。
+  // ここは平坦なセレクトなので、グループのディスクはそのグループの位置に連続して並べる。
+  const nodes = buildLibraryNodes(await listDisks(), classifyDiskKind);
+  for (const entry of nodes.flatMap((n) => (n.kind === 'group' ? n.group.entries : [n.entry]))) {
+    const editable = entry.kind === 'hdd' || (entry.kind === 'fd' && isFmEditableFdName(entry.name));
     const note = editable ? '' : t('fmNotEditableNote');
-    const mountedSlot = SLOT_IDS.find((s) => slots[s]?.sourceKey === item.sourceKey);
-    const displayName = item.displayName ?? item.name;
-    const label = `${displayName}${mountedSlot ? ` [${t('fmMountedBadge')}]` : ''}${note ? ` (${note})` : ''}`;
-    targets.push({ kind: 'library', ref: item.sourceKey, label, mounted: !!mountedSlot, editable });
+    const mountedSlot = SLOT_IDS.find((s) => slots[s]?.sourceKey === entry.sourceKey);
+    const label = `${entry.displayName}${mountedSlot ? ` [${t('fmMountedBadge')}]` : ''}${note ? ` (${note})` : ''}`;
+    targets.push({ kind: 'library', ref: entry.sourceKey, label, mounted: !!mountedSlot, editable });
   }
   return targets;
 }
