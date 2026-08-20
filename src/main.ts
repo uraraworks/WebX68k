@@ -82,7 +82,15 @@ import { buildInputProfileEditor, type InputSourceDef } from './input-profile-ui
 import { buildHostKeyDialog } from './hostkey-ui';
 import { createVirtualKeyboard, SharedKeyInput } from './virtual-keyboard';
 import { isRepeatableKey, KeyRepeater } from './key-repeat';
-import { createVirtualPad, type VpadPlacement, type VpadSideBoxes } from './virtual-pad';
+import {
+  createVirtualPad,
+  readSafeAreaInsets,
+  resolveLandscapeInsets,
+  screenAngle,
+  vpadSideBoxesFor,
+  type VpadPlacement,
+  type VpadSideBoxes,
+} from './virtual-pad';
 import { createVirtualTrackpad, type VirtualTrackpad } from './virtual-trackpad';
 import {
   activeProfile,
@@ -121,7 +129,7 @@ import {
   type StateDiskConfig,
 } from './state-store';
 import { describeError, getLang, langSelfName, setLang, t } from './strings';
-import { getTargetSize, resolveAspectMode, type AspectMode } from './aspect';
+import { fitDeviceScale, getTargetSize, resolveAspectMode, type AspectMode } from './aspect';
 import { isIOS } from './platform';
 
 const canvas = document.getElementById('screen') as HTMLCanvasElement;
@@ -668,8 +676,8 @@ let vpadPlacement: VpadPlacement = 'overlay';
  * 毎回 virtualPad.setPlacement() へ渡し直す(ビューポートサイズの変化に追従するため。
  * virtual-pad.ts の setPlacement() 側がボックスだけの更新を安全に処理する)。
  * かつてはネイティブフルスクリーン中に強制的に overlay へ倒していたが、フルスクリーン
- * 対象が .stage から .console-card(パッドを内包する)に変わったため、パッドが画面から
- * 消える事態が起きなくなり不要になった。通常どおり呼び出し側の判定(余り高さ・左右余白)に従う。
+ * 対象がページ全体(documentElement)になり、body 直下へ出しても描画対象の中に留まる
+ * ようになったため不要になった。通常どおり呼び出し側の判定(余り高さ・左右余白)に従う。
  */
 function applyVpadPlacement(next: VpadPlacement, panelHeight: number, sidesBoxes: VpadSideBoxes): void {
   virtualPadPanel.style.height = next === 'panel' ? `${Math.round(panelHeight)}px` : '';
@@ -3303,14 +3311,25 @@ btnMouseResync.addEventListener('click', () => {
 });
 
 /**
- * フルスクリーン化の対象は .stage ではなく .console-card(ツールバーを内包するカード全体)。
- * .stage だけを全画面化するとツールバー(⌨/🎮切り替え・プロファイルメニュー等)が
- * 描画対象外になり操作できなくなるため、疑似フルスクリーン(ツールバーを残す方式)に
- * 合わせて一本化した。アスペクト比の維持・サイズ決定は rescale() (JS側)が
- * getTargetSize() 経由で行う(旧 object-fit:contain の CSS 任せはやめた)。
+ * フルスクリーン化の対象はページ全体(document.documentElement)。
+ *
+ * ネイティブ全画面はその部分木の外にある要素を一切描画しない。かつては .stage を
+ * 対象にしていてツールバーが消え、次に .console-card へ移してツールバーは残ったが、
+ * バーチャルパッドは sides配置のとき document.body 直下へ出す(左右のデッドスペースへ
+ * またがるため)ので、カード対象では必ず対象の外に出てパッドが消えていた
+ * (WebNP2 の Android 実機で発覚、2026-08-20。iPhone は Fullscreen API 自体が無く
+ * 疑似フルスクリーンへ倒れるのでこの経路を踏まない)。
+ * ページ全体を対象にすれば、どこへ reparent しても消えない。
+ * アスペクト比の維持・サイズ決定は rescale() (JS側)が getTargetSize() 経由で行う
+ * (旧 object-fit:contain の CSS 任せはやめた)。
  */
-function isCardFullscreen(): boolean {
-  return document.fullscreenElement === consoleCardEl || (document as any).webkitFullscreenElement === consoleCardEl;
+const fullscreenRootEl = document.documentElement;
+
+function isNativeFullscreen(): boolean {
+  return (
+    document.fullscreenElement === fullscreenRootEl ||
+    (document as any).webkitFullscreenElement === fullscreenRootEl
+  );
 }
 
 /**
@@ -3357,10 +3376,10 @@ const FULLSCREEN_FALLBACK_MS = 400;
 
 function setFullscreen(makeFullscreen: boolean): void {
   if (makeFullscreen) {
-    if (isCardFullscreen()) return;
+    if (isNativeFullscreen()) return;
     const req =
-      consoleCardEl.requestFullscreen?.bind(consoleCardEl) ??
-      (consoleCardEl as any).webkitRequestFullscreen?.bind(consoleCardEl);
+      fullscreenRootEl.requestFullscreen?.bind(fullscreenRootEl) ??
+      (fullscreenRootEl as any).webkitRequestFullscreen?.bind(fullscreenRootEl);
     // requestFullscreen は「メソッドが生えていて document.fullscreenEnabled も true」でも
     // 実行時に通らないことがある(埋め込み webview 等)。nativeFullscreenSupported() のような
     // 静的な能力判定だけでは足りない。以前はここで失敗を黙って無視していたため、
@@ -3382,10 +3401,10 @@ function setFullscreen(makeFullscreen: boolean): void {
       },
     );
     window.setTimeout(() => {
-      if (settled || isCardFullscreen() || isPseudoFullscreen()) return;
+      if (settled || isNativeFullscreen() || isPseudoFullscreen()) return;
       togglePseudoFullscreen(true);
     }, FULLSCREEN_FALLBACK_MS);
-  } else if (isCardFullscreen()) {
+  } else if (isNativeFullscreen()) {
     const exit = document.exitFullscreen?.bind(document) ?? (document as any).webkitExitFullscreen?.bind(document);
     void Promise.resolve(exit?.());
   }
@@ -3393,7 +3412,7 @@ function setFullscreen(makeFullscreen: boolean): void {
 
 /** フルスクリーンボタンの見た目(トグル状態)を実際の全画面状態に追従させる。マウスキャプチャボタンと同じ流儀。 */
 function updateFullscreenControl(): void {
-  const nativeFs = isCardFullscreen();
+  const nativeFs = isNativeFullscreen();
   const pseudoFs = isPseudoFullscreen();
   btnFullscreen.classList.toggle('active', nativeFs || pseudoFs);
   // 疑似フルスクリーンは Esc では抜けられない(nativeFullscreenSupported() の
@@ -3416,7 +3435,7 @@ function updateFullscreenControl(): void {
  */
 function togglePseudoFullscreen(on?: boolean): void {
   document.body.classList.toggle('pseudo-fullscreen', on);
-  document.body.classList.toggle('immersive', isPseudoFullscreen() || isCardFullscreen());
+  document.body.classList.toggle('immersive', isPseudoFullscreen() || isNativeFullscreen());
   updateFullscreenControl();
   rescale();
 }
@@ -3428,8 +3447,8 @@ btnFullscreen.addEventListener('click', () => {
     togglePseudoFullscreen(false);
     return;
   }
-  if (nativeFullscreenSupported(consoleCardEl)) {
-    setFullscreen(!isCardFullscreen());
+  if (nativeFullscreenSupported(fullscreenRootEl)) {
+    setFullscreen(!isNativeFullscreen());
     return;
   }
   // iPhone の WebKit は <video> 以外の Fullscreen API を持たないため、ネイティブ版は
@@ -3578,11 +3597,21 @@ function rescale(): void {
   // (下限 0.3 は維持)。ネイティブ全画面も疑似フルスクリーンも同じ「画面を最大限使う」
   // 見え方に揃えるのが狙いで、フルスクリーン対象が .console-card になった今はどちらも
   // このJS計算がサイズを決める(旧 object-fit:contain へ丸投げする経路は無くなった)。
-  const scale = isImmersive()
+  const rawScale = isImmersive()
     ? Math.max(0.3, fit)
     : fit >= 1
       ? Math.min(MAX_SCALE, Math.floor(fit))
       : Math.max(0.3, Math.min(1, fit));
+  // 端数倍のときは物理ピクセル整数倍へ寄せる(寄せられなければ補間へ落とす)。
+  // 非没入かつ fit>=1 の経路は既にCSS整数倍なので触らない(DPRが整数の環境では物理も整数倍)。
+  // 没入モードは fit をそのまま使う設計なので、1倍以上でも端数倍になるのが常態であり、
+  // ここを通さないと最近傍のまま端数倍になって1ドット幅の線が周期的に間引かれる。
+  const fractional = isImmersive() || fit < 1;
+  const fitted = fractional ? fitDeviceScale(rawScale, window.devicePixelRatio) : { scale: rawScale, smooth: false };
+  const scale = fitted.scale;
+  // 補間へ落とす指定。4:3モード側は .stage.aspect-4-3 #screen で常に auto にしてあるので、
+  // このクラスが効くのはドット等倍モードのときだけ。
+  canvas.classList.toggle('smooth-scaled', fitted.smooth);
 
   const w = Math.round(target.width * scale);
   const h = Math.round(target.height * scale);
@@ -3636,26 +3665,30 @@ function rescale(): void {
   //    横持ちで4:3維持のため画面が縦に制限されると、画面の左右に余白が生まれる。
   //
   //    基準は **.stage** の矩形にすること(.console-card ではない)。
-  //    ネイティブ全画面では .console-card:fullscreen が 100vw/100vh に広げられるため、
+  //    ネイティブ全画面では .console-card が 100vw/100vh に広げられるため、
   //    カード基準で測ると左右の余白が常に 0 になり、**sides 配置が絶対に発動しなくなる**
   //    (Android の横持ち全画面という一番効かせたい場面で効かない、という状態だった)。
   //    .stage 基準なら、ウィンドウ表示でも全画面でも「画面の横に空いている幅」を同じ式で測れる。
   //    左右で幅が違う場合は狭い方で判定する(狭い側に部品がはみ出すのを避けるため)。
   const stageRect = stageEl.getBoundingClientRect();
-  const leftMargin = stageRect.left;
-  const rightMargin = window.innerWidth - stageRect.right;
-  const sidesMargin = Math.min(leftMargin, rightMargin);
   // ボックスの縦範囲は .stage の上端〜下端に合わせる(画面と同じ高さの帯にすると
-  // 指の位置が自然になるため)。
-  const sidesBoxes: VpadSideBoxes = {
-    left: { x: 0, y: stageRect.top, w: Math.max(0, leftMargin), h: stageRect.height },
-    right: { x: stageRect.right, y: stageRect.top, w: Math.max(0, rightMargin), h: stageRect.height },
-  };
+  // 指の位置が自然になるため)。ただし切り欠き/ホームインジケータの下は使わない:
+  // index.html の viewport は viewport-fit=cover なので、スタンドアロン表示や
+  // Android の全画面ではビューポートが切り欠きの下まで広がり、x:0〜innerWidth の
+  // ままボックスを取ると外縁の部品(左のスティック/右端のボタン)が隠れる。
+  const sidesBoxes: VpadSideBoxes = vpadSideBoxesFor(
+    { x: stageRect.left, y: stageRect.top, w: stageRect.width, h: stageRect.height },
+    { width: window.innerWidth, height: window.innerHeight },
+    resolveLandscapeInsets(readSafeAreaInsets(), screenAngle()),
+  );
   // 4. 判定順は panel → sides → overlay。
   //    - 縦の余り >= VPAD_PANEL_MIN_HEIGHT ならパネルモード(帯の高さは余りと
   //      VPAD_PANEL_MAX_HEIGHT の小さい方)。
   //    - そうでなくても左右の余白が両方とも VPAD_SIDES_MIN_WIDTH 以上あればサイドモード。
   //    - どちらでもなければ従来通りオーバーレイモード。
+  // sides にするかどうかは、セーフエリアを引いた後の実際のボックス幅で決める
+  // (切り欠きに食われて狭くなった側で判定しないと、部品が縮みすぎたまま sides になる)。
+  const sidesMargin = Math.min(sidesBoxes.left.w, sidesBoxes.right.w);
   const nextVpadPlacement: VpadPlacement =
     leftover >= VPAD_PANEL_MIN_HEIGHT ? 'panel' : sidesMargin >= VPAD_SIDES_MIN_WIDTH ? 'sides' : 'overlay';
   const vpadPanelHeight = Math.min(Math.max(leftover, 0), VPAD_PANEL_MAX_HEIGHT);
@@ -3676,8 +3709,8 @@ window.addEventListener('orientationchange', rescale);
 function onNativeFullscreenChange(): void {
   // ネイティブが遅れて通った場合(タイムアウトで疑似へ倒した後に fullscreenchange が来る)、
   // 疑似との二重掛けを解いてネイティブ側に一本化する。
-  if (isCardFullscreen() && isPseudoFullscreen()) document.body.classList.remove('pseudo-fullscreen');
-  document.body.classList.toggle('immersive', isCardFullscreen() || isPseudoFullscreen());
+  if (isNativeFullscreen() && isPseudoFullscreen()) document.body.classList.remove('pseudo-fullscreen');
+  document.body.classList.toggle('immersive', isNativeFullscreen() || isPseudoFullscreen());
   rescale();
 }
 document.addEventListener('fullscreenchange', onNativeFullscreenChange);

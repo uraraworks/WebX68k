@@ -281,14 +281,24 @@ main {
  * 代わりのルールは下の .console-card:fullscreen を参照。
  */
 
-/* フルスクリーン化の対象は .console-card(ツールバーを内包するカード全体)。 */
-.console-card:fullscreen,
-.console-card:-webkit-full-screen {
+/* フルスクリーン化の対象はページ全体(main.ts の fullscreenRootEl = documentElement)。
+   カード対象だと sides配置のバーチャルパッド(document.body 直下へ出す)が
+   描画対象の外に出て消えるため。カード自身は :fullscreen にならなくなったので、
+   全画面時に画面いっぱいへ広げる指定はルート側の :fullscreen から掛ける。 */
+:root:fullscreen .console-card,
+:root:-webkit-full-screen .console-card {
   width: 100vw;
   height: 100vh;
   max-width: none;
   max-height: none;
   background: #000;
+}
+
+/* 物理ピクセル整数倍に乗せられなかったときだけ補間へ落とす(main.ts の rescale() が付与)。
+   最近傍のまま端数倍にすると、1ドット幅の線や市松が周期的に間引かれてモアレになる。
+   4:3モードは下のルールで常に auto なので、これが効くのはドット等倍モードのとき。 */
+#screen.smooth-scaled {
+  image-rendering: auto;
 }
 
 /*
@@ -1736,9 +1746,32 @@ body.immersive .fd-slots {
   display: none;
 }
 
+/* 全画面では余白を捨てて実行画面へ面積を渡すが、上のセーフエリアだけは残す。
+   丸ごと0にすると、縦向きで切り欠き/パンチホールが実行画面に重なる(WebNP2 の Android
+   実機で発覚)。横向きは上インセットが0なので実質これまでと同じ(iPhone実測: top 0)。
+   下と左右は入れない。下を空けると横向きで実行画面が縮み、左右は sides配置の
+   バーチャルパッドが vpadSideBoxesFor() 側で別途セーフエリアを扱っているため。
+   rescale() は main のパディングを実測して高さ計算に算入するので、この余白は
+   自動的に実行画面のサイズへ反映される。 */
 body.immersive main {
-  padding: 0;
+  padding: env(safe-area-inset-top, 0px) 0 0;
   gap: 0;
+}
+
+/* env(safe-area-inset-*) をJSから読むための測定用要素(virtual-pad.ts の readSafeAreaInsets)。
+   カスタムプロパティ経由では env() が解決されない環境があるため実プロパティへ入れる。 */
+.safe-area-probe {
+  position: fixed;
+  top: 0;
+  left: 0;
+  width: 0;
+  height: 0;
+  visibility: hidden;
+  pointer-events: none;
+  padding-left: env(safe-area-inset-left, 0px);
+  padding-right: env(safe-area-inset-right, 0px);
+  padding-top: env(safe-area-inset-top, 0px);
+  padding-bottom: env(safe-area-inset-bottom, 0px);
 }
 
 body.immersive .console-card {

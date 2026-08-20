@@ -263,6 +263,116 @@ export interface VpadSideBoxes {
   right: VpadRect;
 }
 
+export interface SafeAreaInsets {
+  left: number;
+  right: number;
+  top: number;
+  bottom: number;
+}
+
+/** セーフエリアが無い(切り欠きの無い端末・ブラウザ表示)ときの値。 */
+export const NO_SAFE_AREA: SafeAreaInsets = { left: 0, right: 0, top: 0, bottom: 0 };
+
+/**
+ * sides配置の左右ボックスを、ステージ(.stage)の矩形・ビューポート・セーフエリアから決める。
+ *
+ * index.html の viewport は viewport-fit=cover なので、ホーム画面から開いた
+ * スタンドアロン表示や Android の全画面では、ビューポートが切り欠きの下まで広がる。
+ * ボックスを x:0〜innerWidth のまま取ると、外縁へ寄る部品(左のスティック/右端のボタン)が
+ * 切り欠きに隠れる(WebNP2 で実機実測、2026-08-20)。
+ * 切り欠きは端末の持ち方で左右どちらにも来るので、必ず両側を引く
+ * (どちら側が実際に塞がっているかは resolveLandscapeInsets() が別途扱う)。
+ * 上下も同様に詰める。負の幅・高さは作らない。
+ */
+export function vpadSideBoxesFor(
+  stage: VpadRect,
+  viewport: { width: number; height: number },
+  insets: SafeAreaInsets,
+): VpadSideBoxes {
+  const top = Math.max(stage.y, insets.top);
+  const bottom = Math.min(stage.y + stage.h, viewport.height - insets.bottom);
+  const h = Math.max(0, bottom - top);
+  const rightX = stage.x + stage.w;
+  return {
+    left: { x: insets.left, y: top, w: Math.max(0, stage.x - insets.left), h },
+    right: { x: rightX, y: top, w: Math.max(0, viewport.width - insets.right - rightX), h },
+  };
+}
+
+/**
+ * 左右対称に返ってきたインセットから、実際に塞がっている側だけを残す。
+ *
+ * iOS は横向きのとき左右へ同じ値を返す(WebNP2 での実機実測: iPhone / inner 852x393 /
+ * angle 90 / inset left 59・right 59)。だが実際に隠れるのは切り欠き側だけで、
+ * 反対側は完全に見えている。両方避けると片側ぶん(59px)を無駄に捨て、
+ * ボタンが1個ぶん小さくなる。
+ *
+ * angle 90 で切り欠きが左・270 で右(どちらも WebNP2 で実機確認済み)。
+ * 触らない条件を広く取ってあるので、切り欠きの無い端末は素通りする:
+ *   - 左右が 0 (切り欠き無し端末・iPad・Chrome等のブラウザ表示) → そのまま
+ *   - 左右が同値でない (Android のパンチホール等、値が正確に返る場合) → そのまま
+ *   - 縦向き(angle 0/180)・角度が取れない・想定外の角度 → そのまま(安全側)
+ * 残る危険は「左右とも本当に塞がっている端末」で左右同値が返る場合だけで、これは未検証。
+ */
+export function resolveLandscapeInsets(insets: SafeAreaInsets, angle: number | null): SafeAreaInsets {
+  if (insets.left <= 0 || insets.left !== insets.right) return insets;
+  if (angle === 90) return { ...insets, right: 0 };
+  if (angle === 270) return { ...insets, left: 0 };
+  return insets;
+}
+
+/** 画面の回転角。取れない環境では null。 */
+export function screenAngle(): number | null {
+  if (typeof screen === 'undefined') return null;
+  const angle = screen.orientation?.angle;
+  return typeof angle === 'number' ? angle : null;
+}
+
+/**
+ * env(safe-area-inset-*) の実効値を px で読む。
+ * カスタムプロパティ経由だと getComputedStyle が env() を解決しない環境があるため、
+ * 実プロパティ(padding)へ入れた不可視の測定用要素から読む(style.css の .safe-area-probe)。
+ * 要素は使い回す。
+ */
+let safeAreaProbe: HTMLElement | null = null;
+export function readSafeAreaInsets(): SafeAreaInsets {
+  if (typeof document === 'undefined') return NO_SAFE_AREA;
+  if (!safeAreaProbe || !safeAreaProbe.isConnected) {
+    safeAreaProbe = document.createElement('div');
+    safeAreaProbe.className = 'safe-area-probe';
+    document.body.append(safeAreaProbe);
+  }
+  const style = getComputedStyle(safeAreaProbe);
+  const px = (value: string): number => {
+    const n = parseFloat(value);
+    return Number.isFinite(n) && n > 0 ? n : 0;
+  };
+  return {
+    left: px(style.paddingLeft),
+    right: px(style.paddingRight),
+    top: px(style.paddingTop),
+    bottom: px(style.paddingBottom),
+  };
+}
+
+/*
+ * sides配置の充填率。左右のボックスは縦長で細いため、部品の大きさはほぼ「箱の幅」で決まり、
+ * 縦向き(panel配置)より小さくなる。はみ出さず互いに重ならない範囲まで詰めて取る
+ * (WebNP2 で実機を見ながら決めた値をそのまま使う。2026-08-20)。
+ */
+/** スティック直径 / min(左ボックス幅, スティック領域高)。 */
+const STICK_FILL = 0.9;
+/** opt1/opt2 の中心間距離(左ボックス幅に対する比)。直径はこれを超えられない(重なるため)。 */
+const OPT_PITCH_RATIO = 0.46;
+/** 直径をピッチ/帯の高さぴったりにせず余裕を持たせる比率。 */
+const OPT_MARGIN = 0.92;
+/** オプション用に先取りする帯の高さの上限(左ボックス高に対する比)。 */
+const OPT_BAND_MAX = 0.25;
+/** ボタン直径 / min(列ピッチ, 行ピッチ)。 */
+const GRID_MARGIN = 0.9;
+/** オプションボタンのID(帯を取るかどうかの判定に使う)。 */
+const OPT_SLOT_IDS = ['btn-opt1', 'btn-opt2'] as const;
+
 /**
  * sides 配置(横持ちフルスクリーンで .console-card の左右に生じるデッドスペースへ
  * スティック・ボタンを振り分ける置き場所)の部品矩形を、左右の余白ボックスから直接計算する。
@@ -276,13 +386,16 @@ export interface VpadSideBoxes {
  * 「はみ出さない・重ならない」を数式的に保証する(反復的な当たり判定→縮小の試行錯誤はしない)。
  *
  * 配置方針(docs/DESIGN.md「バーチャルパッド」節参照):
- * - スティック: 左ボックスの中央。直径は min(左ボックス幅, 左ボックス高) * 0.7。
- * - 補助ボタン(opt1/opt2): 左ボックスの上部(スティックの上に生じる隙間)に横並び。
- *   直径はその隙間の高さと横方向のピッチ(隙間があれば重ならない量)の小さい方から決める。
+ * - 補助ボタン(opt1/opt2): 左ボックスの上部に帯を先取りして横並び。直径は帯の高さと
+ *   横方向のピッチ(重ならない量)の小さい方から決める。スティックを先に最大化して
+ *   「余った隙間」を回す方式だと、箱が横広のときオプションだけ極端に潰れるため先に取る。
+ * - スティック: 帯の下の残り領域の中央。直径は min(左ボックス幅, 残り高) * STICK_FILL。
  * - ボタン: 右ボックスに3列×2段。下段(y大きい方) 左→右 A/B/C、上段 左→右 X/Y/Z、
  *   右へ行くほど上がる(既存の VPAD_SLANT_PCT_OVERLAY と同じ「右上がり」の考え方だが、
  *   sides はボックス自体の寸法が可変なので、傾き量もボックス高さに対する比率で決める)。
  *   2ボタンのときは下段の中央・右(mid/right)スロットだけを使う(Aが右、Bがその左)。
+ *   列ピッチ・行ピッチは「実際に使うスロットの数」で割る(常に3列で割ると、2ボタン構成で
+ *   使いもしない1列ぶん横幅を捨ててボタンが小さくなる)。
  *   列ピッチ・行ピッチの小さい方より必ず小さい直径にすることで、格子内のどの2部品も
  *   (同じ行・同じ列・斜めのいずれでも)中心間距離が直径を下回らないことを保証する。
  */
@@ -294,9 +407,16 @@ export function layoutVpadSides(boxes: VpadSideBoxes, boundIds: ReadonlySet<stri
   const dpadBound =
     boundIds.has(DPAD_IDS.up) || boundIds.has(DPAD_IDS.down) || boundIds.has(DPAD_IDS.left) || boundIds.has(DPAD_IDS.right);
 
-  const stickDiameter = Math.min(left.w, left.h) * 0.7;
+  // オプション(1/2)の帯を先に取り、残りをスティックへ割り当てる。スティックを先に
+  // 最大化して「余った隙間」をオプションに回すと、箱が横広のときオプションだけ極端に
+  // 潰れる(WebNP2 の実測で 28.8px)。取り分は先に決める。
+  const hasOptions = OPT_SLOT_IDS.some((id) => boundIds.has(id));
+  const optBand = hasOptions ? Math.min(left.w * OPT_PITCH_RATIO, left.h * OPT_BAND_MAX) : 0;
+  const stickAreaY = left.y + optBand;
+  const stickAreaH = Math.max(0, left.h - optBand);
+  const stickDiameter = Math.min(left.w, stickAreaH) * STICK_FILL;
   const stickCx = left.x + left.w / 2;
-  const stickCy = left.y + left.h / 2;
+  const stickCy = stickAreaY + stickAreaH / 2;
   if (dpadBound) {
     const rect = clampRectToBox(
       { x: stickCx - stickDiameter / 2, y: stickCy - stickDiameter / 2, w: stickDiameter, h: stickDiameter },
@@ -305,17 +425,14 @@ export function layoutVpadSides(boxes: VpadSideBoxes, boundIds: ReadonlySet<stri
     out.push({ widget: { kind: 'dpad', ids: DPAD_IDS, xPct: 0, yPct: 0, sizePct: 0 }, rect });
   }
 
-  // スティック上端より上に生じる隙間へ補助ボタンを横並びに置く(隙間が無ければ直径0=非表示相当)。
-  const stickTopY = stickCy - stickDiameter / 2;
-  const gapAboveStick = Math.max(0, stickTopY - left.y);
-  const OPT_PITCH_RATIO = 0.36; // opt1/opt2 中心間の距離(左ボックス幅に対する比)
-  const OPT_MARGIN = 0.85; // 直径をピッチ/隙間ぴったりにせず15%の余裕を持たせる
-  const optDiameter = Math.max(0, Math.min(left.w * OPT_PITCH_RATIO, gapAboveStick) * OPT_MARGIN);
-  const optCy = left.y + gapAboveStick / 2;
+  // 先に取り分けた帯へ補助ボタンを横並びに置く(帯が無ければ直径0=非表示相当)。
+  const optDiameter = Math.max(0, optBand * OPT_MARGIN);
+  const optCy = left.y + optBand / 2;
   // 並びは OVERLAY_OPT_SLOTS/PANEL_OPT_SLOTS と揃えて「左から 1、2」。
+  // 中心間の距離はちょうど OPT_PITCH_RATIO(直径の根拠にした量)になるようにする。
   const optSlots: ReadonlyArray<{ id: string; label: string; cxRatio: number }> = [
-    { id: 'btn-opt1', label: '1', cxRatio: 0.32 },
-    { id: 'btn-opt2', label: '2', cxRatio: 0.68 },
+    { id: 'btn-opt1', label: '1', cxRatio: 0.5 - OPT_PITCH_RATIO / 2 },
+    { id: 'btn-opt2', label: '2', cxRatio: 0.5 + OPT_PITCH_RATIO / 2 },
   ];
   for (const slot of optSlots) {
     if (!boundIds.has(slot.id)) continue;
@@ -342,11 +459,18 @@ export function layoutVpadSides(boxes: VpadSideBoxes, boundIds: ReadonlySet<stri
         { row: 1, col: 2, id: 'btn-a', label: 'A' },
       ];
 
-  const colPitchX = right.w / 3;
-  const rowPitchY = right.h / 2;
-  // 0.8: 列/行ピッチの小さい方に対する直径の比率。1未満にすることで、同列・同行は
+  // 段/列は「実際に使う数」で割る。2ボタン構成は col 1,2 の2列しか使わないので、
+  // 常に3で割っていると横幅を1列ぶん捨てたままボタンが小さくなる。
+  const usedSlots = gridSlots.filter((slot) => boundIds.has(slot.id));
+  const usedCols = usedSlots.map((slot) => slot.col);
+  const usedRows = usedSlots.map((slot) => slot.row);
+  const minCol = usedCols.length > 0 ? Math.min(...usedCols) : 0;
+  const colCount = usedCols.length > 0 ? Math.max(...usedCols) - minCol + 1 : 1;
+  const rowCount = usedRows.length > 0 ? Math.max(...usedRows) - Math.min(...usedRows) + 1 : 1;
+  const colPitchX = right.w / colCount;
+  const rowPitchY = right.h / rowCount;
+  // GRID_MARGIN: 列/行ピッチの小さい方に対する直径の比率。1未満にすることで、同列・同行は
   // もちろん斜め(ピッチのベクトル和で常に単独ピッチ以上離れる)でも重ならない。
-  const GRID_MARGIN = 0.8;
   const gridDiameter = Math.min(colPitchX, rowPitchY) * GRID_MARGIN;
   // 右へ行くほど上がる傾き。VPAD_SLANT_PCT_OVERLAY と同じ「列ごとに一定量上げる」考え方を
   // ボックス高さに対する比率(定数)で表す(sides はボックスの実寸が可変なため、既存の
@@ -358,7 +482,7 @@ export function layoutVpadSides(boxes: VpadSideBoxes, boundIds: ReadonlySet<stri
 
   for (const slot of gridSlots) {
     if (!boundIds.has(slot.id)) continue;
-    const cx = right.x + colPitchX * (slot.col + 0.5);
+    const cx = right.x + colPitchX * (slot.col - minCol + 0.5);
     const baseY = slot.row === 1 ? lowerBaseY : upperBaseY;
     const cy = baseY - slantPx * slot.col;
     const rect = clampRectToBox(
