@@ -92,6 +92,11 @@ import {
   type VpadSideBoxes,
 } from './virtual-pad';
 import { createVirtualTrackpad, type VirtualTrackpad } from './virtual-trackpad';
+// Sprout68k の共有リンク(#p1=)を開くための復号と .xdf 組み立て。
+// **送信側(Sprout68k)とまったく同じ正典**を tools/fetch-sprout-runtime.mjs が持ってくる。
+import {
+  DEFAULT_DISK, assembleXdf, decodeShareFragment, packUserPayload, tagLabel, unpackUserPayload,
+} from './sprout-share.mts';
 import {
   activeProfile,
   BUILTIN_CURSOR_SPACE_ID,
@@ -4494,7 +4499,66 @@ btnHelp.addEventListener('click', () => window.open(`./help.html?lang=${getLang(
  * fd1/fd2/hdd と異なりスロットへの自動挿入は行わず、必ずライブラリダイアログを開く。
  * fd1/fd2/hdd と併用された場合は、それらのスロット処理を先に行ってから lib を処理する。
  */
+/**
+ * Sprout68k の共有リンク `#p1=` を開く。
+ *
+ * URL に載っているのは**利用者コードだけ**（数百バイト〜数KB）。ライブラリは
+ * この配布物が持っているランタイム(public/sprout-runtime/v1)側にあり、固定番地の
+ * ジャンプテーブル越しに呼ばれる。ここで両者を合体させて .xdf にする。
+ *
+ * 復号と組み立ては src/sprout-share.mts（Sprout68k の送信側とまったく同じ正典を
+ * tools/fetch-sprout-runtime.mjs が持ってきたもの）を通す。自前で書くと、
+ * 送信側と静かに食い違う。
+ *
+ * `#` より後ろはサーバへ送られないので、この作品はどこにもアップロードされていない。
+ */
+async function applySprout68kShare(): Promise<boolean> {
+  const fragment = location.hash;
+  if (!/(?:^|[#&])p1=/.test(fragment)) return false;
+  try {
+    const inflate = async (bytes: Uint8Array): Promise<Uint8Array> => {
+      // Uint8Array をそのまま Blob へ渡すと SharedArrayBuffer の可能性で型が通らないため、
+      // 実体の範囲だけを ArrayBuffer に切り出して渡す。
+      const buffer = bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength) as ArrayBuffer;
+      const stream = new Blob([buffer]).stream().pipeThrough(new DecompressionStream('deflate-raw'));
+      return new Uint8Array(await new Response(stream).arrayBuffer());
+    };
+    const { bytes, tags } = await decodeShareFragment(fragment, inflate);
+
+    const base = './sprout-runtime/v1/';
+    const manifestResponse = await fetch(`${base}manifest.json`);
+    if (!manifestResponse.ok) throw new Error(`ランタイムを読み込めません (HTTP ${manifestResponse.status})`);
+    const manifest = await manifestResponse.json();
+    const fetchBin = async (name: string): Promise<Uint8Array> => {
+      const response = await fetch(`${base}${name}`);
+      if (!response.ok) throw new Error(`${name} を読み込めません (HTTP ${response.status})`);
+      return new Uint8Array(await response.arrayBuffer());
+    };
+    const [runtime, boot] = await Promise.all([fetchBin('runtime.bin'), fetchBin('boot.bin')]);
+    const layout = { ...manifest.layout, ...DEFAULT_DISK };
+
+    // ヘッダ検査をここで通す（版違いや壊れたURLをエミュレータへ渡さない）。
+    const user = unpackUserPayload(bytes, layout);
+    const { image } = assembleXdf(boot, runtime, packUserPayload(user, layout), layout);
+
+    const labels = tags.map((code) => tagLabel(code)).filter(Boolean);
+    const tagText = labels.length > 0 ? `(${labels.join(' / ')})` : '';
+    await insertDiskBytes('fdd0', 'sprout68k-share.xdf', image, undefined, 'sprout68k:share');
+    showToast(t('sproutShareLoaded', { tags: tagText }), 6000);
+    await startFromOverlay(false);
+    return true;
+  } catch (error) {
+    console.error('Sprout68k の共有リンクを開けませんでした', error);
+    showToast(t('sproutShareFailed', { message: (error as Error).message }), 8000);
+    return false;
+  }
+}
+
 async function applyUrlParams(): Promise<void> {
+  // Sprout68k の共有リンクが来ていたら、それだけを処理して終わる
+  // （他のURLパラメータと混ざると、どのディスクで起動するのか分からなくなる）。
+  if (await applySprout68kShare()) return;
+
   // system=1: fd1 の明示指定が無いときだけ、同梱システムディスクをFDD0として使う
   // (WebNP2 の freedos=1 相当。fd1 が指定されていればそちらを優先する)。
   const wantsBundledSystem = urlSystem && !urlFd1;

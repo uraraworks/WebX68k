@@ -219,6 +219,10 @@ interface Dict {
   urlLoadFailedToast(args: { label: string; message: string }): string;
   /** 同梱システムディスク(?system=1)の取得に失敗したときのトースト。 */
   urlSystemFetchFailed(): string;
+  /** Sprout68k の共有リンク(#p1=)から作品を読み込んだときのトースト。tags は空のこともある。 */
+  sproutShareLoaded(args: { tags: string }): string;
+  /** Sprout68k の共有リンクを開けなかったときのトースト。 */
+  sproutShareFailed(args: { message: string }): string;
   /** URLパラメータの取得結果がZIP/LZHで、前回展開済みのグループがライブラリにあり再ダウンロードせず復帰したときのトースト。 */
   urlArchiveResumed(args: { label: string; count: number }): string;
   /** URLパラメータで取得したアーカイブにディスクイメージが1つも見つからなかった場合のエラー。 */
@@ -628,6 +632,8 @@ const STRINGS: Record<Lang, Dict> = {
     urlProxyReasonUnknown: ({ status }) => `中継サーバでエラーが発生しました (HTTP ${status})。`,
     urlLoadFailedToast: ({ label, message }) => `${label}の読み込みに失敗しました: ${message}`,
     urlSystemFetchFailed: () => '同梱システムディスクの取得に失敗しました。',
+    sproutShareLoaded: ({ tags }) => `Sprout68k で作られた作品を読み込みました${tags}。`,
+    sproutShareFailed: ({ message }) => `共有リンクを開けませんでした: ${message}`,
     urlArchiveResumed: ({ label, count }) =>
       `${label}: 前回展開した${count}件のディスクイメージをライブラリから復元しました(再ダウンロードなし)。`,
     urlArchiveNoDiskImage: ({ label }) => `${label}: アーカイブ内にディスクイメージが見つかりませんでした。`,
@@ -958,6 +964,8 @@ const STRINGS: Record<Lang, Dict> = {
     urlProxyReasonUnknown: ({ status }) => `The relay server returned an error (HTTP ${status}).`,
     urlLoadFailedToast: ({ label, message }) => `Failed to load ${label}: ${message}`,
     urlSystemFetchFailed: () => 'Failed to fetch the bundled system disk.',
+    sproutShareLoaded: ({ tags }) => `Loaded a program made with Sprout68k${tags}.`,
+    sproutShareFailed: ({ message }) => `Could not open the shared link: ${message}`,
     urlArchiveResumed: ({ label, count }) =>
       `${label}: Restored ${count} previously extracted disk image(s) from the library (no re-download).`,
     urlArchiveNoDiskImage: ({ label }) => `${label}: No disk image was found inside the archive.`,
