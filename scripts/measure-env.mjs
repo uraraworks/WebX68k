@@ -311,38 +311,120 @@ function parseEtimeToSeconds(etime) {
 }
 
 /**
- * `ps -Ao pid,pcpu,etime,comm -r`(CPU降順)で全プロセスを1回だけスナップショットし、
- * 上位 limit 件を返す。計測窓の「外」(開始直前・終了直後)で1回ずつ呼ぶ用途であり、
- * 計測窓の中では呼ばない(サブプロセス起動そのものが負荷になるため)。
- * 取得不能なら null(空配列と区別する)。
- *
- * 上位 limit 件に加えて、comm に 'vite' を含むプロセスは(CPU使用率に関わらず)必ず
- * 含める。vite preview は接続がなければCPUをほぼ使わず「上位10件」から漏れうるが、
- * 残存プロセスの検出(competitor条件(b))そのものがCPU使用率と無関係であるべき
- * ため、この2種の抽出は別ロジックにしてある(2026-08-19実測: 実際に上位10件には
- * 入らずvite単体では検出できなかった)。
+ * parsedのpidから process.pid(selfPid) への祖先チェーンを辿り、selfPidを先祖に
+ * 持つプロセス(および selfPid 自身)に selfDescendant: true を付ける。
+ * `npm run dev` → vite → esbuild のように孫・ひ孫まで潜るため必ず根まで辿る。
+ * ps出力が壊れてppidの環が生じても無限ループしないよう訪問済みpidを記録する。
  */
-export async function snapshotProcesses(limit = 10) {
+function markSelfDescendants(parsedList, selfPid) {
+  const ppidByPid = new Map(parsedList.map((proc) => [proc.pid, proc.ppid]));
+  const cache = new Map();
+  const resolve = (pid) => {
+    if (cache.has(pid)) return cache.get(pid);
+    if (pid === selfPid) {
+      cache.set(pid, true);
+      return true;
+    }
+    const visited = new Set();
+    let current = pid;
+    let result = false;
+    for (;;) {
+      if (visited.has(current) || !ppidByPid.has(current)) {
+        result = false;
+        break;
+      }
+      visited.add(current);
+      const parent = ppidByPid.get(current);
+      if (parent === selfPid) {
+        result = true;
+        break;
+      }
+      if (cache.has(parent)) {
+        result = cache.get(parent);
+        break;
+      }
+      if (parent === current) {
+        result = false;
+        break;
+      }
+      current = parent;
+    }
+    cache.set(pid, result);
+    return result;
+  };
+  for (const proc of parsedList) {
+    proc.selfDescendant = resolve(proc.pid);
+  }
+}
+
+/**
+ * `ps -Ao pid,ppid,pcpu,etime,comm -r`(CPU降順)と `ps -Ao pid=,args=` を1回ずつ
+ * 呼び、pidで突き合わせて全プロセスをスナップショットし、上位 limit 件を返す。
+ * comm・argsのどちらも値に空白を含みうるため、1回の ps で両方同時に取得すると
+ * フィールド境界が解析できない。必ず2回呼んでpidで突き合わせる。
+ * 計測窓の「外」(開始直前・終了直後)で1回ずつ呼ぶ用途であり、計測窓の中では
+ * 呼ばない(サブプロセス起動そのものが負荷になるため)。取得不能なら null
+ * (空配列と区別する)。
+ *
+ * 上位 limit 件に加えて、args(コマンドライン全体)に 'vite' を含むプロセスは
+ * (CPU使用率に関わらず)必ず含める。comm(実行ファイルパス)には現れない
+ * ―― `node .../node_modules/.bin/vite` はcommが`node`にしかならず、'vite'の
+ * 文字列は `ps -o args` にしか出ない。2026-08-19の「分類の確認」はcommに'vite'を
+ * 含む合成オブジェクトを直接ルールへ通したため、この経路の穴が実プロセスの
+ * 挙動と食い違ったまま見逃され、2026-08-23の計測で残存vite2本を検出できずに
+ * verdictが誤って"quiet"寄りになった。record化するargsは300文字で切り詰める
+ * (切り詰めた場合は末尾に'…')が、vite判定そのものは切り詰め前の生文字列
+ * (argsByPid)に対して行う。
+ *
+ * 併せて、`process.pid`(このNodeプロセス自身、selfPid引数で差し替え可能)を
+ * 先祖に持つプロセス(npm run dev が起動するvite・esbuild等の子孫、および自分
+ * 自身)には selfDescendant: true を付ける。計測スクリプトが自ら起動した
+ * dev サーバを competitor 扱いしないための印(buildLoadReport側で使う)。
+ */
+export async function snapshotProcesses(limit = 10, selfPid = process.pid) {
   try {
-    const { stdout } = await execFileAsync('ps', ['-Ao', 'pid,pcpu,etime,comm', '-r']);
-    const lines = stdout.split('\n').filter((line) => line.trim().length > 0);
+    const [{ stdout: mainOut }, { stdout: argsOut }] = await Promise.all([
+      execFileAsync('ps', ['-Ao', 'pid,ppid,pcpu,etime,comm', '-r']),
+      execFileAsync('ps', ['-Ao', 'pid=,args=']),
+    ]);
+
+    const argsByPid = new Map();
+    for (const line of argsOut.split('\n')) {
+      const match = /^\s*(\d+)\s+(.*)$/.exec(line);
+      if (!match) continue;
+      const [, pidStr, args] = match;
+      argsByPid.set(Number(pidStr), args);
+    }
+
+    const lines = mainOut.split('\n').filter((line) => line.trim().length > 0);
     lines.shift(); // ヘッダ行
     const parsed = [];
     for (const line of lines) {
-      const match = /^\s*(\d+)\s+([\d.]+)\s+(\S+)\s+(.*)$/.exec(line);
+      const match = /^\s*(\d+)\s+(\d+)\s+([\d.]+)\s+(\S+)\s+(.*)$/.exec(line);
       if (!match) continue;
-      const [, pidStr, pcpuStr, etime, comm] = match;
+      const [, pidStr, ppidStr, pcpuStr, etime, comm] = match;
+      const pid = Number(pidStr);
+      const rawArgs = argsByPid.get(pid) ?? '';
+      const args = rawArgs.length > 300 ? `${rawArgs.slice(0, 300)}…` : rawArgs;
       parsed.push({
-        pid: Number(pidStr),
+        pid,
+        ppid: Number(ppidStr),
         pcpu: Number(pcpuStr),
         etime,
         etimeSeconds: parseEtimeToSeconds(etime),
         comm: comm.trim(),
+        args,
+        selfDescendant: false,
       });
     }
+
+    markSelfDescendants(parsed, selfPid);
+
     const top = parsed.slice(0, limit);
     const topPids = new Set(top.map((proc) => proc.pid));
-    const viteMatches = parsed.filter((proc) => !topPids.has(proc.pid) && /vite/i.test(proc.comm));
+    const viteMatches = parsed.filter(
+      (proc) => !topPids.has(proc.pid) && /vite/i.test(argsByPid.get(proc.pid) ?? '')
+    );
     return [...top, ...viteMatches];
   } catch {
     return null;
@@ -398,7 +480,7 @@ const SYSTEM_BACKGROUND_ALLOWLIST = [
   /\/claude-code\//,
 ];
 
-function isSystemBackground(proc) {
+export function isSystemBackground(proc) {
   if (!proc || typeof proc.comm !== 'string') return false;
   return SYSTEM_BACKGROUND_ALLOWLIST.some((pattern) => pattern.test(proc.comm));
 }
@@ -413,10 +495,18 @@ function isSystemBackground(proc) {
  *      並走させるCPUスピナー)は経過600秒に達する前に計測が終わってしまい
  *      検出できない。反復試行の外で1回ずつしか ps を撮らない設計(このモジュール
  *      冒頭のコメント参照)上、経過時間に依存しない独立した基準が要る
- *  (b) comm に 'vite' を含む(大文字小文字を区別しない)
+ *  (b) args(コマンドライン全体)に 'vite' を含む(大文字小文字を区別しない)。
+ *      comm(実行ファイルパス)には現れない ―― `node .../bin/vite` はcommが
+ *      `node`にしかならず、'vite'という文字列は`ps -o args`にしか出ない。
+ *      以前はcommを見ていたため実プロセスでは条件(b)が絶対に成立せず、
+ *      2026-08-19の合成入力での検証(commに'vite'を含む自作オブジェクトを
+ *      直接ルールへ通した)では穴が見えないまま「検出できた」ことになって
+ *      いた。2026-08-23の計測で残存vite2本を見逃して発覚した。
  * ただし SYSTEM_BACKGROUND_ALLOWLIST に該当するものは対象外(systemBackground側に記録)。
+ * selfDescendant(このNodeプロセス自身が起動したdevサーバの子孫)の除外は
+ * ここではなく buildLoadReport 側で行う(selfPidと同じ扱い)。
  */
-function isCompetitor(proc) {
+export function isCompetitor(proc) {
   if (!proc) return false;
   if (isSystemBackground(proc)) return false;
   const heavyAndLongRunning =
@@ -425,7 +515,7 @@ function isCompetitor(proc) {
     Number.isFinite(proc.etimeSeconds) &&
     proc.etimeSeconds >= 600;
   const heavyBurst = Number.isFinite(proc.pcpu) && proc.pcpu >= 80;
-  const isVite = typeof proc.comm === 'string' && /vite/i.test(proc.comm);
+  const isVite = typeof proc.args === 'string' && /vite/i.test(proc.args);
   return heavyAndLongRunning || heavyBurst || isVite;
 }
 
@@ -461,8 +551,16 @@ export function buildLoadReport({ sampler, processesBefore, processesAfter, self
     // 計測スクリプト自身のnodeプロセス(puppeteer起動やawait処理でCPUが瞬間的に
     // 跳ねうる)は「止められる余計なもの」ではなく計測ツールそのものであるため、
     // Claude.appと同様にsystemBackground側へ退避する(heavyBurst基準の自己検出を防ぐ)。
+    //
+    // 条件(b)がargsを見るようになったことで、計測スクリプト自身が`npm run dev`で
+    // spawnしたvite(の子孫プロセス。npm→vite→esbuildと孫・ひ孫まで潜る)も
+    // competitor条件(b)に該当してしまう。これは「別セッション由来の残存vite」とは
+    // 別物で、計測対象を汚す余計なものではなく計測ツールそのものの一部であるため、
+    // snapshotProcessesが付けたselfDescendant印を使い、selfPidと同様に
+    // systemBackground側へ退避する(除外≠不可視化。記録は残す)。
     const isSelf = selfPid != null && proc?.pid === selfPid;
-    if (isSystemBackground(proc) || isSelf) {
+    const isSelfDescendant = proc?.selfDescendant === true;
+    if (isSystemBackground(proc) || isSelf || isSelfDescendant) {
       if (!systemBackgroundMap.has(proc.pid)) systemBackgroundMap.set(proc.pid, proc);
       continue;
     }
