@@ -20,6 +20,18 @@ import {
 
 const ROOT = resolve(__dirname, '..');
 const RUNTIME_DIR = resolve(ROOT, 'public/sprout-runtime/v1');
+
+/*
+ * 同梱したランタイムが「正典の Release そのもの」であることを、この値で固定する。
+ * Sprout68k の Release runtime-v1 の manifest.json の SHA-256。
+ *
+ * **manifest と実ファイルの一致だけでは足りない。** manifest ごと差し替えれば
+ * 全部つじつまが合ってしまうので、外側の入口をここに焼き込む。
+ * 更新するときは tools/fetch-sprout-runtime.mjs を走らせ、この値も一緒に直す
+ * （直し忘れればこのテストが落ちる）。
+ */
+const EXPECTED_MANIFEST_SHA256 = '7792ba5484996e5a9c0311c30b7c17582dbff86e678f3c28da5cbe86a7f615b3';
+const RUNTIME_RELEASE = 'https://github.com/uraraworks/Sprout68k/releases/download/runtime-v1/';
 const manifest = JSON.parse(readFileSync(resolve(RUNTIME_DIR, 'manifest.json'), 'utf8'));
 const layout = { ...manifest.layout, ...DEFAULT_DISK };
 
@@ -28,6 +40,17 @@ const deflate = (bytes: Uint8Array) => new Uint8Array(deflateRawSync(bytes, { le
 const inflate = (bytes: Uint8Array) => new Uint8Array(inflateRawSync(bytes));
 
 describe('同梱した Sprout68k ランタイム', () => {
+  it('正典の Release の manifest そのものである', () => {
+    const manifestBytes = readFileSync(resolve(RUNTIME_DIR, 'manifest.json'));
+    expect(sha256(new Uint8Array(manifestBytes))).toBe(EXPECTED_MANIFEST_SHA256);
+  });
+
+  it('取得元が固定のタグを指している（latest だと知らぬ間に別版が入る）', () => {
+    const fetcher = readFileSync(resolve(ROOT, 'tools/fetch-sprout-runtime.mjs'), 'utf8');
+    expect(fetcher).toContain(RUNTIME_RELEASE);
+    expect(fetcher).not.toContain('/releases/latest/');
+  });
+
   it('manifest の SHA-256 と一致する', () => {
     const runtime = new Uint8Array(readFileSync(resolve(RUNTIME_DIR, 'runtime.bin')));
     const boot = new Uint8Array(readFileSync(resolve(RUNTIME_DIR, 'boot.bin')));

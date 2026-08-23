@@ -453,6 +453,29 @@ the bundled files on future visits.
   running. Blank HDDs are FAT16 data drives only (no IPL).
 - **FDD0/FDD1**: hot-swappable at any time.
 
+## Sprout68k shared runtime
+
+Opening a `#p1=` link (a program shared from
+[Sprout68k](https://github.com/uraraworks/Sprout68k)) needs a 5 KB runtime, bundled
+under `public/sprout-runtime/v1/`. It is **fetched at build time and served by this
+site at runtime**, so shared links keep working offline and do not depend on GitHub
+being reachable.
+
+To update it to a newer ABI version:
+
+```sh
+node tools/fetch-sprout-runtime.mjs
+```
+
+This pulls from the pinned release tag (`runtime-v1`), verifies every file against the
+manifest, and writes `public/sprout-runtime/v1/` and `src/sprout-share.mts`. Then update
+`EXPECTED_MANIFEST_SHA256` in `test/sprout-share.test.ts` to the new manifest hash —
+that constant is what proves the bundled copy really is the published release, so the
+test fails until you do.
+
+**Older runtime versions must never be deleted.** Code in a shared URL calls the jump
+table of the version it was built against.
+
 ## MCP support (control WebX68k from AI agents)
 
 Open the page with `?bridge=1` to have it connect to a local MCP server

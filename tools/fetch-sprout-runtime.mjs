@@ -23,6 +23,8 @@ import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
+/** 既定の取得元。**タグを固定する**（latest にすると、いつの間にか別の版が入る）。 */
+const DEFAULT_SOURCE = 'https://github.com/uraraworks/Sprout68k/releases/download/runtime-v1/';
 const OUTPUT = resolve(ROOT, 'public/sprout-runtime/v1');
 /** 復号と組み立ての正典。src からも import するのでここへ置く。 */
 const SHARE_OUTPUT = resolve(ROOT, 'src/sprout-share.mts');
@@ -42,11 +44,10 @@ async function read(source, name) {
   return new Uint8Array(readFileSync(path));
 }
 
-const [source, ...rest] = process.argv.slice(2);
-if (!source) {
-  console.error('使い方: node tools/fetch-sprout-runtime.mjs <取得元> [--manifest-sha256 <hex>]');
-  process.exit(1);
-}
+const args = process.argv.slice(2);
+const source = args[0] && !args[0].startsWith('--') ? args.shift() : DEFAULT_SOURCE;
+const rest = args;
+console.log(`取得元: ${source}`);
 let expectedManifestSha;
 for (let index = 0; index < rest.length; index++) {
   if (rest[index] === '--manifest-sha256') expectedManifestSha = rest[++index];
