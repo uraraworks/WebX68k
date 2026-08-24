@@ -1,0 +1,283 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>OPFS 前提条件プローブ</title>
+<style>
+ body{font:14px/1.6 -apple-system,sans-serif;margin:1rem;max-width:60rem}
+ pre{background:#f4f4f4;padding:.6rem;overflow-x:auto;white-space:pre-wrap}
+ .ok{color:#0a0}.ng{color:#c00}.na{color:#888}
+ button{font-size:16px;padding:.6rem 1.2rem}
+</style>
+<h1>OPFS 前提条件プローブ</h1>
+<p>決定2・決定3の土台になる「能力があるか」の確認。時間の計測ではないので、ホストが忙しくても結果は有効。
+スループットだけは参考値。</p>
+<button id="run">実行</button>
+<pre id="out">未実行</pre>
+<script>
+const out = document.getElementById('out');
+const lines = [];
+function log(s){ lines.push(s); out.textContent = lines.join('\n'); }
+function j(v){ try { return JSON.stringify(v); } catch(e){ return String(v); } }
+
+// ---- ワーカー本体(Blobで生成。同一originなのでOPFSに触れる) ----
+const WORKER_SRC = `
+self.onmessage = async (ev) => {
+  const cmd = ev.data;
+  try {
+    const r = await run(cmd);
+    self.postMessage({ ok: true, result: r });
+  } catch (e) {
+    self.postMessage({ ok: false, error: String(e && e.name) + ': ' + String(e && e.message) });
+  }
+};
+
+async function fileHandle(name) {
+  const root = await navigator.storage.getDirectory();
+  return await root.getFileHandle(name, { create: true });
+}
+
+async function run(cmd) {
+  if (cmd.op === 'syncHandle') {
+    // 512バイト/セクタの読み書き往復。既知パターンを書いて、そのパターンが返るかを見る。
+    const fh = await fileHandle('probe-sector.bin');
+    const h = await fh.createSyncAccessHandle();
+    try {
+      h.truncate(0);
+      const SEC = 512, N = 64;
+      const w = new Uint8Array(SEC);
+      for (let s = 0; s < N; s++) {
+        for (let i = 0; i < SEC; i++) w[i] = (s * 31 + i) & 0xff;
+        h.write(w, { at: s * SEC });
+      }
+      h.flush();
+      const size = h.getSize();
+      // 順不同で読み戻して内容一致を確認する(書いた順に読むと位置ずれを見逃す)
+      const order = [63, 0, 17, 62, 1, 40];
+      const r = new Uint8Array(SEC);
+      let mismatch = null;
+      for (const s of order) {
+        const got = h.read(r, { at: s * SEC });
+        if (got !== SEC) { mismatch = { sector: s, reason: 'short read ' + got }; break; }
+        for (let i = 0; i < SEC; i++) {
+          if (r[i] !== ((s * 31 + i) & 0xff)) { mismatch = { sector: s, offset: i, want: (s*31+i)&0xff, got: r[i] }; break; }
+        }
+        if (mismatch) break;
+      }
+      // 陰性対照: 書いていない領域(N セクタ目以降)は読めないはず
+      const beyond = h.read(r, { at: N * SEC });
+      return { size, expectedSize: SEC * N, mismatch, readBeyondEnd: beyond };
+    } finally { h.close(); }
+  }
+
+  if (cmd.op === 'writeBulk') {
+    // 指定バイト数を OPFS に書く(estimate の増分を見るため)
+    const fh = await fileHandle(cmd.name);
+    const h = await fh.createSyncAccessHandle();
+    try {
+      h.truncate(0);
+      const CH = 1 << 20;
+      const buf = new Uint8Array(CH);
+      for (let i = 0; i < CH; i++) buf[i] = (i * 7) & 0xff;  // 非ゼロ(疎ファイル化を避ける)
+      let written = 0;
+      while (written < cmd.bytes) {
+        const n = Math.min(CH, cmd.bytes - written);
+        h.write(buf.subarray(0, n), { at: written });
+        written += n;
+      }
+      h.flush();
+      return { size: h.getSize() };
+    } finally { h.close(); }
+  }
+
+  if (cmd.op === 'huge') {
+    // 大容量を確保できるか。truncate で伸ばしたあと、末尾セクタへ実際に書いて読み戻す。
+    const fh = await fileHandle('probe-huge.bin');
+    const h = await fh.createSyncAccessHandle();
+    try {
+      h.truncate(0);
+      h.truncate(cmd.bytes);
+      const sizeAfterTruncate = h.getSize();
+      const SEC = 512;
+      const at = cmd.bytes - SEC;
+      const w = new Uint8Array(SEC);
+      for (let i = 0; i < SEC; i++) w[i] = (i ^ 0xa5) & 0xff;
+      h.write(w, { at });
+      h.flush();
+      const r = new Uint8Array(SEC);
+      const got = h.read(r, { at });
+      let mismatch = null;
+      for (let i = 0; i < SEC; i++) if (r[i] !== ((i ^ 0xa5) & 0xff)) { mismatch = { offset: i, want: (i^0xa5)&0xff, got: r[i] }; break; }
+      return { sizeAfterTruncate, tailWriteAt: at, tailReadBytes: got, mismatch };
+    } finally { h.close(); }
+  }
+
+  if (cmd.op === 'throughput') {
+    const fh = await fileHandle('probe-tp.bin');
+    const h = await fh.createSyncAccessHandle();
+    try {
+      h.truncate(0);
+      h.truncate(cmd.bytes);
+      const SEC = 512, N = cmd.sectors;
+      const buf = new Uint8Array(SEC);
+      const maxSec = Math.floor(cmd.bytes / SEC);
+      // 順次書き
+      let t0 = performance.now();
+      for (let s = 0; s < N; s++) h.write(buf, { at: s * SEC });
+      h.flush();
+      const seqWriteMs = performance.now() - t0;
+      // ランダム読み(LBAが飛ぶ実際のディスクアクセスに近い)
+      const picks = [];
+      for (let s = 0; s < N; s++) picks.push(((s * 7919) % maxSec));
+      t0 = performance.now();
+      for (const s of picks) h.read(buf, { at: s * SEC });
+      const randReadMs = performance.now() - t0;
+      // 1MiB 一括書き
+      const big = new Uint8Array(1 << 20);
+      t0 = performance.now();
+      h.write(big, { at: 0 });
+      h.flush();
+      const bulkWriteMs = performance.now() - t0;
+      return {
+        sectors: N,
+        seqWriteMs: +seqWriteMs.toFixed(2), seqWriteUsPerSector: +(seqWriteMs * 1000 / N).toFixed(2),
+        randReadMs: +randReadMs.toFixed(2), randReadUsPerSector: +(randReadMs * 1000 / N).toFixed(2),
+        bulkWrite1MiBMs: +bulkWriteMs.toFixed(2),
+      };
+    } finally { h.close(); }
+  }
+
+  if (cmd.op === 'cleanup') {
+    const root = await navigator.storage.getDirectory();
+    const removed = [];
+    for (const name of cmd.names) {
+      try { await root.removeEntry(name); removed.push(name); } catch (e) { /* 無ければ無視 */ }
+    }
+    return { removed };
+  }
+
+  throw new Error('unknown op ' + cmd.op);
+}
+`;
+
+let worker = null;
+function call(cmd) {
+  return new Promise((res, rej) => {
+    worker.onmessage = (ev) => ev.data.ok ? res(ev.data.result) : rej(new Error(ev.data.error));
+    worker.onerror = (e) => rej(new Error('worker error: ' + e.message));
+    worker.postMessage(cmd);
+  });
+}
+
+async function estimate() {
+  const e = await navigator.storage.estimate();
+  // usageDetails は列挙可能でない実装があるため明示的に展開する
+  const details = e.usageDetails ? { ...e.usageDetails } : null;
+  return { usage: e.usage, quota: e.quota, usageDetails: details };
+}
+
+async function idbWrite(bytes) {
+  const db = await new Promise((res, rej) => {
+    const rq = indexedDB.open('opfs-probe-idb', 1);
+    rq.onupgradeneeded = () => rq.result.createObjectStore('blobs');
+    rq.onsuccess = () => res(rq.result);
+    rq.onerror = () => rej(rq.error);
+  });
+  const buf = new Uint8Array(bytes);
+  for (let i = 0; i < bytes; i++) buf[i] = (i * 13) & 0xff;
+  await new Promise((res, rej) => {
+    const tx = db.transaction('blobs', 'readwrite');
+    tx.objectStore('blobs').put(buf, 'chunk');
+    tx.oncomplete = () => res();
+    tx.onerror = () => rej(tx.error);
+  });
+  db.close();
+}
+
+async function idbDelete() {
+  await new Promise((res) => { const rq = indexedDB.deleteDatabase('opfs-probe-idb'); rq.onsuccess = rq.onerror = rq.onblocked = () => res(); });
+}
+
+document.getElementById('run').onclick = async () => {
+  lines.length = 0;
+  document.getElementById('run').disabled = true;
+  const MB = 1 << 20;
+  try {
+    log('== 環境 ==');
+    log('userAgent: ' + navigator.userAgent);
+    log('isSecureContext: ' + isSecureContext + ' / crossOriginIsolated: ' + self.crossOriginIsolated);
+    log('storage.getDirectory: ' + (navigator.storage && typeof navigator.storage.getDirectory === 'function'));
+    log('');
+
+    log('== A. 同期ハンドルはワーカー専用か(対照) ==');
+    try {
+      const root = await navigator.storage.getDirectory();
+      const fh = await root.getFileHandle('probe-main.bin', { create: true });
+      const h = await fh.createSyncAccessHandle();
+      h.close();
+      log('<span class="ng">メインスレッドで createSyncAccessHandle が成功した(想定外)</span>');
+    } catch (e) {
+      log('メインスレッド: 失敗 = ' + e.name + ': ' + e.message + '  ← 想定どおり');
+    }
+    log('');
+
+    worker = new Worker(URL.createObjectURL(new Blob([WORKER_SRC], { type: 'text/javascript' })));
+
+    log('== B. ワーカー内の同期ハンドル(512B/セクタ 往復) ==');
+    const b = await call({ op: 'syncHandle' });
+    log(j(b));
+    log(b.mismatch === null && b.size === b.expectedSize && b.readBeyondEnd === 0
+      ? '判定: 一致(内容・サイズ・末尾超過読みすべて期待どおり)'
+      : '判定: <span class="ng">不一致あり</span>');
+    log('');
+
+    log('== C. estimate の内訳で OPFS と IndexedDB を分離できるか ==');
+    const e0 = await estimate();
+    log('初期        : ' + j(e0));
+    await call({ op: 'writeBulk', name: 'probe-c-opfs.bin', bytes: 16 * MB });
+    const e1 = await estimate();
+    log('OPFS +16MiB : ' + j(e1) + '  Δusage=' + (e1.usage - e0.usage));
+    await idbWrite(16 * MB);
+    const e2 = await estimate();
+    log('IDB  +16MiB : ' + j(e2) + '  Δusage=' + (e2.usage - e1.usage));
+    log(e2.usageDetails ? '判定: usageDetails あり → キー: ' + Object.keys(e2.usageDetails).join(', ')
+                        : '判定: usageDetails なし → IndexedDB のレコード列挙で代替する必要あり');
+    log('');
+
+    log('== D. persist ==');
+    log('persisted() 実行前: ' + await navigator.storage.persisted());
+    let persistResult;
+    try { persistResult = await navigator.storage.persist(); } catch (err) { persistResult = 'throw: ' + err; }
+    log('persist() 戻り値  : ' + persistResult);
+    log('persisted() 実行後: ' + await navigator.storage.persisted());
+    log('');
+
+    log('== E. 大容量の確保(512MiB) ==');
+    try {
+      const h = await call({ op: 'huge', bytes: 512 * MB });
+      log(j(h));
+      log(h.mismatch === null && h.tailReadBytes === 512 ? '判定: 末尾セクタの書き戻し一致' : '判定: <span class="ng">末尾セクタが一致しない</span>');
+    } catch (err) { log('<span class="ng">失敗: ' + err.message + '</span>'); }
+    const e3 = await estimate();
+    log('確保後 estimate: ' + j(e3));
+    log('');
+
+    log('== F. スループット(参考値。ホスト負荷の影響を受ける) ==');
+    const tp = await call({ op: 'throughput', bytes: 64 * MB, sectors: 4096 });
+    log(j(tp));
+    log('');
+
+    log('== 後片付け ==');
+    const cl = await call({ op: 'cleanup', names: ['probe-sector.bin','probe-c-opfs.bin','probe-huge.bin','probe-tp.bin','probe-main.bin'] });
+    await idbDelete();
+    log('削除: ' + j(cl.removed));
+    const e4 = await estimate();
+    log('後片付け後 estimate: ' + j(e4));
+    log('');
+    log('== 完了 ==');
+  } catch (err) {
+    log('<span class="ng">中断: ' + (err && err.stack || err) + '</span>');
+  } finally {
+    out.innerHTML = lines.join('\n');
+    document.getElementById('run').disabled = false;
+  }
+};
+</script>
