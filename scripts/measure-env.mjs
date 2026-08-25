@@ -96,6 +96,53 @@ async function collectPowerSource() {
   }
 }
 
+/**
+ * `system_profiler SPAudioDataType -json` の出力から既定の**出力**デバイスを取り出す。
+ *
+ * 入力デバイスにも `coreaudio_default_audio_input_device` が付くため、出力側のキーだけを
+ * 見る。既定出力が見つからない場合は null を返す（0や空オブジェクトで埋めない。
+ * 「取得できなかった」と「そういう値だった」を混ぜないため）。
+ *
+ * @param {string} stdout
+ * @returns {{name: string|null, transport: string|null, sampleRate: number|null}|null}
+ */
+export function parseAudioOutputDevice(stdout) {
+  let items;
+  try {
+    items = JSON.parse(stdout)?.SPAudioDataType?.[0]?._items;
+  } catch {
+    return null;
+  }
+  if (!Array.isArray(items)) return null;
+  const hit = items.find((d) => d?.coreaudio_default_audio_output_device === 'spaudio_yes');
+  if (!hit) return null;
+  return {
+    name: hit._name ?? null,
+    transport: hit.coreaudio_device_transport ?? null,
+    sampleRate: hit.coreaudio_device_srate ?? null,
+  };
+}
+
+/**
+ * macOS の既定音声出力デバイスを返す。
+ *
+ * AudioContext.outputLatency は**このデバイスだけで決まる**（2026-08-25 の実測）。
+ * 同一マシン・同一ビルドで HDMI 0.016秒 / 内蔵スピーカー 0.032秒 / Bluetooth 0.168秒。
+ * デバイスを記録していなかったために、この差を長らく「日差」と誤読していた。
+ * 音声指標を組の間で比較してよいのは、このデバイスが一致しているときだけである。
+ */
+async function collectAudioOutputDevice() {
+  if (process.platform !== 'darwin') return null;
+  try {
+    const { stdout } = await execFileAsync('system_profiler', ['SPAudioDataType', '-json'], {
+      maxBuffer: 8 * 1024 * 1024,
+    });
+    return parseAudioOutputDevice(stdout);
+  } catch {
+    return null;
+  }
+}
+
 async function collectHost() {
   let cpuModel = null;
   let cpuCount = null;
@@ -122,6 +169,7 @@ async function collectHost() {
     totalMemMiB,
     nodeVersion: process.version ?? null,
     powerSource: await collectPowerSource(),
+    audioOutputDevice: await collectAudioOutputDevice(),
   };
 }
 

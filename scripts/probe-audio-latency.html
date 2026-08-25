@@ -1,0 +1,78 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>outputLatency 切り分けプローブ</title>
+<body>
+<pre id="out">node scripts/probe-audio-latency.mjs から呼ばれる</pre>
+<script>
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+function snap(ctx) {
+  return {
+    sampleRate: ctx.sampleRate,
+    baseLatency: ctx.baseLatency ?? null,
+    outputLatency: ctx.outputLatency ?? null,
+    state: ctx.state,
+    currentTime: +ctx.currentTime.toFixed(4),
+  };
+}
+
+// 実際にデバイスを開かせるため、可聴しない音量で発振させる。
+// gain を完全に0にするとブラウザが出力を最適化して省く可能性があるため、極小の非ゼロ値にする。
+function startSilentTone(ctx) {
+  const osc = ctx.createOscillator();
+  const gain = ctx.createGain();
+  gain.gain.value = 0.0001;
+  osc.frequency.value = 440;
+  osc.connect(gain).connect(ctx.destination);
+  osc.start();
+  return () => { try { osc.stop(); } catch {} };
+}
+
+async function timeline() {
+  // 軸(1): 読み取る時刻。アプリと同じ生成方法(44100強制)で、時間を追って読む。
+  const ctx = new AudioContext({ sampleRate: 44100 });
+  const steps = [{ at: '生成直後', ...snap(ctx) }];
+  await ctx.resume();
+  steps.push({ at: 'resume直後', ...snap(ctx) });
+  const stop = startSilentTone(ctx);
+  for (const ms of [500, 1000, 1500, 3000]) {
+    await sleep(ms === 500 ? 500 : 500);
+    steps.push({ at: `発音後${ms}ms`, ...snap(ctx) });
+  }
+  stop();
+  await ctx.close();
+  return steps;
+}
+
+async function variant(label, options) {
+  const ctx = new AudioContext(options);
+  try {
+    await ctx.resume();
+    const stop = startSilentTone(ctx);
+    await sleep(1200);
+    const s = snap(ctx);
+    stop();
+    return { variant: label, options: JSON.parse(JSON.stringify(options ?? null)), ...s };
+  } finally { await ctx.close(); }
+}
+
+window.__probeAudioLatency = async () => {
+  const out = { timeline: await timeline(), variants: [] };
+  // 軸(2): latencyHint。軸(3): sampleRate強制の有無。
+  const cases = [
+    ['44100強制・hint既定', { sampleRate: 44100 }],
+    ['44100強制・interactive', { sampleRate: 44100, latencyHint: 'interactive' }],
+    ['44100強制・balanced', { sampleRate: 44100, latencyHint: 'balanced' }],
+    ['44100強制・playback', { sampleRate: 44100, latencyHint: 'playback' }],
+    ['44100強制・数値0.05', { sampleRate: 44100, latencyHint: 0.05 }],
+    ['強制なし・hint既定', undefined],
+    ['強制なし・interactive', { latencyHint: 'interactive' }],
+    ['48000強制・hint既定', { sampleRate: 48000 }],
+  ];
+  for (const [label, opt] of cases) {
+    try { out.variants.push(await variant(label, opt)); }
+    catch (e) { out.variants.push({ variant: label, error: String(e && e.name) + ': ' + String(e && e.message) }); }
+  }
+  return out;
+};
+</script>
