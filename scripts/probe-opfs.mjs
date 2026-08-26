@@ -6,7 +6,8 @@
 //
 // 測っているのは「能力があるか」であってホスト負荷に依存しないが、末尾のスループットだけは
 // 参考値であり、実行環境の影響を受ける(Electron製のブラウザで走らせると30倍遅い値が出た)。
-import { createServer } from 'node:http';
+import { createServer as createHttpServer } from 'node:http';
+import { createServer as createHttpsServer } from 'node:https';
 import { readFile, mkdir, writeFile } from 'node:fs/promises';
 import { networkInterfaces } from 'node:os';
 import { extname, join } from 'node:path';
@@ -19,6 +20,9 @@ const serveOnly = process.argv.includes('--serve');
 const MIME = { '.html': 'text/html; charset=utf-8', '.mjs': 'text/javascript', '.js': 'text/javascript' };
 // 実機(iOS Safari等)から回収した結果の保存先。_local/ は .gitignore 済みなのでコミット事故が起きない。
 const RESULT_DIR = join(SCRIPT_DIR, '..', '_local', 'opfs-probe');
+// --serve は navigator.storage が secure context を要求するため HTTPS で配る。
+// 自己署名証明書は既定でこの場所を見る(生成はこのスクリプトの責務ではない)。
+const CERT_DIR = process.env.PROBE_CERT_DIR || join(SCRIPT_DIR, '..', '_local', 'probe-cert');
 
 function timestampName() {
   const d = new Date();
@@ -32,7 +36,7 @@ async function readBody(req) {
   return Buffer.concat(chunks).toString('utf8');
 }
 
-const server = createServer(async (req, res) => {
+const handler = async (req, res) => {
   if (serveOnly && req.method === 'POST' && (req.url || '/').split('?')[0] === '/result') {
     try {
       const raw = await readBody(req);
@@ -54,14 +58,39 @@ const server = createServer(async (req, res) => {
     const body = await readFile(join(SCRIPT_DIR, name));
     res.writeHead(200, { 'content-type': MIME[extname(name)] || 'application/octet-stream' }).end(body);
   } catch { res.writeHead(404).end('not found'); }
-});
+};
+
+let server;
+let scheme;
+if (serveOnly) {
+  // navigator.storage は secure context 専用。LAN IP 宛は http だと secure context にならず
+  // A〜Fが軒並み「非対応」になり「iOSはOPFS非対応」という誤った結論を招くため、
+  // 証明書が無ければ http へ黙って劣化させずここで止める。
+  let key, cert;
+  try {
+    [key, cert] = await Promise.all([
+      readFile(join(CERT_DIR, 'key.pem')),
+      readFile(join(CERT_DIR, 'cert.pem')),
+    ]);
+  } catch (e) {
+    console.error(`証明書が無いので HTTPS で配信できない(${CERT_DIR} に key.pem/cert.pem が必要): ${e.message}`);
+    process.exit(1);
+  }
+  server = createHttpsServer({ key, cert }, handler);
+  scheme = 'https';
+} else {
+  // puppeteer の自動実行経路は今までどおり http + 127.0.0.1(既にsecure context)。
+  // 8/24計測時のChrome結果と条件を揃えるため、ここは変えない。
+  server = createHttpServer(handler);
+  scheme = 'http';
+}
 await new Promise((r) => server.listen(PORT, serveOnly ? '0.0.0.0' : '127.0.0.1', r));
 
-const url = `http://127.0.0.1:${PORT}/probe-opfs.html`;
+const url = `${scheme}://127.0.0.1:${PORT}/probe-opfs.html`;
 if (serveOnly) {
   const lan = Object.values(networkInterfaces()).flat().find((n) => n && n.family === 'IPv4' && !n.internal);
   console.log(`配信中: ${url}`);
-  if (lan) console.log(`LAN から: http://${lan.address}:${PORT}/probe-opfs.html`);
+  if (lan) console.log(`LAN から: ${scheme}://${lan.address}:${PORT}/probe-opfs.html`);
   console.log('Ctrl+C で停止。');
 } else {
   const browser = await puppeteer.launch({ executablePath: CHROME, headless: false, args: ['--no-first-run'] });

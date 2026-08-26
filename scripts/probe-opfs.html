@@ -6,13 +6,30 @@
  pre{background:#f4f4f4;padding:.6rem;overflow-x:auto;white-space:pre-wrap}
  .ok{color:#0a0}.ng{color:#c00}.na{color:#888}
  button{font-size:16px;padding:.6rem 1.2rem}
+ #secureBanner{font-size:18px;font-weight:bold;padding:.8rem;border-radius:.4rem;margin-bottom:1rem}
+ #secureBanner.ok{background:#e6ffe6;color:#070}
+ #secureBanner.ng{background:#ffe6e6;color:#c00}
 </style>
 <h1>OPFS 前提条件プローブ</h1>
+<div id="secureBanner">secure context 判定中…</div>
 <p>決定2・決定3の土台になる「能力があるか」の確認。時間の計測ではないので、ホストが忙しくても結果は有効。
 スループットだけは参考値。</p>
 <button id="run">実行</button>
 <pre id="out">未実行</pre>
 <script>
+// ページを開いた瞬間(実行ボタンを押す前)から secure context を目立たせる。
+// http のLAN IPで開くと navigator.storage が全滅し「iOSはOPFS非対応」という誤結論に
+// つながるため、iPhoneの画面で即座に「この結果は無効だ」と分かるようにする。
+(() => {
+  const b = document.getElementById('secureBanner');
+  if (isSecureContext) {
+    b.textContent = 'secure context: OK(isSecureContext = true)';
+    b.className = 'ok';
+  } else {
+    b.textContent = '⚠ secure context ではありません(isSecureContext = false) — このページの結果は無効です。https:// で開き直してください';
+    b.className = 'ng';
+  }
+})();
 const out = document.getElementById('out');
 const lines = [];
 function log(s){ lines.push(s); out.textContent = lines.join('\n'); }
