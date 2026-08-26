@@ -1,0 +1,439 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>OPFS 負荷併走プローブ</title>
+<style>
+ body{font:14px/1.6 -apple-system,sans-serif;margin:1rem;max-width:60rem}
+ pre{background:#f4f4f4;padding:.6rem;overflow-x:auto;white-space:pre-wrap}
+ .ok{color:#0a0}.ng{color:#c00}.na{color:#888}
+ button{font-size:16px;padding:.6rem 1.2rem;margin-right:.5rem}
+ #secureBanner{font-size:18px;font-weight:bold;padding:.8rem;border-radius:.4rem;margin-bottom:1rem}
+ #secureBanner.ok{background:#e6ffe6;color:#070}
+ #secureBanner.ng{background:#ffe6e6;color:#c00}
+ #bgInstruction{font-size:16px;font-weight:bold;padding:.8rem;border-radius:.4rem;margin:.6rem 0;background:#fff6d6;color:#665500}
+</style>
+<h1>OPFS 負荷併走プローブ</h1>
+<div id="secureBanner">secure context 判定中…</div>
+<p>scripts/probe-opfs.mjs/html(能力プローブ)の続き。ワーカー内でコア相当の負荷(busy loop)をかけながら
+同期I/Oしたときの干渉、バックグラウンド復帰後のハンドル生存、同一ファイルへの排他を測る。
+<code>?noLoad=1</code> を付けると項目1の busy loop と I/O を両方無効化した陰性対照になる
+(全水準でフレーム時間がほぼ0になるはず。measurement mode に反映される)。</p>
+<button id="run">実行</button>
+<button id="crossTabBtn" disabled>別タブ確認(項目3・任意)</button>
+<pre id="out">未実行</pre>
+<script>
+(() => {
+  const b = document.getElementById('secureBanner');
+  if (isSecureContext) {
+    b.textContent = 'secure context: OK(isSecureContext = true)';
+    b.className = 'ok';
+  } else {
+    b.textContent = '⚠ secure context ではありません(isSecureContext = false) — このページの結果は無効です。https:// で開き直してください';
+    b.className = 'ng';
+  }
+})();
+const out = document.getElementById('out');
+const lines = [];
+function log(s){ lines.push(s); out.textContent = lines.join('\n'); }
+function j(v){ try { return JSON.stringify(v); } catch(e){ return String(v); } }
+function esc(s){ return String(s).replace(/[&<>"']/g, (c) => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
+
+const params = new URLSearchParams(location.search);
+const noLoad = params.get('noLoad') === '1'; // 陰性対照: busy loopとI/Oを両方無効化する
+
+// ---- ワーカー本体 ----
+// 項目1: フレームごとに「決定的なbusy loop(コア相当の負荷)」→「Nセクタの同期read/write」を行い、
+//        フレーム所要時間の分布を取る。項目2: 開いたままのSyncAccessHandleをバックグラウンド復帰後に
+//        使い直せるか。項目3: 同一ファイルへの2つ目のcreateSyncAccessHandle。
+const WORKER_SRC = `
+self.onmessage = async (ev) => {
+  const cmd = ev.data;
+  try {
+    const r = await run(cmd);
+    self.postMessage({ ok: true, result: r });
+  } catch (e) {
+    self.postMessage({ ok: false, error: String(e && e.name) + ': ' + String(e && e.message) });
+  }
+};
+
+async function fileHandle(name) {
+  const root = await navigator.storage.getDirectory();
+  return await root.getFileHandle(name, { create: true });
+}
+
+// 決定的な整数畳み込み(Math.random/Date.nowに依存しない)。結果はsinkへXORして
+// デッドコード除去されないようにする。
+let sink = 0;
+function busyWork(reps) {
+  let acc = 0x2545f491 ^ reps;
+  for (let i = 0; i < reps; i++) {
+    acc = (acc + i) | 0;
+    acc = Math.imul(acc, 2654435761) | 0;
+    acc ^= acc >>> 15;
+  }
+  return acc;
+}
+
+// performance.now() の分解能: 値が変化するまで回し、その最小差分を複数試行取る。
+function measureTimerResolutionMs() {
+  const diffs = [];
+  for (let trial = 0; trial < 20; trial++) {
+    const a = performance.now();
+    let b = a, guard = 0;
+    while (b === a && guard < 5_000_000) { b = performance.now(); guard++; }
+    if (b > a) diffs.push(b - a);
+  }
+  if (!diffs.length) return NaN;
+  diffs.sort((x, y) => x - y);
+  return diffs[0];
+}
+
+// targetMsぶんのbusyWorkになるreps数を較正する(倍増探索→線形補正)。
+// JIT最適化前に較正するとreps過大になり、以降(最適化後)の実測フレーム時間が目標より
+// 大幅に短くなる(Mac Chromeで実測: 較正時0.3ms/reps=29279 → 最適化後は同reps数で0.3ms程度)。
+// 較正前に十分な回数のウォームアップを挟み、最適化された後の速度で較正する。
+function calibrateReps(targetMs) {
+  for (let i = 0; i < 200; i++) sink ^= busyWork(4000);
+  let reps = 2000;
+  for (let iter = 0; iter < 40; iter++) {
+    const t0 = performance.now();
+    sink ^= busyWork(reps);
+    const dt = performance.now() - t0;
+    if (dt >= targetMs) break;
+    reps = Math.ceil(reps * (dt > 0 ? Math.max(1.3, targetMs / Math.max(dt, 0.001)) : 4));
+  }
+  const t0 = performance.now();
+  for (let k = 0; k < 5; k++) sink ^= busyWork(reps);
+  const dt = (performance.now() - t0) / 5;
+  if (dt > 0) reps = Math.max(1, Math.round(reps * targetMs / dt));
+  return reps;
+}
+
+function ioFrame(h, n, secBuf, totalSectors, seq) {
+  if (n <= 0) return;
+  for (let i = 0; i < n; i++) {
+    const sector = (seq * n + i) % totalSectors;
+    h.write(secBuf, { at: sector * 512 });
+  }
+  h.flush();
+  for (let i = 0; i < n; i++) {
+    const sector = (seq * n + i) % totalSectors;
+    h.read(secBuf, { at: sector * 512 });
+  }
+}
+
+async function runLoadTest(cmd) {
+  const targetFrameMs = cmd.targetFrameMs;
+  const timerResolutionMs = measureTimerResolutionMs();
+  const reps = cmd.noLoad ? 0 : calibrateReps(targetFrameMs);
+  // 分解能に負けないよう、1計測区間がtimerResolutionMsの20倍以上になるフレーム数をまとめる。
+  const blockSize = Math.max(1, Math.ceil((timerResolutionMs * 20) / targetFrameMs));
+  const levels = [];
+  const secBuf = new Uint8Array(512);
+  for (let i = 0; i < 512; i++) secBuf[i] = i & 0xff;
+  for (const N of cmd.levels) {
+    const totalSectors = Math.max(2048, N * 4);
+    const fh = await fileHandle('probe-load.bin');
+    const h = await fh.createSyncAccessHandle();
+    h.truncate(0);
+    h.truncate(totalSectors * 512);
+    const frames = cmd.framesPerLevel;
+    const blocks = Math.ceil(frames / blockSize);
+    const frameTimesMs = [];
+    let seq = 0;
+    for (let b = 0; b < blocks; b++) {
+      const framesInBlock = Math.min(blockSize, frames - b * blockSize);
+      const t0 = performance.now();
+      for (let f = 0; f < framesInBlock; f++) {
+        if (!cmd.noLoad) sink ^= busyWork(reps);
+        if (!cmd.noLoad) ioFrame(h, N, secBuf, totalSectors, seq++);
+      }
+      const dt = performance.now() - t0;
+      const perFrame = dt / framesInBlock;
+      for (let f = 0; f < framesInBlock; f++) frameTimesMs.push(perFrame);
+    }
+    h.close();
+    frameTimesMs.sort((a, b) => a - b);
+    const median = frameTimesMs[Math.floor(frameTimesMs.length / 2)];
+    const max = frameTimesMs[frameTimesMs.length - 1];
+    const over = frameTimesMs.filter((t) => t > targetFrameMs).length;
+    levels.push({
+      N, frames: frameTimesMs.length,
+      medianMs: +median.toFixed(3), maxMs: +max.toFixed(3),
+      framesOverTargetMs: over,
+    });
+  }
+  return { timerResolutionMs, reps, blockSize, targetFrameMs, noLoad: !!cmd.noLoad, levels, sinkUnused: sink };
+}
+
+let bgHandle = null;
+let exclusiveHandle = null;
+
+async function run(cmd) {
+  if (cmd.op === 'runLoadTest') return await runLoadTest(cmd);
+
+  if (cmd.op === 'openBg') {
+    const fh = await fileHandle('probe-bg.bin');
+    bgHandle = await fh.createSyncAccessHandle();
+    bgHandle.truncate(512);
+    return { opened: true };
+  }
+  if (cmd.op === 'bgIo') {
+    if (!bgHandle) return { ok: false, errorName: 'NoHandle', errorMessage: 'ハンドルが無い(既に無効化された可能性)' };
+    try {
+      const w = new Uint8Array(512);
+      for (let i = 0; i < 512; i++) w[i] = i & 0xff;
+      bgHandle.write(w, { at: 0 });
+      bgHandle.flush();
+      const r = new Uint8Array(512);
+      const got = bgHandle.read(r, { at: 0 });
+      let match = got === 512;
+      for (let i = 0; i < 512 && match; i++) if (r[i] !== (i & 0xff)) match = false;
+      return { ok: match, got };
+    } catch (e) {
+      return { ok: false, errorName: e && e.name, errorMessage: e && e.message };
+    }
+  }
+  if (cmd.op === 'closeBg') {
+    if (bgHandle) { try { bgHandle.close(); } catch (e) {} bgHandle = null; }
+    return { closed: true };
+  }
+  if (cmd.op === 'ping') return { pong: true };
+
+  if (cmd.op === 'openExclusive') {
+    const fh = await fileHandle(cmd.name);
+    exclusiveHandle = await fh.createSyncAccessHandle();
+    return { opened: true };
+  }
+  if (cmd.op === 'closeExclusive') {
+    if (exclusiveHandle) { try { exclusiveHandle.close(); } catch (e) {} exclusiveHandle = null; }
+    return { closed: true };
+  }
+
+  if (cmd.op === 'cleanup') {
+    const root = await navigator.storage.getDirectory();
+    const removed = [];
+    for (const name of cmd.names) {
+      try { await root.removeEntry(name); removed.push(name); } catch (e) {}
+    }
+    return { removed };
+  }
+
+  throw new Error('unknown op ' + cmd.op);
+}
+`;
+
+function makeWorker() {
+  return new Worker(URL.createObjectURL(new Blob([WORKER_SRC], { type: 'text/javascript' })));
+}
+function callOn(w, cmd) {
+  return new Promise((res, rej) => {
+    w.onmessage = (ev) => ev.data.ok ? res(ev.data.result) : rej(new Error(ev.data.error));
+    w.onerror = (e) => rej(new Error('worker error: ' + e.message));
+    w.postMessage(cmd);
+  });
+}
+
+// ---- 項目1: 負荷併走時のフレーム時間分布 ----
+async function runItem1() {
+  const w = makeWorker();
+  try {
+    const r = await callOn(w, {
+      op: 'runLoadTest',
+      levels: [0, 1, 8, 64, 256],
+      framesPerLevel: 300,
+      targetFrameMs: 1000 / 60,
+      noLoad,
+    });
+    return r;
+  } finally {
+    try { await callOn(w, { op: 'cleanup', names: ['probe-load.bin'] }); } catch (e) {}
+    w.terminate();
+  }
+}
+
+// ---- 項目2: バックグラウンド復帰後のハンドル生存 ----
+async function runItem2() {
+  const w = makeWorker();
+  const result = {};
+  try {
+    await callOn(w, { op: 'openBg' });
+    const banner = document.getElementById('bgInstruction') || (() => {
+      const d = document.createElement('div');
+      d.id = 'bgInstruction';
+      document.body.insertBefore(d, out);
+      return d;
+    })();
+    banner.textContent = '項目2: ホーム画面に戻って10秒待ってから戻ってきてください(60秒でタイムアウトします)';
+    log('== 項目2待機中 == ホーム画面に戻って10秒待ってから戻ってきてください(60秒でタイムアウト)');
+
+    let hiddenAt = null, visibleAt = null;
+    const observed = await new Promise((resolve) => {
+      const timeoutId = setTimeout(() => { cleanup(); resolve(false); }, 60000);
+      function onVis() {
+        if (document.visibilityState === 'hidden' && hiddenAt === null) {
+          hiddenAt = performance.now();
+        } else if (document.visibilityState === 'visible' && hiddenAt !== null && visibleAt === null) {
+          visibleAt = performance.now();
+          cleanup();
+          resolve(true);
+        }
+      }
+      function cleanup() { clearTimeout(timeoutId); document.removeEventListener('visibilitychange', onVis); }
+      document.addEventListener('visibilitychange', onVis);
+    });
+    banner.remove();
+
+    if (!observed) {
+      result.backgrounded = false;
+      result.note = 'バックグラウンド化が観測されなかった(60秒タイムアウト)';
+    } else {
+      result.backgrounded = true;
+      result.elapsedHiddenToVisibleMs = +(visibleAt - hiddenAt).toFixed(1);
+      try {
+        await Promise.race([
+          callOn(w, { op: 'ping' }),
+          new Promise((_, rej) => setTimeout(() => rej(new Error('ping timeout')), 5000)),
+        ]);
+        result.workerAlive = true;
+      } catch (e) {
+        result.workerAlive = false;
+        result.workerPingError = String(e && e.message || e);
+      }
+      if (result.workerAlive) {
+        try {
+          const io = await callOn(w, { op: 'bgIo' });
+          result.handleUsable = !!io.ok;
+          result.ioResult = io;
+        } catch (e) {
+          result.handleUsable = false;
+          result.error = String(e && e.message || e);
+        }
+      } else {
+        result.handleUsable = false;
+      }
+    }
+  } finally {
+    try { await callOn(w, { op: 'closeBg' }); } catch (e) {}
+    try { await callOn(w, { op: 'cleanup', names: ['probe-bg.bin'] }); } catch (e) {}
+    w.terminate();
+  }
+  return result;
+}
+
+// ---- 項目3: 同一ファイルへの排他 ----
+async function runItem3() {
+  const w1 = makeWorker();
+  const w2 = makeWorker();
+  const result = {};
+  try {
+    try {
+      await callOn(w1, { op: 'openExclusive', name: 'probe-exclusive.bin' });
+      result.firstOpen = { ok: true };
+    } catch (e) { result.firstOpen = { ok: false, error: String(e && e.message || e) }; }
+
+    try {
+      await callOn(w2, { op: 'openExclusive', name: 'probe-exclusive.bin' });
+      result.secondOpenWhileFirstHeld = { ok: true };
+    } catch (e) { result.secondOpenWhileFirstHeld = { ok: false, error: String(e && e.message || e) }; }
+
+    try { await callOn(w1, { op: 'closeExclusive' }); } catch (e) {}
+
+    try {
+      await callOn(w2, { op: 'openExclusive', name: 'probe-exclusive.bin' });
+      result.secondOpenAfterFirstClosed = { ok: true };
+    } catch (e) { result.secondOpenAfterFirstClosed = { ok: false, error: String(e && e.message || e) }; }
+  } finally {
+    try { await callOn(w1, { op: 'closeExclusive' }); } catch (e) {}
+    try { await callOn(w2, { op: 'closeExclusive' }); } catch (e) {}
+    try { await callOn(w1, { op: 'cleanup', names: ['probe-exclusive.bin'] }); } catch (e) {}
+    w1.terminate(); w2.terminate();
+  }
+  return result;
+}
+
+// ---- 項目3の任意手動テスト(別タブ) ----
+let manualCrossTabResult = { tested: false };
+document.getElementById('crossTabBtn').onclick = async () => {
+  const btn = document.getElementById('crossTabBtn');
+  btn.disabled = true;
+  const w = makeWorker();
+  try {
+    await callOn(w, { op: 'openExclusive', name: 'probe-exclusive.bin' });
+    manualCrossTabResult = { tested: true, ok: true, note: 'このタブから見て成功(=もう1タブは保持していないか、保持していても取得できた)' };
+  } catch (e) {
+    manualCrossTabResult = { tested: true, ok: false, error: String(e && e.message || e) };
+  } finally {
+    try { await callOn(w, { op: 'closeExclusive' }); } catch (e) {}
+    w.terminate();
+  }
+  log('手動クロスタブ結果: ' + j(manualCrossTabResult));
+  try {
+    await fetch('/result', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: j({ type: 'manualCrossTabFollowup', at: new Date().toISOString(), result: manualCrossTabResult }),
+    });
+  } catch (e) {}
+  btn.disabled = false;
+};
+
+document.getElementById('run').onclick = async () => {
+  lines.length = 0;
+  document.getElementById('run').disabled = true;
+  document.getElementById('crossTabBtn').disabled = false;
+  const report = {
+    userAgent: navigator.userAgent,
+    isSecureContext,
+    noLoad,
+  };
+  try {
+    log('== 環境 ==');
+    log('userAgent: ' + esc(navigator.userAgent));
+    log('isSecureContext: ' + isSecureContext + ' / noLoad(陰性対照): ' + noLoad);
+    log('');
+
+    log('== 項目1: 負荷併走時のフレーム時間分布 ==');
+    try {
+      const r1 = await runItem1();
+      report.item1 = r1;
+      log(j(r1));
+    } catch (err) { report.item1 = { error: String(err && err.message || err) }; log('<span class="ng">項目1失敗: ' + esc(err.message || err) + '</span>'); }
+    log('');
+
+    log('== 項目2: バックグラウンド復帰後のハンドル生存 ==');
+    try {
+      const r2 = await runItem2();
+      report.item2 = r2;
+      log(j(r2));
+    } catch (err) { report.item2 = { error: String(err && err.message || err) }; log('<span class="ng">項目2失敗: ' + esc(err.message || err) + '</span>'); }
+    log('');
+
+    log('== 項目3: 同一ファイルへの排他 ==');
+    try {
+      const r3 = await runItem3();
+      report.item3 = r3;
+      log(j(r3));
+    } catch (err) { report.item3 = { error: String(err && err.message || err) }; log('<span class="ng">項目3失敗: ' + esc(err.message || err) + '</span>'); }
+    report.manualCrossTab = manualCrossTabResult;
+    log('');
+    log('== 完了 ==');
+  } catch (err) {
+    log('<span class="ng">中断: ' + esc(err && err.stack || err) + '</span>');
+  } finally {
+    out.innerHTML = lines.join('\n');
+    report.lines = lines.join('\n');
+    try {
+      const res = await fetch('/result', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: j(report),
+      });
+      log(res.ok ? '送信: OK' : ('<span class="ng">送信: 失敗 HTTP ' + res.status + '</span>'));
+    } catch (err) {
+      log('<span class="ng">送信: 失敗 ' + esc(err && err.message || err) + '</span>');
+    }
+    out.innerHTML = lines.join('\n');
+    document.getElementById('run').disabled = false;
+  }
+};
+</script>
