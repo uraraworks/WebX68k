@@ -7,7 +7,7 @@
 // 測っているのは「能力があるか」であってホスト負荷に依存しないが、末尾のスループットだけは
 // 参考値であり、実行環境の影響を受ける(Electron製のブラウザで走らせると30倍遅い値が出た)。
 import { createServer } from 'node:http';
-import { readFile } from 'node:fs/promises';
+import { readFile, mkdir, writeFile } from 'node:fs/promises';
 import { networkInterfaces } from 'node:os';
 import { extname, join } from 'node:path';
 import puppeteer from 'puppeteer-core';
@@ -17,8 +17,37 @@ const SCRIPT_DIR = new URL('.', import.meta.url).pathname;
 const PORT = Number(process.env.PROBE_PORT || 5401);
 const serveOnly = process.argv.includes('--serve');
 const MIME = { '.html': 'text/html; charset=utf-8', '.mjs': 'text/javascript', '.js': 'text/javascript' };
+// 実機(iOS Safari等)から回収した結果の保存先。_local/ は .gitignore 済みなのでコミット事故が起きない。
+const RESULT_DIR = join(SCRIPT_DIR, '..', '_local', 'opfs-probe');
+
+function timestampName() {
+  const d = new Date();
+  const p = (n) => String(n).padStart(2, '0');
+  return `ios-${d.getFullYear()}${p(d.getMonth() + 1)}${p(d.getDate())}-${p(d.getHours())}${p(d.getMinutes())}${p(d.getSeconds())}.json`;
+}
+
+async function readBody(req) {
+  const chunks = [];
+  for await (const c of req) chunks.push(c);
+  return Buffer.concat(chunks).toString('utf8');
+}
 
 const server = createServer(async (req, res) => {
+  if (serveOnly && req.method === 'POST' && (req.url || '/').split('?')[0] === '/result') {
+    try {
+      const raw = await readBody(req);
+      JSON.parse(raw); // 妥当なJSONであることだけ確認(内容の検証はしない)
+      await mkdir(RESULT_DIR, { recursive: true });
+      const path = join(RESULT_DIR, timestampName());
+      await writeFile(path, raw, 'utf8');
+      console.log('保存しました:', path);
+      res.writeHead(200, { 'content-type': 'application/json' }).end('{"ok":true}');
+    } catch (e) {
+      console.error('[result] 保存に失敗:', e && e.message);
+      res.writeHead(500, { 'content-type': 'application/json' }).end(JSON.stringify({ ok: false, error: String(e && e.message) }));
+    }
+    return;
+  }
   const name = (req.url || '/').split('?')[0].replace(/^\/+/, '') || 'probe-opfs.html';
   if (name.includes('..')) { res.writeHead(400).end(); return; }
   try {

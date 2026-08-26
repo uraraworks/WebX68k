@@ -17,6 +17,8 @@ const out = document.getElementById('out');
 const lines = [];
 function log(s){ lines.push(s); out.textContent = lines.join('\n'); }
 function j(v){ try { return JSON.stringify(v); } catch(e){ return String(v); } }
+// userAgent 等の外部由来の文字列を <span class="ng"> 混在の innerHTML に混ぜる前にエスケープする。
+function esc(s){ return String(s).replace(/[&<>"']/g, (c) => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
 
 // ---- ワーカー本体(Blobで生成。同一originなのでOPFSに触れる) ----
 const WORKER_SRC = `
@@ -200,11 +202,20 @@ document.getElementById('run').onclick = async () => {
   lines.length = 0;
   document.getElementById('run').disabled = true;
   const MB = 1 << 20;
+  // 実機の結果をMacへ回収するための構造化オブジェクト。lines(表示用テキスト)とは別に貯める。
+  // 各項目は独立に try/catch し、途中で何が落ちても後続とsendまで到達させる。
+  const report = {
+    userAgent: navigator.userAgent,
+    isSecureContext,
+    crossOriginIsolated: self.crossOriginIsolated,
+    hasGetDirectory: !!(navigator.storage && typeof navigator.storage.getDirectory === 'function'),
+  };
+
   try {
     log('== 環境 ==');
-    log('userAgent: ' + navigator.userAgent);
+    log('userAgent: ' + esc(navigator.userAgent));
     log('isSecureContext: ' + isSecureContext + ' / crossOriginIsolated: ' + self.crossOriginIsolated);
-    log('storage.getDirectory: ' + (navigator.storage && typeof navigator.storage.getDirectory === 'function'));
+    log('storage.getDirectory: ' + report.hasGetDirectory);
     log('');
 
     log('== A. 同期ハンドルはワーカー専用か(対照) ==');
@@ -213,69 +224,108 @@ document.getElementById('run').onclick = async () => {
       const fh = await root.getFileHandle('probe-main.bin', { create: true });
       const h = await fh.createSyncAccessHandle();
       h.close();
+      report.a = { mainThreadSyncHandleSucceeded: true };
       log('<span class="ng">メインスレッドで createSyncAccessHandle が成功した(想定外)</span>');
     } catch (e) {
-      log('メインスレッド: 失敗 = ' + e.name + ': ' + e.message + '  ← 想定どおり');
+      report.a = { mainThreadSyncHandleSucceeded: false, error: e.name + ': ' + e.message };
+      log('メインスレッド: 失敗 = ' + esc(e.name + ': ' + e.message) + '  ← 想定どおり');
     }
     log('');
 
     worker = new Worker(URL.createObjectURL(new Blob([WORKER_SRC], { type: 'text/javascript' })));
 
     log('== B. ワーカー内の同期ハンドル(512B/セクタ 往復) ==');
-    const b = await call({ op: 'syncHandle' });
-    log(j(b));
-    log(b.mismatch === null && b.size === b.expectedSize && b.readBeyondEnd === 0
-      ? '判定: 一致(内容・サイズ・末尾超過読みすべて期待どおり)'
-      : '判定: <span class="ng">不一致あり</span>');
+    try {
+      const b = await call({ op: 'syncHandle' });
+      report.b = b;
+      log(j(b));
+      log(b.mismatch === null && b.size === b.expectedSize && b.readBeyondEnd === 0
+        ? '判定: 一致(内容・サイズ・末尾超過読みすべて期待どおり)'
+        : '判定: <span class="ng">不一致あり</span>');
+    } catch (err) { report.b = { error: String(err && err.message || err) }; log('<span class="ng">B失敗: ' + esc(err.message || err) + '</span>'); }
     log('');
 
     log('== C. estimate の内訳で OPFS と IndexedDB を分離できるか ==');
-    const e0 = await estimate();
-    log('初期        : ' + j(e0));
-    await call({ op: 'writeBulk', name: 'probe-c-opfs.bin', bytes: 16 * MB });
-    const e1 = await estimate();
-    log('OPFS +16MiB : ' + j(e1) + '  Δusage=' + (e1.usage - e0.usage));
-    await idbWrite(16 * MB);
-    const e2 = await estimate();
-    log('IDB  +16MiB : ' + j(e2) + '  Δusage=' + (e2.usage - e1.usage));
-    log(e2.usageDetails ? '判定: usageDetails あり → キー: ' + Object.keys(e2.usageDetails).join(', ')
-                        : '判定: usageDetails なし → IndexedDB のレコード列挙で代替する必要あり');
+    try {
+      const e0 = await estimate();
+      log('初期        : ' + j(e0));
+      await call({ op: 'writeBulk', name: 'probe-c-opfs.bin', bytes: 16 * MB });
+      const e1 = await estimate();
+      log('OPFS +16MiB : ' + j(e1) + '  Δusage=' + (e1.usage - e0.usage));
+      await idbWrite(16 * MB);
+      const e2 = await estimate();
+      log('IDB  +16MiB : ' + j(e2) + '  Δusage=' + (e2.usage - e1.usage));
+      log(e2.usageDetails ? '判定: usageDetails あり → キー: ' + Object.keys(e2.usageDetails).join(', ')
+                          : '判定: usageDetails なし → IndexedDB のレコード列挙で代替する必要あり');
+      report.c = { e0, e1, e2 };
+    } catch (err) { report.c = { error: String(err && err.message || err) }; log('<span class="ng">C失敗: ' + esc(err.message || err) + '</span>'); }
     log('');
 
     log('== D. persist ==');
-    log('persisted() 実行前: ' + await navigator.storage.persisted());
-    let persistResult;
-    try { persistResult = await navigator.storage.persist(); } catch (err) { persistResult = 'throw: ' + err; }
-    log('persist() 戻り値  : ' + persistResult);
-    log('persisted() 実行後: ' + await navigator.storage.persisted());
+    try {
+      const persistedBefore = await navigator.storage.persisted();
+      log('persisted() 実行前: ' + persistedBefore);
+      let persistResult;
+      try { persistResult = await navigator.storage.persist(); } catch (err) { persistResult = 'throw: ' + err; }
+      log('persist() 戻り値  : ' + persistResult);
+      const persistedAfter = await navigator.storage.persisted();
+      log('persisted() 実行後: ' + persistedAfter);
+      report.d = { persistedBefore, persistResult: String(persistResult), persistedAfter };
+    } catch (err) { report.d = { error: String(err && err.message || err) }; log('<span class="ng">D失敗: ' + esc(err.message || err) + '</span>'); }
     log('');
 
     log('== E. 大容量の確保(512MiB) ==');
     try {
       const h = await call({ op: 'huge', bytes: 512 * MB });
+      report.e = h;
       log(j(h));
       log(h.mismatch === null && h.tailReadBytes === 512 ? '判定: 末尾セクタの書き戻し一致' : '判定: <span class="ng">末尾セクタが一致しない</span>');
-    } catch (err) { log('<span class="ng">失敗: ' + err.message + '</span>'); }
-    const e3 = await estimate();
-    log('確保後 estimate: ' + j(e3));
+    } catch (err) { report.e = { error: String(err && err.message || err) }; log('<span class="ng">失敗: ' + esc(err.message || err) + '</span>'); }
+    try {
+      const e3 = await estimate();
+      report.eEstimate = e3;
+      log('確保後 estimate: ' + j(e3));
+    } catch (err) { log('<span class="ng">確保後estimate失敗: ' + esc(err.message || err) + '</span>'); }
     log('');
 
     log('== F. スループット(参考値。ホスト負荷の影響を受ける) ==');
-    const tp = await call({ op: 'throughput', bytes: 64 * MB, sectors: 4096 });
-    log(j(tp));
+    try {
+      const tp = await call({ op: 'throughput', bytes: 64 * MB, sectors: 4096 });
+      report.f = tp;
+      log(j(tp));
+    } catch (err) { report.f = { error: String(err && err.message || err) }; log('<span class="ng">F失敗: ' + esc(err.message || err) + '</span>'); }
     log('');
 
     log('== 後片付け ==');
-    const cl = await call({ op: 'cleanup', names: ['probe-sector.bin','probe-c-opfs.bin','probe-huge.bin','probe-tp.bin','probe-main.bin'] });
-    await idbDelete();
-    log('削除: ' + j(cl.removed));
-    const e4 = await estimate();
-    log('後片付け後 estimate: ' + j(e4));
+    try {
+      const cl = await call({ op: 'cleanup', names: ['probe-sector.bin','probe-c-opfs.bin','probe-huge.bin','probe-tp.bin','probe-main.bin'] });
+      await idbDelete();
+      log('削除: ' + j(cl.removed));
+      const e4 = await estimate();
+      log('後片付け後 estimate: ' + j(e4));
+      report.cleanup = { removed: cl.removed, e4 };
+    } catch (err) { report.cleanup = { error: String(err && err.message || err) }; log('<span class="ng">後片付け失敗: ' + esc(err.message || err) + '</span>'); }
     log('');
     log('== 完了 ==');
   } catch (err) {
-    log('<span class="ng">中断: ' + (err && err.stack || err) + '</span>');
+    log('<span class="ng">中断: ' + esc(err && err.stack || err) + '</span>');
   } finally {
+    out.innerHTML = lines.join('\n');
+    report.lines = lines.join('\n');
+    try {
+      const res = await fetch('/result', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: j(report),
+      });
+      if (res.ok) {
+        log('送信: OK');
+      } else {
+        log('<span class="ng">送信: 失敗 HTTP ' + res.status + '</span>');
+      }
+    } catch (err) {
+      log('<span class="ng">送信: 失敗 ' + esc(err && err.message || err) + '</span>');
+    }
     out.innerHTML = lines.join('\n');
     document.getElementById('run').disabled = false;
   }
