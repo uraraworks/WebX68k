@@ -15,14 +15,24 @@
 // 手順5でメインスレッドの canvas へ転送する形に置き換える。ここで作る scratch
 // canvas の内容は今回どこにも転送されず、破棄されるだけ。
 //
-// Worker のビルド形式について: vite.config.ts は worker.format を明示していないため
-// 既定の 'iife'(クラシックworker、importScripts が使える)でビルドされる想定。
-// ただし vite dev server 上でクラシック/モジュールworkerのどちらとして配信されるかは
-// 未検証(未確認のこと。実ブラウザでの ?worker=1 動作確認は次段の宿題)。
+// Worker のビルド形式について(実測により訂正): vite dev server はクラシックworker
+// 指定(type省略)でも、返す中身に ESM の import 文をそのまま残す(`?worker_file&type=classic`
+// として配信されるが本文は `import { ... } from '/src/...'` を含む)。クラシックworkerは
+// import を解釈できず構文エラーで即死するため、src/core-proxy.ts の defaultCreateWorker()
+// では `{ type: 'module' }` を明示してモジュールworkerとして生成する。
+//
+// モジュールworkerでは importScripts() が使えない。一方 px68k_libretro.js
+// (emscripten glue)はクラシックスクリプトで、グローバル(`self.PX68K` / `window.PX68K`)へ
+// 代入する形式(index.htmlの<script src="/core/px68k_libretro.js">と同じもの)なので、
+// `import()` で読み込むとモジュールスコープで実行されグローバルに何も設定されない。
+// そのため fetch してソースを取得し、ワーカーのグローバルスコープで直接評価する
+// (`(0, eval)(src)` の間接eval形にして、この関数のローカルスコープを汚さずグローバル
+// self に代入させる)。実ブラウザで self.PX68K が設定されることを確認済み(docs参照)。
 
 import {
   createCoreError,
   CoreProxyError,
+  WORKER_BOOT_ACK_KIND,
   type CoreCommand,
   type CoreError,
   type WorkerToMain,
@@ -40,7 +50,6 @@ interface WorkerGlobalLike {
   postMessage(message: unknown, transfer?: Transferable[]): void;
   onmessage: ((ev: MessageEvent<CoreCommand>) => void) | null;
 }
-declare function importScripts(...urls: string[]): void;
 
 const ctx = self as unknown as WorkerGlobalLike;
 
@@ -59,10 +68,20 @@ function toCoreError(err: unknown, operation: string): CoreError {
 }
 
 /** px68k-libretro (emscripten) の wasm glue を一度だけ読み込む。index.html の
- * `<script src="/core/px68k_libretro.js">` と同じ絶対パスを使う(base設定に依存しない)。 */
+ * `<script src="/core/px68k_libretro.js">` と同じ絶対パスを使う(base設定に依存しない)。
+ * モジュールworker内では importScripts() が使えないため、fetch でソースを取得し
+ * 間接eval(`(0, eval)(src)`)でワーカーのグローバルスコープで評価する。このglueは
+ * クラシックスクリプトとして自身を `self.PX68K` に代入する形式(import()でモジュール
+ * として読み込むとモジュールスコープに閉じてしまい失敗する)。 */
 async function ensureCoreModuleLoaded(): Promise<void> {
   if (coreModuleLoaded) return;
-  importScripts('/core/px68k_libretro.js');
+  const res = await fetch('/core/px68k_libretro.js');
+  if (!res.ok) {
+    throw new Error(`px68k_libretro.js の取得に失敗しました (status=${res.status})`);
+  }
+  const src = await res.text();
+  // 間接eval: グローバル(self)スコープで評価させ、この関数のローカルスコープを汚染しない。
+  (0, eval)(src);
   coreModuleLoaded = true;
 }
 
@@ -203,3 +222,14 @@ ctx.onmessage = (ev: MessageEvent<CoreCommand>) => {
     }
   }
 };
+
+// 起動ハンドシェイク(実測により追加): `ctx.onmessage` を登録した直後のこの時点で、
+// Worker側は main からの command を受け取れる状態になっている。しかし実測では、
+// main が `new Worker(...)` 直後に送った最初の command(initialize)がここまで一度も
+// 届かず、応答timeoutでしか失敗が検知できないことがあった(module worker は import
+// グラフの解決・フェッチに実時間がかかり、その間 main から届いたメッセージを取りこぼす
+// ため。`self.onmessage` が実際にセットされた後の話ではなく、それより前に送られた
+// メッセージがロストする)。そのため、起動が完了したこの時点で明示的に合図
+// (WORKER_BOOT_ACK_KIND)を送り返し、main 側(src/core-proxy.ts の WorkerCoreProxy)は
+// これを受け取るまで実際の postMessage を保留する形にした。
+ctx.postMessage({ kind: WORKER_BOOT_ACK_KIND });

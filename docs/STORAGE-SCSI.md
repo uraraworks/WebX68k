@@ -2724,8 +2724,39 @@ frameNoの連番(`gapCount`)は多忙時も0で、メッセージ自体は失わ
 ### 今回やらなかったこと・未確認のこと
 
 - 映像・音声の出力経路(手順5)、駆動ループ(手順7)、入力(手順6)は未着手。`?worker=1` で起動しても画面・音は一切出ない(意図した状態)。
-- `src/core-worker.ts` の `importScripts()` は classic(非module)workerが前提。`vite.config.ts` は `worker.format` を明示していないため既定の `'iife'`(build時)でビルドされる想定だが、`vite dev` サーバがWorkerをclassic/moduleのどちらとして配信するかは**未検証**。実ブラウザでの `?worker=1` 動作確認(コンソールログの実地確認含む)は次段の宿題として残す。
 - `WorkerCoreProxy` の自動再生成(手順9のスコープ)は今回実装していない。異常終了後は `failed` フラグが立ったままで、以後の呼び出しは即座に `WORKER_FAILURE` で reject される。
+
+### 追記(2026-08-28): 実ブラウザでは一度も起動していなかった不具合と修正
+
+上の「未検証」としていた実ブラウザでの `?worker=1` 動作確認を行ったところ、**テスト532件が全通過していたにもかかわらず、Worker骨格は実ブラウザでは一度も起動していなかった**(「コンパイルできる」は「動く」の証明にならない、の再現)。原因・修正・確認方法を以下に記録する。
+
+**原因1: クラシックworker前提が dev では成立しない。** `src/core-proxy.ts` の `defaultCreateWorker()` は `new Worker(new URL('./core-worker.ts', import.meta.url))` を `type` 指定なしで生成していた。上のコメントでは「`vite.config.ts` が `worker.format` を明示していないため既定の `'iife'`(クラシックworker)でビルドされる想定」と書いていたが、これは **build 時の話であって dev サーバには当てはまらなかった**。実測すると、`vite dev` は type指定なしのWorkerを `?worker_file&type=classic` として配信するが、返す中身には ESM の `import { ... } from '/src/...'` 文がそのまま残っており、クラシックworkerはこれを解釈できず構文エラーで即死していた(`CoreProxyError: Workerでエラーが発生しました`)。
+
+**修正1**: `defaultCreateWorker()` を `{ type: 'module' }` 付きに変更し、モジュールworkerとして生成するようにした。
+
+**原因2: モジュールworkerでは `importScripts()` が使えない。** `src/core-worker.ts` は emscripten glue(`px68k_libretro.js`)を `importScripts('/core/px68k_libretro.js')` で読み込んでいたが、モジュールworker内ではこの関数自体が存在しない。またこのglueは「クラシックスクリプトとして`self.PX68K`/`window.PX68K`にグローバル代入する」形式であり、単純に `import()` で読み込むとモジュールスコープに閉じてグローバルへの代入が起きない。
+
+**修正2**: `fetch('/core/px68k_libretro.js')` でソースを取得し、間接eval(`(0, eval)(src)`)でワーカーのグローバルスコープに対して評価する形に変更した。間接evalを使うことで、通常のeval(直接呼び出し)がその場のローカルスコープで実行されるのに対し、グローバル(`self`)スコープでの実行を保証している。実ブラウザで `self.PX68K` が実際に設定されることを確認済み(後述)。
+
+**原因3: 起動ハンドシェイクの欠如による初回commandの取りこぼし。** 修正1・2の後も `initialize` が応答timeout(10秒)で失敗し続けた。調査の結果、`new Worker(...)` 直後に送った最初の command(`initialize`)が、Worker側の `self.onmessage` が実際にセットされた後になっても一度も届いていないことが分かった(`self.onmessage` が関数であることを実ブラウザで確認済みなのに、onmessage内のログが一切出ない)。モジュールworkerはimportグラフの解決・フェッチに実時間がかかり、その間にmainスレッドから送られたメッセージを取りこぼす挙動を実測した。
+
+**修正3**: `src/core-protocol.ts` に generationを持たない専用のハンドシェイク型(`WORKER_BOOT_ACK_KIND`/`isWorkerBootAck`)を追加。`core-worker.ts` は `ctx.onmessage` の登録が完了した直後に一度だけこれを送り返し、`WorkerCoreProxy`(`core-proxy.ts`)側はこれを受け取るまで実際の `postMessage` を保留してキュー(`preBootQueue`)に積む設計にした。
+
+**原因4: wasm glueの相対パス解決がWorkerでは狂う。** 修正1〜3の後、`self.PX68K` は設定されるようになったが、今度は glue が wasm ファイルを `/src/px68k_libretro.wasm`(誤ったパス)から取得しようとして失敗した。glueは既定で自分自身の scriptDirectory(メインスレッドでは `document.currentScript.src`、Workerでは `self.location.href`)から wasm の相対パスを推測するが、`fetch+eval` で読み込んでいるため `self.location.href` は core-worker.ts 自身のURLになってしまい、意図しないパスになっていた。
+
+**修正4**: `src/libretro-host.ts` の `init()` で `getPX68KFactory()({ locateFile: (path) => `/core/${path}` })` のように `locateFile` を明示し、メインスレッド・Worker双方で scriptDirectory 推測に依存しないようにした(メインスレッドの `<script src="/core/px68k_libretro.js">` と同じ絶対パスであり、既存の挙動と一致する)。
+
+**実ブラウザでの確認方法(dev・本番ビルド双方)**: puppeteer-core で実Chromeを起動し(`scripts/measure-*.mjs` の様式を参考に、scratchpad に独立したスクリプトを書いた。計測スクリプト本体は実行していない)、`http://127.0.0.1:5299/?system=1&run=1&worker=1` を開いて `console`/`pageerror`/`workercreated`(Worker自身のconsole/errorも `worker.on('console')` で購読)を収集した。
+
+- **dev(`npm run dev`)**: `[worker skeleton] initialize/ready 完了。loadGame=false avInfo=ok` のログ到達を確認(`loadGame=false` は `/game/boot.cmd` が存在しないため想定どおりの失敗であり、`writeFile` 未実装によりこのcmdファイル自体をWorker側へ書けない設計上の制約であって今回のバグとは無関係)。
+- **本番ビルド(`npm run build` → `npm run preview`)**: 同一URLで同じログ到達を確認。ビルド後の `dist/assets/core-worker-*.js` はIIFE形式(import/importScripts不使用)にバンドルされ、メインバンドル側の `new Worker(...)` 呼び出しにも `{type:"module"}` が保持されていることを確認した。
+- 既定経路(`?worker=1` を指定しない `http://127.0.0.1:5299/?system=1&run=1`)は、今回の変更前後でコンソール出力が完全に同じ(sram write enable ログ・キーリピート設定ログのみ、エラー無し)であることを確認し、無影響を担保した。
+
+**再発防止の静的検査(`test/core-worker-build-format.test.ts`、新規)**: 実ファイルを読んで (1) `defaultCreateWorker()` が `type: 'module'` 付きで `new Worker(...)` していること、(2) `core-worker.ts` が実コード中で `importScripts(` を呼んでいないこと(コメントの説明文と区別するため、判定前にコメントを除去する)、(3) glueの読み込みが `fetch('/core/px68k_libretro.js')` と `(0, eval)(` の組み合わせであること、を検査する。**陽性対照**: 実装時に `src/core-proxy.ts`/`src/core-worker.ts` を一時的に修正前の状態(type指定なし・importScripts使用)へ戻し、該当する3件のテストが実際に赤くなることを確認してから元に戻した(`cp`で退避 → 破壊 → `npx vitest run` で red 確認 → 復元、の手順)。
+
+**この静的検査の限界(重要)**: これはあくまで「構文・API選択の形」を検査するものであり、**「実ブラウザで実際に `ready` まで到達する」ことは一切保証しない**。今回の不具合そのものが「テスト532件が全通過していたのに実ブラウザでは一度も起動していなかった」というケースであり(「コンパイルできる」は「動く」の証明にならない、の再現)、静的検査は再発の一部(型・API選択の巻き戻り)しか防げない。実ブラウザでの動作確認(dev・本番ビルド双方で `ready` に到達すること)は、この種の変更をコミットする前に毎回、手動またはスクリプトで別途行う必要がある。
+
+修正後、`npx tsc --noEmit` はクリーン、`npm test` は既存532件+新規4件の**536件全通過**。
 
 ## 次にやること
 

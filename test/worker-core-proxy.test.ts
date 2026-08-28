@@ -7,7 +7,7 @@
 // を確認する。故障注入(陽性対照)は本ファイルではなく作業報告に記録した手順で
 // 一時的にソースを壊して実施した(このファイル自体は正常経路の検査のみを持つ)。
 import { describe, expect, it } from 'vitest';
-import type { CoreCommand, WorkerToMain } from '../src/core-protocol';
+import { WORKER_BOOT_ACK_KIND, type CoreCommand, type WorkerToMain } from '../src/core-protocol';
 import { WorkerCoreProxy, type WorkerLike } from '../src/core-proxy';
 import type { AvInfo } from '../src/libretro-host';
 
@@ -35,8 +35,15 @@ class FakeWorker implements WorkerLike {
   }
 
   addEventListener(type: 'message' | 'error' | 'messageerror', listener: AnyListener): void {
-    if (type === 'message') this.messageListeners.push(listener);
-    else if (type === 'error') this.errorListeners.push(listener);
+    if (type === 'message') {
+      this.messageListeners.push(listener);
+      // 実Workerの起動ハンドシェイク(src/core-worker.ts が onmessage 登録直後に送る
+      // WORKER_BOOT_ACK_KIND)を模す。実装との対応: FakeWorkerには実際のロード遅延が
+      // 無いので、message リスナー登録(=WorkerCoreProxyのコンストラクタ完了)の直後に
+      // 即座に返す。これが無いと WorkerCoreProxy 側の preBootQueue に command が
+      // 積まれたまま実際には送信されず、全テストが応答timeoutになる。
+      listener({ data: { kind: WORKER_BOOT_ACK_KIND } });
+    } else if (type === 'error') this.errorListeners.push(listener);
     else this.messageErrorListeners.push(listener);
   }
 

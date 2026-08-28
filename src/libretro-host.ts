@@ -195,6 +195,19 @@ declare global {
   }
 }
 
+/** メインスレッド(window)・Worker(self)どちらのグローバルにも emscripten glue が
+ * `PX68K` を代入する(index.htmlの<script>読み込み、またはcore-worker.tsのfetch+eval)。
+ * `window` はWorker内では未定義になるが、`typeof window` はReferenceErrorを起こさず
+ * 安全に判定できるのでこれで分岐する(実ブラウザのメインスレッドでは globalThis===window
+ * なのでどちらから読んでも同じだが、テストがグローバルの `window` を個別オブジェクトとして
+ * 差し替えるためここでは window を優先する)。Workerでは globalThis(===self)経由で読む。 */
+function getPX68KFactory(): (moduleArg?: Record<string, unknown>) => Promise<PX68KModule> {
+  if (typeof window !== 'undefined' && (window as unknown as Window).PX68K) {
+    return (window as unknown as Window).PX68K;
+  }
+  return (globalThis as unknown as Window).PX68K;
+}
+
 export interface AvInfo {
   baseWidth: number;
   baseHeight: number;
@@ -546,7 +559,15 @@ export class LibretroHost {
    * ままIPLに既定値を書かせたほうが安全なため)。
    */
   async init(biosIpl: Uint8Array, biosCg: Uint8Array, sram?: Uint8Array): Promise<void> {
-    const mod = await window.PX68K({});
+    // locateFile: emscripten glue は既定で自身のスクリプトの所在(scriptDirectory、
+    // メインスレッドでは document.currentScript.src、Workerでは self.location.href)から
+    // wasm の相対パスを推測する。Worker内では core-worker.ts が glue を
+    // `<script src="/core/px68k_libretro.js">` 経由ではなく fetch+eval で読み込むため、
+    // scriptDirectory が worker自身のURL(/src/core-worker.ts?...)になってしまい、
+    // wasm を誤って `/src/px68k_libretro.wasm` から取得しようとして失敗する(実測)。
+    // メインスレッドの `<script>` タグと同じ絶対パス `/core/` を明示することで、
+    // メインスレッド・Worker どちらでも scriptDirectory 推測に依存しないようにする。
+    const mod = await getPX68KFactory()({ locateFile: (path: string) => `/core/${path}` });
     this.mod = mod;
 
     this.mkdirSafe('/system');

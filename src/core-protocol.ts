@@ -27,6 +27,29 @@ export type FrameNo = number;
 export type MainToWorker = CoreCommand;
 export type WorkerToMain = CoreResponse | CoreEvent;
 
+// --- Worker起動ハンドシェイク --------------------------------------------
+//
+// 実測(docs/STORAGE-SCSI.md 手順4参照): モジュールworkerは`new Worker(...)`直後に
+// postMessageした最初のcommandを取りこぼすことがある(module worker はimportの解決・
+// フェッチに実時間がかかり、その間に届いたメッセージが失われるため。`self.onmessage`が
+// 実際にセットされた後もこの取りこぼしは起こる)。これは command/response/event の
+// 通常プロトコル(generation付き)とは別物の、起動確認専用の1回きりの合図なので、
+// generationを持たない専用の型として区別する。worker側は起動直後(onmessage登録直後)に
+// これを1回だけ送り、main側はこれを受け取るまで実際のpostMessageを保留する。
+export const WORKER_BOOT_ACK_KIND = 'workerBootAck' as const;
+
+export interface WorkerBootAck {
+  kind: typeof WORKER_BOOT_ACK_KIND;
+}
+
+export function isWorkerBootAck(message: unknown): message is WorkerBootAck {
+  return (
+    typeof message === 'object' &&
+    message !== null &&
+    (message as { kind?: unknown }).kind === WORKER_BOOT_ACK_KIND
+  );
+}
+
 export type CoreCommand =
   | {
       kind: 'command';

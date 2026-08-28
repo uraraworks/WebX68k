@@ -13,6 +13,7 @@ import {
   CoreProxyError,
   createCoreError,
   isCoreResponse,
+  isWorkerBootAck,
   type CoreCommand,
   type CoreErrorCode,
   type Generation,
@@ -411,10 +412,13 @@ export interface WorkerCoreProxyOptions {
 const DEFAULT_RESPONSE_TIMEOUT_MS = 10_000;
 
 function defaultCreateWorker(): WorkerLike {
-  // vite.config.ts は worker.format を明示していないため既定の 'iife'(クラシックworker)で
-  // ビルドされる想定(core-worker.ts 冒頭のコメント参照)。ここでは type を明示しない
-  // (=クラシックworkerとして扱わせる)。
-  return new Worker(new URL('./core-worker.ts', import.meta.url)) as unknown as WorkerLike;
+  // 実測(docs/STORAGE-SCSI.md 手順4参照): vite dev server はクラシックworker指定でも
+  // ESM importをそのまま含んだソースを返すため、type指定なし(クラシックworker)だと
+  // 構文エラーで即死する(`?worker_file&type=classic` として配信されるが中身は import 文入り)。
+  // モジュールworkerとして生成する。core-worker.ts 側は importScripts を使わない前提に変更済み。
+  return new Worker(new URL('./core-worker.ts', import.meta.url), {
+    type: 'module',
+  }) as unknown as WorkerLike;
 }
 
 interface PendingRequest {
@@ -434,6 +438,17 @@ export class WorkerCoreProxy implements LibretroHostProxy {
    * 手順9(再生成)は今回のスコープ外のため、失敗後の自動再生成は行わない。 */
   private failed = false;
   private readonly pending = new Map<RequestId, PendingRequest>();
+  /** 実測(docs/STORAGE-SCSI.md 手順4参照): `new Worker(...)` 直後に送った最初の command は
+   * module worker側の import グラフ解決中に取りこぼされることがある(`self.onmessage` が
+   * 実際にセットされる前だけでなく、セットされた後でも起きた)。Worker側(core-worker.ts)は
+   * 起動が完了した時点で WORKER_BOOT_ACK_KIND を1回送ってくるので、それを受け取るまでは
+   * 実際の postMessage を保留してここに積む。 */
+  private workerBooted = false;
+  private readonly preBootQueue: Array<{
+    command: CoreCommand;
+    resolve: (value: unknown) => void;
+    reject: (reason: unknown) => void;
+  }> = [];
 
   constructor(opts?: WorkerCoreProxyOptions) {
     this.responseTimeoutMs = opts?.responseTimeoutMs ?? DEFAULT_RESPONSE_TIMEOUT_MS;
@@ -453,6 +468,15 @@ export class WorkerCoreProxy implements LibretroHostProxy {
   }
 
   private handleMessage(message: WorkerToMain): void {
+    // 起動ハンドシェイク: generation を持たない専用メッセージなので他の分岐より先に見る。
+    if (isWorkerBootAck(message)) {
+      this.workerBooted = true;
+      const queued = this.preBootQueue.splice(0);
+      for (const item of queued) {
+        this.dispatchCommand(item.command, item.resolve, item.reject);
+      }
+      return;
+    }
     // docs「エラー、異常終了、再生成」: 現在世代と異なる response/event は無視する。
     if (message.generation !== this.generation) return;
     if (isCoreResponse(message)) {
@@ -485,6 +509,10 @@ export class WorkerCoreProxy implements LibretroHostProxy {
       req.reject(new CoreProxyError(error));
     }
     this.pending.clear();
+    const queued = this.preBootQueue.splice(0);
+    for (const item of queued) {
+      item.reject(new CoreProxyError(error));
+    }
     if (terminateWorker) {
       try {
         this.worker.terminate();
@@ -515,12 +543,28 @@ export class WorkerCoreProxy implements LibretroHostProxy {
       );
     }
     return new Promise((resolve, reject) => {
-      const timeoutHandle = setTimeout(() => {
-        this.handleWorkerFailure(`応答timeout(${this.responseTimeoutMs}ms): ${command.op}`, undefined);
-      }, this.responseTimeoutMs);
-      this.pending.set(command.requestId, { resolve, reject, timeoutHandle });
-      this.worker.postMessage(command, collectTransferables(command));
+      // 起動ハンドシェイク未完了(WorkerCoreProxyクラス冒頭のコメント参照)の間は実際の
+      // postMessageをせず、preBootQueueに積んで到着後にまとめて送る。
+      if (!this.workerBooted) {
+        this.preBootQueue.push({ command, resolve, reject });
+        return;
+      }
+      this.dispatchCommand(command, resolve, reject);
     });
+  }
+
+  /** 実際に command を postMessage し、対応する response の待受(timeout込み)を登録する。
+   * 起動ハンドシェイク完了直後の flush と、通常の即時送信の両方から呼ばれる。 */
+  private dispatchCommand(
+    command: CoreCommand,
+    resolve: (value: unknown) => void,
+    reject: (reason: unknown) => void,
+  ): void {
+    const timeoutHandle = setTimeout(() => {
+      this.handleWorkerFailure(`応答timeout(${this.responseTimeoutMs}ms): ${command.op}`, undefined);
+    }, this.responseTimeoutMs);
+    this.pending.set(command.requestId, { resolve, reject, timeoutHandle });
+    this.worker.postMessage(command, collectTransferables(command));
   }
 
   private issue<T>(op: CoreCommand['op'], payload: unknown): Promise<T> {
