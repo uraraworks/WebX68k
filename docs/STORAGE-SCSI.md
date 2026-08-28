@@ -2936,6 +2936,67 @@ FDD0のドライブ行に赤いアクセスランプが点灯することも上�
 - prodビルドでの同じ計測(プローブがDEV限定のため不可能)。
 - 製品コードの修正(明白な単一原因が見つからなかったため、今回は計測のみ。修正コミットは無い)。
 
+## retro_run自体の重さと「空白」の切り分け（2026-08-28 続報）
+
+前節の「まだ言えないこと」のうち、(a) retro_run自体がWorkerで遅いのか、(b) 「空白」の間に何が起きていたのか、の2点を切り分けた。
+
+### 追加した計測系
+
+- `src/core-worker.ts`: `WorkerTickEvent` に `nowMs`(そのtick実行時点の絶対時刻)を追加し、他系列との時刻突き合わせを可能にした。
+- `src/core-worker.ts`: `ctx.onmessage` のcommand分岐(`initialize`/`loadGame`/`fetchAvInfo`/`setRunning`/`readTextScreen`等/`dispose`)それぞれの開始・終了時刻を記録する `WorkerCommandEvent`(`op`/`startAtMs`/`endAtMs`)を追加した。DEVかつ`workerTickProbe.enabled`時のみ記録し(`recordCommandTiming()`内部でガード)、無効時・prodビルドでは記録しない(既存の作法どおり)。`workerTickProbeRead()` の戻り値を `WorkerTickEvent[]` から `{ events, commandEvents }` に変更した(`src/main.ts` の `pendingWorkerTickProbeRead`/`workerTickProbeRead` も追随)。
+- `scripts/measure-worker-tick.mjs`:
+  - `bucketByElapsedMs()` を追加。コア稼働からの経過時間(既定3秒刻み)でイベントをバケット化する共通関数で、Worker経路(`perFrameRunMs = runTotalMs/ranFrames`、tickの`nowMs`基準)と既定経路(`frameProbe`の`runEndAtMs-runStartAtMs`、`runStartAtMs`基準)の両方に同じ関数を適用し、**「同じ物差し」で起動フェーズをそろえて比較できるようにした**(前節時点では四分位=tick件数で区切っており、起動フェーズがずれて比較にならないという指摘があった)。
+  - `analyzeWorkerTicks()` に `gapCommandOverlapSummary`(「空白」の定義=前tickの実測作業時間で説明のつかない残りが50ms超のtick数と、その空白区間`[前tickのnowMs, 今のnowMs]`に`commandEvents`が重なっているかの集計)を追加した。
+
+### 計測系の検証で見つけた誤り(このスクリプト自身のバグ)
+
+「空白」の定義を実装する際、当初は tick[i] の `sinceLastTickMs`(前tickからの実経過)を tick[i] 自身の `runTotalMs`/`convertMs`/`postMs` と突き合わせていた。しかし `sinceLastTickMs` は「前tickのコールバック開始からこのtickのコールバック開始まで」の実経過であり、その間の実ワークロードは前tick(tick[i-1])が費やしたものである。故障注入(30tickごとに固定30msのbusy wait)を使った検証で、tick[1]の`runTotalMs`が8,605msと突出した回に対し、突き合わせ対象を1件ずらす前は tick[1] 自身が `unaccountedMs=-7,963ms`(マイナス)、その直後の tick[2] が `unaccountedMs=8,792ms`(異常な空白)という形で誤って現れることを実測で確認した。**前tickの`runTotalMs+convertMs+postMs+busyWaitInjectedMs`と、このtickの`sinceLastTickMs`を突き合わせる**よう修正し、再実行して上位20件中の負値が0件になったことを確認した(修正前後の実データはいずれも `_local/measure/` 相当の一時ファイルで確認済み、リポジトリには含めていない)。**この誤りは計測ツール(分析ロジック)のバグであり、製品コード側の記録内容自体は正しかった。**
+
+### 実測結果: (1) retro_run自体の重さ(既定 vs Worker、起動フェーズをそろえた比較)
+
+`?worker=1`(Worker経路)3試行、既定経路3試行を dev server + 実Chrome(ヘッドフル、フォアグラウンド固定オプション込み)で完走した。経過時間3秒刻みで「1フレームあたりretro_run時間」の中央値を並べると:
+
+| 経過(秒) | Worker(3試行の目安) | 既定(3試行の目安) |
+|---|---|---|
+| 0(起動直後の最初の1〜2フレーム) | 882〜1,961ms(n=1) | 2,131〜3,536ms(n=1〜2) |
+| 9〜12 | 約2.7〜3.7ms | 約5.0〜7.5ms |
+| 15秒以降(定常) | 約3.0〜3.7ms | 約4.4〜5.4ms |
+
+**判定: 既定経路でも起動直後(最初の1〜2フレーム)にretro_run自体が極めて重く(1〜3.5秒級)、Worker経路(0.9〜2秒級)と同型のパターンが出た。定常状態(15秒以降)ではWorkerの中央値の方がむしろ既定より小さい(速い)。retro_run自体がWorkerで遅いという証拠は無い。**「起動直後にretro_runが重い」現象はWorker固有ではなく、コア/ゲスト側(IPL/BIOS起動シーケンス)由来と考えられる。したがって**犯人は「空白」だけ**という判定になった。
+
+### 実測結果: (2) 「空白」とcommand処理の重なり
+
+Worker経路3試行それぞれで、`sinceLastTickMs`が前tickの実測作業を50ms超上回る「空白」を数え、その区間に`commandEvents`(Worker宛のcommandメッセージ処理)が重なっているかを集計した。
+
+| 試行 | 空白件数 | うちcommand重なりあり | 空白時間合計 | うちcommand重なり分 |
+|---|---|---|---|---|
+| 1 | 109件 | 93件(85%) | 16,930ms | 15,676ms(93%) |
+| 2 | 94件 | 82件(87%) | 11,788ms | 10,800ms(92%) |
+| 3 | 103件 | 84件(82%) | 15,530ms | 14,162ms(91%) |
+
+**3試行とも重なっていたcommandは`readTextScreen`のみ**(1回あたり100ms台〜700ms台)で、件数・時間ともに8割以上が重なっている。**判定: 「空白」の大半は`readTextScreen`command処理と重なっている。**GC・wasmメモリ拡張・ブラウザスケジューリング等の別要因を疑う前に、まずこの重なりが優勢だった。
+
+**ただし言えないこと**: この`readTextScreen`呼び出しは、製品コード自体が起動シーケンス中に発しているものではなく、**計測ハーネス(`waitForPromptStable()`)がプロンプト安定判定のために150ms間隔でポーリングしているもの**である。同じポーリングは既定経路の計測でも同一の仕組み(`window.__webx68kDebug.screenText()`)で行われており、既定経路は単一スレッドのメインスレッドで駆動ループとreadTextScreenの両方を処理する点はWorker経路と同様のはずである。**それにもかかわらずWorker経路でだけ「空白」が顕著に多く現れる理由(readTextScreen自体の所要時間がWorker側で余計にかかっているのか、単一スレッド上での競合の起き方が違うのか等)は、今回の計測では切り分けられていない。** 推測で埋めず、次回の宿題とする。
+
+### 計測系の検証
+
+- **故障注入**: 前述のとおり、30tickごとの固定30msのbusy waitが分析ロジック修正後は正しく(前tickの`busyWaitInjectedMs`として)説明のつく形で現れることを確認した(修正前は誤った符号で現れた。上記参照)。
+- **プローブ有効/無効での起動時間**: dev serverの負荷変動が大きく(同時間帯の他試行で起動が59秒〜128秒までばらついた)、時間内に完走できたのは1組のみだった。有効128,008ms・無効126,380ms(差約1.3%)で、ノイズの範囲内という結果ではあるが、**反復未確認(n=1)であることに注意**。
+
+### 完走した試行数
+
+- Worker経路(main計測、`perFrameRunElapsedBuckets`と`gapCommandOverlapSummary`採取): **3試行完走**(うち1回のバッチ実行では既定タイムアウト90,000msで2試行が時間切れになったため、`--boot-timeout=150000`で個別に再実行して成功させた)。
+- 既定経路(main計測): **3試行完走**(いずれも既定タイムアウト内)。
+- 故障注入検証: 2回実行(1回目で分析ロジックのバグを発見、修正後に2回目で確認)。
+- コスト計測(プローブ有効/無効): 1組のみ完走(前述)。
+
+### できなかったこと
+
+- readTextScreenとの重なりが、readTextScreen自体の所要増加によるものか、単一スレッド競合の起き方の違いによるものかの切り分け。
+- コスト計測の反復(n=1のみ)。
+- prodビルドでの同じ計測(プローブがDEV限定のため不可能)。
+- 製品コードの修正(今回は測定のみ。修正コミットは無い)。
+
 ## 次にやること
 
 移行前基準は2組そろい、**ワーカー移行に着手できる状態になった**。

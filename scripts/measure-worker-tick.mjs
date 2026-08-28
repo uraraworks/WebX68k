@@ -123,6 +123,31 @@ function percentile(sorted, fraction) {
   return sorted[lo] + (sorted[hi] - sorted[lo]) * (idx - lo);
 }
 
+// 経過時間(起動からの秒数)でバケット化する共通ヘルパー。既定経路(frameProbe、frame粒度)と
+// Worker経路(workerTickProbe、tick粒度)を「同じ物差し」で比較するために使う
+// (docs/STORAGE-SCSI.md参照。四分位ではなく経過時間の秒刻みで揃えないと起動フェーズが
+// ずれて比較にならない、という指摘への対応)。
+function bucketByElapsedMs(items, getAtMs, getValueMs, bucketMs = 3000) {
+  if (items.length === 0) return [];
+  const firstAtMs = getAtMs(items[0]);
+  const buckets = new Map();
+  for (const item of items) {
+    const elapsed = getAtMs(item) - firstAtMs;
+    const idx = Math.floor(elapsed / bucketMs);
+    const value = getValueMs(item);
+    if (value === null || !Number.isFinite(value)) continue;
+    if (!buckets.has(idx)) buckets.set(idx, []);
+    buckets.get(idx).push(value);
+  }
+  return [...buckets.entries()]
+    .sort((a, b) => a[0] - b[0])
+    .map(([idx, values]) => ({
+      windowStartMs: idx * bucketMs,
+      windowEndMs: (idx + 1) * bucketMs,
+      ...summarize(values),
+    }));
+}
+
 function summarize(samples) {
   if (samples.length === 0) return { medianMs: null, p95Ms: null, minMs: null, maxMs: null, n: 0 };
   const sorted = [...samples].sort((a, b) => a - b);
@@ -212,20 +237,29 @@ async function bootAndCollect(browser, config, { probeEnabled, busyWaitFault }) 
     const bootDurationMs = bootEndAtMs - bootStartAtMs;
 
     let tickEvents = null;
+    let commandEvents = null;
     let frameProbeData = null;
     if (config.target === 'worker') {
-      tickEvents = await page.evaluate(() => window.__webx68kDebug.workerTickProbeRead());
+      const probeResult = await page.evaluate(() => window.__webx68kDebug.workerTickProbeRead());
+      tickEvents = probeResult?.events ?? [];
+      commandEvents = probeResult?.commandEvents ?? [];
     } else {
       frameProbeData = await page.evaluate(() => window.__webx68kDebug.frameProbeRead());
     }
 
-    return { success: stable, bootDurationMs, lastScreenText: text, tickEvents, frameProbeData };
+    return { success: stable, bootDurationMs, lastScreenText: text, tickEvents, commandEvents, frameProbeData };
   } finally {
     await context.close();
   }
 }
 
-function analyzeWorkerTicks(events) {
+// tickの実行区間[nowMs - sinceLastTickMs, nowMs]とcommandEventの[startAtMs, endAtMs]が
+// 重なっているかを見る(「空白」がcommand処理と重なっていたかの判定。docs/STORAGE-SCSI.md参照)。
+function intervalsOverlap(aStart, aEnd, bStart, bEnd) {
+  return aStart < bEnd && bStart < aEnd;
+}
+
+function analyzeWorkerTicks(events, commandEvents = []) {
   if (!events || events.length === 0) return null;
   const ranFramesCounts = {};
   for (const e of events) {
@@ -261,19 +295,63 @@ function analyzeWorkerTicks(events) {
     cursorMs += chunkWallMs;
   }
 
-  // 最大の停滞tick上位20件(内訳の何がその停滞を占めているかを見るため)。
-  const topStalls = [...events]
-    .sort((a, b) => b.sinceLastTickMs - a.sinceLastTickMs)
+  // 最大の停滞tick上位20件(内訳の何がその停滞を占めているかを見るため)。unaccountedMs =
+  // sinceLastTickMs から run/convert/post を引いた残り(「空白」そのもの)。commandOverlaps
+  // には、その空白区間[nowMs-sinceLastTickMs, nowMs]と重なるcommandEventを列挙する。
+  // 注意(実測で判明した誤り): sinceLastTickMs[i] は「前tickのコールバック開始からこのtickの
+  // コールバック開始まで」の実測経過であり、その間の実ワークロード(retro_run+convert+post+
+  // 故障注入busy wait)は"前tick"であるevents[i-1]が費やしたものである。同じtickのrunTotalMs等と
+  // 突き合わせると、重い1tickの直後のtickが「異常な空白」に、重かった当のtickが「マイナスの
+  // 空白」に化けて出る(実際に故障注入busy waitで再現・確認した)。そのため前後1件ずらして
+  // 突き合わせる。gapStartMs は前tickのnowMs(=このtickのnowMs-sinceLastTickMsと数学的に同じ値)。
+  const eventsWithGap = events.map((e, i) => {
+    const prev = i > 0 ? events[i - 1] : null;
+    const prevAccounted = prev ? prev.runTotalMs + (prev.convertMs ?? 0) + (prev.postMs ?? 0) + prev.busyWaitInjectedMs : 0;
+    const unaccountedMs = prev ? e.sinceLastTickMs - prevAccounted : 0;
+    const gapStartMs = e.nowMs - e.sinceLastTickMs;
+    const overlapping = commandEvents.filter((c) => intervalsOverlap(gapStartMs, e.nowMs, c.startAtMs, c.endAtMs));
+    return { e, prevAccounted, unaccountedMs, gapStartMs, overlapping };
+  });
+
+  const topStalls = [...eventsWithGap]
+    .sort((a, b) => b.e.sinceLastTickMs - a.e.sinceLastTickMs)
     .slice(0, 20)
-    .map((e) => ({
+    .map(({ e, unaccountedMs, overlapping }) => ({
       tickIndex: e.tickIndex,
       sinceLastTickMs: roundMs(e.sinceLastTickMs),
       ranFrames: e.ranFrames,
       runTotalMs: roundMs(e.runTotalMs),
       convertMs: roundMs(e.convertMs),
       postMs: roundMs(e.postMs),
+      unaccountedMs: roundMs(unaccountedMs),
+      overlappingCommands: overlapping.map((c) => ({ op: c.op, durationMs: roundMs(c.endAtMs - c.startAtMs) })),
       busyWaitInjectedMs: e.busyWaitInjectedMs,
     }));
+
+  // 「空白」の定義: unaccountedMsが50ms超のtick(取り戻し上限8フレームぶんのrun以外に
+  // 説明のつかない時間が50ms超残っている回)。これがcommand処理と重なっているかを集計する。
+  const gapThresholdMs = 50;
+  const gaps = eventsWithGap.filter((g) => g.unaccountedMs > gapThresholdMs);
+  const gapsWithCommandOverlap = gaps.filter((g) => g.overlapping.length > 0);
+  const gapCommandOverlapSummary = {
+    gapThresholdMs,
+    gapCount: gaps.length,
+    gapsWithCommandOverlapCount: gapsWithCommandOverlap.length,
+    gapsWithoutCommandOverlapCount: gaps.length - gapsWithCommandOverlap.length,
+    totalUnaccountedMs: roundMs(gaps.reduce((s, g) => s + g.unaccountedMs, 0)),
+    totalUnaccountedMsWithOverlap: roundMs(gapsWithCommandOverlap.reduce((s, g) => s + g.unaccountedMs, 0)),
+    overlappingOpCounts: gapsWithCommandOverlap.reduce((acc, g) => {
+      for (const c of g.overlapping) acc[c.op] = (acc[c.op] ?? 0) + 1;
+      return acc;
+    }, {}),
+  };
+
+  // 経過時間(コア稼働からの秒数)でバケット化した「1フレームあたりretro_run時間」
+  // (=runTotalMs/ranFrames。既定経路のframeProbeと同じ物差しで比較するため)。
+  const perFrameRunEvents = events
+    .filter((e) => e.ranFrames > 0)
+    .map((e) => ({ nowMs: e.nowMs, perFrameRunMs: e.runTotalMs / e.ranFrames }));
+  const elapsedBuckets = bucketByElapsedMs(perFrameRunEvents, (e) => e.nowMs, (e) => e.perFrameRunMs);
 
   return {
     tickCount: events.length,
@@ -282,11 +360,13 @@ function analyzeWorkerTicks(events) {
     effectiveFps: roundMs(effectiveFps),
     ranFramesHistogram: ranFramesCounts,
     topStalls,
+    gapCommandOverlapSummary,
     sinceLastTickMs: summarize(sinceLastTick),
     runTotalMs: summarize(runTotals),
     convertMs: summarize(convertTimes),
     postMs: summarize(postTimes),
     timeline,
+    perFrameRunElapsedBuckets: elapsedBuckets,
   };
 }
 
@@ -298,12 +378,17 @@ function analyzeFrameProbe(data) {
   const totalWallMs = last - first;
   const effectiveFps = totalWallMs > 0 ? (events.length / totalWallMs) * 1000 : null;
   const runDurations = events.map((e) => e.runEndAtMs - e.runStartAtMs);
+  // 経過時間(コア稼働からの秒数)でバケット化した1フレームあたりretro_run時間。
+  // Worker経路のperFrameRunElapsedBucketsと同じ bucketByElapsedMs() を使うことで、
+  // 起動フェーズをそろえて既定経路と直接比較できるようにする(docs/STORAGE-SCSI.md参照)。
+  const elapsedBuckets = bucketByElapsedMs(events, (e) => e.runStartAtMs, (e) => e.runEndAtMs - e.runStartAtMs);
   return {
     frameCount: events.length,
     totalWallMs: roundMs(totalWallMs),
     effectiveFps: roundMs(effectiveFps),
     runDurationMs: summarize(runDurations),
     fps: data.fps,
+    perFrameRunElapsedBuckets: elapsedBuckets,
   };
 }
 
@@ -368,7 +453,7 @@ async function run() {
       output.mode = 'fault-check';
       const positiveControl = await bootAndCollect(browser, config, { probeEnabled: false, busyWaitFault: false });
       const withFault = await bootAndCollect(browser, config, { probeEnabled: true, busyWaitFault: true });
-      const analysis = target === 'worker' ? analyzeWorkerTicks(withFault.tickEvents) : analyzeFrameProbe(withFault.frameProbeData);
+      const analysis = target === 'worker' ? analyzeWorkerTicks(withFault.tickEvents, withFault.commandEvents) : analyzeFrameProbe(withFault.frameProbeData);
       const injectedCount =
         target === 'worker'
           ? (withFault.tickEvents ?? []).filter((e) => e.busyWaitInjectedMs > 0).length
@@ -390,7 +475,7 @@ async function run() {
       output.mode = 'main';
       for (let trial = 1; trial <= runs; trial++) {
         const result = await bootAndCollect(browser, config, { probeEnabled: true, busyWaitFault: false });
-        const analysis = target === 'worker' ? analyzeWorkerTicks(result.tickEvents) : analyzeFrameProbe(result.frameProbeData);
+        const analysis = target === 'worker' ? analyzeWorkerTicks(result.tickEvents, result.commandEvents) : analyzeFrameProbe(result.frameProbeData);
         output.trials.push({
           trial,
           success: result.success,

@@ -442,7 +442,11 @@ let workerCoreProxy: WorkerCoreProxy | null = null;
 let workerTickProbeWanted = false;
 // busy-wait故障注入も同じ理由(proxy作り直し)で意思を持ち回る必要がある。
 let workerTickProbeBusyWaitFaultWanted = false;
-let pendingWorkerTickProbeRead: ((events: unknown[]) => void) | null = null;
+interface WorkerTickProbeReadResult {
+  events: unknown[];
+  commandEvents: unknown[];
+}
+let pendingWorkerTickProbeRead: ((result: WorkerTickProbeReadResult) => void) | null = null;
 let running = false;
 let bootStarted = false;
 
@@ -2486,11 +2490,11 @@ async function bootWorkerCore(): Promise<void> {
   // 世代交代で応答が来ないため、resolve せずに新しいproxyの応答だけを繋ぐ
   // (workerTickProbeReadのタイムアウト保険が最終的に片付ける)。
   proxy.setDevMessageHandler((msg) => {
-    const m = msg as { kind?: string; events?: unknown[] };
+    const m = msg as { kind?: string; events?: unknown[]; commandEvents?: unknown[] };
     if (m?.kind === '__devTickProbeData' && pendingWorkerTickProbeRead) {
       const resolve = pendingWorkerTickProbeRead;
       pendingWorkerTickProbeRead = null;
-      resolve(m.events ?? []);
+      resolve({ events: m.events ?? [], commandEvents: m.commandEvents ?? [] });
     }
   });
   // 起動前に window.__webx68kDebug.workerTickProbeEnable(true) が呼ばれていた場合、
@@ -4070,10 +4074,10 @@ if (import.meta.env.DEV) {
     workerTickProbeReset: () => {
       workerCoreProxy?.devPostRawMessage({ kind: '__devTickProbe', action: 'reset' });
     },
-    workerTickProbeRead: (): Promise<unknown[]> =>
+    workerTickProbeRead: (): Promise<WorkerTickProbeReadResult> =>
       new Promise((resolve) => {
         if (!workerCoreProxy) {
-          resolve([]);
+          resolve({ events: [], commandEvents: [] });
           return;
         }
         pendingWorkerTickProbeRead = resolve;
@@ -4082,7 +4086,7 @@ if (import.meta.env.DEV) {
         setTimeout(() => {
           if (pendingWorkerTickProbeRead === resolve) {
             pendingWorkerTickProbeRead = null;
-            resolve([]);
+            resolve({ events: [], commandEvents: [] });
           }
         }, 2000);
       }),

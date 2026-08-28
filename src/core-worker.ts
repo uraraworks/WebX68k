@@ -76,6 +76,9 @@ import { FrameBufferPool, runTick } from './worker-drive-loop';
 // setDevMessageHandler、src/main.ts の workerTickProbe* フック参照。
 export interface WorkerTickEvent {
   tickIndex: number;
+  /** ctx.performance.now() で見たこのtick実行時点の絶対時刻(ms)。他系列(commandEvents等)との
+   * 突き合わせ・経過時間帯でのバケット化に使う。 */
+  nowMs: number;
   /** 前tickのsetIntervalコールバックからの実測経過(ms)。取り戻しの入力そのもの。 */
   sinceLastTickMs: number;
   /** このtickで実際に進めたフレーム数(取り戻しが効いているかの直接の証拠)。 */
@@ -94,19 +97,50 @@ export interface WorkerTickEvent {
   busyWaitInjectedMs: number;
 }
 
+/**
+ * 「空白」(tick呼び出し間隔がrun+convert+postの合計を大きく超える区間)の間に
+ * commandメッセージ処理が起きていたかを突き合わせるための記録(docs/STORAGE-SCSI.md参照)。
+ * ctx.onmessage の command 分岐だけを対象にする(__devTickProbe制御メッセージ自体・
+ * RETURN_FRAME_BUFFER_KINDは対象外)。
+ */
+export interface WorkerCommandEvent {
+  op: string;
+  startAtMs: number;
+  endAtMs: number;
+}
+
 class WorkerTickProbe {
   enabled = false;
   /** 30tickごとに30msのbusy waitを注入する(測定系の検証専用。故障注入)。 */
   busyWaitFaultEnabled = false;
   tickIndex = 0;
   events: WorkerTickEvent[] = [];
+  commandEvents: WorkerCommandEvent[] = [];
   reset(): void {
     this.tickIndex = 0;
     this.events = [];
+    this.commandEvents = [];
   }
 }
 
 const workerTickProbe = new WorkerTickProbe();
+
+/**
+ * DEVかつ有効時のみ、command処理の開始/終了時刻を記録する(空白と重なるかの突き合わせ用)。
+ * 無効時・prodビルドではこの関数自体を分岐の外側に置き、呼び出し元でガードする
+ * (frameProbe/storageProbeと同じ作法)。同期・非同期どちらの handle* からも呼べるよう、
+ * 戻り値が Promise なら resolve を待ってから終了時刻を記録する。
+ */
+function recordCommandTiming(op: string, startAtMs: number, result: void | Promise<void>): void {
+  if (!(import.meta.env.DEV && workerTickProbe.enabled)) return;
+  if (result instanceof Promise) {
+    void result.finally(() => {
+      workerTickProbe.commandEvents.push({ op, startAtMs, endAtMs: ctx.performance.now() });
+    });
+  } else {
+    workerTickProbe.commandEvents.push({ op, startAtMs, endAtMs: ctx.performance.now() });
+  }
+}
 
 interface DevTickProbeControlMessage {
   kind: '__devTickProbe';
@@ -275,6 +309,7 @@ function tick(): void {
     const budgetHint = computeFrameBudget(dt, frameInterval, 0, 1);
     workerTickProbe.events.push({
       tickIndex: workerTickProbe.tickIndex++,
+      nowMs: now,
       sinceLastTickMs,
       ranFrames: result.ranFrames,
       budgetHint,
@@ -519,7 +554,11 @@ ctx.onmessage = (ev) => {
         workerTickProbe.busyWaitFaultEnabled = data.value === true;
         break;
       case 'read':
-        ctx.postMessage({ kind: '__devTickProbeData', events: workerTickProbe.events });
+        ctx.postMessage({
+          kind: '__devTickProbeData',
+          events: workerTickProbe.events,
+          commandEvents: workerTickProbe.commandEvents,
+        });
         break;
     }
     return;
@@ -531,26 +570,31 @@ ctx.onmessage = (ev) => {
     return;
   }
   const cmd = data as CoreCommand;
+  // DEVかつプローブ有効時のみ、command処理の開始/終了時刻を記録する(空白との突き合わせ用。
+  // recordCommandTiming内部で import.meta.env.DEV && workerTickProbe.enabled を見て
+  // 無効時は何もしない。performance.now()呼び出し自体は軽量なため無効時も許容する)。
+  const commandStartAtMs = ctx.performance.now();
   switch (cmd.op) {
     case 'initialize':
-      void handleInitialize(cmd);
+      recordCommandTiming(cmd.op, commandStartAtMs, handleInitialize(cmd));
       return;
     case 'loadGame':
-      void handleLoadGame(cmd);
+      recordCommandTiming(cmd.op, commandStartAtMs, handleLoadGame(cmd));
       return;
     case 'fetchAvInfo':
-      void handleFetchAvInfo(cmd);
+      recordCommandTiming(cmd.op, commandStartAtMs, handleFetchAvInfo(cmd));
       return;
     case 'setRunning':
       handleSetRunning(cmd);
+      recordCommandTiming(cmd.op, commandStartAtMs, undefined);
       return;
     case 'serialize':
     case 'readTextScreen':
     case 'screenshot':
-      void handleReadTextScreen(cmd);
+      recordCommandTiming(cmd.op, commandStartAtMs, handleReadTextScreen(cmd));
       return;
     case 'dispose':
-      void handleDispose(cmd);
+      recordCommandTiming(cmd.op, commandStartAtMs, handleDispose(cmd));
       return;
     // 以下は今回のスコープ外(入力・音声・FDDホットマウント・SRAM・ステート保存/復元)。
     // UNSUPPORTED を返す。main.ts 側で「?worker=1 では未対応」と利用者に見える形にする
