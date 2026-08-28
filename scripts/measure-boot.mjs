@@ -43,6 +43,10 @@ function parseArgs(argv) {
       values.help = true;
       continue;
     }
+    if (arg === '--worker') {
+      values.worker = true;
+      continue;
+    }
     const match = /^--(mode|port|runs|timeout|poll-interval|output|fault)=(.+)$/.exec(arg);
     if (!match) throw new Error(`不明な引数です: ${arg}`);
     values[match[1]] = match[2];
@@ -60,6 +64,8 @@ function printHelp() {
   --poll-interval=<ms>  ページ内ポーリング間隔 (既定: 50)
   --output=<path>       JSON の保存先
   --fault=<name>        no-disk または wrong-marker
+  --worker              計測対象URLに ?worker=1 を付ける(Worker経路の計測)。
+                        未指定時の挙動には一切影響しない
 
 prod モードは計測前に毎回 npm run build を実行します。
 
@@ -113,6 +119,9 @@ function buildConfig(args) {
     outputPath,
     executablePath: process.env.CHROME_PATH ?? DEFAULT_CHROME,
     fault,
+    // Worker経路(?worker=1)の計測かどうか。既定はfalseで、既定計測(measurementUrl組み立て・
+    // その他すべての挙動)には一切影響しない。
+    worker: args.worker === true,
   };
 }
 
@@ -786,6 +795,12 @@ async function measureOnce(browser, config, trial, envCapture) {
       url.searchParams.set('bridge', String(config.measurementBridge.port));
       measurementUrl = url.href;
     }
+    if (config.worker) {
+      // 既定(worker未指定)ではこの分岐に入らず、measurementUrl は従来どおり。
+      const url = new URL(measurementUrl);
+      url.searchParams.set('worker', '1');
+      measurementUrl = url.href;
+    }
     await page.goto(measurementUrl, { waitUntil: 'networkidle2' });
     if (config.mode === 'prod') await config.measurementBridge.waitForClient();
     await page.bringToFront();
@@ -994,6 +1009,7 @@ async function run() {
         pollIntervalMs: config.pollIntervalMs,
         requiredStablePolls: REQUIRED_STABLE_POLLS,
         fault: config.fault,
+        worker: config.worker,
         ...(config.mode === 'prod'
           ? {
               observationPath: 'websocket-bridge (screen_text/status)',

@@ -43,7 +43,7 @@ import {
 import { buildFileManagerDialog, type FmTarget } from './filemanager';
 import { Bridge, resolveBridgeUrl, type BridgeHost } from './bridge';
 import { RETROK, charToKey, codeToRetrok } from './keyboard';
-import { LibretroHost } from './libretro-host';
+import { LibretroHost, type AvInfo } from './libretro-host';
 import {
   LocalCoreProxy,
   WorkerCoreProxy,
@@ -2417,6 +2417,12 @@ function sanitizeFileName(name: string): string {
 let workerLastPoolMisses = 0;
 let workerLastFrameNo = 0;
 
+/** Worker経路(?worker=1)で `proxy.fetchAvInfo()` が返した値。既定経路の `host.avInfo` に相当する
+ * 値がWorker経路には無いため、計測フック(__webx68kDebug.stat/bridgeHost.status)の
+ * fps読み取りをWorker経路でも成立させる目的だけで保持する(docs/STORAGE-SCSI.md
+ * 「Worker経路の起動時間：同一ビルドA/B」参照。host.avInfoと同様、以後更新しない)。 */
+let workerAvInfo: AvInfo | null = null;
+
 /** `?worker=1` でだけ利用者へ見せる、未移行機能のトースト。入力・音声・FDDホットマウント・
  * SRAM・ステート保存/復元は今回のスコープ外(docs/STORAGE-SCSI.md「段階移行の順序」参照)。
  * 無言のno-opにせず、必ずここを通してから抜けること。 */
@@ -2445,6 +2451,7 @@ async function bootWorkerCore(): Promise<void> {
     const previous = workerCoreProxy;
     workerCoreProxy = null;
     coreProxy = null;
+    workerAvInfo = null;
     try {
       await previous.dispose();
     } catch (err) {
@@ -2510,7 +2517,7 @@ async function bootWorkerCore(): Promise<void> {
 
   await proxy.init(biosIplBytes, biosCgBytes, savedSram ?? undefined, initialDisks);
   await proxy.loadGame('/game/boot.cmd');
-  await proxy.fetchAvInfo();
+  workerAvInfo = await proxy.fetchAvInfo();
   await proxy.setRunning(true);
 
   running = true;
@@ -3876,7 +3883,9 @@ document.addEventListener('visibilitychange', () => {
 // 開発時デバッグ用: 音声遅延(キュー滞留秒)とコアの現在 fps をコンソールから覗けるようにする。
 if (import.meta.env.DEV) {
   (window as unknown as Record<string, unknown>).__webx68kDebug = {
-    stat: () => ({ queuedSec: audio?.queuedSeconds ?? null, fps: host?.avInfo?.fps ?? null }),
+    // Worker経路(?worker=1)はhostが常にnullのため、その場合だけworkerAvInfoへ
+    // フォールバックする(既定経路はhost.avInfoが既に設定されるため、この分岐は通らない)。
+    stat: () => ({ queuedSec: audio?.queuedSeconds ?? null, fps: host?.avInfo?.fps ?? workerAvInfo?.fps ?? null }),
     // 計測環境記録(scripts/measure-env.mjs)用。AudioContext未生成ならnull。
     audioEnv: () => audio?.audioEnv() ?? null,
     mouse: () => ({ captured: isMouseCaptured(), tracking: isMouseTracking(), ratio: { x: desiredRatioX, y: desiredRatioY }, pending: host?.hasPendingMouseDelta() ?? null, cursor: host?.readGuestCursor() ?? null, sensitivity: mouseSensitivity, core: host?.readMouseState() ?? null }),
@@ -4769,7 +4778,9 @@ const bridgeHost: BridgeHost = {
   status: () =>
     Promise.resolve({
       running,
-      fps: host?.avInfo?.fps ?? null,
+      // Worker経路(?worker=1)はhostが常にnullのため、その場合だけworkerAvInfoへ
+      // フォールバックする(既定経路はhost.avInfoが既に設定されるため、この分岐は通らない)。
+      fps: host?.avInfo?.fps ?? workerAvInfo?.fps ?? null,
       screen: { width: canvas.width, height: canvas.height },
       slots: SLOT_IDS.map((slot) => ({ slot, name: slots[slot]?.name ?? null })),
       mouseCaptured: isMouseCaptured(),
