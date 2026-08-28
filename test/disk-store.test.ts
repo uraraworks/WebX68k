@@ -1,16 +1,19 @@
 import { readFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { extractArchive } from '../src/api/archive.ts';
 import {
   classifyDiskBytes,
+  deleteDisk,
   detectDiskContentKind,
   ensureDiskExtension,
   FD_SIZE_2DD_640,
   FD_SIZE_2DD_720,
   FD_SIZE_2HD_1232,
   FD_SIZE_2HD_1440,
+  measureDiskLibraryBytes,
+  putDisk,
 } from '../src/disk-store.ts';
 
 const here = dirname(fileURLToPath(import.meta.url));
@@ -91,4 +94,207 @@ describe('classifyDiskBytes (アーカイブ内エントリ専用の内容ベー
     expect(contentKind).toBe('rawFd');
     expect(ensureDiskExtension('NODISK_EXT', 'fd', contentKind)).toBe('NODISK_EXT.xdf');
   });
+});
+
+// --- measureDiskLibraryBytes(): IndexedDBのレコード列挙によるサイズ合計の検証 ---
+//
+// vitest.config.ts は environment: 'node' なのでブラウザのIndexedDBは存在しない。
+// test/sram-store.test.ts と同じ流儀で、disk-store.ts が実際に叩くAPI面
+// (open/onupgradeneeded/transaction/objectStore/put/get/getAll/getKey/delete)だけを
+// 再現した最小限の互換モックをここに用意する(keyPathでの格納が要るぶん、
+// sram-store.test.ts のものより一回り広い)。
+
+interface FakeIDBRequestLike {
+  result: unknown;
+  error: unknown;
+  onsuccess: (() => void) | null;
+  onerror: (() => void) | null;
+}
+
+function makeRequest(): FakeIDBRequestLike {
+  return { result: undefined, error: null, onsuccess: null, onerror: null };
+}
+
+class FakeObjectStore {
+  constructor(
+    private data: Map<string, unknown>,
+    private keyPath: string,
+  ) {}
+
+  put(value: Record<string, unknown>): FakeIDBRequestLike {
+    const key = String(value[this.keyPath]);
+    this.data.set(key, value);
+    return makeRequest();
+  }
+
+  get(key: string): FakeIDBRequestLike {
+    const req = makeRequest();
+    queueMicrotask(() => {
+      req.result = this.data.get(key);
+      req.onsuccess?.();
+    });
+    return req;
+  }
+
+  getKey(key: string): FakeIDBRequestLike {
+    const req = makeRequest();
+    queueMicrotask(() => {
+      req.result = this.data.has(key) ? key : undefined;
+      req.onsuccess?.();
+    });
+    return req;
+  }
+
+  getAll(): FakeIDBRequestLike {
+    const req = makeRequest();
+    queueMicrotask(() => {
+      req.result = Array.from(this.data.values());
+      req.onsuccess?.();
+    });
+    return req;
+  }
+
+  delete(key: string): FakeIDBRequestLike {
+    this.data.delete(key);
+    return makeRequest();
+  }
+}
+
+class FakeTransaction {
+  oncomplete: (() => void) | null = null;
+  onabort: (() => void) | null = null;
+  onerror: (() => void) | null = null;
+  error: unknown = null;
+  private store: FakeObjectStore;
+  private aborted = false;
+
+  constructor(data: Map<string, unknown>, keyPath: string) {
+    this.store = new FakeObjectStore(data, keyPath);
+    // put()/delete()は同期的にMapへ反映済みなので、呼び出し元がoncomplete/onabortを
+    // 代入し終えた後のマイクロタスクで完了通知すればよい。
+    queueMicrotask(() => {
+      if (!this.aborted) this.oncomplete?.();
+    });
+  }
+
+  objectStore(_name: string): FakeObjectStore {
+    return this.store;
+  }
+
+  abort(): void {
+    this.aborted = true;
+    this.error = new Error('transaction aborted (fake, unused in these tests)');
+    queueMicrotask(() => this.onabort?.());
+  }
+}
+
+class FakeDatabase {
+  private stores = new Map<string, { data: Map<string, unknown>; keyPath: string }>();
+  objectStoreNames = {
+    contains: (name: string): boolean => this.stores.has(name),
+  };
+  createObjectStore(name: string, opts?: { keyPath?: string }): void {
+    this.stores.set(name, { data: new Map(), keyPath: opts?.keyPath ?? '' });
+  }
+  transaction(name: string, _mode: string): FakeTransaction {
+    const store = this.stores.get(name);
+    if (!store) throw new Error(`FakeDatabase: no such store "${name}"`);
+    return new FakeTransaction(store.data, store.keyPath);
+  }
+  close(): void {}
+}
+
+class FakeIndexedDB {
+  private databases = new Map<string, FakeDatabase>();
+
+  open(name: string, _version: number): FakeIDBRequestLike & { onupgradeneeded: (() => void) | null } {
+    const req = makeRequest() as FakeIDBRequestLike & { onupgradeneeded: (() => void) | null };
+    req.onupgradeneeded = null;
+    queueMicrotask(() => {
+      let db = this.databases.get(name);
+      const isNew = !db;
+      if (!db) {
+        db = new FakeDatabase();
+        this.databases.set(name, db);
+      }
+      req.result = db;
+      if (isNew) req.onupgradeneeded?.();
+      req.onsuccess?.();
+    });
+    return req;
+  }
+
+  /** テスト間の汚染を防ぐため呼ぶ */
+  reset(): void {
+    this.databases.clear();
+  }
+}
+
+let fakeIndexedDB: FakeIndexedDB;
+
+beforeEach(() => {
+  fakeIndexedDB = new FakeIndexedDB();
+  (globalThis as unknown as { indexedDB: unknown }).indexedDB = fakeIndexedDB;
+});
+
+afterEach(() => {
+  fakeIndexedDB.reset();
+});
+
+function makeDisk(sourceKey: string, size: number, savedAt = Date.now()) {
+  const bytes = new Uint8Array(size);
+  for (let i = 0; i < size; i++) bytes[i] = i & 0xff;
+  return { sourceKey, name: `${sourceKey}.xdf`, bytes, savedAt };
+}
+
+describe('measureDiskLibraryBytes (決定3の受け入れ条件: IndexedDBレコード列挙による実サイズ合計)', () => {
+  it('レコードが無ければ合計0・内訳0件', async () => {
+    const usage = await measureDiskLibraryBytes();
+    expect(usage.totalBytes).toBe(0);
+    expect(usage.records).toEqual([]);
+  });
+
+  it('【陽性対照】レコードを1件追加すると合計がそのサイズぶん増える', async () => {
+    const before = await measureDiskLibraryBytes();
+    expect(before.totalBytes).toBe(0);
+
+    await putDisk(makeDisk('file:a.xdf:1000', 1000));
+
+    const after = await measureDiskLibraryBytes();
+    expect(after.totalBytes).toBe(1000);
+    expect(after.records).toEqual([{ key: 'file:a.xdf:1000', kind: 'Uint8Array', byteLength: 1000 }]);
+  });
+
+  it('複数レコードの合計と内訳(キー・種別・バイト数)を返す', async () => {
+    await putDisk(makeDisk('file:a.xdf:1000', 1000));
+    await putDisk(makeDisk('file:b.hdf:2000', 2000));
+
+    const usage = await measureDiskLibraryBytes();
+    expect(usage.totalBytes).toBe(3000);
+    expect(usage.records.map((r) => r.key).sort()).toEqual(['file:a.xdf:1000', 'file:b.hdf:2000']);
+    for (const r of usage.records) {
+      expect(r.kind).toBe('Uint8Array');
+      expect(r.byteLength).toBeGreaterThan(0);
+    }
+  });
+
+  it('削除すると合計から減る', async () => {
+    await putDisk(makeDisk('file:a.xdf:1000', 1000));
+    await putDisk(makeDisk('file:b.hdf:2000', 2000));
+    await deleteDisk('file:a.xdf:1000');
+
+    const usage = await measureDiskLibraryBytes();
+    expect(usage.totalBytes).toBe(2000);
+    expect(usage.records).toEqual([{ key: 'file:b.hdf:2000', kind: 'Uint8Array', byteLength: 2000 }]);
+  });
+
+  it('上書き保存(同一sourceKey)では合計が二重計上されない', async () => {
+    await putDisk(makeDisk('file:a.xdf:1000', 1000));
+    await putDisk(makeDisk('file:a.xdf:1000', 1000, Date.now() + 1));
+
+    const usage = await measureDiskLibraryBytes();
+    expect(usage.totalBytes).toBe(1000);
+    expect(usage.records.length).toBe(1);
+  });
+
 });

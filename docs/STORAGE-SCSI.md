@@ -1794,7 +1794,20 @@ XM6 との資産のやりとりについて、3案を比較した。
 
 - **合格条件**：500MB級のSCSIイメージをマウントしても **wasmヒープの実サイズ（`memory.buffer.byteLength`）が増えない**こと（512バイト単位の誤差のみ）。
 - **陽性対照**：同じサイズのイメージを現行のSASI経路に通すと**ヒープがイメージサイズぶん増える**こと。これが取れなければ、検査自体が動いていない。
-- IndexedDB に載っていないことの確認は、`navigator.storage.estimate()` が OPFS と IndexedDB を合算した値を返すため、Chrome の `usageDetails`（内訳）が使えるかを先に確かめる。**Chrome では使えるが、iOS（Chrome for iOS・Safari とも）では `usageDetails` が常に `null` で使えない**（2026-08-26 実測、後述）。使えない環境では **IndexedDB のレコードを列挙してサイズを合計する**方法を正とする。
+
+### 決定3の受け入れ条件（IndexedDBのレコード列挙、2026-08-28 書き直し）
+
+当初は `navigator.storage.estimate()` の `usageDetails`（OPFS/IndexedDB の内訳）で検証する案だったが、**iOS（Chrome for iOS・Safari とも）では `usageDetails` が常に `null` で使えない**（2026-08-26 実測、後述）ため、Chrome限定の検証手段のまま実装を進めると受け入れ条件がクロスブラウザで満たせない。そこで **IndexedDB のレコードを列挙して実サイズを合計する**方式に置き換えた。
+
+- 実装：`src/disk-store.ts` の `measureDiskLibraryBytes()`。`disks` ストアの全レコードを `getAll()` で読み出し、各レコードの実体（`Uint8Array`/`ArrayBuffer`/`Blob`）の `byteLength`/`size` をそのまま合計する。`estimate()` は一切使わない。合計だけでなくレコードごとの内訳（key・種別・バイト数）も返す。
+- **合格条件**：SCSIイメージをマウントしても、`measureDiskLibraryBytes()` の合計（`totalBytes`）が増えないこと（メタデータぶんの数百バイトを除く）。
+- **陽性対照**：同サイズを現行の SASI 経路（`saveDisk()`/`putDisk()`）に通すと、`totalBytes` がイメージサイズぶん増えること。`test/disk-store.test.ts` にこの陽性対照（1件追加で合計がそのサイズぶん増える）と、故障注入（`byteLength` を無視して件数だけ数える壊れた実装に書き換えると失敗することを確認してから復元）を実装済み。
+- **この方式は全ブラウザで成立する。** `estimate()`/`usageDetails` に依存せず IndexedDB API（`getAll()`）を直接叩くだけなので、iOS でも Chrome と同じ値・同じロジックで検証できる。
+- 副産物として分かっていた `usage` の値の性質（この方式が必要な理由の背景）：
+  - **IndexedDBの`usage`は生バイト数ではない**：デスクトップChromeで16MiB書き込みの増分が853,362バイト（約20分の1）に圧縮された（2026-08-24実測）。
+  - **iOSの`estimate()`は総量としても信用できない**：削除しても`usage`が減らず、さらに1MiB単位に量子化されている（2026-08-26実測）。
+  - **圧縮率はデータ依存かつ環境依存**：同じ16MiB書き込みでもiOSではほぼ生サイズの増分になり、デスクトップChromeの圧縮は環境固有の観測だった。
+  - これらはいずれも`estimate()`側の癖であり、`measureDiskLibraryBytes()`はストレージの内部実装を経由せずレコード実体を直接数えるため、この影響を受けない。
 
 ## XM6のHDS資産の移行（流れ）
 
@@ -2018,7 +2031,7 @@ B（ワーカー内同期ハンドル）が成功した。「SCSIのI/Oはワー
 
 ### 決定3の検証手段は iOS では成立しない
 
-C の `usageDetails` が **常に `null`** で返る。デスクトップChromeでは `fileSystem`／`indexedDB` の内訳が取れたが、iOSではOPFSとIndexedDBを `estimate()` で分離する方法が無い。上の「RAMに載っていないことの検証方法（決定2の受け入れ条件）」の節をこの実測にあわせて更新した。**Chromeでは内訳が使えるが、iOSでは使えないため、IndexedDBのレコード列挙を検証手段の正とする**。
+C の `usageDetails` が **常に `null`** で返る。デスクトップChromeでは `fileSystem`／`indexedDB` の内訳が取れたが、iOSではOPFSとIndexedDBを `estimate()` で分離する方法が無い。上の「RAMに載っていないことの検証方法（決定2の受け入れ条件）」の節をこの実測にあわせて更新した。**Chromeでは内訳が使えるが、iOSでは使えないため、IndexedDBのレコード列挙を検証手段の正とする**。（2026-08-28: 実装済み。上の節の「決定3の受け入れ条件（IndexedDBのレコード列挙、2026-08-28 書き直し）」を参照。）
 
 ### iOS の `estimate()` は総量としても信用できない
 
@@ -2395,7 +2408,7 @@ HDMIデバイスでの10回では、既定と `interactive` は 10/10 が同じ�
 - `list_disks`: `ok:true`、スロット一覧
 
 **できなかったこと・未確認のこと**
-- `read_memory` で TVRAM 領域(試しに `0xe00000`)を読んだところ全バイト0だった。px68k側のTVRAM実アドレスやプレーン配置を確認していないため、proxy/bridge経路のバグなのかアドレス指定が単に違うのかは切り分けていない(`screenText`は同時刻に正しい内容を返しているため、経路自体は機能している)。
+- `read_memory` で TVRAM 領域(試しに `0xe00000`)を読んだところ全バイト0だった。**2026-08-28 確認済み: これは回帰ではなく、そのアドレスがこの窓から見えないだけ。** `src/text-screen.ts` は専用export `_webx68k_tvram_data()` でヒープ内ポインタを直接取得しており、TVRAM読み出しはそもそも `readMemory`/`peekByte` の経路を通らない。一方 `readMemory` の実体である `peekByte()`(`src/libretro-host.ts:375`、`_webx68k_peek8()`)はゲストのメモリバス経由で、`0xE00000` はこの経路に載っていない。手順2の前後でproxyは `peekByte` をlength回まわすだけなので、返るバイト値は変更前と同一(`screenText`が同時刻に正しい内容を返しているのはこのため)。「アドレス指定が悪い」のではなく「そのアドレスはこの窓からは見えない」が結論。
 - MCP stdio 層(`mcp/server.mjs` の `McpServer`/`StdioServerTransport` 部分)は今回変更しておらず、実動確認もWSブリッジ層(`src/bridge.ts`)止まりで、実際の MCP クライアント(Claude Code等)経由では確認していない。
 - `__webx68kDebug.screenText()` を呼ぶ計測スクリプト群(`scripts/measure-*.mjs`)は非同期化に合わせて `await` を足したが、実ブラウザでの通し実行(起動計測・3ドライブ認識・キー入力計測等)では再検証していない。型・構文レベルの整合のみ確認済み。
 
@@ -2407,7 +2420,7 @@ HDMIデバイスでの10回では、既定と `interactive` は 10/10 が同じ�
 2. **計測時に既定出力デバイスを内蔵スピーカーに固定する。**条件 (a)(b)(c) に加えて (d) とする。ハーネスが記録するようになったので、結果ファイルで照合できる。
 3. **`persist()` の切り分け。**普段使いのプロファイルで `node scripts/probe-opfs.mjs --serve` のページを開き、`false` が使い捨てプロファイル固有かどうかを見る。
 4. ~~iOS WebKit での確認。~~ → **2026-08-26 に確認済み**（「OPFS前提条件の実機確認（iOS、実測、2026-08-26）」参照）。A〜Eは成立し、決定2の対象範囲は変更不要と判断した。
-5. **決定3の受け入れ条件をIndexedDBのレコード列挙で書き直す。**iOSでは `usageDetails` が使えず `estimate()` による分離検証ができないため、Chrome限定の検証手段のまま実装を進めると受け入れ条件がクロスブラウザで満たせない。
+5. ~~決定3の受け入れ条件をIndexedDBのレコード列挙で書き直す。~~ → **2026-08-28 に実施済み**（`src/disk-store.ts` の `measureDiskLibraryBytes()`、「決定3の受け入れ条件（IndexedDBのレコード列挙、2026-08-28 書き直し）」参照）。
 6. **iOSのeviction実挙動の確認。**`persist()` がfalseのまま運用したとき、容量逼迫時にいつ・どういう条件でデータが消えるのかは未確認のまま。
 7. ドライブ計測の試行数を5から増やすか検討する（DIR A: の日差が±25%あり、現状では回帰を分離できない）。
 

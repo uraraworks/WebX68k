@@ -178,6 +178,49 @@ export async function listDisks(): Promise<StoredDisk[]> {
   return result.sort((a, b) => b.savedAt - a.savedAt);
 }
 
+/** measureDiskLibraryBytes() が返すレコード1件ぶんの内訳。 */
+export interface DiskLibraryByteRecord {
+  key: string;
+  kind: 'Uint8Array' | 'ArrayBuffer' | 'Blob' | 'unknown';
+  byteLength: number;
+}
+
+export interface DiskLibraryByteUsage {
+  totalBytes: number;
+  records: DiskLibraryByteRecord[];
+}
+
+function byteSizeOf(value: unknown): { kind: DiskLibraryByteRecord['kind']; byteLength: number } {
+  if (value instanceof Uint8Array) return { kind: 'Uint8Array', byteLength: value.byteLength };
+  if (value instanceof ArrayBuffer) return { kind: 'ArrayBuffer', byteLength: value.byteLength };
+  if (typeof Blob !== 'undefined' && value instanceof Blob) return { kind: 'Blob', byteLength: value.size };
+  return { kind: 'unknown', byteLength: 0 };
+}
+
+/**
+ * 決定3(大容量イメージがIndexedDBに載らないことを経路の不在で保証する)の受け入れ条件を、
+ * IndexedDBのレコードを実際に列挙して検証するための関数。
+ *
+ * `navigator.storage.estimate()` の `usageDetails` はChrome限定でiOS(Chrome for iOS・Safariとも)では
+ * 常に `null` になる(2026-08-26実測)うえ、`usage` の値自体もブラウザ側の圧縮・1MiB単位の量子化を
+ * 経ており生バイト数の根拠にならない(デスクトップChromeで16MiB書き込みの増分が853,362バイトに
+ * 圧縮された一方、iOSでは同じ書き込みがほぼ生サイズの増分になった。圧縮率はデータ依存かつ環境依存)。
+ *
+ * この関数は `estimate()` を一切使わず、`disks` ストアの全レコードを `getAll()` で読み出して
+ * 実体(`bytes: Uint8Array`。将来 `ArrayBuffer`/`Blob` を格納する場合も同じロジックで数える)の
+ * `byteLength`/`size` をそのまま合計するため、ブラウザの圧縮・量子化の影響を受けない。
+ * 合計だけでなくレコードごとの内訳も返す(「どのレコードが太ったか」を後から追えるように)。
+ */
+export async function measureDiskLibraryBytes(): Promise<DiskLibraryByteUsage> {
+  const rows = await listDisks();
+  const records: DiskLibraryByteRecord[] = rows.map((row) => {
+    const size = byteSizeOf(row.bytes);
+    return { key: row.sourceKey, kind: size.kind, byteLength: size.byteLength };
+  });
+  const totalBytes = records.reduce((sum, r) => sum + r.byteLength, 0);
+  return { totalBytes, records };
+}
+
 export async function deleteDisk(sourceKey: string): Promise<void> {
   const db = await openDb();
   await new Promise<void>((resolve, reject) => {
