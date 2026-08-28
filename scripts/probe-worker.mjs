@@ -99,6 +99,41 @@ try {
   const visAfter = await page.evaluate(() => window.__pwVisibility());
   report.visibilityAfterRestore = visAfter;
 
+  // --- 2026-08-28 追測: Aの速度測定をsetInterval下で測り直す(転送・返却なし/あり/OffscreenCanvas) ---
+  // 前回のA速度測定はsetTimeoutドリフト下で行われており、Cの結論(setInterval採用)を反映していなかった。
+  console.log('A(再測定): rAFカウンタ・スナップショット(前)…');
+  const rafBeforeA2 = await page.evaluate(() => window.__pwRafSnapshot());
+
+  console.log('A(再測定): 転送・返却なし(setInterval, 3試行)…');
+  report.aTransferInterval = await page.evaluate((n, d) => window.__pwSpeedA('transfer', n, d), TRIALS, A_DURATION_MS);
+  console.log('A(再測定): 転送・返却あり(setInterval, 3試行)…');
+  report.aTransferPoolInterval = await page.evaluate((n, d) => window.__pwSpeedA('transferPool', n, d), TRIALS, A_DURATION_MS);
+  console.log('A(再測定): OffscreenCanvas(setInterval, 3試行)…');
+  report.aOffscreenInterval = await page.evaluate((n, d) => window.__pwSpeedA('offscreen', n, d), TRIALS, A_DURATION_MS);
+
+  const rafAfterA2 = await page.evaluate(() => window.__pwRafSnapshot());
+  report.rafDuringA2 = {
+    before: rafBeforeA2, after: rafAfterA2,
+    count: rafAfterA2.count - rafBeforeA2.count,
+  };
+  console.log('A(再測定): rAF発火回数(区間中):', report.rafDuringA2.count);
+
+  // --- 故障注入(a): 描画スキップで不一致が検出されること(setInterval下の3条件で再確認) ---
+  console.log('A(再測定): 故障注入(a) 描画スキップ検出中…');
+  report.aFaultInjectionTransferInterval = await page.evaluate(() => window.__pwFaultInjectionA('transfer'));
+  report.aFaultInjectionTransferPoolInterval = await page.evaluate(() => window.__pwFaultInjectionA('transferPool'));
+  report.aFaultInjectionOffscreenInterval = await page.evaluate(() => window.__pwFaultInjectionA('offscreen'));
+  console.log('故障注入(a):', JSON.stringify({
+    transfer: report.aFaultInjectionTransferInterval,
+    transferPool: report.aFaultInjectionTransferPoolInterval,
+    offscreen: report.aFaultInjectionOffscreenInterval,
+  }));
+
+  // --- 故障注入(b): バッファ返却を止めるとpoolMissesが跳ね上がること ---
+  console.log('A(再測定): 故障注入(b) バッファ返却停止でpoolMisses確認中…');
+  report.poolReturnFaultInjection = await page.evaluate((d) => window.__pwPoolReturnFaultInjection(d), 2000);
+  console.log('故障注入(b):', JSON.stringify(report.poolReturnFaultInjection));
+
   report.finishedAt = new Date().toISOString();
 } finally {
   await browser.close();
@@ -115,3 +150,11 @@ console.log('getImageDataAfterTransfer:', JSON.stringify(report.aFeasibility.get
 console.log('retransferSameCanvas:', JSON.stringify(report.aFeasibility.retransferSameCanvas));
 console.log('newCanvasTransferAfterRegen:', JSON.stringify(report.aFeasibility.newCanvasTransferAfterRegen));
 console.log('hiddenConfirmed:', report.hiddenConfirmed);
+console.log('--- 2026-08-28 追測(setInterval下でのA再測定) ---');
+for (const [label, arr] of [['transfer', report.aTransferInterval], ['transferPool', report.aTransferPoolInterval], ['offscreen', report.aOffscreenInterval]]) {
+  const frames = arr.map((r) => r.framesPresented);
+  const target = arr[0].targetFrames;
+  console.log(`${label}: framesPresented=${JSON.stringify(frames)} / target=${target}`);
+}
+console.log('rafDuringA2.count:', report.rafDuringA2.count);
+console.log('poolReturnFaultInjection:', JSON.stringify(report.poolReturnFaultInjection));

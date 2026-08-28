@@ -18,6 +18,7 @@ puppeteer から個々の関数を呼ぶ運用を想定しており、下のボ�
 <div>
   <canvas id="canvasOffscreen" width="768" height="512"></canvas>
   <canvas id="canvasTransfer" width="768" height="512"></canvas>
+  <canvas id="canvasTransferPool" width="768" height="512"></canvas>
 </div>
 <button id="run">人手実行(概要のみ)</button>
 <pre id="out">未実行</pre>
@@ -44,8 +45,12 @@ function pixelFor(frameNo, seed) {
 }
 // W/H/MARKERSを外側のクロージャに置くとWorker側へ.toString()でソースだけをコピーした際に
 // 自由変数として未定義になる(実測: "W is not defined")。全て引数で受け取る形にしてある。
-function buildFrameRGBA(frameNo, skipMarkers, w, h, markers) {
-  const rgba = new Uint8ClampedArray(w*h*4);
+// fillFrameRGBA: 既存のバッファ(Uint8ClampedArray)へ直接書き込む版。
+// バッファ返却(プール)方式では毎フレーム新規確保をせず使い回すため、
+// 「新規確保して返す」buildFrameRGBAと「渡された領域へ書く」fillFrameRGBAを分けてある。
+// 全セル書き換え(先頭4バイト+copyWithinで埋め尽くし)なので、前フレームの内容が
+// 残ったまま次のマーカーだけ上書きする、という取りこぼしは起きない前提。
+function fillFrameRGBA(rgba, frameNo, skipMarkers, w, h, markers) {
   rgba[0]=(frameNo*3)&0xff; rgba[1]=(frameNo*5)&0xff; rgba[2]=(frameNo*7)&0xff; rgba[3]=255;
   let filled = 4;
   while (filled < rgba.length) {
@@ -60,6 +65,10 @@ function buildFrameRGBA(frameNo, skipMarkers, w, h, markers) {
       rgba[off]=r; rgba[off+1]=g; rgba[off+2]=bl; rgba[off+3]=255;
     }
   }
+}
+function buildFrameRGBA(frameNo, skipMarkers, w, h, markers) {
+  const rgba = new Uint8ClampedArray(w*h*4);
+  fillFrameRGBA(rgba, frameNo, skipMarkers, w, h, markers);
   return rgba;
 }
 function checkMarkers(getPixel /* (x,y) => [r,g,b] */, frameNo) {
@@ -101,8 +110,12 @@ window.__pwRafSnapshot = () => ({ count: window.__pwRaf.count, visibilityState: 
 // A. 映像経路
 // =================================================================
 
+// 2026-08-28 追測: スケジューラはC節の結論(setIntervalを採用)に合わせて全条件で
+// setIntervalへ切り替えた(旧setTimeout版の測定結果は上の節にすでに固定して残してある。
+// この関数の実装を変えても、確定済みの旧セクションの文章は書き換えない)。
 const OFFSCREEN_WORKER_SRC = `
 ${pixelFor.toString()}
+${fillFrameRGBA.toString()}
 ${buildFrameRGBA.toString()}
 let ctx = null, timer = null, frameNo = 0, intervals = [], loopStart = 0, lastTick = 0;
 let selfCheckMismatches = 0, selfCheckSamples = 0, skipEvery = 0;
@@ -120,7 +133,7 @@ onmessage = (ev) => {
     loopStart = performance.now(); lastTick = loopStart;
     const targetMs = m.targetMs;
     const durationMs = m.durationMs;
-    function tick() {
+    timer = setInterval(() => {
       const now = performance.now();
       intervals.push(now - lastTick);
       lastTick = now;
@@ -140,12 +153,10 @@ onmessage = (ev) => {
       }
       frameNo++;
       if (now - loopStart >= durationMs) {
+        clearInterval(timer);
         postMessage({ op:'done', frameNo, intervals, selfCheckMismatches, selfCheckSamples });
-        return;
       }
-      timer = setTimeout(tick, targetMs);
-    }
-    tick();
+    }, targetMs);
   }
 };
 `;
@@ -170,6 +181,7 @@ async function runOffscreenTrial(durationMs, skipEvery) {
 
 const TRANSFER_WORKER_SRC = `
 ${pixelFor.toString()}
+${fillFrameRGBA.toString()}
 ${buildFrameRGBA.toString()}
 let frameNo = 0, intervals = [], loopStart = 0, lastTick = 0, timer = null, skipEvery = 0;
 let sendTimes = [];
@@ -180,12 +192,14 @@ onmessage = (ev) => {
     frameNo = 0; intervals = []; sendTimes = [];
     const targetMs = m.targetMs, durationMs = m.durationMs;
     loopStart = performance.now(); lastTick = loopStart;
-    function tick() {
+    timer = setInterval(() => {
       const now = performance.now();
       intervals.push(now - lastTick);
       lastTick = now;
       const skip = skipEvery > 0 && (frameNo % skipEvery === 0);
       if (!skip) {
+        // 条件1(返却なし): 毎フレーム必ず新規確保する。poolMissesに相当する概念は無いが、
+        // 「常に新規」を基準として条件2のpoolMissesと対比する。
         const rgba = buildFrameRGBA(frameNo, false, ${W}, ${H}, ${JSON.stringify(MARKERS)});
         const sendT0 = performance.now();
         // 実測でわかったこと: Workerのperformance.now()はmain threadと時刻原点(timeOrigin)が
@@ -199,12 +213,59 @@ onmessage = (ev) => {
       }
       frameNo++;
       if (now - loopStart >= durationMs) {
+        clearInterval(timer);
         postMessage({ op:'done', frameNo, intervals, sendTimes });
-        return;
       }
-      timer = setTimeout(tick, targetMs);
-    }
-    tick();
+    }, targetMs);
+  }
+};
+`;
+
+// 条件2(本命): メインが描き終えたバッファをtransferでWorkerへ返し、循環させる。
+// poolMisses = プールが空で新規確保した回数。返却が効いていれば起動直後の数件のみのはず。
+// 返却が黙って失敗している(=毎回新規確保と同じ状態)場合、poolMissesはframeNoとほぼ同数になる
+// ─ これが「返却できているつもり」を検出する陽性対照そのもの。
+const TRANSFER_POOL_WORKER_SRC = `
+${pixelFor.toString()}
+${fillFrameRGBA.toString()}
+let frameNo = 0, intervals = [], loopStart = 0, lastTick = 0, timer = null, skipEvery = 0;
+let sendTimes = [], pool = [], poolMisses = 0;
+onmessage = (ev) => {
+  const m = ev.data;
+  if (m.op === 'return') {
+    // mainが描画を終えて返してきたバッファをプールへ戻す(次フレーム以降の再利用対象)。
+    pool.push(m.buffer);
+    return;
+  }
+  if (m.op === 'start') {
+    skipEvery = m.skipEvery || 0;
+    frameNo = 0; intervals = []; sendTimes = []; pool = []; poolMisses = 0;
+    const targetMs = m.targetMs, durationMs = m.durationMs;
+    loopStart = performance.now(); lastTick = loopStart;
+    timer = setInterval(() => {
+      const now = performance.now();
+      intervals.push(now - lastTick);
+      lastTick = now;
+      const skip = skipEvery > 0 && (frameNo % skipEvery === 0);
+      if (!skip) {
+        let buf = pool.pop();
+        if (!buf) { poolMisses++; buf = new ArrayBuffer(${W}*${H}*4); }
+        const rgba = new Uint8ClampedArray(buf);
+        // 使い回すバッファでも全セルを毎回書き換える(fillFrameRGBAは先頭4バイト+
+        // copyWithinで全域を埋め尽くす)。前フレームの内容が部分的に残ることはない。
+        fillFrameRGBA(rgba, frameNo, false, ${W}, ${H}, ${JSON.stringify(MARKERS)});
+        const sendT0 = performance.now();
+        postMessage({ op:'frame', frameNo, buffer: buf, sentAt: performance.timeOrigin + performance.now() }, [buf]);
+        sendTimes.push(performance.now() - sendT0);
+      } else {
+        postMessage({ op:'skip', frameNo });
+      }
+      frameNo++;
+      if (now - loopStart >= durationMs) {
+        clearInterval(timer);
+        postMessage({ op:'done', frameNo, intervals, sendTimes, poolMisses });
+      }
+    }, targetMs);
   }
 };
 `;
@@ -254,6 +315,67 @@ async function runTransferTrial(durationMs, skipEvery) {
   worker.terminate();
   return { ...result, wallMs, handlerDurations, recvDelays, bytesTotal, framesReceived, checkSamples, checkMismatches };
 }
+
+// disableReturn=true のときは受信後にバッファを返さない(=返却が黙って失敗している状態を模擬)。
+// poolMissesがframesReceivedに漸近することを確認する故障注入専用。
+async function runTransferPoolTrial(durationMs, skipEvery, disableReturn) {
+  const canvas = document.getElementById('canvasTransferPool');
+  const ctx = canvas.getContext('2d');
+  const worker = new Worker(URL.createObjectURL(new Blob([TRANSFER_POOL_WORKER_SRC], { type:'text/javascript' })));
+  let handlerDurations = [], recvDelays = [], bytesTotal = 0, framesReceived = 0, checkSamples = 0, checkMismatches = 0;
+  const done = new Promise((resolve) => {
+    worker.onmessage = (ev) => {
+      const m = ev.data;
+      if (m.op === 'frame') {
+        const hStart = performance.now();
+        const rgba = new Uint8ClampedArray(m.buffer);
+        ctx.putImageData(new ImageData(rgba, W, H), 0, 0);
+        bytesTotal += m.buffer.byteLength;
+        framesReceived++;
+        recvDelays.push((performance.timeOrigin + hStart) - m.sentAt);
+        if (m.frameNo % 7 === 0) {
+          checkSamples++;
+          const img = ctx.getImageData(Math.floor(W/2), Math.floor(H/2), 1, 1).data;
+          const want = pixelFor(m.frameNo, 4);
+          if (img[0]!==want[0] || img[1]!==want[1] || img[2]!==want[2]) checkMismatches++;
+        }
+        handlerDurations.push(performance.now() - hStart);
+        // putImageDataはImageDataの中身をcanvasの描画バッファへコピーするだけで、
+        // 元のArrayBuffer(m.buffer)はdetachされない。描き終わった直後にWorkerへ返す。
+        if (!disableReturn) {
+          worker.postMessage({ op:'return', buffer: m.buffer }, [m.buffer]);
+        }
+        // disableReturn時はここで何もしない(=バッファはGC対象になるだけ)。
+      } else if (m.op === 'skip') {
+        if (m.frameNo % 7 === 0) {
+          checkSamples++;
+          const img = ctx.getImageData(Math.floor(W/2), Math.floor(H/2), 1, 1).data;
+          const want = pixelFor(m.frameNo, 4);
+          if (img[0]!==want[0] || img[1]!==want[1] || img[2]!==want[2]) checkMismatches++;
+        }
+      } else if (m.op === 'done') {
+        resolve(m);
+      }
+    };
+  });
+  const t0 = performance.now();
+  worker.postMessage({ op:'start', targetMs: TARGET_MS, durationMs, skipEvery: skipEvery||0 });
+  const result = await guard(worker, done);
+  const wallMs = performance.now() - t0;
+  worker.terminate();
+  return { ...result, wallMs, handlerDurations, recvDelays, bytesTotal, framesReceived, checkSamples, checkMismatches };
+}
+
+window.__pwPoolReturnFaultInjection = async (durationMs) => {
+  // 返却を止めた状態で走らせ、poolMissesがframesReceivedにほぼ一致する(=返却が効いていない
+  // ときの挙動)ことを確認してから、通常の(返却あり)測定へ戻る。
+  const broken = await runTransferPoolTrial(durationMs || 2000, 0, true);
+  const ok = await runTransferPoolTrial(durationMs || 2000, 0, false);
+  return {
+    disableReturn: { framesReceived: broken.framesReceived, poolMisses: broken.poolMisses },
+    normalReturn: { framesReceived: ok.framesReceived, poolMisses: ok.poolMisses },
+  };
+};
 
 window.__pwFeasibility = async () => {
   const report = {};
@@ -326,6 +448,23 @@ window.__pwSpeedA = async (method, trials, durationMs) => {
         selfCheckSamples: r.selfCheckSamples,
         wallMs: +r.wallMs.toFixed(2),
       });
+    } else if (method === 'transferPool') {
+      const r = await runTransferPoolTrial(durationMs, 0, false);
+      results.push({
+        trial: i+1,
+        targetFrames: Math.round(durationMs / TARGET_MS),
+        framesPresented: r.framesReceived,
+        workerLoopIntervalMs: stats(r.intervals),
+        mainHandlerMs: stats(r.handlerDurations),
+        recvDelayMs: stats(r.recvDelays),
+        sendCostMs: stats(r.sendTimes),
+        bytesTotal: r.bytesTotal,
+        bytesPerFrame: r.framesReceived ? Math.round(r.bytesTotal / r.framesReceived) : null,
+        checkMismatches: r.checkMismatches,
+        checkSamples: r.checkSamples,
+        poolMisses: r.poolMisses,
+        wallMs: +r.wallMs.toFixed(2),
+      });
     } else {
       const r = await runTransferTrial(durationMs, 0);
       results.push({
@@ -352,6 +491,9 @@ window.__pwFaultInjectionA = async (method) => {
   if (method === 'offscreen') {
     const r = await runOffscreenTrial(2000, 2);
     return { method, frameNo: r.frameNo, selfCheckMismatches: r.selfCheckMismatches, selfCheckSamples: r.selfCheckSamples };
+  } else if (method === 'transferPool') {
+    const r = await runTransferPoolTrial(2000, 2, false);
+    return { method, framesReceived: r.framesReceived, checkMismatches: r.checkMismatches, checkSamples: r.checkSamples, poolMisses: r.poolMisses };
   } else {
     const r = await runTransferTrial(2000, 2);
     return { method, framesReceived: r.framesReceived, checkMismatches: r.checkMismatches, checkSamples: r.checkSamples };
