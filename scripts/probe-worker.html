@@ -1,0 +1,515 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>ワーカー描画方式プローブ</title>
+<style>
+ body{font:14px/1.6 -apple-system,sans-serif;margin:1rem;max-width:60rem}
+ pre{background:#f4f4f4;padding:.6rem;overflow-x:auto;white-space:pre-wrap;max-height:40vh}
+ .ok{color:#0a0}.ng{color:#c00}.na{color:#888}
+ button{font-size:16px;padding:.6rem 1.2rem;margin-right:.5rem}
+ canvas{border:1px solid #ccc;image-rendering:pixelated;width:384px;height:256px}
+ #secureBanner{font-size:16px;font-weight:bold;padding:.6rem;border-radius:.4rem;margin-bottom:1rem}
+ #secureBanner.ok{background:#e6ffe6;color:#070}
+ #secureBanner.ng{background:#ffe6e6;color:#c00}
+</style>
+<h1>ワーカー描画方式プローブ(A: 映像経路 / B: frame event / C: スケジューラ)</h1>
+<div id="secureBanner">判定中…</div>
+<p>手順5・7着手前の実測用。単体で開ける(実機で後日そのまま使う想定)。
+puppeteer から個々の関数を呼ぶ運用を想定しており、下のボタンは人手確認用。</p>
+<div>
+  <canvas id="canvasOffscreen" width="768" height="512"></canvas>
+  <canvas id="canvasTransfer" width="768" height="512"></canvas>
+</div>
+<button id="run">人手実行(概要のみ)</button>
+<pre id="out">未実行</pre>
+<script>
+(() => {
+  const b = document.getElementById('secureBanner');
+  if (isSecureContext) { b.textContent = 'secure context: OK'; b.className = 'ok'; }
+  else { b.textContent = '⚠ secure context ではありません — https:// で開き直してください'; b.className = 'ng'; }
+})();
+
+const out = document.getElementById('out');
+function log(s){ out.textContent += s + '\n'; }
+function j(v){ try { return JSON.stringify(v); } catch(e){ return String(v); } }
+
+const W = 768, H = 512;
+const TARGET_MS = 1000 / 55.5; // 約18.018ms
+
+// ---- 共通: フレーム内容の生成式(マーカー4点+ベース色) ----------------------
+// worker側・main側の双方でこの式を独立に再実装している(コピペで揃えている。ズレ注意)。
+// マーカー点は4隅+中央の5点、それぞれ別seedを持つ。
+const MARKERS = [ [0,0,0], [W-1,0,1], [0,H-1,2], [W-1,H-1,3], [Math.floor(W/2), Math.floor(H/2), 4] ];
+function pixelFor(frameNo, seed) {
+  return [ (frameNo*3+seed*11)&0xff, (frameNo*5+seed*13)&0xff, (frameNo*7+seed*17)&0xff ];
+}
+// W/H/MARKERSを外側のクロージャに置くとWorker側へ.toString()でソースだけをコピーした際に
+// 自由変数として未定義になる(実測: "W is not defined")。全て引数で受け取る形にしてある。
+function buildFrameRGBA(frameNo, skipMarkers, w, h, markers) {
+  const rgba = new Uint8ClampedArray(w*h*4);
+  rgba[0]=(frameNo*3)&0xff; rgba[1]=(frameNo*5)&0xff; rgba[2]=(frameNo*7)&0xff; rgba[3]=255;
+  let filled = 4;
+  while (filled < rgba.length) {
+    const copyLen = Math.min(filled, rgba.length-filled);
+    rgba.copyWithin(filled, 0, copyLen);
+    filled += copyLen;
+  }
+  if (!skipMarkers) {
+    for (const [x,y,seed] of markers) {
+      const off = (y*w+x)*4;
+      const [r,g,bl] = pixelFor(frameNo, seed);
+      rgba[off]=r; rgba[off+1]=g; rgba[off+2]=bl; rgba[off+3]=255;
+    }
+  }
+  return rgba;
+}
+function checkMarkers(getPixel /* (x,y) => [r,g,b] */, frameNo) {
+  const mismatches = [];
+  for (const [x,y,seed] of MARKERS) {
+    const want = pixelFor(frameNo, seed);
+    const got = getPixel(x,y);
+    if (!got || got[0]!==want[0] || got[1]!==want[1] || got[2]!==want[2]) {
+      mismatches.push({ x,y,seed, want, got });
+    }
+  }
+  return mismatches;
+}
+
+// worker内で例外が起きると対応する onmessage が二度と来ず、page.evaluate() が
+// CDPのprotocolTimeoutまで無言でハングする(実測)。worker.onerrorで確実に reject する。
+function guard(worker, promise) {
+  const errP = new Promise((_, reject) => {
+    worker.addEventListener('error', (e) => reject(new Error('worker error: ' + (e.message || e))));
+  });
+  return Promise.race([promise, errP]);
+}
+
+function stats(arr) {
+  if (!arr || arr.length === 0) return { n:0, mean:null, p95:null, max:null, min:null };
+  const s = [...arr].sort((a,b)=>a-b);
+  const n = s.length;
+  const mean = s.reduce((a,b)=>a+b,0)/n;
+  const p95 = s[Math.min(n-1, Math.floor(n*0.95))];
+  return { n, mean:+mean.toFixed(3), p95:+p95.toFixed(3), max:+s[n-1].toFixed(3), min:+s[0].toFixed(3) };
+}
+
+// ---- rAF カウンタ(ページ読み込み直後から回り続ける。生死の確認用) -----------
+window.__pwRaf = { count: 0 };
+(function rafLoop(){ window.__pwRaf.count++; requestAnimationFrame(rafLoop); })();
+window.__pwRafSnapshot = () => ({ count: window.__pwRaf.count, visibilityState: document.visibilityState, now: performance.now() });
+
+// =================================================================
+// A. 映像経路
+// =================================================================
+
+const OFFSCREEN_WORKER_SRC = `
+${pixelFor.toString()}
+${buildFrameRGBA.toString()}
+let ctx = null, timer = null, frameNo = 0, intervals = [], loopStart = 0, lastTick = 0;
+let selfCheckMismatches = 0, selfCheckSamples = 0, skipEvery = 0;
+onmessage = (ev) => {
+  const m = ev.data;
+  if (m.op === 'init') {
+    const canvas = m.canvas;
+    ctx = canvas.getContext('2d');
+    postMessage({ op:'ready' });
+    return;
+  }
+  if (m.op === 'start') {
+    skipEvery = m.skipEvery || 0;
+    frameNo = 0; intervals = []; selfCheckMismatches = 0; selfCheckSamples = 0;
+    loopStart = performance.now(); lastTick = loopStart;
+    const targetMs = m.targetMs;
+    const durationMs = m.durationMs;
+    function tick() {
+      const now = performance.now();
+      intervals.push(now - lastTick);
+      lastTick = now;
+      const skip = skipEvery > 0 && (frameNo % skipEvery === 0);
+      if (!skip) {
+        const rgba = buildFrameRGBA(frameNo, false, ${W}, ${H}, ${JSON.stringify(MARKERS)});
+        ctx.putImageData(new ImageData(rgba, ${W}, ${H}), 0, 0);
+      }
+      if (frameNo % 7 === 0) {
+        // 「今のframeNoに対応する内容が実際にcanvasへ入っているか」だけを見る。
+        // skipで描画をサボった回は前フレームの内容が残るため必ず不一致になり、
+        // これが「未描画」の検出そのものになる(通常運転ではskip=falseで常に一致するはず)。
+        selfCheckSamples++;
+        const img = ctx.getImageData(${Math.floor(W/2)}, ${Math.floor(H/2)}, 1, 1).data;
+        const want = [(frameNo*3+4*11)&0xff, (frameNo*5+4*13)&0xff, (frameNo*7+4*17)&0xff];
+        if (img[0]!==want[0] || img[1]!==want[1] || img[2]!==want[2]) selfCheckMismatches++;
+      }
+      frameNo++;
+      if (now - loopStart >= durationMs) {
+        postMessage({ op:'done', frameNo, intervals, selfCheckMismatches, selfCheckSamples });
+        return;
+      }
+      timer = setTimeout(tick, targetMs);
+    }
+    tick();
+  }
+};
+`;
+
+async function runOffscreenTrial(durationMs, skipEvery) {
+  // 実行のたびに新しい canvas 要素を使う(transferControlToOffscreenは1回きりのため)。
+  const canvas = document.createElement('canvas');
+  canvas.width = W; canvas.height = H;
+  const offscreen = canvas.transferControlToOffscreen();
+  const worker = new Worker(URL.createObjectURL(new Blob([OFFSCREEN_WORKER_SRC], { type:'text/javascript' })));
+  worker.postMessage({ op:'init', canvas: offscreen }, [offscreen]);
+  await guard(worker, new Promise((r) => { worker.onmessage = (ev) => { if (ev.data.op==='ready') r(); }; }));
+  const t0 = performance.now();
+  worker.postMessage({ op:'start', targetMs: TARGET_MS, durationMs, skipEvery: skipEvery||0 });
+  const result = await guard(worker, new Promise((resolve) => {
+    worker.onmessage = (ev) => { if (ev.data.op === 'done') resolve(ev.data); };
+  }));
+  const wallMs = performance.now() - t0;
+  worker.terminate();
+  return { canvas, ...result, wallMs };
+}
+
+const TRANSFER_WORKER_SRC = `
+${pixelFor.toString()}
+${buildFrameRGBA.toString()}
+let frameNo = 0, intervals = [], loopStart = 0, lastTick = 0, timer = null, skipEvery = 0;
+let sendTimes = [];
+onmessage = (ev) => {
+  const m = ev.data;
+  if (m.op === 'start') {
+    skipEvery = m.skipEvery || 0;
+    frameNo = 0; intervals = []; sendTimes = [];
+    const targetMs = m.targetMs, durationMs = m.durationMs;
+    loopStart = performance.now(); lastTick = loopStart;
+    function tick() {
+      const now = performance.now();
+      intervals.push(now - lastTick);
+      lastTick = now;
+      const skip = skipEvery > 0 && (frameNo % skipEvery === 0);
+      if (!skip) {
+        const rgba = buildFrameRGBA(frameNo, false, ${W}, ${H}, ${JSON.stringify(MARKERS)});
+        const sendT0 = performance.now();
+        // 実測でわかったこと: Workerのperformance.now()はmain threadと時刻原点(timeOrigin)が
+        // 異なる(mainはdocumentのnavigation start、Workerは自分の生成時刻)。ここで単純に
+        // performance.now()同士を引き算すると数万msの見せかけの遅延になる。timeOrigin込みの
+        // 絶対時刻(エポック相当)に直してから送る。
+        postMessage({ op:'frame', frameNo, buffer: rgba.buffer, sentAt: performance.timeOrigin + performance.now() }, [rgba.buffer]);
+        sendTimes.push(performance.now() - sendT0);
+      } else {
+        postMessage({ op:'skip', frameNo });
+      }
+      frameNo++;
+      if (now - loopStart >= durationMs) {
+        postMessage({ op:'done', frameNo, intervals, sendTimes });
+        return;
+      }
+      timer = setTimeout(tick, targetMs);
+    }
+    tick();
+  }
+};
+`;
+
+async function runTransferTrial(durationMs, skipEvery) {
+  const canvas = document.getElementById('canvasTransfer');
+  const ctx = canvas.getContext('2d');
+  const worker = new Worker(URL.createObjectURL(new Blob([TRANSFER_WORKER_SRC], { type:'text/javascript' })));
+  let handlerDurations = [], recvDelays = [], bytesTotal = 0, framesReceived = 0, checkSamples = 0, checkMismatches = 0;
+  let lastFrameNo = -1;
+  const done = new Promise((resolve) => {
+    worker.onmessage = (ev) => {
+      const m = ev.data;
+      if (m.op === 'frame') {
+        const hStart = performance.now();
+        const rgba = new Uint8ClampedArray(m.buffer);
+        ctx.putImageData(new ImageData(rgba, W, H), 0, 0);
+        bytesTotal += m.buffer.byteLength;
+        framesReceived++;
+        lastFrameNo = m.frameNo;
+        recvDelays.push((performance.timeOrigin + hStart) - m.sentAt);
+        if (m.frameNo % 7 === 0) {
+          checkSamples++;
+          const img = ctx.getImageData(Math.floor(W/2), Math.floor(H/2), 1, 1).data;
+          const want = pixelFor(m.frameNo, 4);
+          if (img[0]!==want[0] || img[1]!==want[1] || img[2]!==want[2]) checkMismatches++;
+        }
+        handlerDurations.push(performance.now() - hStart);
+      } else if (m.op === 'skip') {
+        // 故障注入モード専用: この回はputImageDataしていないので、今のframeNoに対応する
+        // 内容にはなっていないはず。それをこの照合で検出できることを確認する。
+        if (m.frameNo % 7 === 0) {
+          checkSamples++;
+          const img = ctx.getImageData(Math.floor(W/2), Math.floor(H/2), 1, 1).data;
+          const want = pixelFor(m.frameNo, 4);
+          if (img[0]!==want[0] || img[1]!==want[1] || img[2]!==want[2]) checkMismatches++;
+        }
+      } else if (m.op === 'done') {
+        resolve(m);
+      }
+    };
+  });
+  const t0 = performance.now();
+  worker.postMessage({ op:'start', targetMs: TARGET_MS, durationMs, skipEvery: skipEvery||0 });
+  const result = await guard(worker, done);
+  const wallMs = performance.now() - t0;
+  worker.terminate();
+  return { ...result, wallMs, handlerDurations, recvDelays, bytesTotal, framesReceived, checkSamples, checkMismatches };
+}
+
+window.__pwFeasibility = async () => {
+  const report = {};
+  // --- 可否1: transferControlToOffscreen 後、main の toDataURL/getImageData ---
+  const canvas = document.getElementById('canvasOffscreen');
+  const offscreen = canvas.transferControlToOffscreen();
+  const worker = new Worker(URL.createObjectURL(new Blob([OFFSCREEN_WORKER_SRC], { type:'text/javascript' })));
+  await guard(worker, new Promise((resolve) => {
+    worker.onmessage = (ev) => { if (ev.data.op==='ready') resolve(); };
+    worker.postMessage({ op:'init', canvas: offscreen }, [offscreen]);
+  }));
+  // 1フレーム描かせる
+  worker.postMessage({ op:'start', targetMs: TARGET_MS, durationMs: 100, skipEvery: 0 });
+  await guard(worker, new Promise((resolve) => { worker.onmessage = (ev) => { if (ev.data.op==='done') resolve(); }; }));
+
+  try {
+    const url = canvas.toDataURL();
+    report.toDataURLAfterTransfer = { ok: true, length: url.length };
+  } catch (e) { report.toDataURLAfterTransfer = { ok: false, error: e.name + ': ' + e.message }; }
+
+  try {
+    const ctx2 = canvas.getContext('2d');
+    if (!ctx2) { report.getImageDataAfterTransfer = { ok: false, error: 'getContext(2d) returned null' }; }
+    else {
+      const data = ctx2.getImageData(0, 0, 1, 1);
+      report.getImageDataAfterTransfer = { ok: true, sample: [...data.data] };
+    }
+  } catch (e) { report.getImageDataAfterTransfer = { ok: false, error: e.name + ': ' + e.message }; }
+
+  // --- 可否2: 同じ canvas への再 transfer ---
+  try {
+    canvas.transferControlToOffscreen();
+    report.retransferSameCanvas = { ok: true, note: '想定外: 成功した' };
+  } catch (e) { report.retransferSameCanvas = { ok: false, error: e.name + ': ' + e.message, note: '想定どおり失敗(1回きり)' }; }
+
+  // --- 可否3: worker再生成時、旧canvasは死んでいるか。新canvasなら通るか ---
+  worker.terminate();
+  try {
+    const ctx3 = canvas.getContext('2d');
+    report.oldCanvasGetContextAfterWorkerTerminate = { ok: !!ctx3, note: ctx3 ? '想定外: 取得できた' : '想定どおり: nullで死んでいる' };
+  } catch (e) { report.oldCanvasGetContextAfterWorkerTerminate = { ok: false, error: e.name+': '+e.message }; }
+
+  const canvas2 = document.createElement('canvas');
+  canvas2.width = W; canvas2.height = H;
+  try {
+    const offscreen2 = canvas2.transferControlToOffscreen();
+    const worker2 = new Worker(URL.createObjectURL(new Blob([OFFSCREEN_WORKER_SRC], { type:'text/javascript' })));
+    await guard(worker2, new Promise((resolve) => {
+      worker2.onmessage = (ev) => { if (ev.data.op==='ready') resolve(); };
+      worker2.postMessage({ op:'init', canvas: offscreen2 }, [offscreen2]);
+    }));
+    report.newCanvasTransferAfterRegen = { ok: true, note: '新しいcanvas要素なら再transferできた' };
+    worker2.terminate();
+  } catch (e) { report.newCanvasTransferAfterRegen = { ok: false, error: e.name+': '+e.message }; }
+
+  return report;
+};
+
+window.__pwSpeedA = async (method, trials, durationMs) => {
+  const results = [];
+  for (let i = 0; i < trials; i++) {
+    if (method === 'offscreen') {
+      const r = await runOffscreenTrial(durationMs, 0);
+      results.push({
+        trial: i+1,
+        targetFrames: Math.round(durationMs / TARGET_MS),
+        framesPresented: r.frameNo,
+        workerLoopIntervalMs: stats(r.intervals),
+        selfCheckMismatches: r.selfCheckMismatches,
+        selfCheckSamples: r.selfCheckSamples,
+        wallMs: +r.wallMs.toFixed(2),
+      });
+    } else {
+      const r = await runTransferTrial(durationMs, 0);
+      results.push({
+        trial: i+1,
+        targetFrames: Math.round(durationMs / TARGET_MS),
+        framesPresented: r.framesReceived,
+        workerLoopIntervalMs: stats(r.intervals),
+        mainHandlerMs: stats(r.handlerDurations),
+        recvDelayMs: stats(r.recvDelays),
+        sendCostMs: stats(r.sendTimes),
+        bytesTotal: r.bytesTotal,
+        bytesPerFrame: r.framesReceived ? Math.round(r.bytesTotal / r.framesReceived) : null,
+        checkMismatches: r.checkMismatches,
+        checkSamples: r.checkSamples,
+        wallMs: +r.wallMs.toFixed(2),
+      });
+    }
+  }
+  return results;
+};
+
+window.__pwFaultInjectionA = async (method) => {
+  // skipEvery=2: 2フレームに1回描画をサボる。selfCheck/checkMismatchesが増えることを確認する。
+  if (method === 'offscreen') {
+    const r = await runOffscreenTrial(2000, 2);
+    return { method, frameNo: r.frameNo, selfCheckMismatches: r.selfCheckMismatches, selfCheckSamples: r.selfCheckSamples };
+  } else {
+    const r = await runTransferTrial(2000, 2);
+    return { method, framesReceived: r.framesReceived, checkMismatches: r.checkMismatches, checkSamples: r.checkSamples };
+  }
+};
+
+// =================================================================
+// B. frame event の費用
+// =================================================================
+
+const B_WORKER_SRC = `
+let timer = null;
+onmessage = (ev) => {
+  const m = ev.data;
+  if (m.op === 'start') {
+    const targetMs = m.targetMs, durationMs = m.durationMs;
+    let frameNo = 0;
+    const loopStart = performance.now();
+    function tick() {
+      const now = performance.now();
+      postMessage({
+        op: 'frame', frameNo,
+        access: { fdd0: (frameNo % 4) === 0, fdd1: (frameNo % 7) === 0, hdd0: (frameNo % 11) === 0 },
+        fps: 55.5, queuedSec: 0.05 + 0.02 * Math.sin(frameNo / 10),
+        sentAt: performance.timeOrigin + now, // timeOrigin補正(A節と同じ理由)
+      });
+      frameNo++;
+      if (now - loopStart >= durationMs) { postMessage({ op:'done', frameNo }); return; }
+      timer = setTimeout(tick, targetMs);
+    }
+    tick();
+  }
+};
+`;
+
+function busySpinMs(ms) {
+  const end = performance.now() + ms;
+  while (performance.now() < end) { /* 意図的なビジーループ */ }
+}
+
+window.__pwB = async (trials, durationMs, busy) => {
+  const results = [];
+  for (let i = 0; i < trials; i++) {
+    const worker = new Worker(URL.createObjectURL(new Blob([B_WORKER_SRC], { type:'text/javascript' })));
+    const delays = [], handlerDurations = [];
+    let received = 0, lastFrameNo = -1, gapCount = 0;
+    let busyTimer = null;
+    if (busy) {
+      busyTimer = setInterval(() => busySpinMs(40), 180);
+    }
+    const done = new Promise((resolve) => {
+      worker.onmessage = (ev) => {
+        const m = ev.data;
+        if (m.op === 'frame') {
+          const hStart = performance.now();
+          delays.push((performance.timeOrigin + hStart) - m.sentAt);
+          if (lastFrameNo >= 0 && m.frameNo !== lastFrameNo + 1) gapCount++;
+          lastFrameNo = m.frameNo;
+          received++;
+          handlerDurations.push(performance.now() - hStart);
+        } else if (m.op === 'done') { resolve(); }
+      };
+    });
+    worker.postMessage({ op:'start', targetMs: TARGET_MS, durationMs });
+    await guard(worker, done);
+    if (busyTimer) clearInterval(busyTimer);
+    worker.terminate();
+    results.push({
+      trial: i+1, busy: !!busy, received,
+      gapCount, // frameNoが飛んだ回数(=取りこぼし。0が期待値)
+      delayMs: stats(delays),
+      handlerMs: stats(handlerDurations),
+      maxDelayFrames: delays.length ? +(Math.max(...delays)/TARGET_MS).toFixed(2) : null,
+    });
+  }
+  return results;
+};
+
+// =================================================================
+// C. Worker のスケジューラ
+// =================================================================
+
+const C_WORKER_SRC = `
+let timer = null;
+onmessage = (ev) => {
+  const m = ev.data;
+  if (m.op !== 'start') return;
+  const targetMs = m.targetMs, durationMs = m.durationMs, mode = m.mode;
+  const intervals = [];
+  let lastTick = performance.now();
+  const loopStart = lastTick;
+  let n = 0;
+  if (mode === 'timeout') {
+    function tick() {
+      const now = performance.now();
+      intervals.push(now - lastTick);
+      lastTick = now;
+      n++;
+      if (now - loopStart >= durationMs) { postMessage({ op:'done', intervals, n, loopStart, lastTick }); return; }
+      timer = setTimeout(tick, targetMs);
+    }
+    timer = setTimeout(tick, targetMs);
+  } else {
+    timer = setInterval(() => {
+      const now = performance.now();
+      intervals.push(now - lastTick);
+      lastTick = now;
+      n++;
+      if (now - loopStart >= durationMs) { clearInterval(timer); postMessage({ op:'done', intervals, n, loopStart, lastTick }); }
+    }, targetMs);
+  }
+};
+`;
+
+window.__pwC = async (mode, trials, durationMs) => {
+  const results = [];
+  for (let i = 0; i < trials; i++) {
+    const rafBefore = window.__pwRafSnapshot();
+    const worker = new Worker(URL.createObjectURL(new Blob([C_WORKER_SRC], { type:'text/javascript' })));
+    const t0 = performance.now();
+    const result = await guard(worker, new Promise((resolve) => {
+      worker.onmessage = (ev) => { if (ev.data.op === 'done') resolve(ev.data); };
+      worker.postMessage({ op:'start', mode, targetMs: TARGET_MS, durationMs });
+    }));
+    const wallMs = performance.now() - t0;
+    worker.terminate();
+    const rafAfter = window.__pwRafSnapshot();
+    const targetCount = Math.round(durationMs / TARGET_MS);
+    const cumulativeDriftMs = result.lastTick - result.loopStart - (result.n * TARGET_MS);
+    results.push({
+      trial: i+1, mode,
+      visibilityStateBefore: rafBefore.visibilityState,
+      visibilityStateAfter: rafAfter.visibilityState,
+      rafCountDuringPhase: rafAfter.count - rafBefore.count,
+      n: result.n, targetCount,
+      intervalMs: stats(result.intervals),
+      cumulativeDriftMs: +cumulativeDriftMs.toFixed(2),
+      wallMs: +wallMs.toFixed(2),
+    });
+  }
+  return results;
+};
+
+window.__pwVisibility = () => document.visibilityState;
+
+document.getElementById('run').onclick = async () => {
+  out.textContent = '';
+  log('== 概要実行(短時間・人手確認用) ==');
+  const feas = await window.__pwFeasibility();
+  log('feasibility: ' + j(feas));
+  const a1 = await window.__pwSpeedA('offscreen', 1, 2000);
+  log('A offscreen: ' + j(a1));
+  const a2 = await window.__pwSpeedA('transfer', 1, 2000);
+  log('A transfer: ' + j(a2));
+  const bq = await window.__pwB(1, 2000, false);
+  log('B quiet: ' + j(bq));
+  const c1 = await window.__pwC('timeout', 1, 2000);
+  log('C timeout: ' + j(c1));
+  log('== 完了(本測定は node scripts/probe-worker.mjs で行う) ==');
+};
+</script>

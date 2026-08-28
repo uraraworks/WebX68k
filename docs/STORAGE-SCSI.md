@@ -374,9 +374,9 @@ command の予期される失敗は `ok: false` response とし、proxy は `Cor
 
 ### 未決事項
 
-- Worker の内部スケジューラを `setTimeout` のみで構成するか、音声キューの sample frame 数をどの頻度でフィードバックするかは、非表示タブ、iOS、ヘッドレスでの実測がないため未決。メインから一フレームずつ駆動しないことと、境界の時刻を `frameNo` に統一することは固定する。
-- OffscreenCanvas へ直接描画するか、各フレームの `ImageBitmap`/RGBA を転送するかは未決。前者では screenshot、hash、Worker 再生成時の canvas 再移譲を対象ブラウザで検証する必要がある。後者では帯域と背圧を測る必要がある。
-- `frame` event の安全な間引き・背圧方式は未決。アクセス値を失わず、音声の連続性を保ち、別バッファとの事後照合を導入しない方式を実測して決める必要がある。
+- Worker の内部スケジューラを `setTimeout` のみで構成するかは、**2026-08-28の実測(「ワーカー描画方式の実測（2026-08-28）」C節)で決着した**: 固定delayの`setTimeout`だけでは系統的にドリフトし55.5Hzを正確に刻めない(5秒で800ms超の累積遅れ)。`setInterval`はドリフトがほぼ0で安定する。デスクトップChromeでの実測にとどまり、iOS/Android実機・ヘッドレスでの確認は未実施。音声キューの sample frame 数をどの頻度でフィードバックするかは今回測っておらず未決のまま。メインから一フレームずつ駆動しないことと、境界の時刻を `frameNo` に統一することは固定する。
+- OffscreenCanvas へ直接描画するか、各フレームの `ImageBitmap`/RGBA を転送するかは、**2026-08-28の実測(同上A節)でも決まらなかった**。速度差は僅少(転送方式のmain側コストはフレーム予算の3%程度)だが、可否面で重要な制約が判明した: OffscreenCanvas方式では `getImageData()` によるscreenHash相当の直接読み取りがmain側で恒久的に不可能になり(`toDataURL()`は可)、Worker再生成のたびに新しいcanvas要素への差し替えが必須になる。この制約コストを踏まえた選定はまだ行っていない。
+- `frame` event の安全な間引き・背圧方式は、**2026-08-28の実測(同上B節)で部分的にしか決まらなかった**。main40msビジーループ・周期180ms(デューティ比22%)の負荷では取りこぼし0・遅延はp95約33msに収まり、間引き無しでも即座には破綻しなかった。ただしどこまで負荷を上げると破綻するかの閾値は未測定で、間引き・背圧方式そのものは依然として未決。
 - ゲームパッドを独立タイマーで poll するか、受信した `frame` event を契機に poll するかは未決。Worker 内の `input_poll` からメインへ同期問い合わせはしない。
 - HDD の OPFS ID/stream API、既存 IndexedDB からの移行、FDD 全量イメージのメイン側保持方針はストレージ方式の決定に依存するため未決。
 - `_retro_deinit` を正常終了で呼ぶべきか、現在未使用の `loadGameNone()` / `unloadGame()` とテスト用 export を本番 proxy に残すかは、現行の意図と外部利用が確認できないため未決。
@@ -2564,6 +2564,73 @@ dev サーバー（`npm run dev`、127.0.0.1:5299）に `?system=1&run=1` で接
 - **合成キー入力がゲストに届かなかった。** ブラウザ自動操作の `type` で7文字入力したが `screenText` に現れなかった。既知の「自動ブラウザのキー入力は `code` が空」（`feedback_browser_automation_key_code_empty.md`）に該当する可能性が高い。そのため状態を変える手段としてリセットを使った。なお `scripts/measure-key.mjs` は puppeteer の keyboard API で `code` を明示するため影響を受けない。**2026-08-28の人手確認で、実キーの Enter はゲストに到達していることが裏づけられた。** 合成キーが届かなかったのは自動操作側の限界であることが確認できた
 - 音声の実聴取、ファイルマネージャ経由の操作、FDD ホットマウントは今回確認していない
 
+## ワーカー描画方式の実測（2026-08-28）
+
+手順5・7（描画・音声出力、Worker駆動ループ）に着手する前に、「未決事項」に残っていた3点（A: 映像経路、B: `frame` event、C: Workerのスケジューラ）を、コアの移行はせず独立したプローブで実測した。新規追加は `scripts/probe-worker.html`（単体で開けるページ）と `scripts/probe-worker.mjs`（ヘッドフル実Chromeで駆動する既存様式のドライバ）のみで、`src/`・`test/` は変更していない。実行環境は `scripts/measure-env.mjs` の `collectEnvironment()` で記録した：Chrome 151.0.7922.174 / macOS 24.6.0 / Apple M2 8コア / 16GB / AC電源 / 出力デバイス「Beyond TV」(HDMI, 48000Hz)。768×512、目標55.5Hz(約18.018ms)、各測定は3試行。
+
+### A. 映像経路 — 可否3点（最優先）
+
+1. **`transferControlToOffscreen()` 後、main の `canvas.toDataURL()`** → **成立する**(`{ok:true}`)。screenshot相当の経路としてOffscreen後も使える。
+2. **`getImageData()`(main側 `canvas.getContext('2d')`)** → **不成立**。`InvalidStateError: Cannot get context from a canvas that has transferred its control to offscreen.` screenHash相当のpixel直接読み取りはmain側では二度とできない(toDataURLで代替するしかない)。
+3. **同じcanvas要素への再transfer** → **不成立**(想定どおり)。`Cannot transfer control from a canvas for more than one time.` Worker再生成時は**新しいcanvas要素**が必須で、旧canvasは`getContext`も二度と通らない(`oldCanvasGetContextAfterWorkerTerminate: {ok:false}`、同じエラー)。**新しいcanvas要素なら再transferは問題なく成立する**(`newCanvasTransferAfterRegen: {ok:true}`)。
+
+→ **決定に直結する事実**: OffscreenCanvas方式を採るなら、screenHash相当(生pixel読み取り)は`toDataURL()`経由へ置き換える設計変更が要る。Worker再生成のたびにcanvas要素を作り直す実装(DOMツリーの再配置を含む)が必須になる。
+
+### A. 速度(3試行×2方式、6秒/試行)
+
+| 指標 | OffscreenCanvas直描画 | 転送(ImageBitmap相当のRGBA transferable) |
+| --- | --- | --- |
+| 提示フレーム数/目標 | 276〜285 / 333 | 270〜277 / 333 |
+| Workerループ間隔(mean/p95/max) | 21.1〜21.8 / 23.9〜25.2 / 36〜156ms | 22.0〜22.3 / 23.3〜23.4 / 34〜62ms |
+| main側の1フレームあたり処理 | **描画自体はmainで発生しない**(0) | putImageData+検証込みで mean 0.4〜0.7ms / p95 0.4〜4.7ms(GCと思われる散発max 25ms) |
+| 転送コスト(bytes/frame) | — | 1,572,864B(768×512×4)固定、`postMessage`呼出自体は mean 0.05〜0.07ms(transferableのためコピー無し) |
+| 受信遅延(worker送出→main受信、timeOrigin補正後) | — | mean 0.4〜1.0ms / p95 0.4〜0.5ms / max 5.8〜68.2ms(初回ジッタ) |
+
+両方式ともWorkerループ間隔がmean 21〜22msで目標18.02msより明確に遅い(下記C節参照。原因はcanvas方式固有ではなくWorker内`setTimeout`そのもの)。転送方式のmain側コストはフレーム予算(18.02ms)の3%程度で軽微。
+
+### B. `frame` event の費用(3試行×静穏/多忙、6秒/試行)
+
+| 条件 | 遅延(mean/p95/max) | 取りこぼし(gapCount) |
+| --- | --- | --- |
+| 静穏(mainが他に何もしない) | 0.59〜0.71 / 0.6〜0.8 / 2.1〜19.4ms | 0(3試行とも) |
+| 多忙(mainで40msビジーループを180ms周期で注入) | 5.38〜5.40 / 32.5〜33.3 / 40.7〜47.9ms | 0(3試行とも) |
+
+frameNoの連番(`gapCount`)は多忙時も0で、メッセージ自体は失われない。遅延はp95で約1.8フレーム分(33ms)まで伸びるが、破綻(無制限の滞留)は観測されなかった。**ただしこの負荷は継続40ms/周期180ms(デューティ比22%)のみを試しており、より長い連続ブロックでの破綻点は未測定。**
+
+### C. Worker のスケジューラ(3試行×{setTimeout, setInterval}×{前面, 背面}、5秒/試行)
+
+| 条件 | 実測間隔mean | 累積ドリフト(5秒間) | rAF発火回数(同区間) |
+| --- | --- | --- | --- |
+| setTimeout・前面 | 21.46〜21.50ms | +804〜810ms | 300〜302 |
+| setInterval・前面 | 18.01ms | -3〜+15ms(ほぼ0) | 301〜303 |
+| setTimeout・背面(hidden) | 19.51〜19.85ms | +384〜463ms | **0**(3試行とも) |
+| setInterval・背面(hidden) | 18.07ms | +14ms前後 | **0**(3試行とも) |
+
+`document.visibilityState`は別タブを実際に前面へ出す方法で`hidden`にできたことを3試行とも確認した(puppeteerで`page.bringToFront()`によりタブを切り替え、`page.evaluate`でのなりすましではない)。
+
+→ **決定に直結する事実**: **固定delayの`setTimeout`のみでは55.5Hzを正確に刻めない**(1周ごとに約3.4〜3.5msの正の系統誤差があり、5秒で800ms超・累積すると際限なく遅れていく)。**`setInterval`は同条件でドリフトがほぼ0**で、目標に対して安定している。背面(hidden)化した5秒間ではrAFは完全に停止する(0回)が、Worker内タイマー(setTimeout/setInterval とも)は5秒間止まらず動き続けた(間隔がむしろ前面よりやや目標に近づく結果になったが、この短時間では誤差の範囲とみて過度に解釈しない)。
+
+### 測定系の検証(陽性対照・故障注入)
+
+- **内容の正しさを検証する仕組み**: フレーム内容はframeNoの純関数(4隅+中央の5点マーカー、`pixelFor(frameNo, seed)`)で決まる。OffscreenCanvas方式はWorker自身が`getImageData()`で描いた直後に読み戻して照合、転送方式はmain側が受信後の`getImageData()`で照合する(自己参照にならないよう、転送方式は「描いた側」と「照合する側」が別コンテキスト)。
+- **陽性対照**: 通常運転(skip無し)の全trialで一致率100%(`checkMismatches: 0` / `selfCheckMismatches: 0`)。
+- **故障注入**: 2フレームに1回、意図的に描画をサボらせた(2秒間の専用試行)。結果、OffscreenCanvas方式は13サンプル中7件、転送方式は14サンプル中7件が不一致として検出された。**「未描画」を検出できることを確認してから通常計測に戻した。**
+- **rAFのカウンタ**: ページ読込直後から回し続け、前面区間で毎回300前後(目標60Hzに対しdevicePixelRatio等の環境要因で実測60.89Hz相当)発火していることを確認、背面区間では0であることを確認した。rAFが「そもそも自動ブラウザで回っていない」可能性を排除した。
+- **測定系のバグを1件発見・修正した**: 開発初期の実装では、Workerとmainの`performance.now()`を単純に引き算して受信遅延を出していたところ、trialを重ねるごとに遅延が25秒→31秒→37秒と成長する明らかにおかしい値が出た。原因は**Workerとmainで`performance.timeOrigin`(時刻の原点)が異なる**こと(mainはdocumentのnavigation start、Workerは自分自身の生成時刻)。`performance.timeOrigin + performance.now()`で絶対時刻に直してから差分を取るよう修正し、遅延はミリ秒オーダーの妥当な値になった(A/B節の数値は修正後のもの)。2つの時計を安易に混ぜて比較してはいけない、という既知の教訓(`feedback_two_logs_need_one_clock.md`)がここでも再現した形になる。
+
+### 3つの未決事項に対する結論
+
+- **A(OffscreenCanvas vs 転送)**: **決まらなかった**(速度だけでは優劣が出なかった。転送方式のmain側コストはフレーム予算の3%程度で軽微、OffscreenCanvasはmain側コストが実質0)。ただし**可否面での重要な制約が判明した**: OffscreenCanvas方式を採る場合、screenHash相当の生pixel読み取りは`toDataURL()`経由に置き換える設計変更が必須で、Worker再生成のたびに新しいcanvas要素へ差し替える実装が必須になる。この制約コストを踏まえた選定は今回の測定範囲外(実装難易度の見積りが必要)。
+- **B(frame eventの間引き・背圧)**: **部分的に決まった**。今回試した負荷(main40msビジーループ・180ms周期・デューティ比22%)では取りこぼし無く、遅延も有限(p95約33ms)に収まり、間引き・背圧の仕組みが無くても即座には破綻しない。ただし**どこまで負荷を上げると破綻するかの閾値は決まらなかった**(より長い連続ブロックや高頻度負荷は未測定)。
+- **C(setTimeoutのみで55.5Hzを刻めるか)**: **決まった**。固定delayの`setTimeout`だけでは系統的にドリフトし(mean 21.5ms、5秒で800ms超の累積遅れ)、55.5Hzを正確には刻めない。`setInterval`はドリフトがほぼ0で安定する。したがって Worker のスケジューラは**`setInterval`を使うか、`setTimeout`にドリフト補正(前回の超過分をdelayから差し引く等)を追加する必要がある**。後者(補正付きsetTimeout)は今回測定していない。
+
+### 未確認のこと
+
+- **iOS / Android実機は未実施。** `scripts/probe-worker.html`は単体で開けるページとして作ってあるため、後日iOS Safari・Android Chromeでもそのまま開いて`window.__pwFeasibility()`等を呼べる。
+- Bの背圧について、より長い連続ブロック・より高頻度の負荷での破綻点。
+- Cについて、ドリフト補正付き`setTimeout`の実測。
+- 音声キューとの実結合(今回はqueuedSecを模擬値で流しただけで、実際のAudioWorkletとの同期は測っていない)。
+
 ## 次にやること
 
 移行前基準は2組そろい、**ワーカー移行に着手できる状態になった**。
@@ -2582,3 +2649,4 @@ dev サーバー（`npm run dev`、127.0.0.1:5299）に `?system=1&run=1` で接
 
 10. **長時間バックグラウンド化の確認。**今回は14.9秒しか試していない。数分〜数十分の凍結やメモリ逼迫下でのハンドル生存・ワーカー生存を確認する。
 11. **2タブでの排他の実地確認。**単一タブ内の多重取得では排他が効くことを確認済みだが、実際に2枚のタブを開いての相互確認（`manualCrossTab`）は未実施のまま。案内UIの出し方も含めて確認する。
+12. ~~手順5・7着手前の未決事項3点(映像経路・frame event・スケジューラ)の実測。~~ → **2026-08-28 実施済み**（「ワーカー描画方式の実測（2026-08-28）」参照）。Cは決着（`setInterval`採用が妥当、固定delayの`setTimeout`単独は不可）。AとBは部分決着にとどまり、**OffscreenCanvas方式を選ぶ場合はscreenHash相当の実装変更コストを見積る宿題が残る**。iOS/Android実機とより高負荷条件は未実施のまま。
