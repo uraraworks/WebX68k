@@ -53,7 +53,7 @@ function parseArgs(argv) {
       v.faultCheck = true;
       continue;
     }
-    const m = /^--(target|port|runs|boot-timeout|output)=(.+)$/.exec(a);
+    const m = /^--(target|port|runs|boot-timeout|output|poll-interval)=(.+)$/.exec(a);
     if (!m) throw new Error(`不明な引数です: ${a}`);
     v[m[1]] = m[2];
   }
@@ -67,6 +67,9 @@ function printHelp() {
   --port=<number>            dev server のポート (既定: 5196)
   --runs=<number>            通常計測の反復回数 (既定: 3)
   --boot-timeout=<ms>        起動完了タイムアウト (既定: 90000)
+  --poll-interval=<ms>       waitForPromptStable()のポーリング間隔 (既定: 150)
+                             介入実験用: 間隔を伸ばすとポーリング(readTextScreen)自体の
+                             影響が減る。指定していなければ既存の挙動(150ms固定)と同じ
   --output=<path>            JSON の保存先
   --cost-check               プローブ有効/無効での起動時間を比較する(コスト測定)
   --fault-check              故障注入(固定busy wait)で内訳が正しく検出できるか検証する
@@ -165,10 +168,11 @@ function summarize(samples) {
  * (`A>` + 最大1文字の行を3回連続)だが、こちらは高精度な区間計測を目的としないため、
  * Node側からポーリングする単純な形にしてある。
  */
-async function waitForPromptStable(page, timeoutMs) {
+async function waitForPromptStable(page, timeoutMs, pollIntervalMs = 150) {
   const deadline = Date.now() + timeoutMs;
   let stableCount = 0;
   let lastDump = null;
+  let pollCount = 0;
   while (Date.now() < deadline) {
     const dump = await page.evaluate(async () => {
       try {
@@ -177,6 +181,7 @@ async function waitForPromptStable(page, timeoutMs) {
         return null;
       }
     });
+    pollCount++;
     lastDump = dump;
     // readTextScreen() は TextScreenDump ({ available, lines, diagnostics }) を返す
     // (単純な文字列ではない。src/text-screen.ts参照。measure-boot.mjsのobserveBoot()と同じ判定)。
@@ -186,16 +191,16 @@ async function waitForPromptStable(page, timeoutMs) {
       const remainderLen = lastAPromptLine === null ? Infinity : Array.from(lastAPromptLine.slice(2)).length;
       if (lastAPromptLine !== null && remainderLen <= 1) {
         stableCount++;
-        if (stableCount >= 3) return { stable: true, text: lastDump };
+        if (stableCount >= 3) return { stable: true, text: lastDump, pollCount };
       } else {
         stableCount = 0;
       }
     } else {
       stableCount = 0;
     }
-    await sleep(150);
+    await sleep(pollIntervalMs);
   }
-  return { stable: false, text: lastDump };
+  return { stable: false, text: lastDump, pollCount };
 }
 
 async function bootAndCollect(browser, config, { probeEnabled, busyWaitFault }) {
@@ -232,7 +237,11 @@ async function bootAndCollect(browser, config, { probeEnabled, busyWaitFault }) 
       await page.evaluate((f) => window.__webx68kDebug.frameProbeSetBusyWaitFault(f), busyWaitFault);
     }
 
-    const { stable, text } = await waitForPromptStable(page, config.bootTimeoutMs);
+    const { stable, text, pollCount } = await waitForPromptStable(
+      page,
+      config.bootTimeoutMs,
+      config.pollIntervalMs,
+    );
     const bootEndAtMs = Date.now();
     const bootDurationMs = bootEndAtMs - bootStartAtMs;
 
@@ -247,7 +256,7 @@ async function bootAndCollect(browser, config, { probeEnabled, busyWaitFault }) 
       frameProbeData = await page.evaluate(() => window.__webx68kDebug.frameProbeRead());
     }
 
-    return { success: stable, bootDurationMs, lastScreenText: text, tickEvents, commandEvents, frameProbeData };
+    return { success: stable, bootDurationMs, lastScreenText: text, tickEvents, commandEvents, frameProbeData, pollCount };
   } finally {
     await context.close();
   }
@@ -402,8 +411,9 @@ async function run() {
   const port = Number(args.port ?? 5196);
   const bootTimeoutMs = Number(args['boot-timeout'] ?? 90000);
   const runs = Number(args.runs ?? 3);
+  const pollIntervalMs = Number(args['poll-interval'] ?? 150);
   const baseUrl = `http://localhost:${port}`;
-  const config = { baseUrl, target, bootTimeoutMs };
+  const config = { baseUrl, target, bootTimeoutMs, pollIntervalMs };
 
   let server;
   let browser;
@@ -418,7 +428,7 @@ async function run() {
       args: ['--hide-scrollbars', '--window-size=1000,900', ...CHROME_FOREGROUND_ARGS],
     });
 
-    const output = { schemaVersion: 1, measuredAt: new Date().toISOString(), target, mode: null, trials: [] };
+    const output = { schemaVersion: 1, measuredAt: new Date().toISOString(), target, pollIntervalMs, mode: null, trials: [] };
 
     if (args.costCheck) {
       output.mode = 'cost-check';
@@ -480,10 +490,11 @@ async function run() {
           trial,
           success: result.success,
           bootDurationMs: result.bootDurationMs,
+          pollCount: result.pollCount,
           analysis,
         });
         console.log(
-          `試行${trial}: success=${result.success} bootDurationMs=${result.bootDurationMs} effectiveFps=${analysis?.effectiveFps}`,
+          `試行${trial}: success=${result.success} bootDurationMs=${result.bootDurationMs} pollCount=${result.pollCount} effectiveFps=${analysis?.effectiveFps}`,
         );
       }
     }
