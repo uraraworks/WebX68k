@@ -72,11 +72,40 @@ const _hostSurfaceCheck: CoreHostSurface = null as unknown as LibretroHost;
 void _hostSurfaceCheck;
 
 /**
- * Uint8Array がより大きい ArrayBuffer の一部を指している(subarray)場合があるため、
- * byteOffset/byteLength で切り出して独立した ArrayBuffer にする。
- * 呼び出し側(main.ts)が IndexedDB 由来の Uint8Array を proxy へ渡す際にも使うため export する。
+ * bytes がバッファ全体を覆っている(byteOffset===0 かつ byteLength===buffer.byteLength)ときは
+ * コピーせず bytes.buffer をそのまま返す。より大きい ArrayBuffer の一部を指している(subarray)
+ * ときだけ、独立した ArrayBuffer が必要なので slice() でコピーする。
+ *
+ * 戻り値は「以後 bytes 側を参照しない」前提で渡すための ArrayBuffer(=呼び出し側の所有権を
+ * 手放す関数)。unserialize/writeFile のように渡した先で detach される(takeOwnership参照)
+ * 引数を作るときに使う。呼び出し後も元の Uint8Array/バッファを参照し続けたい場合は
+ * copyArrayBuffer() を使うこと。呼び出し側(main.ts)が IndexedDB 由来の Uint8Array を
+ * proxy へ渡す際にも使うため export する。
+ *
+ * 2026-08-28 追記(レビュー指摘): 手順3で takeOwnership(structuredClone transfer)を入れたが、
+ * 呼び出し側の main.ts は本関数の旧実装(常に slice() でコピー)を経由してから渡していたため、
+ * detach されるのは呼び出しの場で作った使い捨てのコピーであり、main.ts 側が保持するバッファ
+ * (stored.bytes 等)自体は無傷のままだった。つまり手順3の「同一スレッドのうちに使い回し
+ * バグを検出できるようにする」という目的を果たしていなかった(detachテストが
+ * proxy.unserialize(buf) に生バッファを直接渡す形で書かれていたため、この抜けを検出できて
+ * いなかった)。ここでコピーを避けることで、本番の呼び出し経路でも実際に detach が効くように
+ * 修正した(test/core-proxy.test.ts の「main.tsの呼び出し形」節、および
+ * docs/STORAGE-SCSI.md 手順3の節を参照)。
  */
-export function toArrayBuffer(bytes: Uint8Array): ArrayBuffer {
+export function toOwnedArrayBuffer(bytes: Uint8Array): ArrayBuffer {
+  if (bytes.byteOffset === 0 && bytes.byteLength === bytes.buffer.byteLength) {
+    return bytes.buffer as ArrayBuffer;
+  }
+  return bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength) as ArrayBuffer;
+}
+
+/**
+ * 常に独立したコピーを作る版。呼び出し後も元の Uint8Array/ArrayBuffer を呼び出し側が
+ * 参照し続ける場合に使う。現状これを必要とする呼び出し元は無いが、
+ * 「所有権を渡す(toOwnedArrayBuffer)」か「コピーを渡す(こちら)」かを名前で区別できるよう
+ * 残す。
+ */
+export function copyArrayBuffer(bytes: Uint8Array): ArrayBuffer {
   return bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength) as ArrayBuffer;
 }
 
@@ -220,7 +249,7 @@ export class LocalCoreProxy implements LibretroHostProxy {
     this.assertInitialized('serialize');
     return this.run('serialize', () => {
       const bytes = this.host.serialize();
-      return bytes ? toArrayBuffer(bytes) : null;
+      return bytes ? toOwnedArrayBuffer(bytes) : null;
     });
   }
 
@@ -258,7 +287,7 @@ export class LocalCoreProxy implements LibretroHostProxy {
     return this.run('readMemory', () => {
       const bytes = new Uint8Array(length);
       for (let i = 0; i < length; i++) bytes[i] = this.host.peekByte(address + i);
-      return toArrayBuffer(bytes);
+      return toOwnedArrayBuffer(bytes);
     });
   }
 
@@ -275,7 +304,7 @@ export class LocalCoreProxy implements LibretroHostProxy {
       let previousImage: ArrayBuffer | null = null;
       if (previousPath) {
         try {
-          previousImage = toArrayBuffer(this.host.readFile(previousPath));
+          previousImage = toOwnedArrayBuffer(this.host.readFile(previousPath));
         } catch {
           previousImage = null;
         }
@@ -306,7 +335,7 @@ export class LocalCoreProxy implements LibretroHostProxy {
     this.assertInitialized('readFile');
     return this.run('readFile', () => {
       try {
-        return toArrayBuffer(this.host.readFile(path));
+        return toOwnedArrayBuffer(this.host.readFile(path));
       } catch (err) {
         throw this.toProxyError('readFile', err, 'IO_FAILED');
       }

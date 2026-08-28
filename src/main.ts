@@ -44,7 +44,7 @@ import { buildFileManagerDialog, type FmTarget } from './filemanager';
 import { Bridge, resolveBridgeUrl, type BridgeHost } from './bridge';
 import { RETROK, charToKey, codeToRetrok } from './keyboard';
 import { LibretroHost } from './libretro-host';
-import { LocalCoreProxy, toArrayBuffer } from './core-proxy';
+import { LocalCoreProxy, toOwnedArrayBuffer } from './core-proxy';
 import { parseAspectModeParam, parseCpuSpeedParam, parseRamSizeParam } from './url-params';
 import {
   createResampleState,
@@ -2493,7 +2493,7 @@ async function bootCore(): Promise<void> {
     const iniText = `[WinX68k]\r\nHDD0=${hddPath}\r\n`;
     // 互換用FS書き込みはproxy経由にする(手順3)。writeDiskImageはhotSwapFdd専用の実装詳細
     // として host に残す(core-proxy.ts末尾のコメント参照、今回の対象外)。
-    await coreProxy!.writeFile('/system/keropi/config', toArrayBuffer(new TextEncoder().encode(iniText)));
+    await coreProxy!.writeFile('/system/keropi/config', toOwnedArrayBuffer(new TextEncoder().encode(iniText)));
   } else {
     mountedPaths.hdd = null;
   }
@@ -2501,7 +2501,7 @@ async function bootCore(): Promise<void> {
   // px68k-libretro は "px68k <fd0> <fd1>" 形式の.cmdファイルでFDD0/FDD1を同時指定できる
   // (libretro.c pmain(): argc==3で FDDImage[0]/[1] を両方設定)。空スロットは空文字列で渡す。
   const cmdText = `px68k "${fdd0Path}" "${fdd1Path}"\n`;
-  await coreProxy!.writeFile('/game/boot.cmd', toArrayBuffer(new TextEncoder().encode(cmdText)));
+  await coreProxy!.writeFile('/game/boot.cmd', toOwnedArrayBuffer(new TextEncoder().encode(cmdText)));
   host.loadGame('/game/boot.cmd');
 
   host.fetchAvInfo();
@@ -4209,7 +4209,7 @@ async function handleLoadState(): Promise<void> {
     // coreProxy.unserialize() は渡した ArrayBuffer の所有権を受け取り detach する
     // (core-proxy.ts の takeOwnership 参照)。stored.bytes は IndexedDB から読み直した
     // ばかりの値でこの呼び出し以降使わないため、そのまま渡してよい。
-    ok = await coreProxy.unserialize(toArrayBuffer(stored.bytes));
+    ok = await coreProxy.unserialize(toOwnedArrayBuffer(stored.bytes));
   } catch (err) {
     // unserialize失敗時に以前のステートのまま走り続けていないか(host.unserialize()内部の
     // 責務)はここでは保証できないが、エラーコードは握り潰さずログに残し、失敗として扱う。

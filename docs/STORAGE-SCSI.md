@@ -2473,15 +2473,31 @@ HDMIデバイスでの10回では、既定と `interactive` は 10/10 が同じ�
 
 対処した問題: 手順3以前の `LocalCoreProxy` は `ArrayBuffer` を受け取っても参照を保持するだけで、実際には転送しない。そのため「呼び出し側が渡したあとも同じバッファを使い回す」という所有権契約違反が同一スレッドの間は無症状で通ってしまい、実Worker化(手順7以降)でpostMessageのtransfer listに載せた瞬間に初めて症状が出る。detachを先取りして入れることで、契約違反をWorker化前のこの段階で検出可能にした。
 
-**コスト実測(2026-08-28、Node v22、このマシン)** — `structuredClone(buf, { transfer: [buf] })` の所要時間:
+**2026-08-28 追記: レビューで判明した見落とし — 本番経路ではdetachが一度も発火していなかった**
 
-| サイズ | 想定 | 所要時間(5試行) |
-|---|---|---|
-| 15MB | セーブステート1本相当(px68kはRAM領域を12MB固定でシリアライズするため、圧縮前のサイズ) | 0.01〜1.3ms |
-| 1.2MB | FDDイメージ相当 | 0.03ms未満 |
-| 64KB | 小さいFS書き込み(config/boot.cmd)相当 | 0.01ms未満 |
+上の「コスト実測」節(当初版)は `structuredClone(buf, { transfer: [buf] })` 単体の所要時間だけを測っていた。だが本番の呼び出し側(`main.ts`)は、渡す前に必ず `src/core-proxy.ts` の `toArrayBuffer(bytes: Uint8Array)` を経由しており、その実装は当時 **常に `bytes.buffer.slice(...)` でコピーを作っていた**。つまり:
 
-`state-store.ts` のコメントによれば同じ15MBステートのgzip圧縮に約60ms、IndexedDBのラウンドトリップはさらに掛かる。detachのコストはそれらに対して無視できる大きさと判断し、**`import.meta.env.DEV` 限定にはせず本番へ常時適用した**。
+- `takeOwnership()` が実際に detach するのは、`toArrayBuffer()` がその場で作った**使い捨てのコピー**であり、
+- `main.ts` 側が保持し続けるバッファ(`stored.bytes` や `bootCore()` のFS書き込み元)は無傷のまま残る。
+
+`test/core-proxy.test.ts` の「手順3の肝」節は `proxy.unserialize(buf)` のように**生の ArrayBuffer を直接渡す**形でdetachを確認していたため、この抜け(`toArrayBuffer()` を経由する本番の結線)を検出できていなかった。「ヘルパ単体テストは結線を見ていない」(`feedback_helper_unit_test_misses_the_wiring.md`)と同じ形の見落とし。
+
+**修正**: `toArrayBuffer()` を `toOwnedArrayBuffer()` に分割・改名し、渡された `Uint8Array` が**バッファ全体を覆っている**とき(`byteOffset===0` かつ `byteLength===buffer.byteLength`。今回の全呼び出し元がこれに該当することを確認済み)は**コピーせず** `bytes.buffer` をそのまま返すようにした。部分ビュー(subarray)のときだけ従来どおり `slice()` でコピーする。常にコピーしたい場合向けに `copyArrayBuffer()`(旧実装と同じ、常にslice)も残し、「所有権を渡す」か「コピーを渡す」かを名前で区別できるようにした。`main.ts` の3箇所(`unserialize`/`writeFile`×2)を全て `toOwnedArrayBuffer()` に置き換え済み。
+
+再入経路(`restartCore()` → `bootCore()` の2回目起動)も確認した。`bootCore()` 内の `iniText`/`cmdText` はどちらも呼び出しごとにローカルで `new TextEncoder().encode(...)` する使い捨てバッファであり、モジュールレベルのキャッシュや使い回しは無い。`handleLoadState()` の `stored.bytes` も `getState()` が毎回IndexedDBから新規デシリアライズしたバッファを返す(`state-store.ts` の `gunzip()`/レコード読み出し)ため、detachされても次回呼び出しに影響しない。2回目起動だけ壊れる経路は見つからなかった。
+
+**故障注入(新規)**: `test/core-proxy.test.ts` に「main.tsの呼び出し形(toOwnedArrayBuffer経由)でもdetachが効く」節を追加。`toOwnedArrayBuffer()` を旧実装(常にslice、`copyArrayBuffer()`相当)に一時的に戻すと、新規テスト2件(unserialize・writeFileそれぞれ)が **2/2とも失敗**することを確認してから復元した(`storedBytes.byteLength` が期待の0でなく元の値のまま残ることを検出)。合わせて `copyArrayBuffer()` を使った恒久的な陽性対照テストも1件追加し、常にコピーする実装ではdetachされない(byteLengthが残る)ことを直接確認できるようにした。
+
+**コスト実測のやり直し(2026-08-28、Node v22、このマシン)** — 「コピー(slice)」対「コピー無し(バッファそのまま返す)」を、15MB(セーブステート1本相当。px68kはRAM領域を12MB固定でシリアライズするため圧縮前のサイズ)のバッファで20試行ずつ計測(`process.hrtime.bigint()`で1回ごとの所要を記録し、min/median/mean/maxを取った。GCの影響を減らすため試行ごとに新規バッファを確保):
+
+| 実装 | 所要時間(20試行、ms) |
+|---|---|
+| `slice()`(コピーあり。旧実装 = 現在の `copyArrayBuffer()`) | min 1.11 / median 1.95 / mean 3.62 / max 9.17 |
+| バッファそのまま返す(コピー無し。現在の `toOwnedArrayBuffer()` の高速経路) | min 0.0003 / median 0.004 / mean 0.026 / max 0.28 |
+
+当初報告の「15MBで0.01〜1.3ms」は `structuredClone` の transfer(=所有権の付け替え。元々O(1))だけを測ったものであり、支配的コストだった手前の `slice()` によるコピー(15MBの実コピー、中央値で約2ms)を含んでいなかった。今回コピーを回避したことで、detach込みの所要は約2ms→0.004ms(中央値)に縮んだ。
+
+`state-store.ts` のコメントによれば同じ15MBステートのgzip圧縮に約60ms、IndexedDBのラウンドトリップはさらに掛かる。コピー無しにしたことでdetach経路のコストはそれらに対してさらに無視できる大きさになったため、**`import.meta.env.DEV` 限定にはせず本番へ常時適用したまま据え置く**。
 
 **エラー処理**
 
@@ -2495,6 +2511,8 @@ HDMIデバイスでの10回では、既定と `interactive` は 10/10 が同じ�
 2. `unserialize()` の最終戻り値を「例外・falseの両方を握り潰して常に `true` を返す」実装に書き換える → 「unserialize失敗時にエラーコードを握り潰さない」2件(false透過・例外透過それぞれ)が fail。復元後は pass。
 
 **新規テスト** — `test/core-proxy.test.ts` に7件追加(506件 = 既存499件+7件): serialize/unserializeの往復1件、writeFile/readFile/removeFileの往復1件、detach確認3件(unserialize・writeFileそれぞれのdetach、および「detachはコピー後に起きるためhostが受け取る内容は書き換わらない」)、unserialize失敗時の非握り潰し2件(false透過・例外透過)。
+
+**2026-08-28 追記** — 上記の見落とし修正に伴い、さらに3件追加(509件 = 506件+3件): 「main.tsの呼び出し形(toOwnedArrayBuffer経由)でもdetachが効く」節の unserialize/writeFile それぞれ1件、および `copyArrayBuffer()`(常にコピーする実装)ではdetachされないことを確認する恒久的な陽性対照1件。
 
 **できなかったこと・未確認のこと**
 

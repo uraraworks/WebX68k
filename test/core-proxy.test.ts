@@ -3,7 +3,7 @@
 // generation/dispose 後の呼び出し拒否を確認する。
 import { describe, expect, it, vi } from 'vitest';
 import { CoreProxyError } from '../src/core-protocol';
-import { LocalCoreProxy, type CoreHostSurface } from '../src/core-proxy';
+import { LocalCoreProxy, copyArrayBuffer, toOwnedArrayBuffer, type CoreHostSurface } from '../src/core-proxy';
 import type { AvInfo } from '../src/libretro-host';
 import type { TextScreenDump } from '../src/text-screen';
 
@@ -277,6 +277,57 @@ describe('LocalCoreProxy: 手順3の肝 — 所有権のdetach', () => {
     await proxy.writeFile('/game/y', view.buffer);
     const readBack = await proxy.readFile('/game/y');
     expect(new Uint8Array(readBack)).toEqual(new Uint8Array([5, 5, 5]));
+  });
+});
+
+describe('LocalCoreProxy: main.tsの呼び出し形(toOwnedArrayBuffer経由)でもdetachが効く', () => {
+  // レビュー指摘(2026-08-28): 上の「手順3の肝」節は proxy.unserialize(buf) のように生の
+  // ArrayBuffer を直接渡しており、main.ts の実際の呼び出し経路(Uint8Array を
+  // toOwnedArrayBuffer() で ArrayBuffer 化してから渡す)を通っていなかった。旧実装の
+  // toArrayBuffer() は常に slice() でコピーしていたため、main.ts 側が保持する Uint8Array
+  // (stored.bytes 等)は無傷のまま残り、detach は使い捨てのコピーにしか効いていなかった
+  // (=本番経路では一度も発火していなかった)。ここでは main.ts と同じ「Uint8Array →
+  // toOwnedArrayBuffer() → proxy へ渡す」形を再現し、呼び出し元が保持している Uint8Array
+  // 自体が detach されることを確認する。
+
+  it('unserialize(): 呼び出し元が保持するUint8Array自体がdetachされる', async () => {
+    const host = createMockHost();
+    const proxy = new LocalCoreProxy(host);
+    await proxy.init(new Uint8Array([0]), new Uint8Array([0]));
+
+    // IndexedDBから読み直した直後の、バッファ全体を覆うUint8Array(main.tsのstored.bytes相当)。
+    const storedBytes = new Uint8Array([9, 9, 9, 9]);
+    expect(storedBytes.byteLength).toBe(4);
+    await proxy.unserialize(toOwnedArrayBuffer(storedBytes));
+    expect(storedBytes.byteLength).toBe(0);
+  });
+
+  it('writeFile(): 呼び出し元が保持するUint8Array自体がdetachされ、内容は正しく渡る', async () => {
+    const host = createMockHost();
+    const proxy = new LocalCoreProxy(host);
+    await proxy.init(new Uint8Array([0]), new Uint8Array([0]));
+
+    const encoded = new TextEncoder().encode('px68k "" ""\n'); // main.tsのcmdText相当
+    expect(encoded.byteLength).toBeGreaterThan(0);
+    await proxy.writeFile('/game/boot.cmd', toOwnedArrayBuffer(encoded));
+    expect(encoded.byteLength).toBe(0);
+    const readBack = await proxy.readFile('/game/boot.cmd');
+    expect(new TextDecoder().decode(readBack)).toBe('px68k "" ""\n');
+  });
+
+  it('故障注入: toOwnedArrayBufferの代わりにcopyArrayBuffer(常にコピー、旧実装相当)を経由すると、このdetach検出は失敗する', async () => {
+    // 陽性対照。上2件のテストが「結線を見ている」ことの確認: 手順3導入時のtoArrayBuffer
+    // (常にslice()でコピー)相当のcopyArrayBufferに差し替えると、呼び出し元のUint8Arrayは
+    // detachされずbyteLengthが残る。この故障注入で新テストが実際に落ちることを確認できて
+    // 初めて、上のテストが結線の欠陥(旧実装)を検出できると言える。
+    const host = createMockHost();
+    const proxy = new LocalCoreProxy(host);
+    await proxy.init(new Uint8Array([0]), new Uint8Array([0]));
+
+    const storedBytes = new Uint8Array([9, 9, 9, 9]);
+    await proxy.unserialize(copyArrayBuffer(storedBytes));
+    // 旧実装(常にコピー)では呼び出し元のUint8Arrayはdetachされない=byteLengthは4のまま。
+    expect(storedBytes.byteLength).toBe(4);
   });
 });
 
