@@ -43,6 +43,24 @@ export function parseCpuSpeedParam(raw: string | null): string | null {
 }
 
 /**
+ * `?worker=` の値を、Worker 経路を使うかどうかの boolean にパースする。
+ * 受理形式(trim + 大小文字無視): '1' / 'true' / 'yes' / 'on' → true、
+ * '0' / 'false' / 'no' / 'off' → false。それ以外・空文字・null は無効値として null を返す
+ * (呼び出し側は null のとき既定(false = 従来の LocalCoreProxy 経路)を使うこと)。
+ *
+ * docs/STORAGE-SCSI.md「段階移行の順序」に記載の通り、Worker 経路は当面このフラグの裏でのみ
+ * 有効化する試験的スケルトンであり、指定が無い既定の挙動(LocalCoreProxy)は変えない。
+ */
+export function parseWorkerModeParam(raw: string | null): boolean | null {
+  if (raw === null) return null;
+  const trimmed = raw.trim().toLowerCase();
+  if (trimmed === '') return null;
+  if (trimmed === '1' || trimmed === 'true' || trimmed === 'yes' || trimmed === 'on') return true;
+  if (trimmed === '0' || trimmed === 'false' || trimmed === 'no' || trimmed === 'off') return false;
+  return null;
+}
+
+/**
  * `?aspect=` の値を AspectMode('4:3' | 'native')にパースする。
  * 受理形式(trim + 大小文字無視): '4:3' / '43' / '4-3' / '4/3' → '4:3'、
  * 'native' / '1:1' / '11' → 'native'。それ以外・空文字・null は無効値として null を返す。

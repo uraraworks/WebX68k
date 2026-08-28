@@ -44,8 +44,13 @@ import { buildFileManagerDialog, type FmTarget } from './filemanager';
 import { Bridge, resolveBridgeUrl, type BridgeHost } from './bridge';
 import { RETROK, charToKey, codeToRetrok } from './keyboard';
 import { LibretroHost } from './libretro-host';
-import { LocalCoreProxy, toOwnedArrayBuffer } from './core-proxy';
-import { parseAspectModeParam, parseCpuSpeedParam, parseRamSizeParam } from './url-params';
+import { LocalCoreProxy, WorkerCoreProxy, toOwnedArrayBuffer } from './core-proxy';
+import {
+  parseAspectModeParam,
+  parseCpuSpeedParam,
+  parseRamSizeParam,
+  parseWorkerModeParam,
+} from './url-params';
 import {
   createResampleState,
   DEFAULT_SPEED_STEP,
@@ -293,6 +298,16 @@ if (ramParamRaw !== null && urlRamSize === null) {
   ramSize = urlRamSize;
 }
 
+// `?worker=1` : Worker経路(段階移行 手順4のスケルトン)を試すための裏フラグ。指定が無い
+// (既定)場合は従来どおり LocalCoreProxy のみで、この変数は false のまま何も変えない。
+// docs/STORAGE-SCSI.md「段階移行の順序」参照。
+const workerParamRaw = new URLSearchParams(location.search).get('worker');
+const parsedWorkerMode = parseWorkerModeParam(workerParamRaw);
+if (workerParamRaw !== null && parsedWorkerMode === null) {
+  console.warn('?worker= の値が不正です(1/0, true/false, yes/no, on/off のいずれかで指定してください)');
+}
+const urlWorkerMode = parsedWorkerMode ?? false;
+
 cfgCpuSpeed.value = cpuSpeed;
 cfgRamSize.value = ramSize;
 
@@ -404,6 +419,12 @@ let host: LibretroHost | null = null;
 // host.init() が完了した後に initialized:true で構築する(host.init() は既存経路のまま呼ぶため、
 // proxy 自身は init を経由しない。詳細は core-proxy.ts の LocalCoreProxy コンストラクタ参照)。
 let coreProxy: LocalCoreProxy | null = null;
+// `?worker=1` の裏で試すWorker経路(段階移行 手順4のスケルトン)。既定経路(coreProxy/host、上記)
+// には一切触れず、追加でもう1本 Worker 上に別のコアインスタンスを立てて initialize→loadGame→
+// fetchAvInfo が通ることだけを確認する試験用の入れ物。手順5・6・7が終わるまでは画面にも音にも
+// 現れない(docs/STORAGE-SCSI.md「段階移行の順序」参照)。bootCore()呼び出しのたびに前回のもの
+// をdisposeしてから作り直す。
+let experimentalWorkerCoreProxy: WorkerCoreProxy | null = null;
 let running = false;
 let bootStarted = false;
 
@@ -2369,6 +2390,49 @@ function sanitizeFileName(name: string): string {
 }
 
 /**
+ * `?worker=1` の裏でだけ動く試験用スケルトン。既定経路(host/coreProxy、上のbootCore()の残り)
+ * とは完全に独立した、もう1本のコアインスタンスをWorker上に立てて
+ * initialize→ready/loadGame/fetchAvInfo が通ることだけを確認する。
+ *
+ * 手順5(映像・音声出力)・手順6(入力)・手順7(駆動ループ)がまだこのWorker側コアに
+ * 繋がっていないため、loadGame が成功しても画面にも音にも一切現れない(意図した状態。
+ * docs/STORAGE-SCSI.md「段階移行の順序」参照)。失敗しても既定経路(実際に表示・動作する
+ * host/coreProxy側)には一切影響させないよう、ここで例外を握り潰す。
+ */
+async function bootWorkerCoreProxySkeleton(savedSram: Uint8Array | null): Promise<void> {
+  if (experimentalWorkerCoreProxy) {
+    const previous = experimentalWorkerCoreProxy;
+    experimentalWorkerCoreProxy = null;
+    try {
+      await previous.dispose();
+    } catch (err) {
+      console.warn('[worker skeleton] 前回のWorkerコアのdisposeに失敗しました', err);
+    }
+  }
+  if (!biosIplBytes || !biosCgBytes) return;
+  try {
+    const proxy = new WorkerCoreProxy();
+    experimentalWorkerCoreProxy = proxy;
+    await proxy.init(biosIplBytes, biosCgBytes, savedSram ?? undefined);
+    // 実host側は px68k <fd0> <fd1> 形式のcmdファイル経由でFDD0/FDD1を渡すが、この試験用コアは
+    // writeFile がまだUNSUPPORTED(手順5以降)なので同じファイルを書けない。存在しないパスを
+    // 渡して loadGame() が(成功であれ失敗であれ)command/response往復として応答することだけを
+    // 確認する。
+    const loaded = await proxy.loadGame('/game/boot.cmd').catch((err) => {
+      console.warn('[worker skeleton] loadGame に失敗しました(想定内。実起動には未接続)', err);
+      return false;
+    });
+    const avInfo = await proxy.fetchAvInfo().catch(() => null);
+    console.log(
+      `[worker skeleton] initialize/ready 完了。loadGame=${loaded} avInfo=${avInfo ? 'ok' : 'なし'} ` +
+        '(映像・音声・入力・駆動ループは未接続。?worker=1 は既定経路に影響しません)',
+    );
+  } catch (err) {
+    console.warn('[worker skeleton] 初期化に失敗しました(既定経路には影響しません)', err);
+  }
+}
+
+/**
  * コアを初期化して起動する(slots にセットされたディスクから)。
  *
  * FDD0/FDD1 は px68k-libretro の cmd ファイル展開(`px68k <fd0> <fd1>`)で同時指定できる。
@@ -2440,6 +2504,12 @@ async function bootCore(): Promise<void> {
   // host.init() は上で直接完了させた(段階移行の途中でinit経路自体は変えない)。
   // 以後の観測系呼び出し(screenText/readMemory等)だけをこの proxy 経由にする。
   coreProxy = new LocalCoreProxy(host, { initialized: true });
+  // `?worker=1` のときだけ、既定経路(上のhost/coreProxy)とは完全に切り離した
+  // 試験用のWorkerコアを追加で立てる。失敗しても既定経路には一切影響しない
+  // (bootWorkerCoreProxySkeleton()内で例外を握り潰す)。
+  if (urlWorkerMode) {
+    void bootWorkerCoreProxySkeleton(savedSram);
+  }
   host.startSramAutosave((bytes) => {
     saveSramFile(bytes).catch((err) => console.warn('SRAMの保存に失敗しました', err));
   });

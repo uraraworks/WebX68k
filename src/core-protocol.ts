@@ -76,6 +76,23 @@ export type CoreCommand =
       requestId: RequestId;
       op: 'readMemory';
       payload: { address: number; length: number };
+    }
+  | {
+      kind: 'command';
+      generation: Generation;
+      requestId: RequestId;
+      // fetchAvInfo と dispose はそれぞれ独立した union member にする(他のopと同じ member に
+      // 複数opを束ねると Extract<CoreCommand, { op: 'fetchAvInfo' }> 等が `never` になり、
+      // op ごとに引数を絞った handler 関数(core-worker.ts参照)が書けなくなるため)。
+      op: 'fetchAvInfo';
+      payload: Record<string, never>;
+    }
+  | {
+      kind: 'command';
+      generation: Generation;
+      requestId: RequestId;
+      op: 'dispose';
+      payload: Record<string, never>;
     };
 
 export type CoreResponse =
@@ -308,6 +325,8 @@ export function collectTransferables(
       case 'serialize':
       case 'readTextScreen':
       case 'screenshot':
+      case 'fetchAvInfo':
+      case 'dispose':
       case 'readMemory':
         break;
       default: {

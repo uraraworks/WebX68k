@@ -1,5 +1,10 @@
 import { describe, expect, it } from 'vitest';
-import { parseAspectModeParam, parseCpuSpeedParam, parseRamSizeParam } from '../src/url-params';
+import {
+  parseAspectModeParam,
+  parseCpuSpeedParam,
+  parseRamSizeParam,
+  parseWorkerModeParam,
+} from '../src/url-params';
 
 describe('parseRamSizeParam', () => {
   it.each([
@@ -51,5 +56,27 @@ describe('parseAspectModeParam', () => {
 
   it.each([null, '', '4:4', 'abc', '3:4'])('%s -> null', (input) => {
     expect(parseAspectModeParam(input)).toBeNull();
+  });
+});
+
+describe('parseWorkerModeParam', () => {
+  it.each([
+    ['1', true],
+    ['true', true],
+    ['TRUE', true],
+    ['yes', true],
+    ['on', true],
+    [' 1 ', true],
+    ['0', false],
+    ['false', false],
+    ['FALSE', false],
+    ['no', false],
+    ['off', false],
+  ])('%s -> %s', (input, expected) => {
+    expect(parseWorkerModeParam(input)).toBe(expected);
+  });
+
+  it.each([null, '', '2', 'abc', 'worker'])('%s -> null', (input) => {
+    expect(parseWorkerModeParam(input)).toBeNull();
   });
 });

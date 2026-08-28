@@ -9,11 +9,17 @@
 // (文書「段階移行の順序」参照)。
 
 import {
+  collectTransferables,
   CoreProxyError,
   createCoreError,
+  isCoreResponse,
+  type CoreCommand,
   type CoreErrorCode,
+  type Generation,
   type HotSwapFddPayload,
   type HotSwapFddResult,
+  type RequestId,
+  type WorkerToMain,
 } from './core-protocol';
 import type { AvInfo, LibretroHost } from './libretro-host';
 import type { TextScreenDump } from './text-screen';
@@ -27,8 +33,6 @@ export interface LibretroHostProxy {
   init(biosIpl: Uint8Array, biosCg: Uint8Array, sram?: Uint8Array): Promise<void>;
   setCoreOption(key: string, value: string): Promise<void>;
   loadGame(path: string): Promise<boolean>;
-  loadGameNone(): Promise<boolean>;
-  unloadGame(): Promise<void>;
   reset(): Promise<void>;
   fetchAvInfo(): Promise<AvInfo>;
   serialize(): Promise<ArrayBuffer | null>;
@@ -225,16 +229,6 @@ export class LocalCoreProxy implements LibretroHostProxy {
     return this.run('loadGame', () => this.host.loadGame(path));
   }
 
-  async loadGameNone(): Promise<boolean> {
-    this.assertInitialized('loadGameNone');
-    return this.run('loadGameNone', () => this.host.loadGameNone());
-  }
-
-  async unloadGame(): Promise<void> {
-    this.assertInitialized('unloadGame');
-    return this.run('unloadGame', () => this.host.unloadGame());
-  }
-
   async reset(): Promise<void> {
     this.assertInitialized('reset');
     return this.run('reset', () => this.host.reset());
@@ -378,3 +372,266 @@ export class LocalCoreProxy implements LibretroHostProxy {
 // - resetAudioProbe/readAudioProbe: DEV限定の計測プローブであり、本番の proxy 境界の対象外。
 // - writeDiskImage: hotSwapFdd 内部で使う実装詳細として扱い、proxy の公開メソッドにはしない
 //   (公開すると「イメージを置いてから明示的に insert」という2段階の誤用ができてしまうため)。
+// - loadGameNone/unloadGame (2026-08-28、決定): src/main.ts から呼ばれておらず(未使用)、
+//   外部利用も確認できないため LibretroHostProxy から削除した(docs「未決事項」参照)。
+//   CoreHostSurface(実体 LibretroHost との構造チェック)には残している。LibretroHost 自体は
+//   引き続きこれらのメソッドを持つ(削除していない)。
+
+// --- WorkerCoreProxy (段階移行 手順4のスケルトン) -----------------------------
+//
+// LocalCoreProxy と同じ LibretroHostProxy を実装する、実 Worker(src/core-worker.ts)への
+// メッセージ委譲 proxy。呼び出し側(src/main.ts)が LibretroHostProxy 型でだけ扱っていれば
+// LocalCoreProxy とこの WorkerCoreProxy を差し替え可能にすることが目的(docs
+// 「ワーカー境界のAPI設計」冒頭「境界の原則」参照)。
+//
+// 今回実装しているのは initialize/loadGame/fetchAvInfo/dispose の4 op のみ。他の
+// メソッド(setCoreOption/reset/serialize/unserialize/readTextScreen/readMemory/
+// hotSwapFdd/writeFile/readFile/removeFile)は UNSUPPORTED の CoreProxyError を返す
+// (手順5以降、Worker 側 core-worker.ts に実処理を足すのに合わせて実装する)。
+// したがって WorkerCoreProxy を使っても loadGame 成功以降 retro_run() は呼ばれず、
+// 画面・音・セーブステート・メモリ参照は一切機能しない。
+
+/** postMessage/terminate/addEventListener だけを要求する最小の Worker 互換 interface。
+ * テストでは本物の Worker の代わりにこれを満たす fake を渡せる。 */
+export interface WorkerLike {
+  postMessage(message: unknown, transfer?: Transferable[]): void;
+  terminate(): void;
+  addEventListener(type: 'message', listener: (ev: MessageEvent) => void): void;
+  addEventListener(type: 'error', listener: (ev: unknown) => void): void;
+  addEventListener(type: 'messageerror', listener: (ev: unknown) => void): void;
+}
+
+export interface WorkerCoreProxyOptions {
+  /** テスト用: 実 Worker の代わりに渡す fake Worker の生成関数。省略時は本物の Worker を生成する。 */
+  createWorker?: () => WorkerLike;
+  /** 応答timeoutミリ秒(既定 DEFAULT_RESPONSE_TIMEOUT_MS)。テストで短縮するために公開する。 */
+  responseTimeoutMs?: number;
+}
+
+const DEFAULT_RESPONSE_TIMEOUT_MS = 10_000;
+
+function defaultCreateWorker(): WorkerLike {
+  // vite.config.ts は worker.format を明示していないため既定の 'iife'(クラシックworker)で
+  // ビルドされる想定(core-worker.ts 冒頭のコメント参照)。ここでは type を明示しない
+  // (=クラシックworkerとして扱わせる)。
+  return new Worker(new URL('./core-worker.ts', import.meta.url)) as unknown as WorkerLike;
+}
+
+interface PendingRequest {
+  resolve: (value: unknown) => void;
+  reject: (reason: unknown) => void;
+  timeoutHandle: ReturnType<typeof setTimeout>;
+}
+
+export class WorkerCoreProxy implements LibretroHostProxy {
+  private readonly worker: WorkerLike;
+  private readonly responseTimeoutMs: number;
+  private readonly generation: Generation;
+  private nextRequestId: RequestId = 1;
+  private disposed = false;
+  /** true になったら以後すべての呼び出しを即座に WORKER_FAILURE で reject する
+   * (docs「エラー、異常終了、再生成」: messageerror/error/timeout/突然終了は WORKER_FAILURE)。
+   * 手順9(再生成)は今回のスコープ外のため、失敗後の自動再生成は行わない。 */
+  private failed = false;
+  private readonly pending = new Map<RequestId, PendingRequest>();
+
+  constructor(opts?: WorkerCoreProxyOptions) {
+    this.responseTimeoutMs = opts?.responseTimeoutMs ?? DEFAULT_RESPONSE_TIMEOUT_MS;
+    // 手順9(再生成)はスコープ外なので、この proxy 1インスタンス = generation 0 固定。
+    this.generation = 0;
+    this.worker = (opts?.createWorker ?? defaultCreateWorker)();
+    this.worker.addEventListener('message', (ev) => this.handleMessage(ev.data as WorkerToMain));
+    this.worker.addEventListener('error', (ev) => this.handleWorkerFailure('Workerでエラーが発生しました', ev));
+    this.worker.addEventListener('messageerror', (ev) =>
+      this.handleWorkerFailure('Workerからのメッセージを復元できませんでした(messageerror)', ev),
+    );
+  }
+
+  /** テスト・診断用。 */
+  get currentGeneration(): Generation {
+    return this.generation;
+  }
+
+  private handleMessage(message: WorkerToMain): void {
+    // docs「エラー、異常終了、再生成」: 現在世代と異なる response/event は無視する。
+    if (message.generation !== this.generation) return;
+    if (isCoreResponse(message)) {
+      const req = this.pending.get(message.requestId);
+      if (!req) return; // 既にtimeout等で片付いたrequestId。
+      this.pending.delete(message.requestId);
+      clearTimeout(req.timeoutHandle);
+      if (message.ok) req.resolve(message.result);
+      else req.reject(new CoreProxyError(message.error));
+      return;
+    }
+    // event。'fatal' はその世代を継続不能として扱う(docs: handler内例外でコア状態の継続可否を
+    // 保証できない場合、失敗responseに加えfatal eventを送り、以後commandを受け付けない)。
+    if (message.event === 'fatal') {
+      this.handleWorkerFailure(message.error.message, message.error, false);
+      return;
+    }
+    // 'ready'/'frame'/'sramChanged' は今回の LibretroHostProxy には購読者が無い
+    // (手順5・7で映像/音声/SRAM監視を足すときに拾う)。
+  }
+
+  /** messageerror/Workerのerror/応答timeout/fatal event を束ねる WORKER_FAILURE 処理。
+   * その世代の未完了 Promise をすべて reject する(docs 参照)。 */
+  private handleWorkerFailure(message: string, details: unknown, terminateWorker = true): void {
+    if (this.failed) return; // 二重処理防止(error/messageerrorが立て続けに来ても1回だけ処理する)。
+    this.failed = true;
+    const error = createCoreError('WORKER_FAILURE', message, { details: summarizeFailureDetails(details) });
+    for (const req of this.pending.values()) {
+      clearTimeout(req.timeoutHandle);
+      req.reject(new CoreProxyError(error));
+    }
+    this.pending.clear();
+    if (terminateWorker) {
+      try {
+        this.worker.terminate();
+      } catch {
+        // 既に終了している等は無視。
+      }
+    }
+  }
+
+  /** command を1件送り、対応する response を待つ Promise を返す。 */
+  private sendCommand(command: CoreCommand): Promise<unknown> {
+    if (this.disposed) {
+      return Promise.reject(
+        new CoreProxyError(
+          createCoreError('INVALID_STATE', `破棄済みの proxy に対する呼び出しです: ${command.op}`, {
+            operation: command.op,
+          }),
+        ),
+      );
+    }
+    if (this.failed) {
+      return Promise.reject(
+        new CoreProxyError(
+          createCoreError('WORKER_FAILURE', `Worker は既に異常終了しています: ${command.op}`, {
+            operation: command.op,
+          }),
+        ),
+      );
+    }
+    return new Promise((resolve, reject) => {
+      const timeoutHandle = setTimeout(() => {
+        this.handleWorkerFailure(`応答timeout(${this.responseTimeoutMs}ms): ${command.op}`, undefined);
+      }, this.responseTimeoutMs);
+      this.pending.set(command.requestId, { resolve, reject, timeoutHandle });
+      this.worker.postMessage(command, collectTransferables(command));
+    });
+  }
+
+  private issue<T>(op: CoreCommand['op'], payload: unknown): Promise<T> {
+    const command = {
+      kind: 'command',
+      generation: this.generation,
+      requestId: this.nextRequestId++,
+      op,
+      payload,
+    } as CoreCommand;
+    return this.sendCommand(command) as Promise<T>;
+  }
+
+  private unsupported<T>(operation: string): Promise<T> {
+    return Promise.reject(
+      new CoreProxyError(
+        createCoreError('UNSUPPORTED', `${operation} はWorker経路でまだ実装していません(段階移行 手順5以降)`, {
+          operation,
+        }),
+      ),
+    );
+  }
+
+  async init(biosIpl: Uint8Array, biosCg: Uint8Array, sram?: Uint8Array): Promise<void> {
+    await this.issue<unknown>('initialize', {
+      biosIpl: toOwnedArrayBuffer(biosIpl),
+      biosCg: toOwnedArrayBuffer(biosCg),
+      sram: sram ? toOwnedArrayBuffer(sram) : undefined,
+    });
+  }
+
+  async setCoreOption(_key: string, _value: string): Promise<void> {
+    return this.unsupported('setCoreOption');
+  }
+
+  async loadGame(path: string): Promise<boolean> {
+    return this.issue<boolean>('loadGame', { path });
+  }
+
+  async reset(): Promise<void> {
+    return this.unsupported('reset');
+  }
+
+  async fetchAvInfo(): Promise<AvInfo> {
+    return this.issue<AvInfo>('fetchAvInfo', {});
+  }
+
+  async serialize(): Promise<ArrayBuffer | null> {
+    return this.unsupported('serialize');
+  }
+
+  async unserialize(_bytes: ArrayBuffer): Promise<boolean> {
+    return this.unsupported('unserialize');
+  }
+
+  async readTextScreen(): Promise<TextScreenDump> {
+    return this.unsupported('readTextScreen');
+  }
+
+  async readMemory(_address: number, _length: number): Promise<ArrayBuffer> {
+    return this.unsupported('readMemory');
+  }
+
+  async hotSwapFdd(_payload: HotSwapFddPayload): Promise<HotSwapFddResult> {
+    return this.unsupported('hotSwapFdd');
+  }
+
+  async writeFile(_path: string, _data: ArrayBuffer): Promise<void> {
+    return this.unsupported('writeFile');
+  }
+
+  async readFile(_path: string): Promise<ArrayBuffer> {
+    return this.unsupported('readFile');
+  }
+
+  async removeFile(_path: string): Promise<void> {
+    return this.unsupported('removeFile');
+  }
+
+  async dispose(): Promise<void> {
+    if (this.disposed) return;
+    if (this.failed) {
+      // 既にWorkerが死んでいる場合、dispose commandは送れない。terminateだけ試みて終える。
+      this.disposed = true;
+      try {
+        this.worker.terminate();
+      } catch {
+        /* 既に終了している等は無視 */
+      }
+      return;
+    }
+    try {
+      await this.issue<void>('dispose', {});
+    } finally {
+      this.disposed = true;
+      try {
+        this.worker.terminate();
+      } catch {
+        /* 既に終了している等は無視 */
+      }
+    }
+  }
+}
+
+/** WORKER_FAILURE の details は structured-clone 可能な診断情報だけに絞る
+ * (docs「エラー、異常終了、再生成」の CoreError.details 規約)。Event/ErrorEvent はそのままだと
+ * 循環参照を含みうるため、message だけを取り出す。 */
+function summarizeFailureDetails(details: unknown): unknown {
+  if (details && typeof details === 'object' && 'message' in details) {
+    const message = (details as { message?: unknown }).message;
+    if (typeof message === 'string') return { message };
+  }
+  return undefined;
+}
