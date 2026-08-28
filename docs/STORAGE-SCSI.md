@@ -1768,7 +1768,7 @@ SCSI の取り込みは `Uint8Array` を作らず `putDisk()` を呼ばないた
 - 取り込みは `file.stream()` をチャンクのまま OPFS へ書く。
 - ライブラリのメタデータ（表示名・グループ・保存時刻）は IndexedDB のままとし、実体の置き場だけを分ける。レコードに `backend: 'idb' | 'opfs'` を持たせれば一覧・リネーム・削除のUIは現行のまま動く。
 
-### 決定4：案②（実ファイルへの書き戻し）は採用しない。対応形式は構造で書き、ダウンロードは安全策として用意し、往復確認は内部専用とする（2026-08-28 改訂）
+### 決定4：実ファイルへの書き戻し（案②）は採用しない（2026-08-28 改訂）
 
 XM6 との資産のやりとりについて、当初は3案を比較していた。
 
@@ -1837,10 +1837,12 @@ XM6 との資産のやりとりについて、当初は3案を比較していた
 
 当初は `navigator.storage.estimate()` の `usageDetails`（OPFS/IndexedDB の内訳）で検証する案だったが、**iOS（Chrome for iOS・Safari とも）では `usageDetails` が常に `null` で使えない**（2026-08-26 実測、後述）ため、Chrome限定の検証手段のまま実装を進めると受け入れ条件がクロスブラウザで満たせない。そこで **IndexedDB のレコードを列挙して実サイズを合計する**方式に置き換えた。
 
-- 実装：`src/disk-store.ts` の `measureDiskLibraryBytes()`。`disks` ストアの全レコードを `getAll()` で読み出し、各レコードの実体（`Uint8Array`/`ArrayBuffer`/`Blob`）の `byteLength`/`size` をそのまま合計する。`estimate()` は一切使わない。合計だけでなくレコードごとの内訳（key・種別・バイト数）も返す。
-- **合格条件**：SCSIイメージをマウントしても、`measureDiskLibraryBytes()` の合計（`totalBytes`）が増えないこと（メタデータぶんの数百バイトを除く）。
+- 実装：`src/disk-store.ts` の `measureDiskLibraryBytes()`。`disks` ストアを `openCursor()` で1件ずつ進めながら、各レコードの実体（`Uint8Array`/`ArrayBuffer`/`Blob`）の `byteLength`/`size` だけを取り出して合計する（`listDisks()`/`getAll()` は再利用しない）。`estimate()` は一切使わない。合計・レコードごとの内訳（key・種別・バイト数）に加えて、`kind: 'unknown'` と判定されたレコードだけを抜き出した `unknownRecords` も返す。
+  - **カーソルにした理由**：陽性対照は500MB級のイメージをSCSI経路に通して測る。`getAll()` は全レコードの実体を配列として同時にRAMへ展開してしまうため、「RAMに載っていないことを確認する」測定自体が対象と同じことをしてしまう。カーソルなら任意の時点でRAMにあるのは1レコードぶんだけで済む。
+- **合格条件**：SCSIイメージをマウントしても、`measureDiskLibraryBytes()` の合計（`totalBytes`）が増えないこと（メタデータぶんの数百バイトを除く）、**かつ `unknownRecords.length === 0` であること**。
+  - **後者が要る理由**：未知の型（`Uint8Array`/`ArrayBuffer`/`Blob` のいずれでもない実体）のレコードは `byteLength` が常に0として数えられる。そのため実際にはデータが載っていても `totalBytes` は増えず、「合計が増えないこと」という合格条件を失敗状態のほうが完璧に満たしてしまう。`unknownRecords` の件数も確認することで、この見落としを塞ぐ。
 - **陽性対照**：同サイズを現行の SASI 経路（`saveDisk()`/`putDisk()`）に通すと、`totalBytes` がイメージサイズぶん増えること。`test/disk-store.test.ts` にこの陽性対照（1件追加で合計がそのサイズぶん増える）と、故障注入（`byteLength` を無視して件数だけ数える壊れた実装に書き換えると失敗することを確認してから復元）を実装済み。
-- **この方式は全ブラウザで成立する。** `estimate()`/`usageDetails` に依存せず IndexedDB API（`getAll()`）を直接叩くだけなので、iOS でも Chrome と同じ値・同じロジックで検証できる。
+- **この方式は全ブラウザで成立する。** `estimate()`/`usageDetails` に依存せず IndexedDB API（`openCursor()`）を直接叩くだけなので、iOS でも Chrome と同じ値・同じロジックで検証できる。
 - 副産物として分かっていた `usage` の値の性質（この方式が必要な理由の背景）：
   - **IndexedDBの`usage`は生バイト数ではない**：デスクトップChromeで16MiB書き込みの増分が853,362バイト（約20分の1）に圧縮された（2026-08-24実測）。
   - **iOSの`estimate()`は総量としても信用できない**：削除しても`usage`が減らず、さらに1MiB単位に量子化されている（2026-08-26実測）。
@@ -2460,7 +2462,7 @@ HDMIデバイスでの10回では、既定と `interactive` は 10/10 が同じ�
 4. ~~iOS WebKit での確認。~~ → **2026-08-26 に確認済み**（「OPFS前提条件の実機確認（iOS、実測、2026-08-26）」参照）。A〜Eは成立し、決定2の対象範囲は変更不要と判断した。
 5. ~~決定3の受け入れ条件をIndexedDBのレコード列挙で書き直す。~~ → **2026-08-28 に実施済み**（`src/disk-store.ts` の `measureDiskLibraryBytes()`、「決定3の受け入れ条件（IndexedDBのレコード列挙、2026-08-28 書き直し）」参照）。
 6. **iOSのeviction実挙動の確認。**`persist()` がfalseのまま運用したとき、容量逼迫時にいつ・どういう条件でデータが消えるのかは未確認のまま。
-7. ~~決定4：`showOpenFilePicker`/`FileSystemFileHandle` の対応状況調査(案②の実現性確認)。~~ → **2026-08-28、案②(実ファイルへの書き戻し)を不採用と決定したため不要になった**（「決定4：案②（実ファイルへの書き戻し）は採用しない。対応形式は構造で書き、ダウンロードは安全策として用意し、往復確認は内部専用とする（2026-08-28 改訂）」参照）。
+7. ~~決定4：`showOpenFilePicker`/`FileSystemFileHandle` の対応状況調査(案②の実現性確認)。~~ → **2026-08-28、案②(実ファイルへの書き戻し)を不採用と決定したため不要になった**（「決定4：実ファイルへの書き戻し（案②）は採用しない（2026-08-28 改訂）」参照）。
 8. **Pixel 6a(Android Chrome)でのOPFS同期ハンドルの実機確認。**決定4の改訂によりファイルピッカー対応は不要になったが、OPFS同期ハンドル(`createSyncAccessHandle`)がAndroid Chromeで動作することはまだ実測していない。iOS(Safari・Chrome for iOS)は「OPFS前提条件の実機確認（iOS、実測、2026-08-26）」で確認済みだが、docsにAndroidでの実測記述は現時点で0件。決定2(SCSIのI/OはOPFS同期ハンドル経由)の対象範囲にAndroidを含めてよいかを確定するため、宿題として追加する。
 9. ドライブ計測の試行数を5から増やすか検討する（DIR A: の日差が±25%あり、現状では回帰を分離できない）。
 
