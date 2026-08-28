@@ -1,19 +1,35 @@
-// Worker のエントリポイント (docs/STORAGE-SCSI.md「段階移行の順序」手順4のスケルトン)。
+// Worker のエントリポイント (docs/STORAGE-SCSI.md「段階移行の順序」手順4〜7)。
 //
-// 今回実装しているのは initialize→ready / loadGame / fetchAvInfo / dispose の
-// command/response のみ。手順5(映像・音声出力)・手順6(入力)・手順7(駆動ループ)は
-// まだここへ移していない。したがって loadGame が成功しても retro_run() は一度も
-// 呼ばれず、画面や音は一切出ない。これは意図した状態であり、`?worker=1` は既定経路
-// (LocalCoreProxy、src/main.ts の実際の描画・駆動ループ)を置き換えない裏のフラグとして
-// 存在する(未完成のまま既定経路に混ざらないようにする設計。docs 参照)。
+// `?worker=1` のとき、この Worker 上のコアが本体そのものとして使われる(メインスレッド側には
+// もう1本のコアは立たない。src/main.ts 参照)。実装しているのは
+// initialize→ready / loadGame / fetchAvInfo / setRunning / readTextScreen / dispose の
+// command/response と、映像を運ぶ frame event、バッファ返却の3系統。
+// 入力・音声・FDDホットマウント・SRAM・ステート保存/復元は今回のスコープ外で、
+// 该当opは引き続き UNSUPPORTED を返す(src/main.ts 側で「未対応」を利用者に見える形にする)。
 //
 // 実コアの駆動には既存の LibretroHost / LocalCoreProxy をそのまま再利用する。
 // LibretroHost は内部で canvas.getContext('2d') / width / height / createImageData /
 // putImageData しか使わない(src/libretro-host.ts 参照)ため、Worker内では
-// OffscreenCanvas を「実際には誰も読み出さない scratch 描画先」として渡す。
-// docs の決定A(転送方式・メイン側canvas維持)により、実際に画面へ出す映像経路は
-// 手順5でメインスレッドの canvas へ転送する形に置き換える。ここで作る scratch
-// canvas の内容は今回どこにも転送されず、破棄されるだけ。
+// OffscreenCanvas を「実際には誰も画面として表示しない描画先」として渡す。
+// docs の決定A(転送方式・メイン側canvas維持): OffscreenCanvasをメインへ渡す方式は採らない
+// (メイン側で getImageData が使えなくなり screenHash が壊れる等、docs/STORAGE-SCSI.md
+// 「決定」参照)。代わりに、この scratch canvas に描かれた1フレームぶんのRGBAを
+// 毎フレーム getImageData() で読み出し、transferable として main へ postMessage する。
+//
+// バッファ返却: main が putImageData() し終えた ArrayBuffer を送り返してもらい、
+// 同じ byteLength のプールへ積んで次フレームの送信に使い回す(RETURN_FRAME_BUFFER_KIND、
+// core-protocol.ts参照)。プールが空で新規確保した回数を poolMisses として数え、frame event に
+// 載せて main 側から観測できるようにする(返却が黙って効かなくなったときに気づくため。
+// 実測では GC スパイク低減の効果は確認できていない。採用理由は毎フレームの
+// `new ArrayBuffer()` による確保そのものを無くすことにある)。
+//
+// 駆動ループ: setInterval + accumulator で駆動する(docs「決定」: setTimeoutは固定delayで
+// 系統的にドリフトし、素のsetIntervalは遅れた回を取り戻さないため、素の setInterval だけでは
+// 不十分)。既存メインループ(src/main.ts の loop())が使っている computeFrameBudget()
+// (src/frameBudget.ts)をそのまま呼ぶ。ただしメインループにある「音声キュー深さによる
+// ±2%のフレーム間隔補正」は今回入れない(音声が未移行のため補正すべきキューが無い)。
+// computeFrameBudget() には queued=0, speedMultiplier=1 を渡す(補正なし・速度ボタンは
+// 未移行のため常に等倍)。
 //
 // Worker のビルド形式について(実測により訂正): vite dev server はクラシックworker
 // 指定(type省略)でも、返す中身に ESM の import 文をそのまま残す(`?worker_file&type=classic`
@@ -30,15 +46,20 @@
 // self に代入させる)。実ブラウザで self.PX68K が設定されることを確認済み(docs参照)。
 
 import {
+  collectTransferables,
   createCoreError,
   CoreProxyError,
+  isReturnFrameBufferMessage,
   WORKER_BOOT_ACK_KIND,
   type CoreCommand,
   type CoreError,
+  type FrameSnapshot,
+  type Generation,
   type WorkerToMain,
 } from './core-protocol';
 import { LocalCoreProxy } from './core-proxy';
 import { LibretroHost } from './libretro-host';
+import { FrameBufferPool, runTick } from './worker-drive-loop';
 
 /**
  * DOM lib と webworker lib は同一 tsconfig 内で共存できない(グローバル `self` の型が
@@ -48,17 +69,29 @@ import { LibretroHost } from './libretro-host';
  */
 interface WorkerGlobalLike {
   postMessage(message: unknown, transfer?: Transferable[]): void;
-  onmessage: ((ev: MessageEvent<CoreCommand>) => void) | null;
+  onmessage: ((ev: MessageEvent<CoreCommand | { kind: string; buffer?: ArrayBuffer }>) => void) | null;
+  setInterval(handler: () => void, timeoutMs: number): ReturnType<typeof setInterval>;
+  clearInterval(id: ReturnType<typeof setInterval>): void;
+  performance: { now(): number };
 }
 
 const ctx = self as unknown as WorkerGlobalLike;
 
 /** メインの LocalCoreProxy を、initialize 完了後はこの Worker 内の実体として使う。 */
 let proxy: LocalCoreProxy | null = null;
+/** readDiskAccess/avInfo等の同期的な読み出しに使う実体。initialize完了後にのみ非null。 */
+let host: LibretroHost | null = null;
 let coreModuleLoaded = false;
+/** 現在の generation。initialize command から受け取ったものをそのまま event に載せ続ける。 */
+let currentGeneration: Generation = 0;
+
+/** 誰も画面として読まない scratch 描画先(コメント冒頭参照)。ここへ描かれた内容だけを
+ * 毎フレーム getImageData() で吸い出し、main へ転送する。 */
+let scratchCanvas: OffscreenCanvas | null = null;
+let scratchCtx: OffscreenCanvasRenderingContext2D | null = null;
 
 function post(message: WorkerToMain): void {
-  ctx.postMessage(message);
+  ctx.postMessage(message, collectTransferables(message));
 }
 
 function toCoreError(err: unknown, operation: string): CoreError {
@@ -85,29 +118,147 @@ async function ensureCoreModuleLoaded(): Promise<void> {
   coreModuleLoaded = true;
 }
 
+// --- バッファプール (映像frame eventの transfer 用) --------------------------
+//
+// 純粋ロジック(取り戻し計算・byteLengthキーのプール)は src/worker-drive-loop.ts に切り出し、
+// 単体テスト(test/worker-drive-loop.test.ts)の対象にしてある。ここでは実 Worker
+// グローバル(self.setInterval/performance.now、LibretroHost、scratch canvas)への結線だけを持つ。
+const framePool = new FrameBufferPool();
+
+function releaseBuffer(buffer: ArrayBuffer): void {
+  framePool.release(buffer);
+}
+
+// --- 駆動ループ (手順7) ------------------------------------------------------
+//
+// setInterval + accumulator。setTimeoutの固定delayは系統的にドリフトし、素の
+// setIntervalは遅れた回を取り戻さないため、両方の弱点を避けるために既存メインループ
+// (src/main.ts の loop())と同じ考え方(runTick()=computeFrameBudget()による取り戻し)を
+// 持ち込む。メインループと違い音声キューが無いため、frameIntervalの±2%補正(音声キュー深さ
+// 由来)は入れない(runTick()内でqueued=0, speedMultiplier=1固定でcomputeFrameBudget()を呼ぶ)。
+const TICK_MS = 16;
+let running = false;
+let driveIntervalId: ReturnType<typeof setInterval> | undefined;
+let lastTickAtMs = 0;
+let accumulator = 0;
+/** 起動後に完了した retro_run() の累積数。境界上の唯一の時系列識別子(docs参照)。 */
+let frameNo = 0;
+
+function stopDriveLoop(): void {
+  if (driveIntervalId !== undefined) {
+    ctx.clearInterval(driveIntervalId);
+    driveIntervalId = undefined;
+  }
+  lastTickAtMs = 0;
+  accumulator = 0;
+}
+
+function startDriveLoop(): void {
+  if (driveIntervalId !== undefined) return;
+  lastTickAtMs = 0;
+  accumulator = 0;
+  driveIntervalId = ctx.setInterval(tick, TICK_MS);
+}
+
+function tick(): void {
+  if (!running || !host) return;
+  const now = ctx.performance.now();
+  if (lastTickAtMs === 0) lastTickAtMs = now;
+  const dt = (now - lastTickAtMs) / 1000;
+  lastTickAtMs = now;
+
+  const fps = host.avInfo?.fps ?? 60;
+  const currentHost = host;
+  const result = runTick(dt, fps, accumulator, () => {
+    currentHost.runFrame();
+    frameNo++;
+    // runFrame() 直後でないとコア側がクリアしてしまう(LibretroHost#readDiskAccessのコメント参照)。
+    return currentHost.readDiskAccess();
+  });
+  accumulator = result.accumulator;
+
+  if (result.ranFrames > 0) sendFrame(result.access);
+}
+
+function sendFrame(access: { fddReading: boolean; fddDrive: number; hddAccessing: boolean }): void {
+  if (!host || !scratchCanvas || !scratchCtx) return;
+  const width = scratchCanvas.width;
+  const height = scratchCanvas.height;
+  if (width === 0 || height === 0) return; // まだ1度も解像度が確定していない(dupeフレームのみ)。
+
+  const imageData = scratchCtx.getImageData(0, 0, width, height);
+  const buffer = framePool.acquire(imageData.data.byteLength);
+  new Uint8ClampedArray(buffer).set(imageData.data);
+
+  const avInfo = host.avInfo;
+  const snapshot: FrameSnapshot = {
+    frameNo,
+    av: {
+      fps: avInfo?.fps ?? 60,
+      sampleRate: avInfo?.sampleRate ?? 44100,
+      width,
+      height,
+    },
+    video: { kind: 'rgba', bytes: buffer, width, height },
+    // 音声は今回のスコープ外(未移行)。空で送る。
+    audio: { chunks: [], sampleFrames: 0 },
+    disk: {
+      access,
+      // dirty(オートセーブ用フラグ)の pull は今回のスコープ外
+      // (SRAM/ステート/FDDホットマウントと同じく未移行)。常に false で送る。
+      dirty: { fddMask: 0, hdd: false },
+    },
+    poolMisses: framePool.misses,
+  };
+  post({ kind: 'event', generation: currentGeneration, event: 'frame', snapshot });
+}
+
 async function handleInitialize(
   cmd: Extract<CoreCommand, { op: 'initialize' }>,
 ): Promise<void> {
   const { generation, requestId, payload } = cmd;
+  currentGeneration = generation;
   try {
     await ensureCoreModuleLoaded();
-    // scratch canvas: 上のコメント参照。実映像経路は手順5で作る。
-    const scratchCanvas = new OffscreenCanvas(1, 1) as unknown as HTMLCanvasElement;
-    const host = new LibretroHost(scratchCanvas, () => {
-      // 音声経路は手順5で移す。今回は生成されたサンプルを捨てるだけ。
+    // scratch canvas: ファイル冒頭のコメント参照。
+    scratchCanvas = new OffscreenCanvas(1, 1);
+    scratchCtx = scratchCanvas.getContext('2d');
+    const newHost = new LibretroHost(scratchCanvas as unknown as HTMLCanvasElement, () => {
+      // 音声経路は今回のスコープ外。生成されたサンプルは捨てるだけ。
     });
-    await host.init(
+    await newHost.init(
       new Uint8Array(payload.biosIpl),
       new Uint8Array(payload.biosCg),
       payload.sram ? new Uint8Array(payload.sram) : undefined,
     );
     if (payload.options) {
       for (const [key, value] of Object.entries(payload.options)) {
-        host.setCoreOption(key, value);
+        newHost.setCoreOption(key, value);
       }
     }
-    proxy = new LocalCoreProxy(host, { initialized: true });
-    const avInfo = host.fetchAvInfo();
+    // 初期ディスクのマウント(src/main.ts の bootCore() 末尾と同じ手順を Worker 内へ移した版)。
+    // FDDホットマウント(実行中の差し替え。今回のスコープ外)とは違い、起動前の1回きりの
+    // 書き込みなのでここで完結させる(InitPayload.initialDisks のコメント参照)。
+    const disksBySlot = new Map(
+      (payload.initialDisks ?? []).map((d) => [d.slot, d] as const),
+    );
+    const fdd0 = disksBySlot.get('fdd0');
+    const fdd1 = disksBySlot.get('fdd1');
+    const hdd = disksBySlot.get('hdd');
+    const fdd0Path = fdd0 ? newHost.writeDiskImage(`fdd0_${fdd0.name}`, new Uint8Array(fdd0.bytes)) : '';
+    const fdd1Path = fdd1 ? newHost.writeDiskImage(`fdd1_${fdd1.name}`, new Uint8Array(fdd1.bytes)) : '';
+    if (hdd) {
+      const hddPath = newHost.writeDiskImage(`hdd_${hdd.name}`, new Uint8Array(hdd.bytes));
+      const iniText = `[WinX68k]\r\nHDD0=${hddPath}\r\n`;
+      newHost.writeFile('/system/keropi/config', new TextEncoder().encode(iniText));
+    }
+    // px68k-libretro の "px68k <fd0> <fd1>" 形式(bootCore()と同じ)。空スロットは空文字列。
+    const cmdText = `px68k "${fdd0Path}" "${fdd1Path}"\n`;
+    newHost.writeFile('/game/boot.cmd', new TextEncoder().encode(cmdText));
+
+    host = newHost;
+    proxy = new LocalCoreProxy(newHost, { initialized: true });
+    const avInfo = newHost.fetchAvInfo();
     post({ kind: 'response', generation, requestId, ok: true, completedFrameNo: 0, result: undefined });
     post({ kind: 'event', generation, event: 'ready', avInfo });
   } catch (err) {
@@ -135,7 +286,7 @@ async function handleLoadGame(cmd: Extract<CoreCommand, { op: 'loadGame' }>): Pr
   }
   try {
     const result = await proxy.loadGame(payload.path ?? '');
-    post({ kind: 'response', generation, requestId, ok: true, completedFrameNo: 0, result });
+    post({ kind: 'response', generation, requestId, ok: true, completedFrameNo: frameNo, result });
   } catch (err) {
     post({ kind: 'response', generation, requestId, ok: false, error: toCoreError(err, 'loadGame') });
   }
@@ -157,15 +308,67 @@ async function handleFetchAvInfo(
   }
   try {
     const result = await proxy.fetchAvInfo();
-    post({ kind: 'response', generation, requestId, ok: true, completedFrameNo: 0, result });
+    post({ kind: 'response', generation, requestId, ok: true, completedFrameNo: frameNo, result });
   } catch (err) {
     post({ kind: 'response', generation, requestId, ok: false, error: toCoreError(err, 'fetchAvInfo') });
   }
 }
 
+async function handleReadTextScreen(
+  cmd: Extract<CoreCommand, { op: 'serialize' | 'readTextScreen' | 'screenshot' }>,
+): Promise<void> {
+  const { generation, requestId, op } = cmd;
+  if (op !== 'readTextScreen') {
+    post({
+      kind: 'response',
+      generation,
+      requestId,
+      ok: false,
+      error: createCoreError('UNSUPPORTED', `${op} はWorker経路でまだ実装していません`, { operation: op }),
+    });
+    return;
+  }
+  if (!proxy) {
+    post({
+      kind: 'response',
+      generation,
+      requestId,
+      ok: false,
+      error: createCoreError('INVALID_STATE', 'initialize が完了していません', { operation: op }),
+    });
+    return;
+  }
+  try {
+    const result = await proxy.readTextScreen();
+    post({ kind: 'response', generation, requestId, ok: true, completedFrameNo: frameNo, result });
+  } catch (err) {
+    post({ kind: 'response', generation, requestId, ok: false, error: toCoreError(err, op) });
+  }
+}
+
+function handleSetRunning(cmd: Extract<CoreCommand, { op: 'setRunning' }>): void {
+  const { generation, requestId, payload } = cmd;
+  if (!proxy) {
+    post({
+      kind: 'response',
+      generation,
+      requestId,
+      ok: false,
+      error: createCoreError('INVALID_STATE', 'initialize が完了していません', { operation: 'setRunning' }),
+    });
+    return;
+  }
+  running = payload.running;
+  if (running) startDriveLoop();
+  else stopDriveLoop();
+  post({ kind: 'response', generation, requestId, ok: true, completedFrameNo: frameNo, result: undefined });
+}
+
 async function handleDispose(cmd: Extract<CoreCommand, { op: 'dispose' }>): Promise<void> {
   const { generation, requestId } = cmd;
   try {
+    running = false;
+    stopDriveLoop();
     // 決定(前回合意): _retro_deinit() は呼ばない。Worker ごと terminate するため
     // (手順9で改めて判断)。LocalCoreProxy#dispose() は元々 _retro_deinit を呼ばず
     // SRAM自動保存の停止とコールバック関数テーブルの解放のみを行う(src/libretro-host.ts
@@ -173,15 +376,23 @@ async function handleDispose(cmd: Extract<CoreCommand, { op: 'dispose' }>): Prom
     if (proxy) {
       await proxy.dispose();
       proxy = null;
+      host = null;
     }
-    post({ kind: 'response', generation, requestId, ok: true, completedFrameNo: 0, result: undefined });
+    post({ kind: 'response', generation, requestId, ok: true, completedFrameNo: frameNo, result: undefined });
   } catch (err) {
     post({ kind: 'response', generation, requestId, ok: false, error: toCoreError(err, 'dispose') });
   }
 }
 
-ctx.onmessage = (ev: MessageEvent<CoreCommand>) => {
-  const cmd = ev.data;
+ctx.onmessage = (ev) => {
+  const data = ev.data as CoreCommand | { kind: string; buffer?: ArrayBuffer };
+  // バッファ返却は generation/requestId を持たない専用メッセージ(core-protocol.ts参照)。
+  // 通常のcommand分岐より先に見る。
+  if (isReturnFrameBufferMessage(data)) {
+    releaseBuffer(data.buffer);
+    return;
+  }
+  const cmd = data as CoreCommand;
   switch (cmd.op) {
     case 'initialize':
       void handleInitialize(cmd);
@@ -192,16 +403,22 @@ ctx.onmessage = (ev: MessageEvent<CoreCommand>) => {
     case 'fetchAvInfo':
       void handleFetchAvInfo(cmd);
       return;
-    case 'dispose':
-      void handleDispose(cmd);
-      return;
-    // 以下は今回のスケルトンでは未実装(手順5以降)。UNSUPPORTED を返す。
     case 'setRunning':
-    case 'updateInput':
-    case 'hotSwapFdd':
+      handleSetRunning(cmd);
+      return;
     case 'serialize':
     case 'readTextScreen':
     case 'screenshot':
+      void handleReadTextScreen(cmd);
+      return;
+    case 'dispose':
+      void handleDispose(cmd);
+      return;
+    // 以下は今回のスコープ外(入力・音声・FDDホットマウント・SRAM・ステート保存/復元)。
+    // UNSUPPORTED を返す。main.ts 側で「?worker=1 では未対応」と利用者に見える形にする
+    // (無言のno-opにしない。docs/STORAGE-SCSI.md参照)。
+    case 'updateInput':
+    case 'hotSwapFdd':
     case 'readMemory': {
       post({
         kind: 'response',
@@ -210,7 +427,7 @@ ctx.onmessage = (ev: MessageEvent<CoreCommand>) => {
         ok: false,
         error: createCoreError(
           'UNSUPPORTED',
-          `${cmd.op} はWorker経路でまだ実装していません(段階移行 手順5以降)`,
+          `${cmd.op} はWorker経路でまだ実装していません(段階移行の対象外。docs参照)`,
           { operation: cmd.op },
         ),
       });

@@ -2758,11 +2758,70 @@ frameNoの連番(`gapCount`)は多忙時も0で、メッセージ自体は失わ
 
 修正後、`npx tsc --noEmit` はクリーン、`npm test` は既存532件+新規4件の**536件全通過**。
 
+## ワーカー移行 手順5・7：映像・駆動ループの実装、`?worker=1` を本体経路化（2026-08-28）
+
+手順4の骨格(メインスレッドのコアと並んで2本目のコアをWorkerに立てるだけの試験用の形)を、**`?worker=1` のときはWorker上のコアだけを本体として使う**形へ作り替えた。今回のスコープは映像(手順5)と駆動ループ(手順7)のみで、音声・入力・FDDホットマウント・SRAM・ステート保存/復元は引き続き未移行。
+
+### 変更した設計判断の反映
+
+- **映像は転送方式**: `src/core-worker.ts` は scratch `OffscreenCanvas` へ描画させたまま、毎tick `getImageData()` で読み出したRGBAを `frame` event の transferable として送る。メイン側(`src/main.ts` の `bootWorkerCore()`)は実際の `#screen` canvas へ `putImageData()` する。`ImageData(data, w, h)` コンストラクタは `data` をコピーせずそのまま backing store にする(HTML仕様どおり)ため、渡した `Uint8ClampedArray` を包む `ArrayBuffer` を `putImageData()` 直後にそのまま `WorkerCoreProxy#returnFrameBuffer()` で送り返せる。
+- **バッファ返却**: `src/worker-drive-loop.ts` の `FrameBufferPool`(byteLengthキーのスタック)が受け持つ。プールが空で新規確保した回数を `misses` として公開し、`FrameSnapshot.poolMisses` に載せてmain側から観測できるようにした(`__webx68kDebug.workerStats()`)。**GCスパイク低減の効果は今回も確認していない**(既存の実測記録どおり)。採用理由は毎フレームの `new ArrayBuffer()` 確保そのものを無くすことにある。
+- **駆動は `setInterval` + accumulator**: `src/worker-drive-loop.ts` の `runTick()` が既存メインループ(`src/main.ts` の `loop()`)と同じ考え方(`computeFrameBudget()` による取り戻し)を純粋関数として持つ。音声キューが無いため、メインループにある「音声キュー深さによる±2%のframeInterval補正」は入れず、`computeFrameBudget()` には `queued=0, speedMultiplier=1` を固定で渡す(コード中にコメントで明記)。`core-worker.ts` はこの純粋ロジックに `self.setInterval`/`performance.now()`/`LibretroHost` を結線するだけの薄い層になっている。
+
+### 追加・変更したファイル
+
+- `src/worker-drive-loop.ts`(新規): `runTick()`(取り戻し計算)と `FrameBufferPool`(バッファプール)。`self`/`OffscreenCanvas`/`fetch` に依存しない純粋ロジックだけを切り出し、`core-worker.ts`(実Workerグローバル依存、前例どおりNodeから直接実行しない)とは別に単体テスト可能にした。
+- `src/core-worker.ts`: `setRunning`/`readTextScreen` を実装(残りの未実装opは引き続きUNSUPPORTED)。`handleInitialize()` で初期ディスク(`InitPayload.initialDisks`、後述)をマウントし `/game/boot.cmd`・`/system/keropi/config` を書いてから応答する。tick()ごとに `runTick()` を呼び、進んだフレームがあれば `sendFrame()` でRGBA+アクセスフラグ+`poolMisses`を送る。
+- `src/core-protocol.ts`: `FrameSnapshot.poolMisses` を追加。`RETURN_FRAME_BUFFER_KIND`/`isReturnFrameBufferMessage`(generation/requestIdを持たない一方向のバッファ返却メッセージ。command/responseの往復に乗せると毎フレームのpending管理・timeoutオーバーヘッドを払うことになるため区別した)。`InitPayload.initialDisks` を「path参照のみ」から「`{slot, name, bytes}` の実体」へ変更(Workerはメインの MEMFS を共有しておらず、初回マウントには実バイト列が必須と判明したため。手順4時点のコメントで「bytesが必要になった場合は別opで」としていた宿題を、初回マウントは実行中の差し替え=FDDホットマウントとは別物と整理した上でここで解消した)。
+- `src/core-proxy.ts`: `WorkerCoreProxy` に `setRunning()`/`returnFrameBuffer()`/`setEventHandler()`(`ready`/`frame`/`sramChanged` eventの購読)を追加。`readTextScreen()` を実装(`issue('readTextScreen', {})`)。`init()` に `initialDisks?: InitialDiskInput[]` を追加引数として持たせた(`LibretroHostProxy` インタフェースには無い、`WorkerCoreProxy` 固有の追加パラメータ。オプション引数なので構造的両立性は保たれる)。
+- `src/main.ts`: `bootCore()` の先頭で `urlWorkerMode` のとき `bootWorkerCore()` へ完全分岐し、以降は元のコード(`host`=メインスレッドの`LibretroHost`を使う経路)へ一切触れない。`bootWorkerCore()` は `WorkerCoreProxy` を唯一のコアとして起動し、`slots.fdd0/fdd1/hdd` から `InitialDiskInput[]` を組み立てて渡し、frame eventをcanvasへ描画・アクセスランプへ反映する。`pollDiskAccess()` のランプ反映ロジックを `applyDiskAccess()` として切り出し、既定経路(host読み出し)とWorker経路(frame eventのdisk.access)の両方から使えるようにした。
+
+### 未移行機能を「見える形」にする(手順4・5・7で要求された制約)
+
+入力・音声・FDDホットマウント・SRAM・ステート保存/復元は今回のスコープ外。無言のno-opにしないため:
+
+- 起動完了時に1回、`console.warn` + トースト(6秒表示、文言キー `workerModeUnsupported`、ja/en両方追加)で「入力・音声は未対応」と知らせる(キー入力のたびに出すと使い物にならないため、起動時の1回にまとめた)。
+- FDDホットマウント(起動中のディスク挿入/排出): `insertDiskBytes()`/`ejectSlot()` の先頭で `urlWorkerMode && running` を見て弾き、トーストを出す。起動前のスロット選択(初期マウント用)は従来どおり通す。
+- ステート保存/復元: `handleSaveState()`/`handleLoadState()` の先頭で `urlWorkerMode` を見て(起動中ならトースト、未起動なら無言で抜ける。従来の `!host` ガードと同じ挙動を維持しつつ、起動中に押した場合だけ理由を知らせる)。
+
+### テストと故障注入
+
+新規 `test/worker-drive-loop.test.ts`(10件)と `test/worker-core-proxy.test.ts` への追加(6件、既存5件+新規6件で計11件)。
+
+- `runTick()`: 通常dt・遅延dt(取り戻しで複数フレーム進むこと)・runFrameOnce呼び出し回数の一致・異常なdt(タブ復帰)でのaccumulator破棄・tick内複数フレームでのアクセスフラグOR合成。
+- `FrameBufferPool`: 新規確保でmisses増加・返却後の再利用でmissesが増えないこと(参照同一性で確認)・サイズ違いは別キー・返却しなければmissesが増え続けること(バッファ返却が効いていない状態の再現)。
+- `WorkerCoreProxy`: `readTextScreen()`/`setRunning()`/`returnFrameBuffer()`(generation/requestId無しの一方向メッセージであることを確認)/`setEventHandler()`によるframe/ready eventの転送。
+
+**陽性対照(故障注入、実装時に確認)**:
+1. `runTick()` のwhileループを「1tick最大1フレーム」に書き換え → 「遅れたtickで複数フレーム進む」「tick内複数フレームのOR合成」の2件が実際にredになることを確認してから復元。
+2. `WorkerCoreProxy#readTextScreen()` を `unsupported('readTextScreen')` に戻す → 該当テストがredになることを確認。
+3. `handleMessage()` 内の `this.eventHandler?.(message)` をコメントアウト → frame/ready event転送のテストがredになることを確認。
+いずれも `cp` で退避 → 破壊 → `npx vitest run` でred確認 → 復元、の手順。
+
+修正後、`npx tsc --noEmit` はクリーン、`npm test` は既存536件+新規14件の**550件全通過**。
+
+### 実ブラウザでの確認(dev・本番ビルド双方)
+
+Claude_Browser(実Chrome、`?worker=1` で `http://localhost:<port>/?worker=1` を開き「システムディスクで起動」をクリック)で確認:
+
+- **dev(`npm run dev`)**: 起動後10秒程度で `A>ECHO OFF` → `A>` プロンプトに到達。`__webx68kDebug.screenText()` が実際に `lines: ["Human68k for X680x0 version 3.02", ..., "A>ECHO OFF", "A>..."]` を返すことを確認(コマンド出力ではなく行内容そのものを目視確認)。`__webx68kDebug.workerStats()` は `frameNo` が1520→2259(3秒間で739フレーム、駆動ループが継続していることを確認)、**`poolMisses` は3のまま変化せず**(バッファ返却が効いて頭打ちになっていることを確認)。
+- **本番ビルド(`npm run build` → `npm run preview`)**: 同一手順で同じく `A>ECHO OFF` の後 `A>` プロンプトの表示までスクリーンショットで確認(`__webx68kDebug` はDEV限定オブジェクトのためprodには存在せず、prodの確認はスクリーンショットによる目視のみ)。`dist/assets/core-worker-*.js` チャンクが生成されていることも確認した。
+- **既定経路(`?worker=1` なし)は本番ビルドで従来どおり起動することを確認**(同一システムディスクで `A>` まで到達、画面表示に変化なし)。
+
+FDD0のドライブ行に赤いアクセスランプが点灯することも上記スクリーンショットで確認しており、frame eventの `disk.access` → `applyDiskAccess()` の経路が実際に機能していることの追加証拠になっている。
+
+### 今回できなかったこと・未確認のこと
+
+- 入力・音声・FDDホットマウント・SRAM・ステート保存/復元(手順6・8・9のスコープ)は未着手のまま。
+- puppeteer-core による自動化スクリプト(scratchpadに作成、`scripts/measure-*.mjs`ではない)は、手動のdevサーバーと重複起動させた際にプロトコルタイムアウトで不安定になった。最終的な合否判定はClaude_Browser(MCP)による手動確認で行った。自動化スクリプト自体の安定化は今回やっていない。
+- 55.5Hz(31kHzモード)の達成率については「Aの追測」節で未決のまま残っている問題(`setInterval`下でも99%達成が3試行そろわない)を、今回はプロンプト到達の確認を優先し、定量的な再測定はしていない。
+- iOS/Android実機での確認は未実施。
+
 ## 次にやること
 
 移行前基準は2組そろい、**ワーカー移行に着手できる状態になった**。
 
-1. ~~ワーカー移行の手順3(ステートと単純なFS転送)に進む。~~ → **2026-08-28 実施済み**（「ワーカー移行 手順3：ステートとFS転送の非同期化（実装）」参照）。**次はワーカー移行の手順4(初期化、オプション、load/AV)に進む。**Module・callback・HEAP・FSをWorker内へ閉じ、ready/load応答までを移す。以後の手順はWorker内コアを前提とする。
+1. ~~ワーカー移行の手順3(ステートと単純なFS転送)に進む。~~ → **2026-08-28 実施済み**（「ワーカー移行 手順3：ステートとFS転送の非同期化（実装）」参照）。~~次はワーカー移行の手順4(初期化、オプション、load/AV)に進む。~~ → **2026-08-28 実施済み**（「ワーカー移行 手順4：初期化・load/AVのスケルトン実装」参照）。~~手順5・7(映像・駆動ループ)に進む。~~ → **2026-08-28 実施済み**（「ワーカー移行 手順5・7：映像・駆動ループの実装、`?worker=1` を本体経路化」参照）。`?worker=1` でHuman68kが`A>`プロンプトまで到達することをdev・本番ビルド双方で確認済み。**次はワーカー移行の手順6(入力)に進む。**
 2. **計測時に既定出力デバイスを内蔵スピーカーに固定する。**条件 (a)(b)(c) に加えて (d) とする。ハーネスが記録するようになったので、結果ファイルで照合できる。
 3. **`persist()` の切り分け。**普段使いのプロファイルで `node scripts/probe-opfs.mjs --serve` のページを開き、`false` が使い捨てプロファイル固有かどうかを見る。
 4. ~~iOS WebKit での確認。~~ → **2026-08-26 に確認済み**（「OPFS前提条件の実機確認（iOS、実測、2026-08-26）」参照）。A〜Eは成立し、決定2の対象範囲は変更不要と判断した。

@@ -50,6 +50,29 @@ export function isWorkerBootAck(message: unknown): message is WorkerBootAck {
   );
 }
 
+// --- フレームバッファ返却 (手順5・7: 映像転送方式・バッファ返却) ------------------
+//
+// メインが putImageData() し終えた ArrayBuffer を Worker へ送り返し、Worker側のプールで
+// 使い回すための専用メッセージ。command/response(generation・requestId付き)の枠には
+// 乗せない: 応答を待つ必要が無い一方向のfire-and-forgetであり、Workerが1フレーム進める
+// たびに送られる高頻度のメッセージなので、pending Map への登録・timeoutタイマーの生成といった
+// 通常command一件ぶんのオーバーヘッドを毎フレーム払いたくない。WORKER_BOOT_ACK_KINDと同様、
+// generationを持たない専用の型として区別する。
+export const RETURN_FRAME_BUFFER_KIND = 'returnFrameBuffer' as const;
+
+export interface ReturnFrameBufferMessage {
+  kind: typeof RETURN_FRAME_BUFFER_KIND;
+  buffer: ArrayBuffer;
+}
+
+export function isReturnFrameBufferMessage(message: unknown): message is ReturnFrameBufferMessage {
+  return (
+    typeof message === 'object' &&
+    message !== null &&
+    (message as { kind?: unknown }).kind === RETURN_FRAME_BUFFER_KIND
+  );
+}
+
 export type CoreCommand =
   | {
       kind: 'command';
@@ -176,19 +199,24 @@ export interface CoreError {
 // --- initialize ----------------------------------------------------------
 
 /**
- * BIOS/CGROM/SRAM、起動時オプション、初期ディスク参照、OffscreenCanvas(採用する場合)を渡す。
+ * BIOS/CGROM/SRAM、起動時オプション、初期ディスク、OffscreenCanvas(採用する場合)を渡す。
  * 大きな ArrayBuffer と canvas は transfer list で渡す。
  *
- * 設計文書は「初期ディスク参照」としか書いておらず、bytes を含めるか path 参照のみにするかは
- * 明記されていない。ここではメッセージ量を抑えるため path 参照のみとした(判断: 実装者)。
- * bytes が必要になった場合は別 op で MEMFS へ書き込む想定。
+ * 2026-08-28追記(手順4→7実装時の訂正): 当初は「メッセージ量を抑えるため path 参照のみ」の
+ * 想定だった(下の旧コメント参照)が、Worker はメインの MEMFS を共有していないため、path 参照
+ * だけでは Worker 側が中身を読めず起動できない。初回起動時のディスクマウントは(FDDホット
+ * マウントと違い)実行中の差し替えではなく1回きりの書き込みなので、実体の bytes をここへ
+ * 含める形に変更した(initialDisks の bytes は initialize の transfer list に載る)。
+ *
+ * 旧コメント(参考): 「設計文書は『初期ディスク参照』としか書いておらず、bytesを含めるか
+ * path参照のみにするかは明記されていない。ここではメッセージ量を抑えるためpath参照のみとした」。
  */
 export interface InitPayload {
   biosIpl: ArrayBuffer;
   biosCg: ArrayBuffer;
   sram?: ArrayBuffer;
   options?: Record<string, string>;
-  initialDisks?: Array<{ slot: 'fdd0' | 'fdd1' | 'hdd'; path: string }>;
+  initialDisks?: Array<{ slot: 'fdd0' | 'fdd1' | 'hdd'; name: string; bytes: ArrayBuffer }>;
   offscreenCanvas?: OffscreenCanvas;
 }
 
@@ -229,6 +257,11 @@ export interface FrameSnapshot {
     access: { fddReading: boolean; fddDrive: number; hddAccessing: boolean };
     dirty: { fddMask: number; hdd: boolean };
   };
+  /** プールが空で新規 ArrayBuffer を確保した累積回数(起動からの累計)。
+   * バッファ返却(RETURN_FRAME_BUFFER_KIND)が効いていれば起動時の数件で頭打ちになるはず。
+   * 返却が黙って失敗している(取りこぼし)ときに気づけるようにするための観測値
+   * (docs/STORAGE-SCSI.md 参照。「効果があった」の確認ではなく、取りこぼしの検知が目的)。 */
+  poolMisses: number;
 }
 
 // --- command と不可分操作 -----------------------------------------------
@@ -334,6 +367,7 @@ export function collectTransferables(
         const p = message.payload;
         out.push(p.biosIpl, p.biosCg);
         if (p.sram) out.push(p.sram);
+        if (p.initialDisks) for (const d of p.initialDisks) out.push(d.bytes);
         if (p.offscreenCanvas) out.push(p.offscreenCanvas);
         break;
       }

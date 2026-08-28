@@ -14,8 +14,10 @@ import {
   createCoreError,
   isCoreResponse,
   isWorkerBootAck,
+  RETURN_FRAME_BUFFER_KIND,
   type CoreCommand,
   type CoreErrorCode,
+  type CoreEvent,
   type Generation,
   type HotSwapFddPayload,
   type HotSwapFddResult,
@@ -24,6 +26,14 @@ import {
 } from './core-protocol';
 import type { AvInfo, LibretroHost } from './libretro-host';
 import type { TextScreenDump } from './text-screen';
+
+/** WorkerCoreProxy#init() の追加引数(InitPayload.initialDisks参照)。main.ts側が
+ * slots.fdd0/fdd1/hdd から組み立てて渡す。 */
+export interface InitialDiskInput {
+  slot: 'fdd0' | 'fdd1' | 'hdd';
+  name: string;
+  bytes: Uint8Array;
+}
 
 /**
  * proxy が公開する形状。docs の例に、既存 LibretroHost の public メソッドのうち
@@ -494,8 +504,17 @@ export class WorkerCoreProxy implements LibretroHostProxy {
       this.handleWorkerFailure(message.error.message, message.error, false);
       return;
     }
-    // 'ready'/'frame'/'sramChanged' は今回の LibretroHostProxy には購読者が無い
-    // (手順5・7で映像/音声/SRAM監視を足すときに拾う)。
+    // 'ready'/'frame'/'sramChanged': src/main.ts 側が setEventHandler() で登録した購読者へ
+    // そのまま転送する(手順5・7: 映像・アクセスフラグをここで main へ橋渡しする)。
+    this.eventHandler?.(message);
+  }
+
+  private eventHandler: ((event: CoreEvent) => void) | null = null;
+
+  /** 'ready'/'frame'/'sramChanged' イベントの購読者を1つだけ登録する(main.ts側の呼び出し元は
+   * 1つのproxyインスタンスにつき1つの購読者しか要らないため、複数登録には対応しない)。 */
+  setEventHandler(handler: ((event: CoreEvent) => void) | null): void {
+    this.eventHandler = handler;
   }
 
   /** messageerror/Workerのerror/応答timeout/fatal event を束ねる WORKER_FAILURE 処理。
@@ -588,11 +607,28 @@ export class WorkerCoreProxy implements LibretroHostProxy {
     );
   }
 
-  async init(biosIpl: Uint8Array, biosCg: Uint8Array, sram?: Uint8Array): Promise<void> {
+  /**
+   * initialDisks: WorkerCoreProxy 固有の追加引数(LibretroHostProxy.init のシグネチャには
+   * 無い)。Worker はメインの MEMFS を共有していないため、初回マウントするディスクの実体を
+   * ここで一緒に渡す必要がある(core-protocol.ts の InitPayload.initialDisks コメント参照)。
+   * LocalCoreProxy は既存経路のとおり src/main.ts の bootCore() が host.writeDiskImage() を
+   * 直接呼ぶため、この引数を持たない(オプション引数なのでインタフェースの構造的両立性は保たれる)。
+   */
+  async init(
+    biosIpl: Uint8Array,
+    biosCg: Uint8Array,
+    sram?: Uint8Array,
+    initialDisks?: InitialDiskInput[],
+  ): Promise<void> {
     await this.issue<unknown>('initialize', {
       biosIpl: toOwnedArrayBuffer(biosIpl),
       biosCg: toOwnedArrayBuffer(biosCg),
       sram: sram ? toOwnedArrayBuffer(sram) : undefined,
+      initialDisks: initialDisks?.map((d) => ({
+        slot: d.slot,
+        name: d.name,
+        bytes: toOwnedArrayBuffer(d.bytes),
+      })),
     });
   }
 
@@ -621,7 +657,22 @@ export class WorkerCoreProxy implements LibretroHostProxy {
   }
 
   async readTextScreen(): Promise<TextScreenDump> {
-    return this.unsupported('readTextScreen');
+    return this.issue<TextScreenDump>('readTextScreen', {});
+  }
+
+  /** 駆動ループ(手順7)の開始・停止。LibretroHostProxy には無い、Worker経路固有のメソッド
+   * (LocalCoreProxy側は既存のsrc/main.tsのloop()が同じ役割を持つため不要)。 */
+  async setRunning(running: boolean): Promise<void> {
+    await this.issue<unknown>('setRunning', { running });
+  }
+
+  /** main が putImageData() し終えた frame event の ArrayBuffer を Worker のプールへ返す。
+   * command/response(generation・requestId付き)の枠には乗せない一方向のfire-and-forget
+   * (core-protocol.ts の RETURN_FRAME_BUFFER_KIND のコメント参照)。dispose済み・異常終了後は
+   * 送っても意味が無いため黙って無視する(バッファは単に破棄される)。 */
+  returnFrameBuffer(buffer: ArrayBuffer): void {
+    if (this.disposed || this.failed) return;
+    this.worker.postMessage({ kind: RETURN_FRAME_BUFFER_KIND, buffer }, [buffer]);
   }
 
   async readMemory(_address: number, _length: number): Promise<ArrayBuffer> {

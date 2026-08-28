@@ -44,7 +44,14 @@ import { buildFileManagerDialog, type FmTarget } from './filemanager';
 import { Bridge, resolveBridgeUrl, type BridgeHost } from './bridge';
 import { RETROK, charToKey, codeToRetrok } from './keyboard';
 import { LibretroHost } from './libretro-host';
-import { LocalCoreProxy, WorkerCoreProxy, toOwnedArrayBuffer } from './core-proxy';
+import {
+  LocalCoreProxy,
+  WorkerCoreProxy,
+  toOwnedArrayBuffer,
+  type InitialDiskInput,
+  type LibretroHostProxy,
+} from './core-proxy';
+import type { CoreEvent, FrameSnapshot } from './core-protocol';
 import {
   parseAspectModeParam,
   parseCpuSpeedParam,
@@ -418,13 +425,15 @@ let host: LibretroHost | null = null;
 // host 自体はまだ同一スレッド実装のままで、駆動ループ・永続化はこの proxy を通さない。
 // host.init() が完了した後に initialized:true で構築する(host.init() は既存経路のまま呼ぶため、
 // proxy 自身は init を経由しない。詳細は core-proxy.ts の LocalCoreProxy コンストラクタ参照)。
-let coreProxy: LocalCoreProxy | null = null;
-// `?worker=1` の裏で試すWorker経路(段階移行 手順4のスケルトン)。既定経路(coreProxy/host、上記)
-// には一切触れず、追加でもう1本 Worker 上に別のコアインスタンスを立てて initialize→loadGame→
-// fetchAvInfo が通ることだけを確認する試験用の入れ物。手順5・6・7が終わるまでは画面にも音にも
-// 現れない(docs/STORAGE-SCSI.md「段階移行の順序」参照)。bootCore()呼び出しのたびに前回のもの
-// をdisposeしてから作り直す。
-let experimentalWorkerCoreProxy: WorkerCoreProxy | null = null;
+// `?worker=1` のときは WorkerCoreProxy、既定はこれまで通り LocalCoreProxy。呼び出し側
+// (screenText/serialize等)は LibretroHostProxy 型でだけ扱うため、どちらが入っていても
+// 同じコードで動く(docs/STORAGE-SCSI.md「境界の原則」参照)。
+let coreProxy: LibretroHostProxy | null = null;
+// `?worker=1` のときだけ非null。setRunning/returnFrameBuffer/setEventHandler は
+// LibretroHostProxy(既定経路のLocalCoreProxyと共通の形)には無い、Worker経路固有の
+// メソッドのため、型を絞った専用の参照を別途持つ。bootCore()呼び出しのたびに前回のものを
+// disposeしてから作り直す。
+let workerCoreProxy: WorkerCoreProxy | null = null;
 let running = false;
 let bootStarted = false;
 
@@ -1326,6 +1335,14 @@ async function insertDiskBytes(
     alert(t('slotLockedWhileRunning'));
     return;
   }
+  // Worker経路(?worker=1)は起動中のFDDホットマウントが未移行(今回のスコープ外)。host(=
+  // メインスレッドのコア)が無いままslotsだけ書き換えると「UI上は挿入済みなのにゲストには
+  // 何も届いていない」という無言の食い違いになるため、起動中は弾いて利用者に知らせる。
+  // 起動前(!running)のスロット選択は従来どおり通す(起動時にまとめてマウントされる)。
+  if (urlWorkerMode && running) {
+    warnWorkerModeUnsupported();
+    return;
+  }
   slots[slot] = { name, data, sourceKey };
   updateSlotDisplay(slot, displayLabel ?? name);
 
@@ -1339,6 +1356,11 @@ async function insertDiskBytes(
 function ejectSlot(slot: SlotId): void {
   if (isSlotLocked(slot)) {
     alert(t('slotLockedWhileRunning'));
+    return;
+  }
+  // insertDiskBytes と同じ理由(FDDホットマウント未移行)で、起動中のWorker経路では弾く。
+  if (urlWorkerMode && running) {
+    warnWorkerModeUnsupported();
     return;
   }
   // 抜く前にゲストの書き込みを回収する(吸い出しは同期なので、ここを抜ける時点で取得済み)。
@@ -2389,47 +2411,119 @@ function sanitizeFileName(name: string): string {
   return name.replace(/[\\/]/g, '_');
 }
 
+/** Worker経路(?worker=1)で直近受け取った frame event の poolMisses。
+ * デバッグフック(__webx68kDebug.workerStats)・自動計測から観測できるようにするための
+ * 唯一の保持場所(バッファ返却が効いているかの確認用。docs/STORAGE-SCSI.md参照)。 */
+let workerLastPoolMisses = 0;
+let workerLastFrameNo = 0;
+
+/** `?worker=1` でだけ利用者へ見せる、未移行機能のトースト。入力・音声・FDDホットマウント・
+ * SRAM・ステート保存/復元は今回のスコープ外(docs/STORAGE-SCSI.md「段階移行の順序」参照)。
+ * 無言のno-opにせず、必ずここを通してから抜けること。 */
+function warnWorkerModeUnsupported(): void {
+  console.warn('[worker] ?worker=1 ではこの機能はまだ未対応です(入力・音声・FDDホットマウント・SRAM・ステート保存/復元)。');
+  showToast(t('workerModeUnsupported'));
+}
+
 /**
- * `?worker=1` の裏でだけ動く試験用スケルトン。既定経路(host/coreProxy、上のbootCore()の残り)
- * とは完全に独立した、もう1本のコアインスタンスをWorker上に立てて
- * initialize→ready/loadGame/fetchAvInfo が通ることだけを確認する。
+ * `?worker=1` のときの起動経路。既定経路(host = メインスレッドの LibretroHost)を一切作らず、
+ * Worker 上のコアだけを本体として使う(手順4のスケルトンと違い、2本目のコアではなくこちらが
+ * 唯一のコアになる)。host はこの経路では常に null のまま(input/audio/hotswap/state系の
+ * 呼び出しが誤って本体があるかのように動かないための安全策も兼ねる)。
  *
- * 手順5(映像・音声出力)・手順6(入力)・手順7(駆動ループ)がまだこのWorker側コアに
- * 繋がっていないため、loadGame が成功しても画面にも音にも一切現れない(意図した状態。
- * docs/STORAGE-SCSI.md「段階移行の順序」参照)。失敗しても既定経路(実際に表示・動作する
- * host/coreProxy側)には一切影響させないよう、ここで例外を握り潰す。
+ * 映像(手順5)は Worker が scratch canvas から毎フレーム吸い出した RGBA を frame event で
+ * 送ってきたものを、ここで実際の画面 canvas へ putImageData() する(決定A: 転送方式・メイン側
+ * canvas維持。docs参照)。putImageData() し終えた ArrayBuffer は同じ event ハンドラの中で
+ * 即座に Worker のプールへ返す(バッファ返却)。
  */
-async function bootWorkerCoreProxySkeleton(savedSram: Uint8Array | null): Promise<void> {
-  if (experimentalWorkerCoreProxy) {
-    const previous = experimentalWorkerCoreProxy;
-    experimentalWorkerCoreProxy = null;
+async function bootWorkerCore(): Promise<void> {
+  speedEnabled = false;
+  recomputeSpeedMultiplier();
+  updateSpeedButtonUi();
+
+  if (workerCoreProxy) {
+    const previous = workerCoreProxy;
+    workerCoreProxy = null;
+    coreProxy = null;
     try {
       await previous.dispose();
     } catch (err) {
-      console.warn('[worker skeleton] 前回のWorkerコアのdisposeに失敗しました', err);
+      console.warn('[worker] 前回のWorkerコアのdisposeに失敗しました', err);
     }
   }
-  if (!biosIplBytes || !biosCgBytes) return;
-  try {
-    const proxy = new WorkerCoreProxy();
-    experimentalWorkerCoreProxy = proxy;
-    await proxy.init(biosIplBytes, biosCgBytes, savedSram ?? undefined);
-    // 実host側は px68k <fd0> <fd1> 形式のcmdファイル経由でFDD0/FDD1を渡すが、この試験用コアは
-    // writeFile がまだUNSUPPORTED(手順5以降)なので同じファイルを書けない。存在しないパスを
-    // 渡して loadGame() が(成功であれ失敗であれ)command/response往復として応答することだけを
-    // 確認する。
-    const loaded = await proxy.loadGame('/game/boot.cmd').catch((err) => {
-      console.warn('[worker skeleton] loadGame に失敗しました(想定内。実起動には未接続)', err);
-      return false;
-    });
-    const avInfo = await proxy.fetchAvInfo().catch(() => null);
-    console.log(
-      `[worker skeleton] initialize/ready 完了。loadGame=${loaded} avInfo=${avInfo ? 'ok' : 'なし'} ` +
-        '(映像・音声・入力・駆動ループは未接続。?worker=1 は既定経路に影響しません)',
-    );
-  } catch (err) {
-    console.warn('[worker skeleton] 初期化に失敗しました(既定経路には影響しません)', err);
+  if (!biosIplBytes || !biosCgBytes) {
+    throw new Error('BIOS/CGROMが未設定です');
   }
+
+  const wctx = canvas.getContext('2d');
+  if (!wctx) throw new Error('2D コンテキストの取得に失敗しました');
+
+  const savedSram = await loadSramFile();
+  // SRAM/ステートの永続化はスコープ外だが、初回のSWITCH.X設定(起動ドライブ等)を引き継ぐため
+  // 初期値として渡すことだけは既定経路と揃える(以後の自動保存は行わない。startSramAutosave
+  // 相当はWorker側に無い)。
+  const proxy = new WorkerCoreProxy();
+  workerCoreProxy = proxy;
+  coreProxy = proxy;
+
+  proxy.setEventHandler((event: CoreEvent) => {
+    if (event.event === 'frame') {
+      const snapshot: FrameSnapshot = event.snapshot;
+      workerLastPoolMisses = snapshot.poolMisses;
+      workerLastFrameNo = snapshot.frameNo;
+      if (snapshot.video.kind === 'rgba') {
+        const { bytes, width, height } = snapshot.video;
+        if (canvas.width !== width || canvas.height !== height) {
+          canvas.width = width;
+          canvas.height = height;
+          rescale();
+        }
+        // ImageData(data, w, h) は data をコピーせずそのまま backing store にする
+        // (HTML仕様上、渡した Uint8ClampedArray が ImageData.data そのものになる)。
+        const imageData = new ImageData(new Uint8ClampedArray(bytes), width, height);
+        wctx.putImageData(imageData, 0, 0);
+        // バッファ返却(決定「バッファ返却あり」): putImageData() は同期的にピクセルを
+        // 読み終えるので、この直後に同じ ArrayBuffer を Worker のプールへ返してよい。
+        workerCoreProxy?.returnFrameBuffer(bytes);
+      }
+      applyDiskAccess(performance.now(), snapshot.disk.access);
+      return;
+    }
+    if (event.event === 'fatal') {
+      showToast('Workerコアが異常終了しました', null);
+      running = false;
+    }
+    // 'ready'/'sramChanged' はこの経路では特に処理しない
+    // (avInfoはfetchAvInfo()の戻り値を、SRAM監視は今回スコープ外のため)。
+  });
+
+  const fdd0 = slots.fdd0;
+  const fdd1 = slots.fdd1;
+  const hdd = slots.hdd;
+  const initialDisks: InitialDiskInput[] = [];
+  if (fdd0) initialDisks.push({ slot: 'fdd0', name: sanitizeFileName(fdd0.name), bytes: fdd0.data });
+  if (fdd1) initialDisks.push({ slot: 'fdd1', name: sanitizeFileName(fdd1.name), bytes: fdd1.data });
+  if (hdd) initialDisks.push({ slot: 'hdd', name: sanitizeFileName(hdd.name), bytes: hdd.data });
+  mountedPaths.fdd0 = fdd0 ? fdd0.name : null;
+  mountedPaths.fdd1 = fdd1 ? fdd1.name : null;
+  mountedPaths.hdd = hdd ? hdd.name : null;
+
+  await proxy.init(biosIplBytes, biosCgBytes, savedSram ?? undefined, initialDisks);
+  await proxy.loadGame('/game/boot.cmd');
+  await proxy.fetchAvInfo();
+  await proxy.setRunning(true);
+
+  running = true;
+  updateSlotControls();
+  resetAccessLamps();
+  // 入力・音声は毎フレーム/毎キー発生するため、押すたびにトーストを出すと使い物にならない。
+  // 代わりに起動が完了したこの時点で1回だけ知らせる(無言のno-opにはしない。docs参照。
+  // FDDホットマウント/ステート保存復元は実際に操作したタイミングで個別に警告する
+  // (warnWorkerModeUnsupportedの他の呼び出し箇所参照)。
+  console.warn(
+    '[worker] ?worker=1 で起動しました。入力(キーボード/マウス/ゲームパッド)と音声は未対応です(段階移行の対象外)。',
+  );
+  showToast(t('workerModeUnsupported'), 6000);
 }
 
 /**
@@ -2442,6 +2536,12 @@ async function bootWorkerCoreProxySkeleton(savedSram: Uint8Array | null): Promis
  * 同時搭載できるようにしている。
  */
 async function bootCore(): Promise<void> {
+  // `?worker=1` は既定経路(この関数の残り、host=メインスレッドのLibretroHostを使う経路)を
+  // 一切変えない裏フラグ(制約: 既定経路の挙動を変えないこと)。ここで完全に分岐する。
+  if (urlWorkerMode) {
+    await bootWorkerCore();
+    return;
+  }
   // 起動時・リセット時は必ず速度ボタンをOFF(実効100%)に戻す。状態を保存しない設計のため、
   // ここで揃えておかないとリセット直後だけ前回のON状態が残ってしまう。
   speedEnabled = false;
@@ -2504,12 +2604,8 @@ async function bootCore(): Promise<void> {
   // host.init() は上で直接完了させた(段階移行の途中でinit経路自体は変えない)。
   // 以後の観測系呼び出し(screenText/readMemory等)だけをこの proxy 経由にする。
   coreProxy = new LocalCoreProxy(host, { initialized: true });
-  // `?worker=1` のときだけ、既定経路(上のhost/coreProxy)とは完全に切り離した
-  // 試験用のWorkerコアを追加で立てる。失敗しても既定経路には一切影響しない
-  // (bootWorkerCoreProxySkeleton()内で例外を握り潰す)。
-  if (urlWorkerMode) {
-    void bootWorkerCoreProxySkeleton(savedSram);
-  }
+  // `?worker=1` はこの関数の先頭(bootCore()冒頭のurlWorkerMode分岐)で bootWorkerCore() へ
+  // 完全に分岐済みなので、ここへは来ない(既定経路のみがここに到達する)。
   host.startSramAutosave((bytes) => {
     saveSramFile(bytes).catch((err) => console.warn('SRAMの保存に失敗しました', err));
   });
@@ -3624,19 +3720,30 @@ function resetAccessLamps(): void {
   for (const slot of SLOT_IDS) slotElements[slot].lamp.classList.remove('active');
 }
 
-function pollDiskAccess(now: number): void {
-  if (!host) return;
-  const { fddReading, fddDrive, hddAccessing } = host.readDiskAccess();
-  if (fddReading) {
-    if (fddDrive === 0) lastAccessAt.fdd0 = now;
-    else if (fddDrive === 1) lastAccessAt.fdd1 = now;
+/** アクセスランプの残光管理そのもの(値の出所は問わない)。既定経路(pollDiskAccess、
+ * host.readDiskAccess()を毎フレーム読む)とWorker経路(frame eventのdisk.access、手順5・7)の
+ * 両方から呼べるよう切り出す。 */
+function applyDiskAccess(
+  now: number,
+  access: { fddReading: boolean; fddDrive: number; hddAccessing: boolean },
+): void {
+  if (access.fddReading) {
+    if (access.fddDrive === 0) lastAccessAt.fdd0 = now;
+    else if (access.fddDrive === 1) lastAccessAt.fdd1 = now;
   }
-  if (hddAccessing) lastAccessAt.hdd = now;
+  if (access.hddAccessing) lastAccessAt.hdd = now;
 
   for (const slot of SLOT_IDS) {
     const lit = now - lastAccessAt[slot] < ACCESS_GLOW_MS;
     slotElements[slot].lamp.classList.toggle('active', lit);
   }
+}
+
+/** 既定経路(メインスレッドの host)専用。Worker経路(?worker=1)では host が常にnullなので、
+ * 代わりに frame event の disk.access を直接 applyDiskAccess() へ渡す(下のbootWorkerCore参照)。 */
+function pollDiskAccess(now: number): void {
+  if (!host) return;
+  applyDiskAccess(now, host.readDiskAccess());
 }
 
 // --- ディスクのオートセーブ ---
@@ -3894,6 +4001,13 @@ if (import.meta.env.DEV) {
       rafSamples: frameProbe.rafSamples,
       longTasks: frameProbe.longTasks,
       fps: host?.avInfo?.fps ?? null,
+    }),
+    // `?worker=1` の受け入れ条件検証用(docs/STORAGE-SCSI.md参照)。poolMissesが起動時の
+    // 数件で頭打ちになっていることを実測で確認するためのフック。
+    workerStats: () => ({
+      active: urlWorkerMode,
+      poolMisses: workerLastPoolMisses,
+      frameNo: workerLastFrameNo,
     }),
   };
 }
@@ -4218,6 +4332,12 @@ function sameDiskConfig(a: StateDiskConfig, b: StateDiskConfig): boolean {
 }
 
 async function handleSaveState(): Promise<void> {
+  // ステート保存/復元はWorker経路(?worker=1)では今回のスコープ外。host(メインスレッドの
+  // コア)が無い=Worker経路なので、無言で抜けずに利用者へ知らせる。
+  if (urlWorkerMode) {
+    if (running) warnWorkerModeUnsupported();
+    return;
+  }
   if (!host || !running || !coreProxy) return;
   let buf: ArrayBuffer | null;
   try {
@@ -4249,6 +4369,11 @@ async function handleSaveState(): Promise<void> {
 }
 
 async function handleLoadState(): Promise<void> {
+  // handleSaveState と同じ理由(ステート保存/復元はWorker経路では今回のスコープ外)。
+  if (urlWorkerMode) {
+    if (running) warnWorkerModeUnsupported();
+    return;
+  }
   if (!host || !running || !coreProxy) return;
   let stored;
   try {
