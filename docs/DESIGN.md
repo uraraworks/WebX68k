@@ -28,7 +28,8 @@ Vite + TypeScript（フレームワーク無し）の最小構成です。
 - `src/core-shim.c` … アクセスランプ取得等、libretro API に無い可変長引数/グローバル参照のための C シム
 - `src/text-screen.ts` … TVRAM の8x16 ANK／16x16漢字をCGROMグリフへ完全一致させるテキスト取得
 - `src/state-store.ts` … ステートセーブを IndexedDB に永続化するヘルパー(gzip 圧縮)
-- `src/bridge.ts` … MCP サーバーと繋ぐ WebSocket ブリッジ(`?bridge=1` で有効)
+- `src/bridge.ts` … MCP サーバーと繋ぐ WebSocket ブリッジ(`?bridge=1` で有効)。
+  ページ内 JS からの自動操作全般は [docs/AUTOMATION.md](AUTOMATION.md) を参照
 - `mcp/` … MCP サーバー(stdio) + WebSocket ブリッジ。詳細は [mcp/README.md](mcp/README.md)
 - `src/main.ts` … UI 配線・メインループ（FDD0/FDD1/HDD の3スロット、アクセスランプ、起動前オーバーレイ等）
 
