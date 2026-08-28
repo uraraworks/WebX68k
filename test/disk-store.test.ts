@@ -119,6 +119,7 @@ class FakeObjectStore {
   constructor(
     private data: Map<string, unknown>,
     private keyPath: string,
+    private tx?: FakeTransaction,
   ) {}
 
   put(value: Record<string, unknown>): FakeIDBRequestLike {
@@ -154,6 +155,42 @@ class FakeObjectStore {
     return req;
   }
 
+  /**
+   * 実際の IDBObjectStore.openCursor() と同様に、1件進めるたびに onsuccess を呼び直す
+   * (実装がリクエストを使い回すため、result への代入と onsuccess 呼び出しをそのつど行う)。
+   * `cursor.continue()` が呼ばれるまでは進まないので、実装が全件を一括で配列化していないことを
+   * このモック経由では検証できないが、少なくとも実装がこのAPI面を正しく叩いていることは検証できる。
+   *
+   * カーソルが末尾に達するまでトランザクションを完了させてはいけないため、tx に活動中を
+   * 通知する(素朴に固定1マイクロタスク後に oncomplete するFakeTransactionのままだと、
+   * 複数件のカーソル継続の途中でトランザクションが完了したことになり、末尾まで数え切る前に
+   * Promiseがresolveしてしまう=一部レコードが欠落する)。
+   */
+  openCursor(): FakeIDBRequestLike {
+    const req = makeRequest();
+    const entries = Array.from(this.data.values());
+    let index = 0;
+    this.tx?.beginActivity();
+    const step = (): void => {
+      queueMicrotask(() => {
+        if (index < entries.length) {
+          const value = entries[index];
+          index++;
+          req.result = {
+            value,
+            continue: () => step(),
+          };
+        } else {
+          req.result = null;
+          this.tx?.endActivity();
+        }
+        req.onsuccess?.();
+      });
+    };
+    step();
+    return req;
+  }
+
   delete(key: string): FakeIDBRequestLike {
     this.data.delete(key);
     return makeRequest();
@@ -167,18 +204,36 @@ class FakeTransaction {
   error: unknown = null;
   private store: FakeObjectStore;
   private aborted = false;
+  private completed = false;
+  // openCursor()等、複数マイクロタスクにまたがる進行中の読み出し件数。0でない間は完了させない。
+  private activityCount = 0;
 
   constructor(data: Map<string, unknown>, keyPath: string) {
-    this.store = new FakeObjectStore(data, keyPath);
+    this.store = new FakeObjectStore(data, keyPath, this);
     // put()/delete()は同期的にMapへ反映済みなので、呼び出し元がoncomplete/onabortを
-    // 代入し終えた後のマイクロタスクで完了通知すればよい。
-    queueMicrotask(() => {
-      if (!this.aborted) this.oncomplete?.();
-    });
+    // 代入し終えた後のマイクロタスクで完了通知すればよい(openCursor()があれば
+    // beginActivity()が先に同期的に呼ばれているため、このチェックでは完了しない)。
+    queueMicrotask(() => this.maybeComplete());
   }
 
   objectStore(_name: string): FakeObjectStore {
     return this.store;
+  }
+
+  beginActivity(): void {
+    this.activityCount++;
+  }
+
+  endActivity(): void {
+    this.activityCount--;
+    queueMicrotask(() => this.maybeComplete());
+  }
+
+  private maybeComplete(): void {
+    if (this.completed || this.aborted) return;
+    if (this.activityCount > 0) return;
+    this.completed = true;
+    this.oncomplete?.();
   }
 
   abort(): void {
@@ -252,6 +307,7 @@ describe('measureDiskLibraryBytes (決定3の受け入れ条件: IndexedDBレコ
     const usage = await measureDiskLibraryBytes();
     expect(usage.totalBytes).toBe(0);
     expect(usage.records).toEqual([]);
+    expect(usage.unknownRecords).toEqual([]);
   });
 
   it('【陽性対照】レコードを1件追加すると合計がそのサイズぶん増える', async () => {
@@ -297,4 +353,49 @@ describe('measureDiskLibraryBytes (決定3の受け入れ条件: IndexedDBレコ
     expect(usage.records.length).toBe(1);
   });
 
+  // --- A-1: unknown型が黙って0を足すのを防ぐ ---
+  // 「totalBytesが増えない」だけを受け入れ条件にすると、未知の型(bytesが壊れている/未対応の形)の
+  // レコードが混入していても合格してしまう(合格条件を失敗状態のほうが強く満たす形)。
+  // unknownRecordsで「未知型が0件であること」も別途確認できるようにする。
+  it('【A-1】bytesが未知の型(文字列)のレコードは合計0のまま、unknownRecordsとして報告される', async () => {
+    await putDisk(makeDisk('file:a.xdf:1000', 1000));
+    // bytesが本来Uint8Arrayである契約を破り、意図的に未知の型を挿入する。
+    await putDisk({
+      sourceKey: 'file:broken',
+      name: 'broken.xdf',
+      bytes: 'not-actually-bytes' as unknown as Uint8Array,
+      savedAt: Date.now(),
+    });
+
+    const usage = await measureDiskLibraryBytes();
+    // 既知の1000バイトぶんだけが合計に乗り、未知型は無言で0として埋没していない。
+    expect(usage.totalBytes).toBe(1000);
+    expect(usage.unknownRecords).toEqual([{ key: 'file:broken', kind: 'unknown', byteLength: 0 }]);
+    expect(usage.records.find((r) => r.key === 'file:broken')?.kind).toBe('unknown');
+  });
+
+  it('【A-1 陰性対照】未知型のレコードが無ければunknownRecordsは0件', async () => {
+    await putDisk(makeDisk('file:a.xdf:1000', 1000));
+    const usage = await measureDiskLibraryBytes();
+    expect(usage.unknownRecords).toEqual([]);
+  });
+
+  // --- A-2: listDisks()(getAll()で全量読み)を再利用せず、カーソルで1件ずつ数える ---
+  // カーソルで進んでいることを直接証明するのは難しいので、ここでは「従来のgetAll()経由と
+  // 合計・内訳が変わらない」ことを担保する回帰テストとする(実装がカーソルAPI面を正しく
+  // 使っていることは、この回帰が壊れずに通ること自体で裏付けられる)。
+  it('【A-2】カーソル方式でも合計・内訳はgetAll()方式と同じ結果になる(回帰)', async () => {
+    await putDisk(makeDisk('file:a.xdf:1000', 1000));
+    await putDisk(makeDisk('file:b.hdf:2000', 2000));
+    await putDisk(makeDisk('file:c.hdf:3000', 3000));
+
+    const usage = await measureDiskLibraryBytes();
+    expect(usage.totalBytes).toBe(6000);
+    const byKey = Object.fromEntries(usage.records.map((r) => [r.key, r.byteLength]));
+    expect(byKey).toEqual({
+      'file:a.xdf:1000': 1000,
+      'file:b.hdf:2000': 2000,
+      'file:c.hdf:3000': 3000,
+    });
+  });
 });

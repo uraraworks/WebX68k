@@ -188,6 +188,13 @@ export interface DiskLibraryByteRecord {
 export interface DiskLibraryByteUsage {
   totalBytes: number;
   records: DiskLibraryByteRecord[];
+  /**
+   * kind: 'unknown' と判定されたレコードのみを抜き出したもの(byteLength は常に0)。
+   * これが1件でもある場合、totalBytes は実際のデータ量を反映していない(未知の型の実体を
+   * 数えられていない)。呼び出し側は totalBytes が増えていないことだけでなく、
+   * unknownRecords.length === 0 であることも確認しなければならない。
+   */
+  unknownRecords: DiskLibraryByteRecord[];
 }
 
 function byteSizeOf(value: unknown): { kind: DiskLibraryByteRecord['kind']; byteLength: number } {
@@ -206,19 +213,43 @@ function byteSizeOf(value: unknown): { kind: DiskLibraryByteRecord['kind']; byte
  * 経ており生バイト数の根拠にならない(デスクトップChromeで16MiB書き込みの増分が853,362バイトに
  * 圧縮された一方、iOSでは同じ書き込みがほぼ生サイズの増分になった。圧縮率はデータ依存かつ環境依存)。
  *
- * この関数は `estimate()` を一切使わず、`disks` ストアの全レコードを `getAll()` で読み出して
+ * この関数は `estimate()` を一切使わず、`disks` ストアの全レコードを実際に読み出して
  * 実体(`bytes: Uint8Array`。将来 `ArrayBuffer`/`Blob` を格納する場合も同じロジックで数える)の
  * `byteLength`/`size` をそのまま合計するため、ブラウザの圧縮・量子化の影響を受けない。
  * 合計だけでなくレコードごとの内訳も返す(「どのレコードが太ったか」を後から追えるように)。
+ *
+ * 読み出しは `listDisks()`(内部で `getAll()`)を再利用せず、`openCursor()` で1件ずつ
+ * 進めながら長さだけを取り出す。`listDisks()` は全レコードの実体を配列として同時にRAMへ
+ * 展開するため、この関数の陽性対照(500MB級イメージをSCSI経路に通すテスト)を取る瞬間に
+ * それをまるごとRAMへ載せてしまい、「RAMに載っていないことを確認する」測定自体が
+ * 測定対象と同じことをしてしまう。カーソルなら任意の時点でRAMにあるのは1レコードぶんだけになる。
+ * (listDisks() 自体は他の呼び出し元があるため変更しない。)
  */
 export async function measureDiskLibraryBytes(): Promise<DiskLibraryByteUsage> {
-  const rows = await listDisks();
-  const records: DiskLibraryByteRecord[] = rows.map((row) => {
-    const size = byteSizeOf(row.bytes);
-    return { key: row.sourceKey, kind: size.kind, byteLength: size.byteLength };
-  });
+  const db = await openDb();
+  const records: DiskLibraryByteRecord[] = [];
+  try {
+    await new Promise<void>((resolve, reject) => {
+      const tx = db.transaction(STORE_NAME, 'readonly');
+      const cursorReq = tx.objectStore(STORE_NAME).openCursor();
+      cursorReq.onsuccess = () => {
+        const cursor = cursorReq.result as IDBCursorWithValue | null;
+        if (!cursor) return; // 末尾に達した。完了は tx.oncomplete 側で拾う。
+        const row = cursor.value as StoredDisk;
+        const size = byteSizeOf(row.bytes);
+        records.push({ key: row.sourceKey, kind: size.kind, byteLength: size.byteLength });
+        cursor.continue();
+      };
+      cursorReq.onerror = () => reject(cursorReq.error);
+      tx.oncomplete = () => resolve();
+      tx.onabort = () => reject(tx.error ?? new Error('transaction aborted'));
+    });
+  } finally {
+    db.close();
+  }
   const totalBytes = records.reduce((sum, r) => sum + r.byteLength, 0);
-  return { totalBytes, records };
+  const unknownRecords = records.filter((r) => r.kind === 'unknown');
+  return { totalBytes, records, unknownRecords };
 }
 
 export async function deleteDisk(sourceKey: string): Promise<void> {
