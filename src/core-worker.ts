@@ -59,7 +59,66 @@ import {
 } from './core-protocol';
 import { LocalCoreProxy } from './core-proxy';
 import { LibretroHost } from './libretro-host';
+import { computeFrameBudget } from './frameBudget';
 import { FrameBufferPool, runTick } from './worker-drive-loop';
+
+// --- DEV専用: 駆動ループ内訳プローブ (性能調査。既定off) --------------------------------
+//
+// `?worker=1` の起動が既定経路の1.76倍かかり、遅れが「コア稼働後〜プロンプト安定」の区間に
+// 集中している実測(docs/STORAGE-SCSI.md参照)を切り分けるための計測専用フック。
+// frameProbe/storageProbe(src/storage-probe.ts)と同じ作法: 既定 enabled=false で
+// `if (workerTickProbe.enabled)` の外側ではコストを一切払わない。import.meta.env.DEV は
+// ビルド時定数のため、prodビルドでは分岐ごと消える(既存フックと同様。既定経路の挙動は不変)。
+//
+// メインスレッドの window を Worker から直接触れないため、CoreCommand の判別union を汚さない
+// 専用の生メッセージ(__devTickProbe / __devTickProbeData)で enable/disable/reset/read/
+// busy-wait故障注入を制御する。main側の結線は src/core-proxy.ts の devPostRawMessage /
+// setDevMessageHandler、src/main.ts の workerTickProbe* フック参照。
+export interface WorkerTickEvent {
+  tickIndex: number;
+  /** 前tickのsetIntervalコールバックからの実測経過(ms)。取り戻しの入力そのもの。 */
+  sinceLastTickMs: number;
+  /** このtickで実際に進めたフレーム数(取り戻しが効いているかの直接の証拠)。 */
+  ranFrames: number;
+  /** computeFrameBudget()が返す上限(runTickの内部と同じ入力で別途計算。参考値)。 */
+  budgetHint: number;
+  accumulatorBeforeMs: number;
+  accumulatorAfterMs: number;
+  /** runFrameOnce()(retro_run+readDiskAccess)にこのtickで費やした合計時間(ms)。 */
+  runTotalMs: number;
+  /** getImageData()によるRGBA読み出し時間(ms)。フレームを送らなかったtickはnull。 */
+  convertMs: number | null;
+  /** postMessage(transfer込み)の所要時間(ms)。フレームを送らなかったtickはnull。 */
+  postMs: number | null;
+  /** busyWaitFaultEnabled時、このtickに注入した固定busy waitの長さ(ms)。0は未注入。 */
+  busyWaitInjectedMs: number;
+}
+
+class WorkerTickProbe {
+  enabled = false;
+  /** 30tickごとに30msのbusy waitを注入する(測定系の検証専用。故障注入)。 */
+  busyWaitFaultEnabled = false;
+  tickIndex = 0;
+  events: WorkerTickEvent[] = [];
+  reset(): void {
+    this.tickIndex = 0;
+    this.events = [];
+  }
+}
+
+const workerTickProbe = new WorkerTickProbe();
+
+interface DevTickProbeControlMessage {
+  kind: '__devTickProbe';
+  action: 'enable' | 'disable' | 'reset' | 'read' | 'setBusyWaitFault';
+  value?: boolean;
+}
+
+function isDevTickProbeControlMessage(data: unknown): data is DevTickProbeControlMessage {
+  return (
+    typeof data === 'object' && data !== null && (data as { kind?: unknown }).kind === '__devTickProbe'
+  );
+}
 
 /**
  * DOM lib と webworker lib は同一 tsconfig 内で共存できない(グローバル `self` の型が
@@ -163,32 +222,86 @@ function startDriveLoop(): void {
 function tick(): void {
   if (!running || !host) return;
   const now = ctx.performance.now();
+  const sinceLastTickMs = lastTickAtMs === 0 ? 0 : now - lastTickAtMs;
   if (lastTickAtMs === 0) lastTickAtMs = now;
   const dt = (now - lastTickAtMs) / 1000;
   lastTickAtMs = now;
 
+  // DEVかつ有効時のみ計測コストを払う(import.meta.env.DEVはビルド時定数なのでprodでは
+  // この分岐ごと消える。frameProbe/storageProbeと同じ作法。ファイル冒頭のコメント参照)。
+  const probing = import.meta.env.DEV && workerTickProbe.enabled;
+  const accumulatorBeforeMs = accumulator * 1000;
+  let busyWaitInjectedMs = 0;
+  if (probing && workerTickProbe.busyWaitFaultEnabled && workerTickProbe.tickIndex % 30 === 0) {
+    // 測定系の検証専用の故障注入: 内訳のどこに現れるかを見るため、tickの冒頭に固定30msの
+    // busy waitを足す(docs/STORAGE-SCSI.md参照。本番挙動には影響しない: busyWaitFaultEnabled
+    // は既定false・DEVのみ到達)。
+    const busyStart = ctx.performance.now();
+    while (ctx.performance.now() - busyStart < 30) {
+      /* busy wait */
+    }
+    busyWaitInjectedMs = 30;
+  }
+
   const fps = host.avInfo?.fps ?? 60;
   const currentHost = host;
+  let runTotalMs = 0;
   const result = runTick(dt, fps, accumulator, () => {
+    const runStart = probing ? ctx.performance.now() : 0;
     currentHost.runFrame();
+    if (probing) runTotalMs += ctx.performance.now() - runStart;
     frameNo++;
     // runFrame() 直後でないとコア側がクリアしてしまう(LibretroHost#readDiskAccessのコメント参照)。
     return currentHost.readDiskAccess();
   });
   accumulator = result.accumulator;
 
-  if (result.ranFrames > 0) sendFrame(result.access);
+  let convertMs: number | null = null;
+  let postMs: number | null = null;
+  if (result.ranFrames > 0) {
+    sendFrame(
+      result.access,
+      probing
+        ? (c, p) => {
+            convertMs = c;
+            postMs = p;
+          }
+        : undefined,
+    );
+  }
+
+  if (probing) {
+    const frameInterval = 1 / fps;
+    const budgetHint = computeFrameBudget(dt, frameInterval, 0, 1);
+    workerTickProbe.events.push({
+      tickIndex: workerTickProbe.tickIndex++,
+      sinceLastTickMs,
+      ranFrames: result.ranFrames,
+      budgetHint,
+      accumulatorBeforeMs,
+      accumulatorAfterMs: result.accumulator * 1000,
+      runTotalMs,
+      convertMs,
+      postMs,
+      busyWaitInjectedMs,
+    });
+  }
 }
 
-function sendFrame(access: { fddReading: boolean; fddDrive: number; hddAccessing: boolean }): void {
+function sendFrame(
+  access: { fddReading: boolean; fddDrive: number; hddAccessing: boolean },
+  onProbe?: (convertMs: number, postMs: number) => void,
+): void {
   if (!host || !scratchCanvas || !scratchCtx) return;
   const width = scratchCanvas.width;
   const height = scratchCanvas.height;
   if (width === 0 || height === 0) return; // まだ1度も解像度が確定していない(dupeフレームのみ)。
 
+  const convertStart = onProbe ? ctx.performance.now() : 0;
   const imageData = scratchCtx.getImageData(0, 0, width, height);
   const buffer = framePool.acquire(imageData.data.byteLength);
   new Uint8ClampedArray(buffer).set(imageData.data);
+  const convertEnd = onProbe ? ctx.performance.now() : 0;
 
   const avInfo = host.avInfo;
   const snapshot: FrameSnapshot = {
@@ -210,7 +323,10 @@ function sendFrame(access: { fddReading: boolean; fddDrive: number; hddAccessing
     },
     poolMisses: framePool.misses,
   };
+  const postStart = onProbe ? ctx.performance.now() : 0;
   post({ kind: 'event', generation: currentGeneration, event: 'frame', snapshot });
+  const postEnd = onProbe ? ctx.performance.now() : 0;
+  if (onProbe) onProbe(convertEnd - convertStart, postEnd - postStart);
 }
 
 async function handleInitialize(
@@ -386,6 +502,28 @@ async function handleDispose(cmd: Extract<CoreCommand, { op: 'dispose' }>): Prom
 
 ctx.onmessage = (ev) => {
   const data = ev.data as CoreCommand | { kind: string; buffer?: ArrayBuffer };
+  // DEV専用の計測プローブ制御(ファイル冒頭コメント参照)。CoreCommandのunionを汚さない
+  // 生メッセージなので、他のどの分岐よりも先に見て早期returnする。
+  if (import.meta.env.DEV && isDevTickProbeControlMessage(data)) {
+    switch (data.action) {
+      case 'enable':
+        workerTickProbe.enabled = true;
+        break;
+      case 'disable':
+        workerTickProbe.enabled = false;
+        break;
+      case 'reset':
+        workerTickProbe.reset();
+        break;
+      case 'setBusyWaitFault':
+        workerTickProbe.busyWaitFaultEnabled = data.value === true;
+        break;
+      case 'read':
+        ctx.postMessage({ kind: '__devTickProbeData', events: workerTickProbe.events });
+        break;
+    }
+    return;
+  }
   // バッファ返却は generation/requestId を持たない専用メッセージ(core-protocol.ts参照)。
   // 通常のcommand分岐より先に見る。
   if (isReturnFrameBufferMessage(data)) {

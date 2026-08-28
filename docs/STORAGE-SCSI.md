@@ -2886,6 +2886,56 @@ FDD0のドライブ行に赤いアクセスランプが点灯することも上�
 - A/A再測定(今回は1組のみ)。日差・負荷差の切り分けは未実施。
 - dev モードでのWorker経路A/B(今回はprodのみ)。
 
+## coreReady→promptStableが遅い原因調査：tick内訳プローブ（2026-08-28）
+
+前節で特定した「coreReady→promptStableがWorker経路で既定経路の4.2倍遅い」を切り分けるため、Worker側の駆動ループ(`src/core-worker.ts` の `tick()`/`sendFrame()`)に1tickごとの内訳プローブを追加した。**推測で直す前に、まず測る**ことを目的とし、今回は製品コードの修正は行っていない(見つかったのは計測ツール自身の実装ミス1件のみ。後述)。
+
+### 追加した計測系
+
+- `src/core-worker.ts`: DEV限定・既定offの `WorkerTickProbe`。1tickごとに次を記録する: `sinceLastTickMs`(前tickからの実経過)、`ranFrames`(そのtickで実際に進めたフレーム数)、`budgetHint`(`computeFrameBudget()` を同じ入力で再計算した参考値)、`accumulatorBeforeMs`/`accumulatorAfterMs`、`runTotalMs`(`retro_run()`+`readDiskAccess()`の合計)、`convertMs`(`getImageData()`)、`postMs`(`postMessage()`)、`busyWaitInjectedMs`(故障注入)。`import.meta.env.DEV` はビルド時定数のため、prodビルドではこの分岐ごと消える(既存の `frameProbe`/`storageProbe` と同じ作法)。
+- 制御はメインスレッドの `window` を直接触れないため、`CoreCommand`/`WorkerToMain` のunionを汚さない専用の生メッセージ(`__devTickProbe`/`__devTickProbeData`)で行う。`src/core-proxy.ts` に `devPostRawMessage()`/`setDevMessageHandler()` を追加し、`src/main.ts` に `workerTickProbeEnable/Reset/SetBusyWaitFault/Read` を追加した。`bootWorkerCore()` はproxyを起動のたびに作り直すため、「起動前に有効化したい」という意思(`workerTickProbeWanted`)を持ち越し、proxy生成直後に即enableする(遅れが集中する区間そのものを取り逃さないため)。
+- 計測スクリプト `scripts/measure-worker-tick.mjs` を新規作成した。dev server(`import.meta.env.DEV` が true になる唯一のモード。prodではプローブごと消えるため)+ 実Chrome(ヘッドフル、`--disable-backgrounding-occluded-windows` 等でタブ非アクティブ扱いのスロットリングを避ける)で `?system=1&run=1&worker=1` を自動起動し、起動前にプローブを有効化、`A>` プロンプト安定を待ってから内訳を読み出す。
+
+### 計測系の検証
+
+- **プローブ自体のコスト**: dev server 1プロセス内でprobe有効/無効を交互に2回ずつ実行した。1回目(そのプロセスで最初に開いたページ)は順序に関わらず突出して遅く(devサーバーのモジュール変換キャッシュのコールドスタート。実測: 有効/無効を入れ替えると遅い方も入れ替わり、符号が反転した)、これはプローブのコストではなく計測条件そのものの効果と判断した。1回目を除いた2回目同士の比較では有効44,290ms・無効43,973msで差317ms(約0.7%)、ノイズの範囲内。**プローブのコストは無視できる。**
+- **故障注入**: 30tickごとに固定30msのbusy waitを注入する経路を追加し、実行して `busyWaitInjectedMs>0` が927tick中31件観測された(30tickに1回の期待どおり)ことを確認した。この検証中に**計測系自身のバグを1件発見して修正した**: `workerTickProbeSetBusyWaitFault()` を起動前(proxy生成前)に呼ぶと `workerCoreProxy` が `null` で無言のno-opになり、`enable` と違って「起動時に持ち越す」フラグが無かったため、故障注入が一度も発火しなかった(`injectedCount: 0`)。`workerTickProbeBusyWaitFaultWanted` を追加し、proxy生成直後に `enable` と同様に送るよう修正した(`src/main.ts`)。修正後に再実行し、期待どおり検出できることを確認した。**これは計測ツールのバグであり、製品コード(既定経路・Worker経路の本体挙動)には影響しない。**
+
+### 実測結果(dev server、`?system=1&run=1&worker=1`)
+
+起動そのものがdev modeでは不安定で(1試行がタイムアウト、詳細は「できなかったこと」参照)、成功した1試行(`bootDurationMs=59,612ms`)の内訳:
+
+- **tick数924、実行フレーム数合計1,809、実測区間の実効fps 35.7fps**(目標55.5fpsの約64%)。
+- **1tickあたりの実行フレーム数の分布**(`ranFrames`のヒストグラム): 0フレーム113件(12%)・1フレーム546件(59%)・2〜7フレーム190件(21%)・**上限8フレーム(取り戻しの天井)に達したtickが75件(8%)**。取り戻し自体は実働で繰り返し発動しており、**「取り戻しが効いていない」という当初の仮説1は否定できる**。
+- **時間帯ごとの推移**(tickを4等分): 実効fpsは前半から後半にかけて単調に上昇した(23.1fps→41.5fps→49.7fps→55.5fps)。**後半(第4四分位)は目標fpsにほぼ到達している**。遅れは起動直後に集中しており、定常化すれば速い。
+- **内訳の内訳**: 中央値では `runTotalMs`(retro_run)3.16ms・`convertMs`(getImageData)3.56ms・`postMs`(postMessage)0.035msで、**postMessageは常に無視できるほど小さい**(仮説3「バッファ返却がループを律速している」は支持されない)。ただし第1四分位(tick 0〜230、壁時計24,759ms)だけを見ると `runTotalMs` の合計が12,123msに達し、**壁時計の49%をretro_run自体が占めている**。1フレームあたりのretro_run時間に換算すると第1四分位は約21ms/frame、第4四分位は約3.4ms/frameで、**起動直後はretro_run自体が定常状態の約6倍重い**(仮説2「1ティックの仕事が重い」は起動直後に限れば支持される。ただしrun/convert/postの合計だけでは壁時計の全てを説明できない。次点参照)。
+- **説明のつかない空白**: tick単位で見ると、`sinceLastTickMs`(前tickからの実経過)が `runTotalMs+convertMs+postMs` の合計を大きく超えるケースが複数あった。最大は tick 2 で `sinceLastTickMs=8,826ms` に対し `runTotalMs=1,277ms`・`convertMs=14ms`・`postMs=0.06ms`(合計約1,291ms)で、**約7.5秒が計測した3区分のどれにも属さない**。同様の空白は tick 3(1,577ms中61.7ms計測)、tick 206(704ms中34.3ms)など複数件確認した。**これが仮説1〜3のいずれとも異なる、今回最大の未解明要素。**
+
+### 比較参考値(既定経路、dev server、frameProbe流用)
+
+既定経路にも同じ観点でframeProbeを流用して1試行採取した(内訳なし。`retro_run`合計時間のみ既存の`runEvents`から取得): frameCount 594・実測区間26,075ms・**実効fps 26.075fps**。既定経路も起動中は目標fpsを大きく下回っており、**起動直後にretro_run(またはコア/ゲスト側)が重い傾向はWorker経路に限らない可能性がある**。ただし計測手法(tick粒度 vs frame粒度)が異なるため、この数値だけでWorker経路固有の遅れの割合を分解することはできない。
+
+### 原因について言えること・言えないこと
+
+**言えること**:
+- 取り戻し(1tickあたり最大8フレーム)は実働で繰り返し発動しており、機能していないわけではない(仮説1は否定)。
+- postMessage(転送)は常に無視できるほど小さく、ボトルネックではない。
+- 起動直後はretro_run自体が定常状態よりずっと重い(実測約6倍)。この傾向は既定経路のframeProbeでも(粒度は違うが)同様に低fpsが観測されており、Worker固有と決めつけられない。
+- tick間隔が計測済みの内訳(run/convert/post)の合計を数秒単位で超える「空白」が複数回存在する。
+
+**言えないこと(未特定)**:
+- 上記「空白」の直接原因(setInterval自体のスロットリング、他の未計測処理、JIT起因の一時停止等、候補はいずれも今回のプローブでは切り分けられない)。
+- Worker経路の「4.2倍」のうち、retro_run自体の重さと、この空白と、その他の要因がそれぞれどれだけ寄与しているかの定量分解。
+- 起動直後にretro_runが重い現象がWorker経路固有か、既定経路と共通(コア/ゲスト側由来)かの確定(手法が違う数値の比較でしかない)。
+- prodビルドでの同じ内訳(プローブがDEV限定のため、devでしか測れていない。dev/prodは絶対値が違うため、devで見えた傾向がprodでも同程度かは未確認)。
+
+### できなかったこと
+
+- **3試行以上の完走**。dev modeでの`?worker=1`起動タイムアウト(90,000ms)を1試行で踏んだため、時間内に安定して3試行を得られなかった(成功した1試行のみで内訳を報告している。中央値ではなく単一試行の値であることに注意)。
+- 「空白」の直接原因特定(上記参照)。
+- prodビルドでの同じ計測(プローブがDEV限定のため不可能)。
+- 製品コードの修正(明白な単一原因が見つからなかったため、今回は計測のみ。修正コミットは無い)。
+
 ## 次にやること
 
 移行前基準は2組そろい、**ワーカー移行に着手できる状態になった**。

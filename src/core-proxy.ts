@@ -478,6 +478,18 @@ export class WorkerCoreProxy implements LibretroHostProxy {
   }
 
   private handleMessage(message: WorkerToMain): void {
+    // DEV専用の計測プローブ応答(core-worker.ts の '__devTickProbeData')。generation を
+    // 持たない生メッセージで、CoreCommand/WorkerToMainのunionには含めていないため、
+    // 他のどの分岐よりも先に見て早期returnする(devPostRawMessage/setDevMessageHandler参照)。
+    if (
+      this.devMessageHandler &&
+      typeof message === 'object' &&
+      message !== null &&
+      (message as unknown as { kind?: unknown }).kind === '__devTickProbeData'
+    ) {
+      this.devMessageHandler(message);
+      return;
+    }
     // 起動ハンドシェイク: generation を持たない専用メッセージなので他の分岐より先に見る。
     if (isWorkerBootAck(message)) {
       this.workerBooted = true;
@@ -515,6 +527,22 @@ export class WorkerCoreProxy implements LibretroHostProxy {
    * 1つのproxyインスタンスにつき1つの購読者しか要らないため、複数登録には対応しない)。 */
   setEventHandler(handler: ((event: CoreEvent) => void) | null): void {
     this.eventHandler = handler;
+  }
+
+  private devMessageHandler: ((msg: unknown) => void) | null = null;
+
+  /** DEV専用: '__devTickProbeData'(計測プローブの読み出し応答)を受け取るハンドラを登録する。
+   * 段階移行の性能調査(docs/STORAGE-SCSI.md)専用で、本体の command/response/event プロトコル
+   * には関与しない。既定では誰も呼ばない(main.ts の workerTickProbe* フック参照)。 */
+  setDevMessageHandler(handler: ((msg: unknown) => void) | null): void {
+    this.devMessageHandler = handler;
+  }
+
+  /** DEV専用: 計測プローブの enable/disable/reset/read/setBusyWaitFault を、CoreCommand の
+   * unionを汚さない生メッセージとしてWorkerへ送る。本体経路(通常のcommand呼び出し)には
+   * 一切関与しない。 */
+  devPostRawMessage(message: unknown): void {
+    this.worker.postMessage(message);
   }
 
   /** messageerror/Workerのerror/応答timeout/fatal event を束ねる WORKER_FAILURE 処理。

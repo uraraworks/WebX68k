@@ -434,6 +434,15 @@ let coreProxy: LibretroHostProxy | null = null;
 // メソッドのため、型を絞った専用の参照を別途持つ。bootCore()呼び出しのたびに前回のものを
 // disposeしてから作り直す。
 let workerCoreProxy: WorkerCoreProxy | null = null;
+// DEV専用: 駆動ループ内訳プローブ(src/core-worker.ts の workerTickProbe)の制御状態。
+// bootWorkerCore() は起動のたびに proxy を作り直すため、「有効にしたい」という意思は
+// proxy インスタンスをまたいで持ち回る必要がある(起動前に window.__webx68kDebug 経由で
+// 立てても、その時点ではまだ proxy が存在しないため)。次回 bootWorkerCore() が proxy を
+// 作った直後にこのフラグを見て、即座に enable メッセージを送る(docs/STORAGE-SCSI.md参照)。
+let workerTickProbeWanted = false;
+// busy-wait故障注入も同じ理由(proxy作り直し)で意思を持ち回る必要がある。
+let workerTickProbeBusyWaitFaultWanted = false;
+let pendingWorkerTickProbeRead: ((events: unknown[]) => void) | null = null;
 let running = false;
 let bootStarted = false;
 
@@ -2473,6 +2482,27 @@ async function bootWorkerCore(): Promise<void> {
   workerCoreProxy = proxy;
   coreProxy = proxy;
 
+  // DEV専用の計測プローブ応答(workerTickProbeRead()参照)。以前のpending readはこの
+  // 世代交代で応答が来ないため、resolve せずに新しいproxyの応答だけを繋ぐ
+  // (workerTickProbeReadのタイムアウト保険が最終的に片付ける)。
+  proxy.setDevMessageHandler((msg) => {
+    const m = msg as { kind?: string; events?: unknown[] };
+    if (m?.kind === '__devTickProbeData' && pendingWorkerTickProbeRead) {
+      const resolve = pendingWorkerTickProbeRead;
+      pendingWorkerTickProbeRead = null;
+      resolve(m.events ?? []);
+    }
+  });
+  // 起動前に window.__webx68kDebug.workerTickProbeEnable(true) が呼ばれていた場合、
+  // このproxy(=今回の起動)に対しても即座に有効化する(起動が終わるのを待たない。
+  // 遅れが集中する「コア稼働後」区間を取り逃さないため)。
+  if (workerTickProbeWanted) {
+    proxy.devPostRawMessage({ kind: '__devTickProbe', action: 'enable' });
+  }
+  if (workerTickProbeBusyWaitFaultWanted) {
+    proxy.devPostRawMessage({ kind: '__devTickProbe', action: 'setBusyWaitFault', value: true });
+  }
+
   proxy.setEventHandler((event: CoreEvent) => {
     if (event.event === 'frame') {
       const snapshot: FrameSnapshot = event.snapshot;
@@ -4018,6 +4048,44 @@ if (import.meta.env.DEV) {
       poolMisses: workerLastPoolMisses,
       frameNo: workerLastFrameNo,
     }),
+    // Worker経路(?worker=1)専用の駆動ループ内訳プローブ(src/core-worker.ts の
+    // workerTickProbe)。既定経路のframeProbe*と同じ作法だが、実体がWorker内にあるため
+    // postMessage越しに制御する(workerTickProbeWanted/pendingWorkerTickProbeRead参照)。
+    // 起動前に呼んでも(proxyがまだ無くても)意思だけ記録し、次の起動で即有効化される。
+    workerTickProbeEnable: (enabled: boolean) => {
+      workerTickProbeWanted = enabled;
+      workerCoreProxy?.devPostRawMessage({
+        kind: '__devTickProbe',
+        action: enabled ? 'enable' : 'disable',
+      });
+    },
+    workerTickProbeSetBusyWaitFault: (enabled: boolean) => {
+      workerTickProbeBusyWaitFaultWanted = enabled;
+      workerCoreProxy?.devPostRawMessage({
+        kind: '__devTickProbe',
+        action: 'setBusyWaitFault',
+        value: enabled,
+      });
+    },
+    workerTickProbeReset: () => {
+      workerCoreProxy?.devPostRawMessage({ kind: '__devTickProbe', action: 'reset' });
+    },
+    workerTickProbeRead: (): Promise<unknown[]> =>
+      new Promise((resolve) => {
+        if (!workerCoreProxy) {
+          resolve([]);
+          return;
+        }
+        pendingWorkerTickProbeRead = resolve;
+        workerCoreProxy.devPostRawMessage({ kind: '__devTickProbe', action: 'read' });
+        // 応答が来ない場合(proxy破棄・generation交代等)にpendingを永久に残さないための保険。
+        setTimeout(() => {
+          if (pendingWorkerTickProbeRead === resolve) {
+            pendingWorkerTickProbeRead = null;
+            resolve([]);
+          }
+        }, 2000);
+      }),
   };
 }
 
