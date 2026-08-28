@@ -249,7 +249,7 @@ async function waitForBootPrompt(page, timeoutMs) {
         lastPollAt = now;
         let dump = null;
         try {
-          dump = window.__webx68kDebug?.screenText?.() ?? null;
+          dump = (await window.__webx68kDebug?.screenText?.()) ?? null;
         } catch {
           consecutive = 0;
           continue;
@@ -312,7 +312,7 @@ async function waitForPromptLine(page, prefix, timeoutMs) {
         const now = performance.now();
         if (now - lastPollAt < 50) continue;
         lastPollAt = now;
-        const dump = window.__webx68kDebug?.screenText?.();
+        const dump = await window.__webx68kDebug?.screenText?.();
         if (!dump?.available || !Array.isArray(dump.lines)) {
           consecutive = 0;
           continue;

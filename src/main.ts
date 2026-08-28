@@ -44,6 +44,7 @@ import { buildFileManagerDialog, type FmTarget } from './filemanager';
 import { Bridge, resolveBridgeUrl, type BridgeHost } from './bridge';
 import { RETROK, charToKey, codeToRetrok } from './keyboard';
 import { LibretroHost } from './libretro-host';
+import { LocalCoreProxy } from './core-proxy';
 import { parseAspectModeParam, parseCpuSpeedParam, parseRamSizeParam } from './url-params';
 import {
   createResampleState,
@@ -398,6 +399,11 @@ function updateSpeedActualDisplay(now: number): void {
 
 let audio: AudioEngine | null = null;
 let host: LibretroHost | null = null;
+// docs/STORAGE-SCSI.md「段階移行の順序」手順2: 観測・診断系 query を LocalCoreProxy 経由にする。
+// host 自体はまだ同一スレッド実装のままで、駆動ループ・永続化はこの proxy を通さない。
+// host.init() が完了した後に initialized:true で構築する(host.init() は既存経路のまま呼ぶため、
+// proxy 自身は init を経由しない。詳細は core-proxy.ts の LocalCoreProxy コンストラクタ参照)。
+let coreProxy: LocalCoreProxy | null = null;
 let running = false;
 let bootStarted = false;
 
@@ -2431,6 +2437,9 @@ async function bootCore(): Promise<void> {
   // retro_load_game()より前に渡す(無ければ未初期化のままIPLが既定値を書く=初回起動相当)。
   const savedSram = await loadSramFile();
   await host.init(biosIplBytes!, biosCgBytes!, savedSram ?? undefined);
+  // host.init() は上で直接完了させた(段階移行の途中でinit経路自体は変えない)。
+  // 以後の観測系呼び出し(screenText/readMemory等)だけをこの proxy 経由にする。
+  coreProxy = new LocalCoreProxy(host, { initialized: true });
   host.startSramAutosave((bytes) => {
     saveSramFile(bytes).catch((err) => console.warn('SRAMの保存に失敗しました', err));
   });
@@ -2516,6 +2525,7 @@ async function restartCore(): Promise<void> {
   cancelScheduled();
   host?.dispose();
   host = null;
+  coreProxy = null;
   await bootCore();
 }
 
@@ -3760,7 +3770,7 @@ if (import.meta.env.DEV) {
 
     // TVRAM の文字画面をテキストで読む(ゲームパッドのキー割当検証等、末端(ゲスト側の受信結果)を
     // 実測するためのフック。?bridge=1 のMCPブリッジと同じ host.readTextScreen() を使う)。
-    screenText: () => host?.readTextScreen() ?? null,
+    screenText: () => coreProxy?.readTextScreen() ?? Promise.resolve(null),
     // KeyBuf(wasm内128バイトリングバッファ)の書き込みポインタと指定範囲を読む。
     // 計測スクリプト(scripts/measure-key.mjs)がブラウザ経路の末端到達を検証するためのフック。
     // 呼ばれたときだけHEAPを読む受動的なAPIで、毎フレーム処理には一切関与しない。
@@ -4456,27 +4466,32 @@ function toSlotId(value: string): SlotId {
 }
 
 const bridgeHost: BridgeHost = {
-  screenshot: () => canvas.toDataURL('image/png'),
-  screenText: () => host?.readTextScreen() ?? {
-    available: false,
-    unavailableReason: 'コアが起動していません',
-    lines: [],
-    diagnostics: {
-      columns: 0, rows: 0, nonEmptyCells: 0, matchedCells: 0, unknownCells: 0,
-      coverage: 0, nonEmptyPlaneCells: [0, 0, 0, 0],
-      kanjiFontAvailable: false,
+  screenshot: () => Promise.resolve(canvas.toDataURL('image/png')),
+  screenText: async () =>
+    (await coreProxy?.readTextScreen()) ?? {
+      available: false,
+      unavailableReason: 'コアが起動していません',
+      lines: [],
+      diagnostics: {
+        columns: 0, rows: 0, nonEmptyCells: 0, matchedCells: 0, unknownCells: 0,
+        coverage: 0, nonEmptyPlaneCells: [0, 0, 0, 0],
+        kanjiFontAvailable: false,
+      },
     },
-  },
   screenHash: () => {
-    // 全画素を舐めると重いので間引いてハッシュする(画面変化の検出用途)
+    // 全画素を舐めると重いので間引いてハッシュする(画面変化の検出用途)。
+    // canvas 由来の同期処理であり、proxy(コアのメモリ/画面状態)には載せていない
+    // (docs/STORAGE-SCSI.md「段階移行の順序」手順2の報告参照)。シグネチャだけ async 化する。
     const ctx = canvas.getContext('2d');
-    if (!ctx) return 0;
+    if (!ctx) return Promise.resolve(0);
     const d = ctx.getImageData(0, 0, canvas.width, canvas.height).data;
     let h = 0;
     for (let i = 0; i < d.length; i += 997) h = (h * 31 + d[i]) | 0;
-    return h;
+    return Promise.resolve(h);
   },
-  reset: () => host?.reset(),
+  reset: async () => {
+    host?.reset();
+  },
   setKey: (retrok, down) => down
     ? sharedKeyInput.press('bridge:key', retrok)
     : sharedKeyInput.release('bridge:key', retrok),
@@ -4505,7 +4520,7 @@ const bridgeHost: BridgeHost = {
   saveState: () => handleSaveState(),
   loadState: () => handleLoadState(),
   listDisks: () =>
-    SLOT_IDS.map((slot) => ({ slot, name: slots[slot]?.name ?? null })),
+    Promise.resolve(SLOT_IDS.map((slot) => ({ slot, name: slots[slot]?.name ?? null }))),
   insertDisk: async (slot, name, bytes) => {
     await insertDiskBytes(toSlotId(slot), name, bytes);
   },
@@ -4518,19 +4533,21 @@ const bridgeHost: BridgeHost = {
     fmReadFile({ kind: 'slot', ref: toSlotId(slot), label: slot, mounted: true, editable: true }, path),
   diskWriteFile: (slot, path, bytes) =>
     fmWriteFile({ kind: 'slot', ref: toSlotId(slot), label: slot, mounted: true, editable: true }, path, bytes),
-  readMemory: (addr, length) => {
-    if (!host) throw new Error('not booted');
-    const out: number[] = [];
-    for (let i = 0; i < length; i++) out.push(host.peekByte(addr + i));
-    return out;
+  readMemory: async (addr, length) => {
+    if (!coreProxy) throw new Error('not booted');
+    // 範囲を1回の proxy 呼び出しでまとめて読む(1バイトずつ host.peekByte を呼ぶ実装は廃止。
+    // docs/STORAGE-SCSI.md「取りうる対応」の「read_memory は範囲一括 RPC」に従う)。
+    const buf = await coreProxy.readMemory(addr, length);
+    return Array.from(new Uint8Array(buf));
   },
-  status: () => ({
-    running,
-    fps: host?.avInfo?.fps ?? null,
-    screen: { width: canvas.width, height: canvas.height },
-    slots: SLOT_IDS.map((slot) => ({ slot, name: slots[slot]?.name ?? null })),
-    mouseCaptured: isMouseCaptured(),
-  }),
+  status: () =>
+    Promise.resolve({
+      running,
+      fps: host?.avInfo?.fps ?? null,
+      screen: { width: canvas.width, height: canvas.height },
+      slots: SLOT_IDS.map((slot) => ({ slot, name: slots[slot]?.name ?? null })),
+      mouseCaptured: isMouseCaptured(),
+    }),
 };
 
 const bridgeUrl = resolveBridgeUrl(location.search);

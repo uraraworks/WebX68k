@@ -313,7 +313,7 @@ function observeBoot(page, buttonSelector, marker, timeoutMs, pollIntervalMs) {
       const button = document.querySelector(selector);
       if (!button) throw new Error(`起動ボタンが見つかりません: ${selector}`);
 
-      const readDebugState = () => {
+      const readDebugState = async () => {
         const debug = window.__webx68kDebug;
         let statValue = null;
         let statError = null;
@@ -329,7 +329,7 @@ function observeBoot(page, buttonSelector, marker, timeoutMs, pollIntervalMs) {
         let screenValue = null;
         let screenError = null;
         try {
-          screenValue = typeof debug?.screenText === 'function' ? debug.screenText() : null;
+          screenValue = typeof debug?.screenText === 'function' ? await debug.screenText() : null;
         } catch (error) {
           screenError = error instanceof Error ? error.message : String(error);
         }
@@ -365,7 +365,7 @@ function observeBoot(page, buttonSelector, marker, timeoutMs, pollIntervalMs) {
 
       // クリック前から成立している判定は起動マイルストーンとして使えないため、
       // 実クリック待受を設置する直前に全条件を一度記録して結果へ残す。
-      const preClickState = readDebugState();
+      const preClickState = await readDebugState();
       const clickedAt = await new Promise((resolveClick) => {
         button.addEventListener('click', () => resolveClick(performance.now()), {
           capture: true,
@@ -398,7 +398,7 @@ function observeBoot(page, buttonSelector, marker, timeoutMs, pollIntervalMs) {
 
         let dump = null;
         try {
-          dump = debug?.screenText?.() ?? null;
+          dump = (await debug?.screenText?.()) ?? null;
         } catch {
           // TVRAM がまだ利用不能なら、次回ポーリングで再試行する。
         }

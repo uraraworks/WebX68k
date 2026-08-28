@@ -140,6 +140,41 @@ describe('LocalCoreProxy: 初期化前後のガード', () => {
   });
 });
 
+describe('LocalCoreProxy: opts.initialized (段階移行での結線用)', () => {
+  it('opts.initialized: true で構築すると、host.init() を呼ばずに observation 系を呼べる', async () => {
+    const host = createMockHost();
+    // 段階移行の途中では host.init() が既存経路(main.ts の bootCore())で既に完了しているため、
+    // proxy はそれを呼び直さずに initialized 状態から始まる。
+    const proxy = new LocalCoreProxy(host, { initialized: true });
+    expect(host.init).not.toHaveBeenCalled();
+    await expect(proxy.readTextScreen()).resolves.toEqual(TEXT_SCREEN);
+    expect(host.init).not.toHaveBeenCalled();
+  });
+
+  it('opts を省略した場合は従来どおり未初期化から始まる', async () => {
+    const host = createMockHost();
+    const proxy = new LocalCoreProxy(host);
+    await expect(proxy.readTextScreen()).rejects.toMatchObject({
+      coreError: { code: 'INVALID_STATE' },
+    });
+  });
+});
+
+describe('LocalCoreProxy: readMemory は範囲を1回のRPCでまとめて読む', () => {
+  it('length ぶんの peekByte を1回の readMemory 呼び出しの中だけで行い、host 側の呼び出し単位は1回', async () => {
+    const host = createMockHost();
+    const proxy = new LocalCoreProxy(host);
+    await proxy.init(new Uint8Array([0]), new Uint8Array([0]));
+
+    const buf = await proxy.readMemory(0x2000, 8);
+    expect(new Uint8Array(buf)).toEqual(new Uint8Array([0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07]));
+    // readMemory 自体は1回の呼び出し。内部で host.peekByte を8回呼ぶのは実装詳細であり、
+    // 「呼び出し元(main.ts の bridgeHost 等)からは1RPCに見える」ことがここでの検証対象。
+    expect(host.peekByte).toHaveBeenCalledTimes(8);
+  });
+
+});
+
 describe('LocalCoreProxy: 引数検証', () => {
   it('loadGame に空文字列を渡すと INVALID_ARGUMENT', async () => {
     const host = createMockHost();

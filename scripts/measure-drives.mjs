@@ -284,7 +284,7 @@ async function waitForBootPrompt(page, timeoutMs, pollIntervalMs) {
       lastPollAt = now;
       let dump = null;
       try {
-        dump = window.__webx68kDebug?.screenText?.() ?? null;
+        dump = (await window.__webx68kDebug?.screenText?.()) ?? null;
       } catch {
         consecutive = 0;
         continue;
@@ -440,13 +440,13 @@ async function executeDir(page, letter, config, fault) {
         );
         await wait(keyGap);
       };
-      const readLines = () => {
-        const dump = window.__webx68kDebug?.screenText?.();
+      const readLines = async () => {
+        const dump = await window.__webx68kDebug?.screenText?.();
         return dump?.available && Array.isArray(dump.lines) ? dump.lines.filter((line) => line.length > 0) : [];
       };
       const countLineContaining = (lines, needle) =>
         lines.filter((line) => line.includes(needle)).length;
-      const latestPromptLine = () => readLines().filter((line) => line.startsWith('A>')).at(-1) ?? null;
+      const latestPromptLine = async () => (await readLines()).filter((line) => line.startsWith('A>')).at(-1) ?? null;
       const expectedCommandLine = `A>dir ${driveLetter.toLowerCase()}:`;
       // TVRAM上のカーソルが行末の1文字として現れる場合だけを許容し、欠落・置換は許さない。
       const commandLineMatches = (line) => {
@@ -455,7 +455,7 @@ async function executeDir(page, letter, config, fault) {
         return Array.from(line.slice(expectedCommandLine.length)).length === 1;
       };
       const clearCommandLine = async () => {
-        const current = latestPromptLine();
+        const current = await latestPromptLine();
         const typedLength = current?.startsWith('A>') ? Array.from(current.slice(2)).length : 0;
         // カーソル表示を文字数に数えても安全なよう余分に送り、空のプロンプトでは止まる。
         const backspaceCount = Math.max(8, Math.min(80, typedLength + 2));
@@ -492,7 +492,7 @@ async function executeDir(page, letter, config, fault) {
       for (let attempt = 1; attempt <= inputRetries + 1; attempt++) {
         if (attempt > 1) await clearCommandLine();
         for (const code of commandCodes) await press(code);
-        const actualLine = latestPromptLine();
+        const actualLine = await latestPromptLine();
         const matched = commandLineMatches(actualLine);
         inputAttempts.push({ attempt, expectedLine: expectedCommandLine, actualLine, matched });
         if (matched) {
@@ -520,11 +520,11 @@ async function executeDir(page, letter, config, fault) {
           timedOut: false,
           responseEvidenceFound: false,
           enterDropped: false,
-          observedLines: readLines(),
-          lastAPromptLine: latestPromptLine(),
+          observedLines: await readLines(),
+          lastAPromptLine: await latestPromptLine(),
         };
       }
-      const baselineLines = readLines();
+      const baselineLines = await readLines();
       const observedLineSet = new Set();
       let enterAt = null;
       let responseAt = null;
@@ -565,7 +565,7 @@ async function executeDir(page, letter, config, fault) {
           const now = performance.now();
           if (now - lastPollAt < pollInterval) continue;
           lastPollAt = now;
-          const lines = readLines();
+          const lines = await readLines();
           // 容量範囲とドライブ固有文で後から切り分けられるため、コマンド実行中に見えた
           // TVRAM 行は全て残す。これにより同じエラー文を出す連続コマンドも生データに残る。
           for (const line of lines) observedLineSet.add(line);

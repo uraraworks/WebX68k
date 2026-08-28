@@ -278,7 +278,7 @@ async function waitForBootPrompt(page, timeoutMs, pollIntervalMs) {
         lastPollAt = now;
         let dump = null;
         try {
-          dump = window.__webx68kDebug?.screenText?.() ?? null;
+          dump = (await window.__webx68kDebug?.screenText?.()) ?? null;
         } catch {
           consecutive = 0;
           continue;
@@ -321,8 +321,8 @@ function runStimulus(page, keySpec, wrongSpec, config, faultKind) {
           new KeyboardEvent(type, { code, key, bubbles: true, composed: true, cancelable: true }),
         );
       };
-      const readPromptLine = () => {
-        const dump = window.__webx68kDebug?.screenText?.();
+      const readPromptLine = async () => {
+        const dump = await window.__webx68kDebug?.screenText?.();
         if (!dump?.available || !Array.isArray(dump.lines)) return null;
         const lines = dump.lines.filter((line) => line.length > 0);
         return lines.filter((line) => line.startsWith('A>')).at(-1) ?? null;
@@ -349,7 +349,7 @@ function runStimulus(page, keySpec, wrongSpec, config, faultKind) {
         return line;
       };
 
-      const baselineLine = readPromptLine();
+      const baselineLine = await readPromptLine();
       const baselineContent = stripTrailingCursor(baselineLine);
       const startProbe = readKeyBuf(0, 0);
       if (startProbe === null) {
@@ -395,7 +395,7 @@ function runStimulus(page, keySpec, wrongSpec, config, faultKind) {
             }
           }
           if (echoAt === null) {
-            const line = readPromptLine();
+            const line = await readPromptLine();
             const content = stripTrailingCursor(line);
             // カーソル点滅だけの揺らぎ(実内容が baseline と同じ)は無視し、実内容が
             // baseline と異なる場合だけを「入力が反映された」とみなす。
@@ -490,8 +490,8 @@ async function clearCommandLine(page, config, faultKind) {
 }
 
 async function readPromptLineOnPage(page) {
-  return page.evaluate(() => {
-    const dump = window.__webx68kDebug?.screenText?.();
+  return page.evaluate(async () => {
+    const dump = await window.__webx68kDebug?.screenText?.();
     if (!dump?.available || !Array.isArray(dump.lines)) return null;
     const lines = dump.lines.filter((line) => line.length > 0);
     return lines.filter((line) => line.startsWith('A>')).at(-1) ?? null;

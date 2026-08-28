@@ -90,8 +90,15 @@ export class LocalCoreProxy implements LibretroHostProxy {
    * 既存 LibretroHost はマウント中パスを外部へ公開しないため、proxy 側で保持する。 */
   private readonly mountedPath = new Map<0 | 1, string>();
 
-  constructor(host: CoreHostSurface) {
+  /**
+   * opts.initialized: 段階移行の途中で、host 側の init() 呼び出しは既存経路(main.ts の
+   * bootCore()等)にそのまま残しつつ、proxy は observation 系メソッドだけを本番結線したい
+   * 場合に使う。host.init() が proxy を経由せず既に完了した後で構築する呼び出し側だけが
+   * 立てること(呼ぶ前に立てると assertInitialized の意味が壊れる)。
+   */
+  constructor(host: CoreHostSurface, opts?: { initialized?: boolean }) {
     this.host = host;
+    this.initialized = opts?.initialized ?? false;
   }
 
   /** dispose() 後に生成し直す場合に使う世代番号。テスト・診断用。 */

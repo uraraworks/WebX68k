@@ -2372,11 +2372,38 @@ HDMIデバイスでの10回では、既定と `interactive` は 10/10 が同じ�
 同じ日に取った2組目の音声には**この項目が無い**（修正前のハーネスで取ったため）。
 記録の有無そのものが、修正が本番経路に届いていることの証拠になっている。
 
+## ワーカー移行 手順2：観測・診断系 query の非同期化（実装）
+
+「段階移行の順序」手順2として、`LocalCoreProxy`(手順1で導入済み・`src/core-proxy.ts`)を初めて本番経路(`src/main.ts`)へ結線した。駆動ループ・永続化・入力には触れていない。
+
+**Promise化した範囲(`BridgeHost`、`src/bridge.ts`)** — `screenshot`/`screenText`/`screenHash`/`reset`/`listDisks`/`readMemory`/`status` の7メソッドを `Promise<T>` に揃えた(`T | Promise<T>` の緩めた型ではなく、8節の「取りうる対応」どおり全面的に Promise へ揃える案を採った)。`dispatch()` 側は該当する全コマンドで `await` する。`wait_screen_change` のポーリングループも `screenHash()` を毎回 `await` するよう修正した(ここは元々同期呼び出しを2箇所で使っており、片方だけ直すと検出できない回帰になるため両方直した)。
+
+**proxy に載せたもの** — `screenText`(debug API `__webx68kDebug.screenText()` と bridge の `screen_text`)、`readMemory`(bridge の `read_memory`)。どちらも `coreProxy.readTextScreen()` / `coreProxy.readMemory(addr, length)` を1回呼ぶだけの形にした。**1バイトずつ `host.peekByte()` を呼んでいた `bridgeHost.readMemory` の実装は削除し**、`proxy.readMemory()` が返す1本の `ArrayBuffer` を `Array.from(new Uint8Array(buf))` で `number[]` に変換するだけにした(範囲一括RPCという文書の決定どおり)。
+
+**main に残したもの** — `screenshot`/`screenHash` は `canvas` 由来の同期処理(画像エンコード・間引きハッシュ)であり、コアの状態を読まないため proxy に載せる対象ではないと判断し、シグネチャだけ `async` 化した。`reset` は既存の `host.reset()` の意味を変えず `Promise<void>` でラップしただけ。`listDisks`/`status` は `slots`(UIの状態)を読むだけで proxy 対象外、`Promise.resolve()` で包んだだけ。
+
+**LocalCoreProxy の結線方法(判断: 実装者)** — `host = new LibretroHost(...)` の生成と `host.init()` の呼び出しは既存の `bootCore()` にそのまま残した(手順2の範囲外)。そのため `LocalCoreProxy` を素朴に `new LocalCoreProxy(host)` すると、`host.init()` 完了後でも proxy 自身は `init()` を呼んでいないので `assertInitialized` が常に `INVALID_STATE` を投げてしまう。これを解決するため `LocalCoreProxy` のコンストラクタに `opts?: { initialized?: boolean }` を追加し、`await host.init(...)` が成功した直後に `coreProxy = new LocalCoreProxy(host, { initialized: true })` で構築するようにした。`restartCore()` で `host = null` にする際は `coreProxy = null` も合わせてリセットする。この `opts.initialized` は「host 側の初期化を proxy を経由せず別経路で済ませた」ことを正しく反映できる場合だけ立てる前提の抜け道であり、`core-proxy.ts` にもその条件をコメントで明記した。
+
+**故障注入で確認した検出力** — 2件、いずれも実際にソースを一時的に壊し、追加したテストが失敗することを確認してから元に戻した(差分は `git diff` で確認済み、コミットには含めていない)。
+1. `src/bridge.ts` の `wait_screen_change` から `await h.screenHash()` の `await` を2箇所とも外す → `test/bridge-dispatch.test.ts` の該当テストが `{ changed: true, settled: false }` を受け取って fail(Promiseオブジェクトどうしの比較になり `now !== last` が常に真になるため)。復元後は pass。
+2. `src/core-proxy.ts` の `readMemory` を「`length` を無視して先頭1バイトだけ返す」実装に書き換える → `test/core-proxy.test.ts` の新規テストと既存テストの計2件が fail。復元後は pass。
+
+**MCP ブリッジの実動確認** — 実際に確認した。`npm run dev` で Vite 開発サーバーを起動し、Browser ペインで `http://localhost:5299/?bridge=1` を開いて「システムディスクで起動」を実クリックした。`mcp/server.mjs` のWSプロトコルを直接模した使い捨てNodeスクリプト(検証専用、リポジトリには残していない)で `ws://127.0.0.1:3099` に接続し、`status`/`screen_text`/`read_memory`/`list_disks` を送った。起動完了後の応答は次のとおりで、いずれも正しく解決済みの値(Promiseの取りこぼしではない)が返っている。
+- `status`: `running:true`, `fps:55.49...`, `slots` に `fdd0:"human302.xdf"`
+- `screen_text`: `available:true`、実際のTVRAM内容(Human68k起動バナー、既知のUnicode変換不備込み)を反映
+- `read_memory`(addr 0xed0000, length 8): `ok:true`、要求どおり8バイトの配列
+- `list_disks`: `ok:true`、スロット一覧
+
+**できなかったこと・未確認のこと**
+- `read_memory` で TVRAM 領域(試しに `0xe00000`)を読んだところ全バイト0だった。px68k側のTVRAM実アドレスやプレーン配置を確認していないため、proxy/bridge経路のバグなのかアドレス指定が単に違うのかは切り分けていない(`screenText`は同時刻に正しい内容を返しているため、経路自体は機能している)。
+- MCP stdio 層(`mcp/server.mjs` の `McpServer`/`StdioServerTransport` 部分)は今回変更しておらず、実動確認もWSブリッジ層(`src/bridge.ts`)止まりで、実際の MCP クライアント(Claude Code等)経由では確認していない。
+- `__webx68kDebug.screenText()` を呼ぶ計測スクリプト群(`scripts/measure-*.mjs`)は非同期化に合わせて `await` を足したが、実ブラウザでの通し実行(起動計測・3ドライブ認識・キー入力計測等)では再検証していない。型・構文レベルの整合のみ確認済み。
+
 ## 次にやること
 
 移行前基準は2組そろい、**ワーカー移行に着手できる状態になった**。
 
-1. **ワーカー移行の着手。**SASI・MEMFSのまま、Human68k 起動まで回帰が取れることを確認する。判定基準は「移行前基準の確定」の表を使う。
+1. **ワーカー移行の手順3(ステートと単純なFS転送)に進む。**手順2で `LocalCoreProxy` の本番結線と非同期境界の検出力(故障注入)を確認済みなので、`serialize`/`unserialize`、互換用read/writeのtransferable化に進む。判定基準は「移行前基準の確定」の表を使う。
 2. **計測時に既定出力デバイスを内蔵スピーカーに固定する。**条件 (a)(b)(c) に加えて (d) とする。ハーネスが記録するようになったので、結果ファイルで照合できる。
 3. **`persist()` の切り分け。**普段使いのプロファイルで `node scripts/probe-opfs.mjs --serve` のページを開き、`false` が使い捨てプロファイル固有かどうかを見る。
 4. ~~iOS WebKit での確認。~~ → **2026-08-26 に確認済み**（「OPFS前提条件の実機確認（iOS、実測、2026-08-26）」参照）。A〜Eは成立し、決定2の対象範囲は変更不要と判断した。

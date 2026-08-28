@@ -10,12 +10,12 @@ import type { TextScreenDump } from './text-screen';
 /** ブリッジから叩くエミュレータ側の操作。main.ts が実装を渡す。 */
 export interface BridgeHost {
   /** 画面を PNG の dataURL で取得 */
-  screenshot(): string;
+  screenshot(): Promise<string>;
   /** TVRAM に描画された ANK・16x16漢字テキストと認識診断を取得 */
-  screenText(): TextScreenDump;
+  screenText(): Promise<TextScreenDump>;
   /** 画面の内容が変わったかを判定するためのハッシュ */
-  screenHash(): number;
-  reset(): void;
+  screenHash(): Promise<number>;
+  reset(): Promise<void>;
   /** RETROK コードのキーを押す/離す */
   setKey(retrok: number, down: boolean): void;
   /** ASCII 文字列をキー入力として流し込む */
@@ -24,14 +24,14 @@ export interface BridgeHost {
   mouseButton(button: 'left' | 'right', down: boolean): void;
   saveState(): Promise<void>;
   loadState(): Promise<void>;
-  listDisks(): Array<{ slot: string; name: string | null }>;
+  listDisks(): Promise<Array<{ slot: string; name: string | null }>>;
   insertDisk(slot: string, name: string, bytes: Uint8Array): Promise<void>;
   ejectDisk(slot: string): void;
   diskListFiles(slot: string, path: string): Promise<Array<Record<string, unknown>>>;
   diskReadFile(slot: string, path: string): Promise<Uint8Array>;
   diskWriteFile(slot: string, path: string, bytes: Uint8Array): Promise<void>;
-  readMemory(addr: number, length: number): number[];
-  status(): Record<string, unknown>;
+  readMemory(addr: number, length: number): Promise<number[]>;
+  status(): Promise<Record<string, unknown>>;
 }
 
 interface IncomingMessage {
@@ -150,16 +150,16 @@ export class Bridge {
         return { pong: true };
 
       case 'status':
-        return h.status();
+        return await h.status();
 
       case 'screenshot':
-        return { dataUrl: h.screenshot() };
+        return { dataUrl: await h.screenshot() };
 
       case 'screen_text':
-        return h.screenText();
+        return await h.screenText();
 
       case 'reset':
-        h.reset();
+        await h.reset();
         return { done: true };
 
       // --- キーボード ---
@@ -212,7 +212,7 @@ export class Bridge {
 
       // --- ディスク ---
       case 'list_disks':
-        return { slots: h.listDisks() };
+        return { slots: await h.listDisks() };
 
       case 'insert_disk':
         await h.insertDisk(
@@ -244,19 +244,19 @@ export class Bridge {
 
       // --- メモリ ---
       case 'read_memory':
-        return { bytes: h.readMemory(Number(args.addr ?? 0), Number(args.length ?? 16)) };
+        return { bytes: await h.readMemory(Number(args.addr ?? 0), Number(args.length ?? 16)) };
 
       // --- 画面変化待ち ---
       case 'wait_screen_change': {
         const stableMs = args.stable_ms !== undefined ? Number(args.stable_ms) : 700;
         const timeoutMs = args.timeout_ms !== undefined ? Number(args.timeout_ms) : 10000;
         const started = performance.now();
-        let last = h.screenHash();
+        let last = await h.screenHash();
         let changed = false;
         let lastChangeAt = started;
         while (performance.now() - started < timeoutMs) {
           await delay(100);
-          const now = h.screenHash();
+          const now = await h.screenHash();
           if (now !== last) {
             changed = true;
             last = now;

@@ -150,8 +150,8 @@ function summarize(samples) {
 
 async function waitForBootPrompt(page, timeoutMs) {
   await page.waitForFunction(
-    () => {
-      const dump = window.__webx68kDebug?.screenText?.();
+    async () => {
+      const dump = await window.__webx68kDebug?.screenText?.();
       if (!dump?.available) return false;
       const lines = dump.lines.filter((l) => l.length > 0);
       const last = lines.filter((l) => l.startsWith('A>')).at(-1);
