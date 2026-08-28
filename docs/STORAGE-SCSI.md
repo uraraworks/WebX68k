@@ -372,14 +372,16 @@ command の予期される失敗は `ok: false` response とし、proxy は `Cor
 
 順序上、Worker 内コアが必要な初期化より前に query の実処理を Worker へ移す必要はない。手順2・3では同じ非同期 proxy interface を同一スレッド adapter で先行導入し、呼び出し側を安全に変更してから実体を Worker に差し替える。
 
+**移行戦略(2026-08-28、ユーザーと合意)**: 手順4以降は新しい Worker 経路を `?worker=1` の裏に作り、**既定は現行のメインスレッド経路のまま**にする。両方を同居させ、実ハーネス(起動・3ドライブ・キー入力)で移行前基準を満たしたら既定を入れ替える。上の手順9が「最後に同期 host と旧スケジューラを除去する」と書いているとおり、最後まで同居する前提の設計である。手順4のスケルトン実装(`src/core-worker.ts`、`WorkerCoreProxy`)はこの方針で導入し、`?worker=1` を指定しない既定の挙動には一切影響させていない。
+
 ### 未決事項
 
-- Worker の内部スケジューラを `setTimeout` のみで構成するかは、**2026-08-28の実測(「ワーカー描画方式の実測（2026-08-28）」C節)で決着した**: 固定delayの`setTimeout`だけでは系統的にドリフトし55.5Hzを正確に刻めない(5秒で800ms超の累積遅れ)。`setInterval`はドリフトがほぼ0で安定する。デスクトップChromeでの実測にとどまり、iOS/Android実機・ヘッドレスでの確認は未実施。音声キューの sample frame 数をどの頻度でフィードバックするかは今回測っておらず未決のまま。メインから一フレームずつ駆動しないことと、境界の時刻を `frameNo` に統一することは固定する。
-- OffscreenCanvas へ直接描画するか、各フレームの `ImageBitmap`/RGBA を転送するかは、**2026-08-28の実測(同上A節)でも決まらなかった**。速度差は僅少(転送方式のmain側コストはフレーム予算の3%程度)だが、可否面で重要な制約が判明した: OffscreenCanvas方式では `getImageData()` によるscreenHash相当の直接読み取りがmain側で恒久的に不可能になり(`toDataURL()`は可)、Worker再生成のたびに新しいcanvas要素への差し替えが必須になる。この制約コストを踏まえた選定はまだ行っていない。
-- `frame` event の安全な間引き・背圧方式は、**2026-08-28の実測(同上B節)で部分的にしか決まらなかった**。main40msビジーループ・周期180ms(デューティ比22%)の負荷では取りこぼし0・遅延はp95約33msに収まり、間引き無しでも即座には破綻しなかった。ただしどこまで負荷を上げると破綻するかの閾値は未測定で、間引き・背圧方式そのものは依然として未決。
+- **A. 映像経路(OffscreenCanvas直描画 vs 転送)**: **2026-08-28、転送方式(メイン側 canvas を維持)＋バッファ返却を採用と決定した。** 理由は速度ではなく**可否**である。OffscreenCanvas方式は (1) `getImageData()` によるscreenHash相当の直接読み取りがmain側で恒久的に不可能になり`toDataURL()`経由への設計変更が要る、(2) Worker再生成のたびに新しいcanvas要素への差し替えが必須になる、という2点が、アスペクト補正・`rescale()`・フルスクリーン・仮想パッドのオーバーレイ・スクリーンショットが全て現在のcanvas要素を参照している現状の実装へ手順9(再生成と異常系)まで波及するため、採らないことにした。速度は両方式で優劣が付かなかった(「Aの追測」節: `setInterval`下でも3条件とも55.5Hz達成率95〜100%で明確な差が無く、転送方式のmain側コストはフレーム予算の3%程度で軽微)。**バッファ返却は採用するが、期待した効果は確認できなかったことをここに正直に記録する。** 87MB/秒の`ArrayBuffer`確保が消えること自体は事実だが、GC由来と見られる散発的なmaxスパイクは減らず、返却ありの試行でむしろ最大値(194.2ms)が出た(「Aの追測」節参照)。`poolMisses`による検査は正しく機能している(返却を意図的に止めた故障注入で`88=88`の完全一致を検出済み)ため、これは「検査が効いたうえで効果が無かった」という否定である。
+- **B. `frame` event の間引き・背圧**: **2026-08-28、当面は設けずに始めると決定した。** デューティ比22%の負荷(main40msビジーループ・周期180ms)で取りこぼし0・遅延p95約33msに収まっており、間引き・背圧の仕組みが無くても即座には破綻しない。**破綻閾値(どこまで負荷を上げると破綻するか)は未測定のまま宿題として残る。**
+- **C. Worker のスケジューラ**: **2026-08-28、`setInterval` ＋ 取り戻し(accumulator + budget)を採用すると決定した。** 今回の測定で分かった最も実装に効く事実は、**素のタイマーはどちらも不十分**ということである。`setTimeout`の固定delayは系統的にドリフトし(5秒で+800ms超)、`setInterval`はドリフトしない(5秒でほぼ0)一方、**遅れた回を取り戻さない**(`setInterval`に切り替えた後の追測でも、発火した回の間隔はmean 18.06〜19.10ms(目標18.018msに近い)と正確なのに、333フレーム中の提示フレーム総数は94.6〜100%にとどまり、散発的なmax(37.7〜191.4ms)が数フレーム分の欠落を生んでいるとみられる)。現行のメインループは `computeFrameBudget()`(src/frameBudget.ts)で遅れを検出し1ティックで複数フレームぶん走らせて取り戻しており、実アプリが55.5fpsを維持できているのはこの「取り戻し」があるためである。**したがって Worker のループにも同種の取り戻しの仕組みを持ち込む必要がある。** 残差(達成率95〜99%にとどまる分の原因)は特定できていない。**プローブでの追跡はここで打ち切り、実装後に実ハーネス(起動・3ドライブ・キー入力)で判定する方針とする**(プローブは合成負荷であり、実コアの負荷特性とは異なるため)。
 - ゲームパッドを独立タイマーで poll するか、受信した `frame` event を契機に poll するかは未決。Worker 内の `input_poll` からメインへ同期問い合わせはしない。
 - HDD の OPFS ID/stream API、既存 IndexedDB からの移行、FDD 全量イメージのメイン側保持方針はストレージ方式の決定に依存するため未決。
-- `_retro_deinit` を正常終了で呼ぶべきか、現在未使用の `loadGameNone()` / `unloadGame()` とテスト用 export を本番 proxy に残すかは、現行の意図と外部利用が確認できないため未決。
+- `_retro_deinit` を正常終了で呼ぶべきかは、**2026-08-28、呼ばないと決定した**(Worker ごと terminate するため。手順9で改めて判断する)。現在未使用の `loadGameNone()` / `unloadGame()` は、**2026-08-28、`LibretroHostProxy` から削除すると決定した**(`src/main.ts` から未使用であり外部利用も確認できないため)。`CoreHostSurface`(実体 `LibretroHost` との構造チェック)と `LibretroHost` 自体には引き続き残す。テスト用 export を本番 proxy に残すかは未決のまま。
 - save state load 後に累積 `frameNo` を 0 へ戻すと世代内で番号が重複するため、本設計では単調増加を維持する。セーブデータ内のゲスト時刻と host の `frameNo` の関係を外部へ見せる必要があるかは未決。
 
 ## 移行前の基準値：計測計画
@@ -2687,6 +2689,43 @@ frameNoの連番(`gapCount`)は多忙時も0で、メッセージ自体は失わ
 - 速度測定・main側コストのばらつきが試行間で大きく(特にmax値)、**なぜ返却ありの試行1だけmax 194.2msになったのか**は未調査(3試行では原因を切り分けるのに足りない)。
 - 55.5Hz未達の原因切り分け(GC・スケジューラ精度・ブラウザの背景プロセス等)は未実施。
 - iOS/Android実機、より高負荷条件は引き続き未実施。
+
+## ワーカー移行 手順4：初期化・load/AVのスケルトン実装（2026-08-28）
+
+未決事項3点(映像経路・`frame` event・スケジューラ)の決定(上記「未決事項」参照)を踏まえ、手順4(初期化、オプション、load/AV)の**骨格だけ**を実装した。今回のスコープは意図的に小さく切ってあり、`initialize`→`ready`/`loadGame`/`fetchAvInfo`/`dispose` の command/response 往復のみを実装する。手順5(映像・音声出力)・手順6(入力)・手順7(駆動ループ)はまだ手を付けていない。
+
+### 追加・変更したファイル
+
+- `src/core-worker.ts`(新規): Worker のエントリポイント。`importScripts('/core/px68k_libretro.js')` で wasm glue を読み込み、実コアの駆動には既存の `LibretroHost`/`LocalCoreProxy` をそのまま再利用する。`LibretroHost` は内部で `canvas.getContext('2d')`/`width`/`height`/`createImageData`/`putImageData` しか使わない(`src/libretro-host.ts` 確認済み)ため、Worker内では `OffscreenCanvas` を「誰も読み出さない scratch 描画先」として渡している(`as unknown as HTMLCanvasElement` のキャスト付き)。決定Aにより実際に画面へ出す映像経路は手順5でメインスレッドの canvas への転送に置き換える設計であり、この scratch canvas の内容はどこにも転送されない。
+- `src/core-proxy.ts`: `WorkerCoreProxy` を追加。`LocalCoreProxy` と同じ `LibretroHostProxy` を実装し、呼び出し側を差し替え可能にした。`generation`(このインスタンスは0固定。再生成は手順9でスコープ外)、`requestId` による pending 管理、`messageerror`/Worker の `error`/応答timeout を `WORKER_FAILURE` として扱いその世代の未完了 Promise を全て reject する処理を実装。`fatal` event も同様に扱う。今回実装した4 op(`initialize`/`loadGame`/`fetchAvInfo`/`dispose`)以外(`setCoreOption`/`reset`/`serialize`/`unserialize`/`readTextScreen`/`readMemory`/`hotSwapFdd`/`writeFile`/`readFile`/`removeFile`)は `UNSUPPORTED` の `CoreProxyError` を返す(手順5以降で実装)。
+- `src/core-protocol.ts`: `CoreCommand` に `fetchAvInfo`/`dispose` op を追加(それぞれ独立した union member。同じ member に複数opを束ねると `Extract<CoreCommand, {op:'fetchAvInfo'}>` 等が `never` になり、core-worker.ts 側の型安全な handler 関数が書けなくなるため分離した)。`collectTransferables` の command 側 switch も追随。
+- `src/url-params.ts`: `parseWorkerModeParam()` を追加。`?worker=1`/`true`/`yes`/`on` → `true`、`0`/`false`/`no`/`off` → `false`、それ以外は `null`(呼び出し側は既定 `false` を使う)。
+- `src/main.ts`: `?worker=1` のときだけ、既定の `host`/`coreProxy`(実際に画面・音を出す既存経路)とは完全に切り離した試験用の `WorkerCoreProxy` を追加でもう1本立てる(`bootWorkerCoreProxySkeleton()`)。`initialize`→`loadGame`(実FDD/HDDのcmdファイルは書けない=`writeFile`未実装のため存在しないパスを渡すだけ)→`fetchAvInfo` を通し、結果を `console.log`/`console.warn` するだけ。例外は全て握り潰し、既定経路(`urlWorkerMode` が false のとき)には一切コードパスが触れない。
+
+### `loadGameNone`/`unloadGame` の削除
+
+前回合意の決定通り、`LibretroHostProxy` インタフェースから `loadGameNone()`/`unloadGame()` を削除した。`src/main.ts` から呼ばれておらず(grep で未使用を確認済み)、外部利用も確認できないため。`CoreHostSurface`(実体 `LibretroHost` との構造チェック用の型)と `LibretroHost` 自体には残しており、削除したのは proxy 境界だけである。
+
+### テストと故障注入
+
+`test/worker-core-proxy.test.ts`(新規)を追加。実 Worker の代わりに `WorkerLike` を満たす `FakeWorker`(command を記録し、任意の response/event を手動または自動で返せる)を使い、以下を確認した:
+
+- command/response の往復(`initialize`→`ready` event/`loadGame`/`fetchAvInfo`/`dispose`)。
+- 未実装opは `UNSUPPORTED` で reject し、Workerへ postMessage 自体しない。
+- **世代が異なる response/event は無視される**(別世代からの遅延応答を模して確認)。
+- **Worker の異常終了(`error` event)・`messageerror` で、その世代の未完了 Promise が全て reject される**。
+- **応答timeoutが `WORKER_FAILURE` になる**。
+- `dispose()` が command を送った上で `Worker.terminate()` を呼ぶこと、disposed後の呼び出しが `INVALID_STATE` になること。
+
+**故障注入(陽性対照付き)を実施した**: (a) `handleMessage` の世代チェック(`if (message.generation !== this.generation) return;`)を一時的にコメントアウトして実行 → 「世代が異なるresponse/eventは無視する」テストが**失敗する**ことを確認(`expected true to be false`)。(b) `handleWorkerFailure` 内の `req.reject(...)` を一時的にコメントアウトして実行 → 異常終了・messageerror・timeoutの3テストが**全てtimeoutで失敗する**ことを確認。いずれも `cp`/`diff` でソースを退避してから壊し、`diff` で元と完全一致することを確認して復元した(検査が実際に効いていることを確認済み)。
+
+`npx tsc --noEmit` はクリーン、`npm test` は既存509件+新規23件(url-params 16件、worker-core-proxy 7件)の**532件全通過**。既定経路(`?worker=1` を指定しない場合)は `LocalCoreProxy` のみを使う既存コードパスを変更していないため、既存テストが全通過することがそのまま無影響の担保になる。
+
+### 今回やらなかったこと・未確認のこと
+
+- 映像・音声の出力経路(手順5)、駆動ループ(手順7)、入力(手順6)は未着手。`?worker=1` で起動しても画面・音は一切出ない(意図した状態)。
+- `src/core-worker.ts` の `importScripts()` は classic(非module)workerが前提。`vite.config.ts` は `worker.format` を明示していないため既定の `'iife'`(build時)でビルドされる想定だが、`vite dev` サーバがWorkerをclassic/moduleのどちらとして配信するかは**未検証**。実ブラウザでの `?worker=1` 動作確認(コンソールログの実地確認含む)は次段の宿題として残す。
+- `WorkerCoreProxy` の自動再生成(手順9のスコープ)は今回実装していない。異常終了後は `failed` フラグが立ったままで、以後の呼び出しは即座に `WORKER_FAILURE` で reject される。
 
 ## 次にやること
 
