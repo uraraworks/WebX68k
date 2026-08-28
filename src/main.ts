@@ -44,7 +44,7 @@ import { buildFileManagerDialog, type FmTarget } from './filemanager';
 import { Bridge, resolveBridgeUrl, type BridgeHost } from './bridge';
 import { RETROK, charToKey, codeToRetrok } from './keyboard';
 import { LibretroHost } from './libretro-host';
-import { LocalCoreProxy } from './core-proxy';
+import { LocalCoreProxy, toArrayBuffer } from './core-proxy';
 import { parseAspectModeParam, parseCpuSpeedParam, parseRamSizeParam } from './url-params';
 import {
   createResampleState,
@@ -2491,7 +2491,9 @@ async function bootCore(): Promise<void> {
     const hddPath = host.writeDiskImage(`hdd_${sanitizeFileName(slots.hdd.name)}`, slots.hdd.data);
     mountedPaths.hdd = hddPath;
     const iniText = `[WinX68k]\r\nHDD0=${hddPath}\r\n`;
-    host.writeFile('/system/keropi/config', new TextEncoder().encode(iniText));
+    // 互換用FS書き込みはproxy経由にする(手順3)。writeDiskImageはhotSwapFdd専用の実装詳細
+    // として host に残す(core-proxy.ts末尾のコメント参照、今回の対象外)。
+    await coreProxy!.writeFile('/system/keropi/config', toArrayBuffer(new TextEncoder().encode(iniText)));
   } else {
     mountedPaths.hdd = null;
   }
@@ -2499,7 +2501,7 @@ async function bootCore(): Promise<void> {
   // px68k-libretro は "px68k <fd0> <fd1>" 形式の.cmdファイルでFDD0/FDD1を同時指定できる
   // (libretro.c pmain(): argc==3で FDDImage[0]/[1] を両方設定)。空スロットは空文字列で渡す。
   const cmdText = `px68k "${fdd0Path}" "${fdd1Path}"\n`;
-  host.writeFile('/game/boot.cmd', new TextEncoder().encode(cmdText));
+  await coreProxy!.writeFile('/game/boot.cmd', toArrayBuffer(new TextEncoder().encode(cmdText)));
   host.loadGame('/game/boot.cmd');
 
   host.fetchAvInfo();
@@ -4146,14 +4148,28 @@ function sameDiskConfig(a: StateDiskConfig, b: StateDiskConfig): boolean {
 }
 
 async function handleSaveState(): Promise<void> {
-  if (!host || !running) return;
-  const bytes = host.serialize();
-  if (!bytes) {
+  if (!host || !running || !coreProxy) return;
+  let buf: ArrayBuffer | null;
+  try {
+    buf = await coreProxy.serialize();
+  } catch (err) {
+    // CoreProxyError の code (host.serialize() が例外を投げた場合は CORE_FAILURE)を握り潰さず
+    // ログには残す。UI 側の見え方は従来の「serialize()がnullを返した場合」と同じにする。
+    console.error('ステートのシリアライズに失敗しました。', err);
+    showToast(t('stateSaveFailed'));
+    return;
+  }
+  if (!buf) {
     showToast(t('stateSaveFailed'));
     return;
   }
   try {
-    await putState({ slot: STATE_SLOT, bytes, savedAt: Date.now(), disks: currentDiskConfig() });
+    await putState({
+      slot: STATE_SLOT,
+      bytes: new Uint8Array(buf),
+      savedAt: Date.now(),
+      disks: currentDiskConfig(),
+    });
   } catch (err) {
     console.error('ステートの保存に失敗しました。', err);
     showToast(t('stateSaveFailed'));
@@ -4163,7 +4179,7 @@ async function handleSaveState(): Promise<void> {
 }
 
 async function handleLoadState(): Promise<void> {
-  if (!host || !running) return;
+  if (!host || !running || !coreProxy) return;
   let stored;
   try {
     stored = await getState(STATE_SLOT);
@@ -4188,11 +4204,26 @@ async function handleLoadState(): Promise<void> {
     if (!proceed) return;
   }
 
-  if (!host.unserialize(new Uint8Array(stored.bytes))) {
+  let ok: boolean;
+  try {
+    // coreProxy.unserialize() は渡した ArrayBuffer の所有権を受け取り detach する
+    // (core-proxy.ts の takeOwnership 参照)。stored.bytes は IndexedDB から読み直した
+    // ばかりの値でこの呼び出し以降使わないため、そのまま渡してよい。
+    ok = await coreProxy.unserialize(toArrayBuffer(stored.bytes));
+  } catch (err) {
+    // unserialize失敗時に以前のステートのまま走り続けていないか(host.unserialize()内部の
+    // 責務)はここでは保証できないが、エラーコードは握り潰さずログに残し、失敗として扱う。
+    console.error('ステートの復元に失敗しました。', err);
     showToast(t('stateLoadFailed'));
     return;
   }
-  // 復元直後は旧状態の音がキューに残っているので捨て、フレーム供給の蓄積もリセットする
+  if (!ok) {
+    showToast(t('stateLoadFailed'));
+    return;
+  }
+  // 復元直後は旧状態の音がキューに残っているので捨て、フレーム供給の蓄積もリセットする。
+  // unserialize の応答(ok)を待ってから行う(docs/STORAGE-SCSI.md
+  // 「unserialize中は駆動を止め、成功応答後に音声flushと基準状態を更新する」)。
   audio?.flush();
   resetResampleState(audioResampleState);
   lastFrameTime = 0;

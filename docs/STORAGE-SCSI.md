@@ -2452,11 +2452,78 @@ HDMIデバイスでの10回では、既定と `interactive` は 10/10 が同じ�
 - MCP stdio 層(`mcp/server.mjs` の `McpServer`/`StdioServerTransport` 部分)は今回変更しておらず、実動確認もWSブリッジ層(`src/bridge.ts`)止まりで、実際の MCP クライアント(Claude Code等)経由では確認していない。
 - `__webx68kDebug.screenText()` を呼ぶ計測スクリプト群(`scripts/measure-*.mjs`)は非同期化に合わせて `await` を足したが、実ブラウザでの通し実行(起動計測・3ドライブ認識・キー入力計測等)では再検証していない。型・構文レベルの整合のみ確認済み。
 
+## ワーカー移行 手順3：ステートとFS転送の非同期化（実装）
+
+「段階移行の順序」手順3として、`serialize`/`unserialize`(セーブステート)と互換用MEMFS書き込みを `LocalCoreProxy` 経由へ結線し、所有権移転が同一スレッドでも実際に守られることを構造で保証した。
+
+**proxy に載せたもの**
+
+- `handleSaveState()`/`handleLoadState()`(`src/main.ts`) — 従来の `host.serialize()`/`host.unserialize()` 直呼びを `coreProxy.serialize()`/`coreProxy.unserialize()` に置き換えた。`LocalCoreProxy` 自体は手順1で `serialize`/`unserialize`/`writeFile`/`readFile`/`removeFile` を実装済みだったため、今回追加したのは呼び出し側の結線と所有権移転の実装。
+- `bootCore()` 内の互換用FS書き込み2箇所(`/system/keropi/config` の HDD0 設定、`/game/boot.cmd`) — `host.writeFile()` 直呼びから `coreProxy.writeFile()` に置き換えた。`host.writeDiskImage()`(FDD/HDD本体イメージの書き込み)はhotSwapFdd専用の実装詳細として今回もproxy対象外のまま残した(`core-proxy.ts` 末尾のコメント参照)。
+
+**proxy に載せなかったもの(と理由)**
+
+- `readLiveSlotImage()`/`hotSwapFdd()`(`src/main.ts`)内の `host.readFile()`/`host.removeFile()`/`host.setFddImage()` — FDDホットマウントとdirty capture(`flushAllSlots()`)の一部であり、手順8の対象。今回は触っていない。
+- `fmReadFile()`/`fmWriteFile()`(ファイルマネージャ) — MEMFS上の生ファイルではなくFAT12/16ボリューム内のファイル操作(`fatReadFile`/`fatWriteFile`)であり、対象が異なる。今回のMEMFS互換read/writeとは無関係と判断した。
+- HDD/大容量データのOPFS経路 — 決定2の実装は別途であり、今回は既存の全量bytes経路をproxyへ載せ替えただけ。
+
+**手順3の肝: 同一スレッドでも所有権移転を実際に守らせる(detach)**
+
+`src/core-proxy.ts` に `takeOwnership(buf: ArrayBuffer): ArrayBuffer` を追加した。中身は `structuredClone(buf, { transfer: [buf] })` で、`LocalCoreProxy#unserialize()` の `bytes` 引数と `#writeFile()` の `data` 引数の先頭で適用する。呼び出し側が渡した元の `ArrayBuffer` はこの時点で実際に detach され、以後 `byteLength` は0になる。
+
+対処した問題: 手順3以前の `LocalCoreProxy` は `ArrayBuffer` を受け取っても参照を保持するだけで、実際には転送しない。そのため「呼び出し側が渡したあとも同じバッファを使い回す」という所有権契約違反が同一スレッドの間は無症状で通ってしまい、実Worker化(手順7以降)でpostMessageのtransfer listに載せた瞬間に初めて症状が出る。detachを先取りして入れることで、契約違反をWorker化前のこの段階で検出可能にした。
+
+**コスト実測(2026-08-28、Node v22、このマシン)** — `structuredClone(buf, { transfer: [buf] })` の所要時間:
+
+| サイズ | 想定 | 所要時間(5試行) |
+|---|---|---|
+| 15MB | セーブステート1本相当(px68kはRAM領域を12MB固定でシリアライズするため、圧縮前のサイズ) | 0.01〜1.3ms |
+| 1.2MB | FDDイメージ相当 | 0.03ms未満 |
+| 64KB | 小さいFS書き込み(config/boot.cmd)相当 | 0.01ms未満 |
+
+`state-store.ts` のコメントによれば同じ15MBステートのgzip圧縮に約60ms、IndexedDBのラウンドトリップはさらに掛かる。detachのコストはそれらに対して無視できる大きさと判断し、**`import.meta.env.DEV` 限定にはせず本番へ常時適用した**。
+
+**エラー処理**
+
+- `unserialize()` は `host.unserialize()` の戻り値(`false`)・例外のどちらも握り潰さず、そのまま呼び出し側(`handleLoadState()`)へ伝える。`handleLoadState()` 側は失敗時に同じ `stateLoadFailed` トーストを出す(UIの見え方は変更前と同じ)が、内部では `console.error` でエラー内容(コード込み)をログに残すようにした。
+- unserialize失敗時に以前のステートが壊れたまま走り続けないことは、`host.unserialize()`(実体は `retro_unserialize`)側の責務であり、今回の変更範囲では実機のコアの動作を変えていないため未確認のまま(既存動作を維持しただけ)。
+- 「unserialize中は駆動を止め、成功応答後に音声flushと基準状態を更新する」は、`LocalCoreProxy` が同一スレッドadapterで `unserialize()` 内部が同期実行のまま(マイクロタスクの範囲でしか `await` しない)であるため、`await coreProxy.unserialize(...)` とその戻り値を見てから `audio?.flush()` 等を行う現状の実装で自然に満たされる。駆動ループ(`scheduleNext`/rAF)はマクロタスク境界を越えないと動かないため、明示的な一時停止コードは追加していない。この前提は実Worker化(手順7)で崩れるため、その段階で改めて明示的な停止が必要になる。
+
+**故障注入で確認した検出力** — 2件、いずれも実際にソースを一時的に壊し、追加したテストが失敗することを確認してから元に戻した(差分は確認済み、コミットには含めていない)。
+
+1. `takeOwnership()` を `structuredClone(..., { transfer: [buf] })` から `buf.slice(0)`(コピーのみ、detachしない)に書き換える → `test/core-proxy.test.ts` の「手順3の肝 — 所有権のdetach」2件(unserialize/writeFileそれぞれ)が `byteLength` が0にならず fail。他の25件は無傷で pass。復元後は27件全て pass。
+2. `unserialize()` の最終戻り値を「例外・falseの両方を握り潰して常に `true` を返す」実装に書き換える → 「unserialize失敗時にエラーコードを握り潰さない」2件(false透過・例外透過それぞれ)が fail。復元後は pass。
+
+**新規テスト** — `test/core-proxy.test.ts` に7件追加(506件 = 既存499件+7件): serialize/unserializeの往復1件、writeFile/readFile/removeFileの往復1件、detach確認3件(unserialize・writeFileそれぞれのdetach、および「detachはコピー後に起きるためhostが受け取る内容は書き換わらない」)、unserialize失敗時の非握り潰し2件(false透過・例外透過)。
+
+**できなかったこと・未確認のこと**
+
+- 実ブラウザでのセーブ/ロード(UI操作を実クリック)での通し確認はしていない(制約により `scripts/measure-*.mjs` を含め計測スクリプトは実行していない)。`npm test`/`npx tsc --noEmit` レベルの確認に留まる。
+- `unserialize` 失敗時に「以前のステートが壊れたまま走り続けない」ことは、コア内部(`retro_unserialize`)の実装に依存し、今回の変更でコア自体には触れていないため実機的な確認はしていない。
+- `core-protocol.ts` の `CoreCommand`/`AtomicCommand` 型には `writeFile`/`readFile`/`removeFile`/`serialize`/`unserialize` に対応する op がまだ無い(手順1時点で `serialize`/`readTextScreen`/`screenshot` は用意されていたが、FS系は未定義のまま)。実Workerの実メッセージプロトコルを固める手順4以降で追加が必要になる。今回は `LocalCoreProxy` が host を直接呼ぶ同一スレッド実装であり、postMessageを経由しないためこの型定義が無くても動作に支障はない。
+
+### 計測ハーネスの通し確認（2026-08-28）
+
+手順2で `__webx68kDebug.screenText()` を非同期化したため、`scripts/measure-*.mjs` を実ブラウザで通した。
+**ハーネスの修正は不要だった。**
+- `measure-drives`：正常系は起動成功・機能失敗0件。故障注入 `no-fdd1` で狙ったドライブBのみ失敗し `passed: true`
+- `measure-key`：正常系は keybuf 2/2・**tvram 2/2**。故障注入 `drop-make` で tvram 0/2（`missingEcho: 2`）を検出
+- `measure-boot`：正常系 1/1 成功（26,590ms）。故障注入 `wrong-marker` は陽性対照26,326ms成功のうえで検出
+
+`screenText()` を判定に使う経路（drivesとkeyのTVRAM経路、bootの起動判定）すべてで「正常系で通り、故障注入で落ちる」の両方向を満たした。`await` 漏れで「常にマッチする」方向に壊れている可能性は潰した。
+
+**これらの数値は基準値ではない**（試行1〜2回、静穏確認なし、出力デバイス未固定）。起動26,590msは基準幅23.5〜24.3秒の外だが、区間内訳は既知の「隣り合う2区間が入れ替わる」現象を示しており、合算17,718ms（基準の合算15,933〜16,100ms）で見ると整合する。
+
+**運用上の失敗3件**（次回の同種作業で踏まないよう記録する）:
+1. 計測を委譲した先が「完了」通知を返したあとも `measure-boot` を並走させており、その競合下で取った起動時間が45.6秒（基準の約1.9倍）になった。**委譲先の完了通知はプロセスの終了を意味しない。** 停止確認まで自分で持つこと
+2. 委譲先を停止したとき vite 開発サーバーだけが落ち、計測スクリプトとChromeが孤児として残った。配信元を失ったページが `Aborted(both async and sync fetching of the wasm failed)` を出す。**アプリの不具合と紛らわしい**
+3. 待機ループに書いた `pgrep -f "scripts/measure-"` が**自分自身のコマンドラインにマッチ**して終わらなかった。観測系そのもののバグ
+
 ## 次にやること
 
 移行前基準は2組そろい、**ワーカー移行に着手できる状態になった**。
 
-1. **ワーカー移行の手順3(ステートと単純なFS転送)に進む。**手順2で `LocalCoreProxy` の本番結線と非同期境界の検出力(故障注入)を確認済みなので、`serialize`/`unserialize`、互換用read/writeのtransferable化に進む。判定基準は「移行前基準の確定」の表を使う。
+1. ~~ワーカー移行の手順3(ステートと単純なFS転送)に進む。~~ → **2026-08-28 実施済み**（「ワーカー移行 手順3：ステートとFS転送の非同期化（実装）」参照）。**次はワーカー移行の手順4(初期化、オプション、load/AV)に進む。**Module・callback・HEAP・FSをWorker内へ閉じ、ready/load応答までを移す。以後の手順はWorker内コアを前提とする。
 2. **計測時に既定出力デバイスを内蔵スピーカーに固定する。**条件 (a)(b)(c) に加えて (d) とする。ハーネスが記録するようになったので、結果ファイルで照合できる。
 3. **`persist()` の切り分け。**普段使いのプロファイルで `node scripts/probe-opfs.mjs --serve` のページを開き、`false` が使い捨てプロファイル固有かどうかを見る。
 4. ~~iOS WebKit での確認。~~ → **2026-08-26 に確認済み**（「OPFS前提条件の実機確認（iOS、実測、2026-08-26）」参照）。A〜Eは成立し、決定2の対象範囲は変更不要と判断した。

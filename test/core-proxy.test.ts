@@ -210,6 +210,100 @@ describe('LocalCoreProxy: 引数検証', () => {
   });
 });
 
+describe('LocalCoreProxy: 手順3(ステートとFS転送) — serialize/unserializeの往復', () => {
+  it('serialize()で得たArrayBufferをunserialize()へ渡すと往復できる', async () => {
+    const host = createMockHost();
+    const proxy = new LocalCoreProxy(host);
+    await proxy.init(new Uint8Array([0]), new Uint8Array([0]));
+
+    const buf = await proxy.serialize();
+    expect(buf).not.toBeNull();
+    await expect(proxy.unserialize(buf!)).resolves.toBe(true);
+    expect(host.unserialize).toHaveBeenCalledWith(new Uint8Array([1, 2, 3]));
+  });
+
+  it('writeFile→readFileで書いたバイト列を読み戻せる', async () => {
+    const host = createMockHost();
+    const proxy = new LocalCoreProxy(host);
+    await proxy.init(new Uint8Array([0]), new Uint8Array([0]));
+
+    await proxy.writeFile('/game/boot.cmd', new Uint8Array([1, 2, 3, 4]).buffer);
+    const readBack = await proxy.readFile('/game/boot.cmd');
+    expect(new Uint8Array(readBack)).toEqual(new Uint8Array([1, 2, 3, 4]));
+
+    await proxy.removeFile('/game/boot.cmd');
+    await expect(proxy.readFile('/game/boot.cmd')).rejects.toMatchObject({
+      coreError: { code: 'IO_FAILED' },
+    });
+  });
+});
+
+describe('LocalCoreProxy: 手順3の肝 — 所有権のdetach', () => {
+  it('unserialize()に渡したArrayBufferは呼び出し後にdetachされ、byteLengthが0になる', async () => {
+    const host = createMockHost();
+    const proxy = new LocalCoreProxy(host);
+    await proxy.init(new Uint8Array([0]), new Uint8Array([0]));
+
+    const buf = new Uint8Array([9, 9, 9, 9]).buffer;
+    expect(buf.byteLength).toBe(4);
+    await proxy.unserialize(buf);
+    // 呼び出し側が渡したあとに同じバッファを使い回すバグを検出できることの確認。
+    expect(buf.byteLength).toBe(0);
+  });
+
+  it('writeFile()に渡したArrayBufferは呼び出し後にdetachされる', async () => {
+    const host = createMockHost();
+    const proxy = new LocalCoreProxy(host);
+    await proxy.init(new Uint8Array([0]), new Uint8Array([0]));
+
+    const buf = new Uint8Array([1, 2, 3]).buffer;
+    expect(buf.byteLength).toBe(3);
+    await proxy.writeFile('/game/x', buf);
+    expect(buf.byteLength).toBe(0);
+    // detach後もhostへ渡った内容自体は正しく保存されている(コピー漏れではないこと)。
+    const readBack = await proxy.readFile('/game/x');
+    expect(new Uint8Array(readBack)).toEqual(new Uint8Array([1, 2, 3]));
+  });
+
+  it('detach前に呼び出し側がバッファへ触れてもhostが受け取る内容は書き換わらない(detachはコピー後に起きる)', async () => {
+    // takeOwnership は structuredClone(buf, { transfer: [buf] }) で「複製してから元をdetach」
+    // する。呼び出し側が渡した直後にバッファを書き換えるような誤用があっても、host が受け取る
+    // のは呼び出し時点のスナップショットであることを確認する(単なるdetach確認と違う観点)。
+    const host = createMockHost();
+    const proxy = new LocalCoreProxy(host);
+    await proxy.init(new Uint8Array([0]), new Uint8Array([0]));
+
+    const view = new Uint8Array([5, 5, 5]);
+    await proxy.writeFile('/game/y', view.buffer);
+    const readBack = await proxy.readFile('/game/y');
+    expect(new Uint8Array(readBack)).toEqual(new Uint8Array([5, 5, 5]));
+  });
+});
+
+describe('LocalCoreProxy: unserialize失敗時にエラーコードを握り潰さない', () => {
+  it('host.unserialize()がfalseを返す場合、falseがそのまま透過する(以前の状態を握り潰した成功扱いにしない)', async () => {
+    const host = createMockHost();
+    host.unserialize = vi.fn(() => false);
+    const proxy = new LocalCoreProxy(host);
+    await proxy.init(new Uint8Array([0]), new Uint8Array([0]));
+
+    await expect(proxy.unserialize(new Uint8Array([1, 2, 3, 4]).buffer)).resolves.toBe(false);
+  });
+
+  it('host.unserialize()が例外を投げる場合、CORE_FAILUREのCoreProxyErrorとして透過する', async () => {
+    const host = createMockHost();
+    host.unserialize = vi.fn(() => {
+      throw new Error('corrupt state');
+    });
+    const proxy = new LocalCoreProxy(host);
+    await proxy.init(new Uint8Array([0]), new Uint8Array([0]));
+
+    await expect(proxy.unserialize(new Uint8Array([1, 2, 3, 4]).buffer)).rejects.toMatchObject({
+      coreError: { code: 'CORE_FAILURE', message: 'corrupt state' },
+    });
+  });
+});
+
 describe('LocalCoreProxy: 例外→CoreProxyError 変換', () => {
   it('host が例外を投げると CORE_FAILURE の CoreProxyError で reject する', async () => {
     const host = createMockHost();

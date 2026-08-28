@@ -71,10 +71,32 @@ export interface CoreHostSurface {
 const _hostSurfaceCheck: CoreHostSurface = null as unknown as LibretroHost;
 void _hostSurfaceCheck;
 
-function toArrayBuffer(bytes: Uint8Array): ArrayBuffer {
-  // Uint8Array がより大きい ArrayBuffer の一部を指している(subarray)場合があるため、
-  // byteOffset/byteLength で切り出して独立した ArrayBuffer にする。
+/**
+ * Uint8Array がより大きい ArrayBuffer の一部を指している(subarray)場合があるため、
+ * byteOffset/byteLength で切り出して独立した ArrayBuffer にする。
+ * 呼び出し側(main.ts)が IndexedDB 由来の Uint8Array を proxy へ渡す際にも使うため export する。
+ */
+export function toArrayBuffer(bytes: Uint8Array): ArrayBuffer {
   return bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength) as ArrayBuffer;
+}
+
+/**
+ * 手順3の肝: 所有権が呼び出し側から proxy 側へ移る引数(unserialize の bytes、writeFile の
+ * data)は、同一スレッド実装のままでも実際に detach させる。
+ *
+ * LocalCoreProxy は将来 Worker 実体に差し替わる前段の同一スレッド adapter であり、
+ * 素朴に ArrayBuffer をそのまま保持・参照するだけだと「proxy に渡したあとも呼び出し元が
+ * 同じバッファを書き換えて使い回す」というバグを黙って通してしまう。実 Worker 化(手順7以降)
+ * で postMessage の transfer list に載せた瞬間にそれが表面化すると、原因調査が今回の変更から
+ * 遠くなる。structuredClone(buf, { transfer: [buf] }) は同一スレッドでも元の buf を実際に
+ * detach するため、契約違反をこの時点で検出可能にする。
+ *
+ * コスト実測(2026-08-28、Node): 15MB(1本のステートに相当する概算サイズ)で 0.01〜1.3ms
+ * (5試行)、1.2MB(FDD相当)で0.03ms未満。put/get の gzip 圧縮(同モジュールの実測で約60ms)や
+ * IndexedDBのラウンドトリップに比べて無視できる大きさのため、DEV限定にはせず常時適用する。
+ */
+function takeOwnership(buf: ArrayBuffer): ArrayBuffer {
+  return structuredClone(buf, { transfer: [buf] });
 }
 
 /**
@@ -202,13 +224,20 @@ export class LocalCoreProxy implements LibretroHostProxy {
     });
   }
 
-  async unserialize(bytes: ArrayBuffer): Promise<boolean> {
+  async unserialize(bytesIn: ArrayBuffer): Promise<boolean> {
     this.assertInitialized('unserialize');
+    // 所有権を proxy へ移す。呼び出し側が渡した bytesIn はここで detach され、以後
+    // byteLength は 0 になる(takeOwnership のコメント参照)。
+    const bytes = takeOwnership(bytesIn);
     if (bytes.byteLength === 0) {
       throw new CoreProxyError(
         createCoreError('INVALID_ARGUMENT', 'bytes が空です', { operation: 'unserialize' }),
       );
     }
+    // unserialize 失敗時に以前のステートが壊れたまま走り続けないことは、実体 LibretroHost
+    // (retro_unserialize)側の責務。ここでは host.unserialize() の戻り値(false)・例外の
+    // どちらも握り潰さず、そのまま呼び出し側へ伝える(false はそのまま返り、例外は
+    // run() が CoreProxyError へ変換する)。
     return this.run('unserialize', () => this.host.unserialize(new Uint8Array(bytes)));
   }
 
@@ -266,8 +295,10 @@ export class LocalCoreProxy implements LibretroHostProxy {
     });
   }
 
-  async writeFile(path: string, data: ArrayBuffer): Promise<void> {
+  async writeFile(path: string, dataIn: ArrayBuffer): Promise<void> {
     this.assertInitialized('writeFile');
+    // unserialize と同様、所有権を proxy へ移す(呼び出し側の dataIn はここで detach される)。
+    const data = takeOwnership(dataIn);
     return this.run('writeFile', () => this.host.writeFile(path, new Uint8Array(data)));
   }
 
