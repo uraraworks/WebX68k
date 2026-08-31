@@ -3888,12 +3888,61 @@ px68kの`Eject`(`FDD_EjectFD`)は、実行中に呼ぶとコアのメモリ上�
 
 ### できなかったこと・未確認のこと
 
-- **実ブラウザでの動作確認・計測は行っていない。** hot swap(ファイル選択でのFDD差し替え・排出)、オートセーブ、終了flush(リセットボタン・タブ切り替え)のいずれも、`?worker=1`で実際にHuman68kを操作して確認する作業は本セッションでは行っていない(親セッションが担当する)。
-- **既定経路の永続化失敗時の再dirty化が無い欠落は今回発見したが直していない**(「再dirty化の意味論」節参照)。既定経路の挙動を変えない制約のため、修正は別タスクとして切り出す。
+- ~~実ブラウザでの動作確認・計測は行っていない。~~ → **2026-08-31、コーディネータ指摘を受けて末端(ゲストが書いた内容がリロード後も残るか)を自動ハーネスで検証した。既定経路・Worker経路とも合格。** 詳細は次節「末端の永続化検証」参照。ただし検証したのはFDDの`MKDIR`/`DIR`によるオートセーブ・リロード復元のみで、hot swap(ファイル選択でのFDD差し替え・排出)そのものとHDDのオートセーブは依然として実ブラウザでは未確認のまま(下記参照)。
+- **既定経路の永続化失敗時の再dirty化が無い欠落は今回発見したが直していない**(「再dirty化の意味論」節参照)。既定経路の挙動を変えない制約のため、修正は別タスクとして切り出す。**リスクの具体的な内容**: 既定経路の`persistSlotToLibrary()`は`clearDirty()`→吸い出し→`saveDisk()`の順に呼ぶが、`saveDisk()`(IndexedDBへのput)が失敗した場合(例: ストレージ容量逼迫によるQuotaExceededError、ブラウザのプライベートモード制限、タブがバックグラウンドでIndexedDBトランザクションが中断される等)、ダーティフラグは既に落ちているため、その時点までのゲストの書き込みは**二度とオートセーブ対象にならず、ページを離れると静かに失われる**。次に何か別の書き込みが起きればその時点で改めてdirtyが立ち今度は保存されるが、「保存に失敗した回の内容」自体はその後の保存で上書きされるまで気づかれない。手順8のWorker経路はこの欠落を影のダーティフラグで塞いだため、両経路は現時点で意図的に非対称になっている。**移行完了後、両経路まとめてこのリスクに対処する宿題として残す**(既定経路にも同じ影のダーティフラグの仕組みを導入するか、`clearDirty()`と`saveDisk()`成功をより厳密に対応付ける設計に見直すか、いずれかの方針を移行完了後に決める)。
 - **hot swap時、旧内容(`previousImage`)の永続化に失敗した場合の再試行手段が無い。** dirty captureと違い、旧スロットは差し替え後に既に`slots[]`から外れているため、再dirty化しても対象が無い(「再dirty化の意味論」節参照)。
 - **ファイルマネージャ(`openSlotVolume()`)はWorker経路で引き続き未対応のまま。** `readLiveSlotImage()`(`host`ガード)を経由するため、今回のスコープ(hot swap/dirty capture/オートセーブ/終了flush)には含めていない。
-- **HDDのオートセーブ(`HDD_MIN_INTERVAL_MS`、10秒間隔)の実際のタイミングは未確認。** 単体テストは`WorkerMediaState`のロジックのみを検証しており、`pollWorkerAutoSave()`自体の時間経過(`performance.now()`の実際の呼び出しタイミング)は結合テストしていない。
+- **HDDのオートセーブ(`HDD_MIN_INTERVAL_MS`、10秒間隔)の実際のタイミングは未確認。** 末端検証ハーネス(`scripts/verify-disk-persistence.mjs`)はFDD(B:)しか検証しておらず、HDDは対象外。単体テストも`WorkerMediaState`のロジックのみを検証しており、`pollWorkerAutoSave()`自体の時間経過(`performance.now()`の実際の呼び出しタイミング)は結合テストしていない。
+- **hot swap(ファイル選択でのFDD差し替え・排出)そのものの実ブラウザ確認は未実施のまま。** 末端検証ハーネスはオートセーブ経路(`MKDIR`→定期ポーリングによる自動保存)だけを通しており、`insertDiskBytes`/`ejectSlot`経由の`workerHotSwapFdd()`(差し替え・排出そのもの)は`storageProbeEjectSlot`/`storageProbeLoadFromLibrary`の手動デバッグ確認(次節)でしか通していない。
 - **音声・SRAM・ステート保存/復元は引き続き今回もスコープ外のまま**(既存の宿題)。
+
+### 末端の永続化検証(実装・実行、2026-08-31、コーディネータ指摘への対応)
+
+コーディネータから「実ブラウザで末端(ディスクへ書いた内容がリロード後も残るか)を検証しようとしたが、`?system=1`の同梱ディスクは`BUNDLED_DISK_SOURCE_KEY`によりライブラリ登録の対象外で、そもそも永続化経路を一度も踏まない」という指摘を受けた。加えて、デバッグフック`storageProbeSaveSlot`が`urlWorkerMode`を見ず既定経路の`persistSlotToLibrary()`へ直結していたため、Worker経路では常にfalseを返すだけで実際には何も試みていなかったことも指摘された。
+
+#### 塞がっていたデバッグフックの修正
+
+`__webx68kDebug`のストレージ系フック5種を1つずつ確認し、実際に塞がっていたのは`storageProbeSaveSlot`だけだったことを確認した。
+
+| フック | Worker経路での挙動(修正前) | 対応 |
+|---|---|---|
+| `storageProbeSaveSlot` | `persistSlotToLibrary()`直結。`host`が常にnullのため無条件に`false`(無言の失敗偽装)。 | **修正**。`persistSlotToLibraryWorker()`を新設し、`urlWorkerMode`で分岐(`src/main.ts`)。`captureDirtyMedia`経由で実際に永続化を試み、成否を返す。ブラウザで`savedAt`が実際に更新されることを実測確認した。 |
+| `storageProbeLoadFromLibrary` | `insertFromLibrary()` → `insertDiskBytes()`経由。手順8で`insertDiskBytes()`がWorker対応済みのため、修正時点で既に動作していた。 | 対応不要。ブラウザで実際にfdd1が復元されることを実測確認した。 |
+| `storageProbeDeleteFromLibrary` | `deleteDisk()`直呼び。IndexedDBのみに触れ`host`/`coreProxy`に一切依存しない。 | 対応不要(経路非依存)。 |
+| `storageProbeEjectSlot` | `ejectSlot()`直呼び。手順8で`ejectSlot()`がWorker対応済みのため、修正時点で既に動作していた。 | 対応不要。ブラウザで実際にfdd1が「未挿入」になることを実測確認した。 |
+| `storageProbeListLibrary` | `listDisks()`直呼び。IndexedDBのみに触れ経路非依存。 | 対応不要(経路非依存)。 |
+
+#### 検証ハーネス: `scripts/verify-disk-persistence.mjs`
+
+既存の`scripts/measure-disk-save.mjs`はIndexedDB書き込みの**性能**を測るもので、「ゲストが書いた内容がリロード後も残るか」という**機能**そのものは検証しない。新規に`scripts/verify-disk-persistence.mjs`を作成した(既存`measure-*.mjs`と同じ作法: 引数パース・`--help`・自前のdev server起動・ヘッドフルPuppeteer・結果JSON出力に倣うが、レイテンシではなく合否を判定する)。
+
+**検証手順**: `?system=1&run=1&fd2=/system/human302.xdf`(`--worker`指定時は`&worker=1`)で起動しA>を待つ → ライブラリに`fd2`ディスク(sourceKey=URL文字列そのもの)が登録されていることを確認 → 合成KeyboardEvent(measure-drives.mjsと同じ方式。コロンは`Semicolon`ではなく実測済みの`Quote` code)で`MKDIR B:WKTEST`を打鍵 → `DIR B:`でWKTESTの作成を画面で確認 → ライブラリのレコード(`savedAt`/`byteLength`)が更新されるのを**ポーリングで**待つ(固定sleepにしない) → ページをリロードし同じURLで再起動 → `DIR B:`でWKTESTが残っていることを確認。
+
+**「ハーネスエラー」と「不合格」を区別する**: 起動タイムアウト・ライブラリ未登録・MKDIRの作成自体が確認できない場合は`HarnessError`として即座に例外を投げ、`harness-error`として区別する。オートセーブのタイムアウトやリロード後にWKTESTが見つからない場合は、検証の前提(起動・ライブラリ登録・MKDIR成功)は満たされているため、症状として`fail`を返す(SKIPが合格の顔をする事故を避けるための区別)。
+
+`fd2`のURL指定の意味: `src/main.ts`の`resolveUrlToLibrary()`は、指定URLが既にライブラリに`sourceKey===url`で保存済みなら再ダウンロードせずそちらを使う(`getDisk(url)`)。これによりページのリロードが「起動のたびにネットワークから新しいコピーを取得する」のではなく「前回保存した状態を引き継ぐ」ことになり、オートセーブによる永続化を実ブラウザのリロードだけで検証できる。
+
+#### 実行結果
+
+既定経路・Worker経路とも**合格**した。
+
+| 経路 | 結果 | ステップ |
+|---|---|---|
+| 既定経路(`--worker`なし) | **pass** | boot → library-registered → mkdir-sent → mkdir-confirmed → autosave-observed → reload-boot → reload-check-passed |
+| Worker経路(`--worker`) | **pass** | boot → library-registered → mkdir-sent → mkdir-confirmed → autosave-observed → reload-boot → reload-check-passed |
+
+実行中、並行して多数のヘッドフルChromeプロセスを起動していた影響と見られる一過性のタイムアウト(オートセーブ観測待ちが30秒を超えた1回)が発生したが、直後の再実行では同一条件で正常に`autosave-observed`まで到達しており、実装の欠陥ではなく実行環境の負荷によるものと判断した(下記故障注入(b)の2回目の実行が該当)。
+
+#### 故障注入(2件、指示どおり実施)
+
+いずれも`src/main.ts`を一時的に書き換えて`node scripts/verify-disk-persistence.mjs --worker`を実行し、症状(ハーネスエラーではなく`fail`)で不合格になることを確認したうえで元に戻した(`git diff`で完全一致を確認済み)。
+
+- **(a) オートセーブを無効化**: `pollWorkerAutoSave()`の先頭に無条件`return;`を追加(captureDirtyMediaの結果を捨てるのと等価。オートセーブ判定自体を丸ごと止める)。`--autosave-timeout=15000`で実行 → 結果`fail`、理由「オートセーブが15000ms以内にライブラリへ反映されませんでした(症状: 永続化されない)」、ステップは`autosave-timeout`で停止(`harness-error`ではない)。
+- **(b) リロード後にライブラリから読み込む経路を潰す**: `resolveUrlToLibrary()`内の`const plainStored = await getDisk(url);`を`null`固定に置き換え、「既に保存済みなら再利用する」分岐を無効化(=リロードのたびに毎回ネットワークから新規取得する)。実行 → 結果`fail`、理由「リロード後、DIR B: の出力にWKTESTが見つかりませんでした(症状: 書き込みが失われた)」、ステップは`reload-check-failed`で停止。リロード後の`DIR B:`出力は同梱システムディスクの内容(SYS/HIS/BIN等のディレクトリ)そのもので、fd2ディスクが再フェッチによって差し替えられ`WKTEST`を含む以前の状態を引き継げていないことを直接確認した。
+
+いずれも`is not a function`等の無関係な理由ではなく、狙った症状(オートセーブが効かない/リロードで書き込みが消える)そのもので不合格になることを確認している。
+
+`npx tsc --noEmit`: エラーなし。`npm test`(`npx vitest run`): **630件全て合格**(前節から変更なし。`storageProbeSaveSlot`修正はmain.tsのDEV専用デバッグフックのみで、単体テストの対象になっていない既存の関数群と同様)。
 
 ## 次にやること
 
