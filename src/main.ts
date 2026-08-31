@@ -52,7 +52,7 @@ import {
   type LibretroHostProxy,
 } from './core-proxy';
 import type { CoreEvent, FrameSnapshot } from './core-protocol';
-import { MainInputSnapshot } from './worker-input';
+import { computeShouldAcceptGuestKeyInput, MainInputSnapshot } from './worker-input';
 import {
   parseAspectModeParam,
   parseCpuSpeedParam,
@@ -724,6 +724,17 @@ function clearWorkerInputGeneration(): void {
   if (!urlWorkerMode || !workerCoreProxy) return;
   workerInput.bumpGeneration();
   sendWorkerInputUpdate();
+}
+
+/**
+ * 物理キーボードのkeydownを受け付けてよいかを判定する(実体は
+ * src/worker-input.ts の computeShouldAcceptGuestKeyInput、純粋ロジックとして単体テスト対象)。
+ * 既定経路は従来どおり `host !== null` で判定し、Worker経路(urlWorkerMode)だけ
+ * `running` で判定する(host はWorker経路では常にnullのため、host基準のままだと
+ * 入力が永久に届かない。2026-08-31、実ブラウザ確認で発覚した欠陥の修正)。
+ */
+function shouldAcceptGuestKeyInput(): boolean {
+  return computeShouldAcceptGuestKeyInput({ urlWorkerMode, running, hostPresent: host !== null });
 }
 
 // 押しっぱなし固着の予防(仮想キーボードの releaseAll と同じ思想)。
@@ -3074,7 +3085,7 @@ const physicalPressed = new Set<string>();
 // sharedKeyInput.press/releaseのretrokが噛み合わなくなる=固着する事故を防ぐため)。
 const hostKeyPressed = new Map<string, Binding>();
 window.addEventListener('keydown', (e) => {
-  if (document.activeElement !== canvas || !host) return;
+  if (document.activeElement !== canvas || !shouldAcceptGuestKeyInput()) return;
   // 自前のKeyRepeaterで刻むため、ブラウザ/OS由来のオートリピートはゲストへ渡さない。
   if (e.repeat) {
     e.preventDefault();

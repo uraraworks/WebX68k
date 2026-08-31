@@ -3108,15 +3108,64 @@ Worker側(`src/core-worker.ts`)は `INPUT_UPDATE_KIND` のメッセージを、�
 - **マウスの閉ループ追従(`trackGuestMouse`系、`readGuestCursor`、`hasPendingMouseDelta`、`resyncGuestMouse`)は未移行のまま。** `canvas`のmousemove(非captured/追従モード)は`desiredRatioX/Y`を記録するだけで、実際の送信を担う`stepMouseTracking()`が`host`ガードを持つため、Worker経路では従来どおり何もしない。
 - **SRAM由来のキーリピート設定追従(`readKeyRepeatConfig`)は未移行。** `KeyRepeater`は既定値のまま動く。
 - **`__webx68kDebug.keybuf`(KeyBufプローブ)は未対応のまま。** `scripts/measure-key.mjs`が同期APIとして使っているため、Worker経路対応には計測スクリプト側の改修が要る。
-- **実ブラウザでの動作確認は行っていない。** `?worker=1`を付けた実ブラウザでキーボード/ゲームパッド/マウスボタンが実際にHuman68kへ届くかは未確認。
+- ~~実ブラウザでの動作確認は行っていない。~~ → **2026-08-31、コーディネータが実ブラウザ(dev server、Chromium)で確認し、物理キーボード入力がゲストへ1文字も届かない欠陥を発見した。以下「実ブラウザ確認で見つかった欠陥」節で修正済み。** ゲームパッド/マウスボタンの実ブラウザ確認はまだ行っていない。
 - **キー入力の実測(末端到達・欠落/重複/残留押下の計測)は未実施。** 目的Aの基準表(「キー入力の末端到達」節)に沿った計測はまだ行っていない。
 - 音声・FDDホットマウント・SRAM・ステート保存/復元は従来どおり未移行(変更なし)。
+
+### 実ブラウザ確認で見つかった欠陥(2026-08-31)
+
+単体テスト567件が全通過した状態で、コーディネータが実ブラウザ(dev server、ポート5299、Chromium)で `?system=1&run=1&worker=1` を実測したところ、**物理キーボードの入力がゲストへ1文字も届いていなかった。** `A>` 到達後、canvasにフォーカスした状態でKeyD/KeyI/KeyRのkeydown/keyupをdispatchし、TVRAM(`__webx68kDebug.screenText()`)を読んだ結果:
+
+- Worker経路 `?system=1&run=1&worker=1`: 打鍵前 `A>` → 打鍵後 `A>`(**変化なし**)
+- 陽性対照・既定経路 `?system=1&run=1`: 打鍵前 `A>ECHO OFF` → 打鍵後 `A>dir`(**届いている**)
+
+同じ合成イベントの出し方で既定経路は通るため、合成イベントの制約ではなくWorker経路固有の欠陥だった。
+
+**単体テスト567件はこの故障を1件も検出できなかった。** 理由は、`WorkerInputState`/`MainInputSnapshot`の単体テストが「`applyKey`等の中央関数より内側(適用ロジック)」だけを検査しており、DOMイベントハンドラの入口(呼ばれるかどうか)自体を一切踏んでいなかったため。中央関数への集約は済んでいたが、**その手前の入口の1つが古いガードで塞がれたまま**だった。
+
+#### 原因
+
+`src/main.ts` の物理キーボードkeydownハンドラ冒頭(手順6着手前から存在していた行):
+
+```
+if (document.activeElement !== canvas || !host) return;
+```
+
+Worker経路では `host` が常にnullのため、ここで全てのkeydownが早期returnしていた。`applyKey`へ集約したのはこの行より後ろの処理だけで、**入口そのものが`host`で塞がれたまま残っていた**。keyup側(同ファイル内、`window.addEventListener('keyup', ...)`)にはこのガードが無かったため気づきにくかった。
+
+#### 監査(入力の入口を全て確認)
+
+| 入口 | ガード条件(修正前) | Worker経路で通るか(修正前) | 対応 |
+| --- | --- | --- | --- |
+| 物理キーボード keydown | `document.activeElement !== canvas \|\| !host` | **通らない(欠陥)** | **修正**: `!host` を `!shouldAcceptGuestKeyInput()` へ置換。既定経路は `host !== null` のまま、Worker経路は `running` で判定する`computeShouldAcceptGuestKeyInput()`(`src/worker-input.ts`、純粋関数)を新設。 |
+| 物理キーボード keyup | ガード無し(`hostKeyPressed`/`physicalPressed`の記録有無のみで判定) | 通る | 変更不要。 |
+| 仮想キーボード(`createVirtualKeyboard`経由) | `src/virtual-keyboard.ts`に`host`参照なし。`sharedKeyInput`(→`applyKey`)を直接呼ぶ | 通る | 変更不要。 |
+| 仮想パッド(`virtualPad`) | `src/virtual-pad.ts`に`host`参照なし。`getJoyBits()`はWorker経路のframe eventハンドラから毎フレーム呼ばれる(手順6実装時に配線済み) | 通る | 変更不要。 |
+| ホストキー割り当て(`resolveHostKeyBinding`経路) | `resolveHostKeyBinding`自体は純粋関数だが、呼び出しは物理keydownハンドラの内側にあり同じガードに引っかかっていた | **通らない(同一欠陥)** | 上のkeydown修正で同時に解消。 |
+| ゲームパッド(`syncGamepadKeys`/`releaseAllGamepadKeys`) | `host`参照なし。`syncGamepadKeys`はWorker経路のframe eventハンドラから毎フレーム呼ばれる | 通る | 変更不要。 |
+| マウスのボタン(`mousedown`/`mouseup`)・キャプチャ時の移動(`mousemove`captured分岐) | 前回の手順6実装(コミット0f54e45)で`applyMouseButton`/`applyMouseDelta`へ既に集約済み、`host`ガード無し | 通る | 変更不要(前回実装で対応済み)。 |
+| `__webx68kDebug`/bridge経由(`setKey`/`typeText`/`moveMouse`/`mouseButton`) | 前回実装で`applyKey`/`applyMouseDelta`/`applyMouseButton`へ集約済み、`typeText`は`running`で判定 | 通る | 変更不要(前回実装で対応済み)。 |
+| マウスの閉ループ追従(`mousemove`の非captured分岐、`stepMouseTracking()`、`resyncGuestMouse()`) | `host`ガードあり | 通らない(意図どおり) | **対象外のまま**(手順6のスコープ外。コーディネータの指示どおり据え置き)。 |
+
+修正箇所は1つ(物理キーボードkeydownの入口ガード)で、ホストキー割り当てはその内側にあるため同時に直った。他の入口は前回実装(コミット0f54e45)時点で既に中央関数へ正しく集約されており、追加の欠陥は見つからなかった。
+
+#### 追加した回帰検査
+
+`src/worker-input.ts` に `computeShouldAcceptGuestKeyInput(opts: { urlWorkerMode, running, hostPresent }): boolean` を純粋関数として切り出した(既定経路は`hostPresent`のみで判定、Worker経路は`running`のみで判定)。`src/main.ts` は `shouldAcceptGuestKeyInput()`(引数無しラッパ、現在のモジュール状態を渡すだけ)経由でこれを呼ぶ。`main.ts` 自体は副作用だらけで直接インポートできない(exportを一切持たない)ため、DOMイベントハンドラそのものを踏む検査は今回も見送り、判定条件を切り出したうえでその純粋ロジックをテストする形にした(コーディネータの「難しければ」の代替案を採用)。
+
+`test/worker-input.test.ts` に `computeShouldAcceptGuestKeyInput` のテスト2件を追加:
+- 既定経路(`urlWorkerMode: false`)は`hostPresent`だけで判定する(既存条件維持の確認)
+- Worker経路(`urlWorkerMode: true`)は`running`だけで判定し、`hostPresent: false`でも`true`を返す(今回の欠陥の直接の回帰検査)
+
+**故障注入(陽性対照)**: `computeShouldAcceptGuestKeyInput()`を`return opts.hostPresent;`(urlWorkerModeを無視する、実ブラウザで見つかった欠陥そのものの再現)へ一時的に書き換えたところ、「Worker経路はrunningだけで判定する」テストが実際にredになることを確認した(`{urlWorkerMode:true, running:true, hostPresent:false}`で期待値`true`に対し`false`が返った)。確認後、元の実装に戻し`diff`で完全一致を確認した。
+
+修正後: `npx tsc --noEmit`・`npm test`とも通過(569件、直前567件+2件)。**実ブラウザでの再確認はコーディネータが行う予定で、このセッションでは行っていない。**
 
 ## 次にやること
 
 移行前基準は2組そろい、**ワーカー移行に着手できる状態になった**。
 
-1. ~~ワーカー移行の手順3(ステートと単純なFS転送)に進む。~~ → **2026-08-28 実施済み**（「ワーカー移行 手順3：ステートとFS転送の非同期化（実装）」参照）。~~次はワーカー移行の手順4(初期化、オプション、load/AV)に進む。~~ → **2026-08-28 実施済み**（「ワーカー移行 手順4：初期化・load/AVのスケルトン実装」参照）。~~手順5・7(映像・駆動ループ)に進む。~~ → **2026-08-28 実施済み**（「ワーカー移行 手順5・7：映像・駆動ループの実装、`?worker=1` を本体経路化」参照）。`?worker=1` でHuman68kが`A>`プロンプトまで到達することをdev・本番ビルド双方で確認済み。~~次はワーカー移行の手順6(入力)に進む。~~ → **2026-08-31、前半(キー・パッド・マウスボタン・加算マウスdelta・世代付きclear)を実装済み**（「ワーカー移行 手順6：入力の実装（2026-08-31）」参照）。単体テストと故障注入は通したが、**実ブラウザでの動作確認と、マウスの閉ループ追従(手順6の後半)はまだ行っていない。** 次はその2点に進む。
+1. ~~ワーカー移行の手順3(ステートと単純なFS転送)に進む。~~ → **2026-08-28 実施済み**（「ワーカー移行 手順3：ステートとFS転送の非同期化（実装）」参照）。~~次はワーカー移行の手順4(初期化、オプション、load/AV)に進む。~~ → **2026-08-28 実施済み**（「ワーカー移行 手順4：初期化・load/AVのスケルトン実装」参照）。~~手順5・7(映像・駆動ループ)に進む。~~ → **2026-08-28 実施済み**（「ワーカー移行 手順5・7：映像・駆動ループの実装、`?worker=1` を本体経路化」参照）。`?worker=1` でHuman68kが`A>`プロンプトまで到達することをdev・本番ビルド双方で確認済み。~~次はワーカー移行の手順6(入力)に進む。~~ → **2026-08-31、前半(キー・パッド・マウスボタン・加算マウスdelta・世代付きclear)を実装済み**（「ワーカー移行 手順6：入力の実装（2026-08-31）」参照）。単体テストと故障注入は通したが、~~実ブラウザでの動作確認~~ → **2026-08-31、コーディネータが実ブラウザ確認を行い、物理キーボード入力がゲストへ届かない欠陥を発見・修正済み**（「実ブラウザ確認で見つかった欠陥(2026-08-31)」参照）。**マウスの閉ループ追従(手順6の後半)、ゲームパッド/マウスボタンの実ブラウザ再確認はまだ行っていない。** 次はその2点に進む。
 2. **計測時に既定出力デバイスを内蔵スピーカーに固定する。**条件 (a)(b)(c) に加えて (d) とする。ハーネスが記録するようになったので、結果ファイルで照合できる。
 3. **`persist()` の切り分け。**普段使いのプロファイルで `node scripts/probe-opfs.mjs --serve` のページを開き、`false` が使い捨てプロファイル固有かどうかを見る。
 4. ~~iOS WebKit での確認。~~ → **2026-08-26 に確認済み**（「OPFS前提条件の実機確認（iOS、実測、2026-08-26）」参照）。A〜Eは成立し、決定2の対象範囲は変更不要と判断した。

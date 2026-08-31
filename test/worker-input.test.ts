@@ -13,7 +13,7 @@
 // 故障注入(b1)(b2)をこのファイル末尾に追加し直した。
 import { describe, expect, it } from 'vitest';
 import type { InputUpdate } from '../src/core-protocol';
-import { MainInputSnapshot, WorkerInputState, type InputHost } from '../src/worker-input';
+import { computeShouldAcceptGuestKeyInput, MainInputSnapshot, WorkerInputState, type InputHost } from '../src/worker-input';
 
 /** InputHost を満たす fake。呼び出しをそのまま記録し、setKey の押下集合も再現する。 */
 class FakeInputHost implements InputHost {
@@ -281,6 +281,33 @@ describe('MainInputSnapshot', () => {
   });
 });
 
+describe('computeShouldAcceptGuestKeyInput', () => {
+  // 実ブラウザ確認(2026-08-31、コーディネータ実測)で見つかった欠陥の回帰検査。
+  // src/main.ts の物理キーボードkeydownハンドラは、既定経路が生まれた当時からの
+  // `!host` ガードをそのまま残していたため、Worker経路(host は常にnull)では
+  // 物理キーボード入力が一度もapplyKeyへ届いていなかった(単体テスト567件はこの故障を
+  // 1件も検出できなかった)。docs/STORAGE-SCSI.md「ワーカー移行 手順6」の
+  // 「実ブラウザ確認で見つかった欠陥」参照。
+
+  it('既定経路(urlWorkerMode=false)はhostPresentだけで判定する(既存の判定条件を維持)', () => {
+    expect(
+      computeShouldAcceptGuestKeyInput({ urlWorkerMode: false, running: false, hostPresent: true }),
+    ).toBe(true);
+    expect(
+      computeShouldAcceptGuestKeyInput({ urlWorkerMode: false, running: true, hostPresent: false }),
+    ).toBe(false);
+  });
+
+  it('Worker経路(urlWorkerMode=true)はrunningだけで判定する(host===nullでもtrueになる)', () => {
+    expect(
+      computeShouldAcceptGuestKeyInput({ urlWorkerMode: true, running: true, hostPresent: false }),
+    ).toBe(true);
+    expect(
+      computeShouldAcceptGuestKeyInput({ urlWorkerMode: true, running: false, hostPresent: false }),
+    ).toBe(false);
+  });
+});
+
 // --- 陽性対照(故障注入)の記録 -------------------------------------------------
 //
 // 実施した4件(実装時に一時的に注入し、red になることを確認してから元に戻した):
@@ -306,3 +333,10 @@ describe('MainInputSnapshot', () => {
 // (b2) main側(MainInputSnapshot)のtake()内、keyMakesのクリア(`this.keyMakes = [];`)を
 //     削除すると、「take()後、keyMakesは空になる」テストが red になった
 //     (2回目のtake()が[1,2]を返し、期待値[]と食い違った)。
+
+//
+// (c) `computeShouldAcceptGuestKeyInput()`を、実ブラウザで見つかった欠陥の再現として
+//     `return opts.hostPresent;`(urlWorkerModeを無視し、常にhost基準で判定する旧実装)へ
+//     一時的に書き換えると、「Worker経路(urlWorkerMode=true)はrunningだけで判定する」
+//     テストが red になった(urlWorkerMode:true, running:true, hostPresent:false の
+//     組み合わせで期待値trueに対しfalseが返り、この故障を検出できることを確認した)。

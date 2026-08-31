@@ -179,3 +179,25 @@ export class MainInputSnapshot {
     return update;
   }
 }
+
+// --- 入力の入口ガード (2026-08-31、実ブラウザ確認で見つかった欠陥の修正) --------------
+//
+// docs/STORAGE-SCSI.md「ワーカー移行 手順6」の「実ブラウザ確認で見つかった欠陥」参照。
+// 物理キーボードのkeydownハンドラ(src/main.ts)は、既定経路が生まれた当時からの
+// `!host` ガード(コアが未起動なら捨てる)をそのまま残していた。適用先はapplyKey等の
+// 中央関数へ集約したにもかかわらず、その手前の入口が`host`(Worker経路では常にnull)で
+// 塞がれたままだったため、Worker経路では物理キーボード入力が一度もapplyKeyへ届いていなかった
+// (単体テスト567件はこの故障を1件も検出できなかった。DOMイベントハンドラの結線自体を
+// 踏む検査が無かったため)。
+//
+// 既定経路の判定条件(host の有無)は一切変えていない。urlWorkerMode(Worker経路)のときだけ
+// runningフラグで判定するようにした。running は両経路で「コアが動いているか」を表す
+// 唯一の共通フラグ(既定経路は host!==null と概ね同時期に true になるが、Worker経路には
+// host という概念自体が無い)。
+export function computeShouldAcceptGuestKeyInput(opts: {
+  urlWorkerMode: boolean;
+  running: boolean;
+  hostPresent: boolean;
+}): boolean {
+  return opts.urlWorkerMode ? opts.running : opts.hostPresent;
+}
