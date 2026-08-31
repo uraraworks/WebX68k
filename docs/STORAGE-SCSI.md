@@ -3944,6 +3944,40 @@ px68kの`Eject`(`FDD_EjectFD`)は、実行中に呼ぶとコアのメモリ上�
 
 `npx tsc --noEmit`: エラーなし。`npm test`(`npx vitest run`): **630件全て合格**(前節から変更なし。`storageProbeSaveSlot`修正はmain.tsのDEV専用デバッグフックのみで、単体テストの対象になっていない既存の関数群と同様)。
 
+#### 追記(2026-08-31、コーディネータ再指摘への対応): `--fault` の実注入化と打鍵検証・リトライ
+
+コーディネータが親セッションで`287017d`/`0412413`を実行し、**Worker経路・既定経路とも合格(末端でゲストの書き込みがリロード後も残ることを確認)**した一方、ハーネス自体に2点の指摘を受けた。
+
+**指摘1(重大): `--fault`は実際には何も注入していなかった。** 上記「故障注入(2件、指示どおり実施)」節は、`src/main.ts`を手で一時的に書き換えたうえで`--fault`フラグを付けて実行した記録であり、**`--fault`フラグ自体は引数パース・ヘルプ・結果JSONへのラベル記録のみで、故障を注入するコードを1行も持っていなかった**。フラグ名が`--fault=<種類>`である以上、これは実行者に「フラグが注入してくれる」と誤解させる設計であり、実際にコーディネータもそう誤解した。**再現できない陽性対照は陽性対照ではない**という指摘は妥当と判断し、修正した。
+
+**修正内容**: `src/main.ts`にdev限定・既定offのURLパラメータを2つ追加した(`docs`のこの節、および該当コード参照)。
+
+- `debugDisableAutosave=1`: `pollAutoSave()`/`pollWorkerAutoSave()`の先頭で即`return`する(オートセーブ判定そのものを丸ごと止める。両経路に同じガードを入れた)。
+- `debugForceUrlRefetch=1`: `resolveUrlToLibrary()`内の「既にライブラリに保存済みなら再利用する」分岐(`plainStored`)を無効化し、毎回ネットワークから再取得させる。
+
+いずれも既定はoffで、パラメータを指定しなければ挙動は一切変わらない(既定経路の挙動を変えない制約は維持)。**URLパラメータを選んだ理由**: JS変数(モジュールスコープの一時フラグ等)だとページのリロードで消えてしまうが、`--fault=disable-reload-resume`はまさに「リロードをまたいで効く」ことが要件であり、URLパラメータならリロード後も同じクエリ文字列を渡す限り効き続ける。`scripts/verify-disk-persistence.mjs`の`buildUrl()`が`config.fault`の値に応じてこれらのパラメータを実際に付与するよう変更し、ソースの手編集を不要にした。ヘルプ文言の「実装側を一時的に壊した状態で使う」という古い記述(通らない設計だった)も修正した。
+
+**再実行結果(修正後の`--fault`を実際に使用)**:
+
+| 実行 | 経路 | 故障注入 | 結果 | ステップ |
+|---|---|---|---|---|
+| 正常系1 | Worker | なし | **pass** | boot → library-registered → mkdir-sent → mkdir-confirmed → autosave-observed → reload-boot → reload-check-passed |
+| 正常系2(対照) | 既定 | なし | **pass** | 同上 |
+| 故障注入(a) | Worker | `--fault=disable-autosave`(`debugDisableAutosave=1`実付与) | **fail** | boot → library-registered → mkdir-sent → mkdir-confirmed → `autosave-timeout`で停止。理由「オートセーブが15000ms以内にライブラリへ反映されませんでした(症状: 永続化されない)」 |
+| 故障注入(b) | Worker | `--fault=disable-reload-resume`(`debugForceUrlRefetch=1`実付与) | **fail** | boot → library-registered → mkdir-sent → mkdir-confirmed → autosave-observed → reload-boot → `reload-check-failed`で停止。理由「リロード後、DIR B: の出力にWKTESTが見つかりませんでした(症状: 書き込みが失われた)」。実際の出力は同梱システムディスクの内容(SYS/HIS/BIN等)そのもので、`WKTEST`を含む以前の状態を引き継げず再フェッチされたことを直接確認した |
+
+いずれも`harness-error`ではなく`fail`(症状による不合格)になることを確認した。実装は`src/main.ts`のみの変更で、`git diff`は意図した2箇所(パラメータ宣言+2関数への早期return+1箇所の分岐差し替え)のみ。
+
+**指摘2: 負荷が高いと合成キーが落ち、`harness-error`になる。** コーディネータの実行で`MKDIR B:WKTEST`が`mdir b:wkest`として送られる(`k`と`t`が欠落)取りこぼしが3回観測された。判定自体(`harness-error`として報告)は正しかったが、負荷条件下で回帰ゲートとして使いにくいという指摘を受けた。
+
+**修正内容**: `typeCommandVerified()`を新設した。打鍵後、Enterを送る前に画面からコマンド行を読み直し、期待どおりの文字列(`A>${command}`、末尾に点滅カーソル分の1文字ちょうどのズレは許容)になっているかを検証する。一致しなければ`Backspace`で行をクリアして打ち直す(`measure-drives.mjs`のDIR入力における行クリア作法を流用)。`--type-retries`(既定3回)を超えても一致しなければ`HarnessError`として報告する(打鍵の信頼性はエミュレータ本体の検証対象の外側にあるため、症状=`fail`ではなく前提条件の欠落=`harness-error`として扱う)。リトライ回数は結果JSONの`outcome.retries`(`mkdir`/`dirAfterMkdir`/`dirAfterReload`のキーごと)に記録し、隠さない。
+
+**実測**: 上表の正常系1(Worker経路)の再実行で実際に取りこぼしが発生し(`mkdir`のリトライ回数が1)、リトライによって自動的に訂正され`pass`まで到達したことを確認した(結果JSON参照)。既定経路の実行ではリトライは発生しなかった(`{"mkdir":0,"dirAfterMkdir":0,"dirAfterReload":0}`)。
+
+**「ハーネス固有かエミュレータ本体かは未切り分け」(断定しない)**: 負荷が高いときに合成キーが落ちる現象が、(A)本スクリプトの合成KeyboardEventのタイミング(`--key-hold`/`--key-gap`)がPuppeteer/ヘッドフルChromeの負荷下でのイベントループ遅延に対して不十分なだけなのか、(B)WebX68k本体(コアの入力ポーリング、Worker経路なら駆動ループの取り戻し処理)が高負荷下で実際にキー入力を取りこぼしているのかは、**今回切り分けていない**。既定経路の実行でも同種の取りこぼしが起きるかどうかも合わせて未確認(今回の実測では既定経路にリトライは発生しなかったが、これは「既定経路では起きない」ことの証明ではなく、単に今回の実行では発生しなかっただけである)。**打鍵取りこぼしの原因切り分けは宿題として残す。**`--key-hold`/`--key-gap`を単純に伸ばす対症療法はしていない(検出・リトライの仕組みを入れることを本筋とした)。
+
+`npx tsc --noEmit`: エラーなし。`npm test`(`npx vitest run`): **630件全て合格**(前節から変更なし)。
+
 ## 次にやること
 
 移行前基準は2組そろい、**ワーカー移行に着手できる状態になった**。
