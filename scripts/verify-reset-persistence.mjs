@@ -208,6 +208,23 @@ async function waitForBootPrompt(page, timeoutMs) {
   );
 }
 
+/**
+ * 2026-08-31追記: 「A>が画面に出た」時点(waitForBootPrompt)と「ゲストがキー入力を実際に
+ * 受け付け始める」時点はイコールではない。特にリセット直後は、A>表示後もCOMMAND.X起動や
+ * KEYBUFの初期化がもう数フレーム続いていることがあり、その間の打鍵は無言で失われる
+ * (実測: 既定経路でDIR B:直前のtypeCommandVerified()が3回リトライしても一致しないharness-error
+ * が出た。原因は「取りこぼし」であって「文字化け」ではなかった)。
+ *
+ * 対処はリトライ上限を上げる対症療法ではなく、A>が最低でも数回連続のポーリングで同じ内容の
+ * まま安定するまで待つ形にする(waitForPromptSettled)。これにより「起動直後の一時的な
+ * 未受付状態」はここで吸収され、それでも取りこぼす場合(=真の不具合)はこれまでどおり
+ * typeCommandVerified() のリトライ機構がそのまま検出する(打鍵落ちを検出できる性質を
+ * 壊さないため、ここでは「打てば直る」まで待つのではなく、あくまで表示の安定だけを待つ)。
+ */
+async function waitForInputReady(page, timeoutMs) {
+  await waitForPromptSettled(page, timeoutMs, 100);
+}
+
 /** 1文字 -> 合成KeyboardEventのcode/key。verify-disk-persistence.mjsと同じ範囲。 */
 function keySpecForChar(ch) {
   if (/^[a-z]$/.test(ch)) return { code: `Key${ch.toUpperCase()}`, key: ch };
@@ -330,7 +347,25 @@ async function clickResetButton(page) {
 async function verifyOnce(browser, config) {
   const context = await browser.createBrowserContext();
   const page = await context.newPage();
+  // page.gotoの既定ナビゲーションタイムアウトはpuppeteer既定の30000msで、
+  // config.bootTimeoutMs(既定90000ms)より短い。負荷が高い環境ではネットワーク要求自体が
+  // 30sを超えて固まることがあり(2026-08-31実測)、その場合は起動タイムアウトより先に
+  // page.goto()自体がTimeoutErrorで死んでHarnessErrorに化けずクラッシュする。
+  // ナビゲーション/暗黙waitの既定タイムアウトもboot-timeoutへ揃える。
+  page.setDefaultNavigationTimeout(config.bootTimeoutMs);
+  page.setDefaultTimeout(config.bootTimeoutMs);
   await page.setViewport({ width: 900, height: 700, deviceScaleFactor: 2 });
+  // 一時デバッグ計装(2026-08-31、リセット復帰の欠陥調査時に追加): unhandledrejection の
+  // reason が CoreProxyError の場合、coreError.operation(どのcommandが失敗したか)を
+  // console.error経由で出す。pageerrorイベント(Runtime.exceptionThrown)はmessage/stackしか
+  // 運ばないため、operationを特定するにはページ内でreasonを直接見る必要がある。
+  await page.evaluateOnNewDocument(() => {
+    window.addEventListener('unhandledrejection', (ev) => {
+      const reason = ev.reason;
+      const op = reason && typeof reason === 'object' ? reason.coreError?.operation : undefined;
+      console.error(`[unhandledrejection] operation=${op ?? '(unknown)'} message=${reason?.message ?? reason}`);
+    });
+  });
   await page.bringToFront();
   const steps = [];
   const retries = {};
@@ -343,6 +378,18 @@ async function verifyOnce(browser, config) {
   page.on('dialog', (dialog) => {
     dialogMessages.push(`${dialog.type()}: ${dialog.message()}`);
     void dialog.dismiss().catch(() => {});
+  });
+  // 2026-08-31追記: 「起動タイムアウト」だけでは原因(JS例外/クラッシュ/単なる遅延)を
+  // 区別できず、原因調査のたびに手動でBrowser pane等を使って裏取りする必要があった。
+  // console.error/pageerrorをそのままログへ流すことで、次回以降はこのハーネスの標準出力
+  // だけで一次切り分けができるようにする(致命的なJS例外を握り潰さない)。
+  page.on('pageerror', (err) => {
+    console.error(`[page error] ${err.message ?? err}\n${err.stack ?? ''}`);
+  });
+  page.on('console', (msg) => {
+    if (msg.type() === 'error' || msg.type() === 'warning') {
+      console.error(`[console.${msg.type()}] ${msg.text()}`);
+    }
   });
 
   const closeAndReturn = async (result) => {
@@ -363,7 +410,11 @@ async function verifyOnce(browser, config) {
 
 async function verifySteps(page, config, steps, retries, closeAndReturn, dialogMessages) {
   const url = buildUrl(config);
-  await page.goto(url, { waitUntil: 'networkidle2' });
+  try {
+    await page.goto(url, { waitUntil: 'networkidle2' });
+  } catch (err) {
+    throw new HarnessError(`ページ読み込みに失敗しました(page.goto): ${err.message}`);
+  }
   await page.bringToFront();
   try {
     await waitForBootPrompt(page, config.bootTimeoutMs);
@@ -371,6 +422,9 @@ async function verifySteps(page, config, steps, retries, closeAndReturn, dialogM
     throw new HarnessError(`起動タイムアウト(A>に到達しませんでした): ${err.message}`);
   }
   steps.push('boot');
+  // 起動直後もキー入力が実際に受け付けられるまで一拍かかりうる(waitForInputReadyコメント
+  // 参照)。ここで安定を待ってから打鍵する。
+  await waitForInputReady(page, 5000);
 
   // 手順1: B: へ書き込ませる(打鍵検証・リトライ込み)。
   const mkdirTyping = await typeCommandVerified(page, 'mkdir b:wktest', config);
@@ -397,6 +451,14 @@ async function verifySteps(page, config, steps, retries, closeAndReturn, dialogM
     throw new HarnessError(`#btn-resetのクリックに失敗しました: ${err.message}`);
   }
   steps.push('reset-clicked');
+  // 2026-08-31追記: bringToFront()はverifySteps冒頭で1回しか呼んでいなかった。多重セッションが
+  // 同居する環境で他ウィンドウにフォーカスを奪われると、Chromeはバックグラウンドタブの
+  // requestAnimationFrameを大幅に間引く(スロットリング)ため、駆動ループ(rAF)に依存する
+  // runFrame()がほぼ進まなくなり、リセット後の再起動が体感で数十秒〜到達しないレベルまで
+  // 遅延する(実測: 手動操作では16〜30秒で再起動できたのに、このハーネスは90秒超でも
+  // reset-boot に届かなかった。フォーカスを失っていたことが原因と判断)。
+  // 待ちに入る直前に再度前面化する。
+  await page.bringToFront();
 
   // 手順4: 再びA>に到達するのを待つ。
   try {
@@ -410,6 +472,19 @@ async function verifySteps(page, config, steps, retries, closeAndReturn, dialogM
     throw new HarnessError(`リセット後の起動タイムアウト: ${err.message}${dialogNote}`);
   }
   steps.push('reset-boot');
+  // 2026-08-31追記: 「打鍵が3回リトライしても一致しない(observed=A>、1文字も反映されない)」
+  // の実際の原因を特定した。src/main.tsのkeydownハンドラは
+  // `document.activeElement !== canvas || !shouldAcceptGuestKeyInput()` で早期returnしており、
+  // #btn-resetをクリックするとフォーカスがボタンへ移る。初回起動時はbootCore()の呼び出し元が
+  // 明示的にcanvas.focus()を呼ぶが、restartCore()(#btn-reset経路)はcanvas.focus()を呼ばない
+  // ため、リセット後はフォーカスがボタンに残ったままになり、合成keydownが(タイミングに関係なく
+  // 毎回確実に)無視される。実際のユーザーもリセット後にcanvasをクリックし直す必要がある
+  // (今回のスコープ外の別の些細な挙動なのでsrc/main.ts側は変更しない)。ハーネスは実ユーザーの
+  // 操作を模してcanvasを明示的にクリックしてから打鍵する。
+  await page.click('#screen');
+  // クリック直後・リセット直後は入力の受付までに時間がかかりうる(waitForInputReadyコメント
+  // 参照。2026-08-31、既定経路で打鍵リトライ上限を超えるharness-errorとして実際に観測した)。
+  await waitForInputReady(page, 5000);
 
   // 手順5: DIR B: でWKTESTが残っていることを確認。
   const survivedCheck = await checkMarkerViaDir(page, config);
@@ -445,7 +520,21 @@ async function run() {
       executablePath: config.executablePath,
       userDataDir: profile,
       headless: false,
-      args: ['--hide-scrollbars', '--force-device-scale-factor=2', '--window-size=1000,900'],
+      args: [
+        '--hide-scrollbars',
+        '--force-device-scale-factor=2',
+        '--window-size=1000,900',
+        // 2026-08-31追記: 多重セッションが同居する環境で他ウィンドウにフォーカスを奪われると、
+        // ChromeはbackgroundタブやoccludedウィンドウのrequestAnimationFrame/timerを大幅に
+        // 間引く(バックグラウンドスロットリング)。本アプリの駆動ループはrAF依存なので、
+        // これが起きるとリセット後の再起動が実際には正常なのに極端に遅く見える(実測:
+        // フォーカスを失った状態で90秒超過。bringToFront()だけでは、OSレベルで他アプリの
+        // ウィンドウに隠れている場合まではカバーしない)。検証の主目的(リセット復帰の
+        // 機能検証)にとってスロットリングは無関係なノイズなので、ここで無効化する。
+        '--disable-backgrounding-occluded-windows',
+        '--disable-renderer-backgrounding',
+        '--disable-background-timer-throttling',
+      ],
     });
 
     try {

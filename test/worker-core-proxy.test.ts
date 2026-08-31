@@ -32,13 +32,31 @@ class FakeWorker implements WorkerLike {
    * (RETURN_FRAME_BUFFER_KINDのテスト用)。 */
   rawSent: unknown[] = [];
   terminated = false;
+  /** postMessageのtransfer listに載ったArrayBufferの、detach直前の内容のコピー
+   * (byteOffset順、Uint8Arrayとして保存)。detach後は元のArrayBufferから内容を読めなく
+   * なるため、テストが「転送された内容が正しいか」を確認したい場合はここを見る。 */
+  transferredSnapshots: Uint8Array[] = [];
   private messageListeners: AnyListener[] = [];
   private errorListeners: AnyListener[] = [];
   private messageErrorListeners: AnyListener[] = [];
   /** 既定は defaultAutoResponder。テストごとに差し替えて「以後応答しない」等を表現する。 */
   respond: (cmd: CoreCommand) => WorkerToMain[] = defaultAutoResponder;
 
-  postMessage(message: unknown): void {
+  postMessage(message: unknown, transfer?: Transferable[]): void {
+    // 実Workerのpostmessage(message, transfer)を模す: transfer listに載ったArrayBufferは
+    // 呼び出し側で実際にdetachされる(structuredClone(buf, {transfer:[buf]})で、送信先へ
+    // 渡す複製を作ると同時に元のbufをdetachする、というのがブラウザの実挙動)。
+    // 既にdetach済みのArrayBuffer(byteLength===0)をtransfer listへ再度載せようとすると
+    // ブラウザは`DataCloneError: ...already detached`を同期的に投げる。structuredCloneも
+    // 同じ例外を投げるため、ここでも実際に呼んでその再現性を保つ(2026-08-31:
+    // リセット復帰の欠陥のfake worker側の裏取り。src/core-proxy.tsのWorkerCoreProxy#init()
+    // コメント参照)。
+    for (const t of transfer ?? []) {
+      if (t instanceof ArrayBuffer) {
+        this.transferredSnapshots.push(new Uint8Array(t.slice(0)));
+        structuredClone(t, { transfer: [t] });
+      }
+    }
     this.rawSent.push(message);
     const asRecord = message as { kind?: unknown };
     // 応答不要のfire-and-forget(RETURN_FRAME_BUFFER_KIND/INPUT_UPDATE_KIND/SPEED_UPDATE_KIND)。
@@ -156,6 +174,66 @@ describe('WorkerCoreProxy', () => {
     expect(worker.sent.map((c) => c.op)).toEqual(['initialize', 'loadGame', 'fetchAvInfo', 'dispose']);
     expect(worker.terminated).toBe(true);
   });
+
+  it(
+    '2026-08-31: リセット復帰の欠陥の回帰テスト。main.tsが同じbiosIpl/biosCg/' +
+      'initialDisksの実体を使い回して2回init()を呼んでも(=2回のリセット相当)、' +
+      '2回目もDataCloneErrorにならず成功する。' +
+      'main.tsのbootWorkerCore()は起動のたびに新しいWorkerCoreProxyインスタンスを作るが、' +
+      'biosIplBytes/biosCgBytes/slots.fdd0等.dataはmodule-levelに保持され続け、同じ' +
+      'Uint8Arrayインスタンスを再度渡してくる。修正前はWorkerCoreProxy#init()内で' +
+      'toOwnedArrayBuffer()(バッファ全体を覆うUint8Arrayならコピーせずbufferをそのまま' +
+      '返す)を経由していたため、1回目のinit()でtransferされ実際にdetachされた' +
+      'ArrayBufferを2回目でも再びtransferしようとして例外になっていた' +
+      '(実機での症状: `DataCloneError: ArrayBuffer at index 0 is already detached`)。',
+    async () => {
+      // main.tsのbiosIplBytes/biosCgBytes/slots.fdd0.dataに相当する、複数回のinit()を
+      // またいで使い回される「同じ実体」。
+      const sharedBiosIpl = new Uint8Array([1, 2, 3]);
+      const sharedBiosCg = new Uint8Array([4, 5, 6]);
+      const sharedFdd0 = new Uint8Array([7, 8, 9, 10]);
+
+      // 1回目の起動。
+      const worker1 = new FakeWorker();
+      const proxy1 = new WorkerCoreProxy({ createWorker: () => worker1 });
+      await proxy1.init(sharedBiosIpl, sharedBiosCg, undefined, [
+        { slot: 'fdd0', name: 'a.xdf', bytes: sharedFdd0 },
+      ]);
+      await proxy1.dispose();
+
+      // main.ts側の実体(sharedBiosIpl等)はここまでで一切detachされていないこと
+      // (=WorkerCoreProxy#init()がcopyArrayBuffer()でコピーしてから渡した証拠)。
+      expect(sharedBiosIpl.buffer.byteLength).toBe(3);
+      expect(sharedBiosCg.buffer.byteLength).toBe(3);
+      expect(sharedFdd0.buffer.byteLength).toBe(4);
+
+      // 2回目の起動(リセット相当)。同じ実体を再び渡す。新しいWorkerCoreProxy/Workerだが、
+      // main.ts側の変数は使い回している点がbootWorkerCore()の実際の呼び方と一致する。
+      const worker2 = new FakeWorker();
+      const proxy2 = new WorkerCoreProxy({ createWorker: () => worker2 });
+      await expect(
+        proxy2.init(sharedBiosIpl, sharedBiosCg, undefined, [
+          { slot: 'fdd0', name: 'a.xdf', bytes: sharedFdd0 },
+        ]),
+      ).resolves.toBeUndefined();
+
+      // 2回目のinitializeコマンドに載ったArrayBufferは、渡した実体そのものではなく
+      // 独立したコピーであること(=渡した先で毎回detachされてよいのは複製の方だけ、という
+      // 「転送するのは所有権を手放してよいバッファだけ」の原則が保たれていることの確認)。
+      const initCmd2 = worker2.sent.find((c) => c.op === 'initialize') as Extract<
+        CoreCommand,
+        { op: 'initialize' }
+      >;
+      expect(initCmd2.payload.biosIpl).not.toBe(sharedBiosIpl.buffer);
+      // postMessage時点(detachされる直前)の内容が正しくコピーされていたこと
+      // (transferredSnapshotsはFakeWorker#postMessage参照)。
+      expect(worker2.transferredSnapshots).toContainEqual(sharedBiosIpl);
+      expect(worker2.transferredSnapshots).toContainEqual(sharedFdd0);
+      // main.ts側の実体は2回目のinit()後も無傷のまま(=3回目のリセットも同様に成立する)。
+      expect(sharedBiosIpl.buffer.byteLength).toBe(3);
+      expect(sharedFdd0.buffer.byteLength).toBe(4);
+    },
+  );
 
   it('手順8: hotSwapFdd/captureDirtyMedia/markDirtyがcommand/responseとして往復する(proxyの結線のみ確認。不可分性そのものはtest/worker-dirty-capture.test.ts参照)', async () => {
     const worker = new FakeWorker();

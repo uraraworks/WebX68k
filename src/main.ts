@@ -4483,7 +4483,19 @@ if (import.meta.env.DEV) {
 
     // TVRAM の文字画面をテキストで読む(ゲームパッドのキー割当検証等、末端(ゲスト側の受信結果)を
     // 実測するためのフック。?bridge=1 のMCPブリッジと同じ host.readTextScreen() を使う)。
-    screenText: () => coreProxy?.readTextScreen() ?? Promise.resolve(null),
+    //
+    // 2026-08-31追記(リセット復帰の欠陥調査で発見): `coreProxy?.readTextScreen() ?? ...` は
+    // coreProxyがnull/undefinedのときしかフォールバックしない。Worker経路では
+    // `coreProxy = proxy`(bootWorkerCore()冒頭、new WorkerCoreProxy()直後)から
+    // `await proxy.init(...)`完了までの間、coreProxyは非nullだが対応するWorkerの
+    // initializeはまだ完了していない。この窓でscreenText()を呼ぶと(scripts/verify-*.mjsの
+    // ポーリングが典型例。reference_webx68k_headless_driving.md参照)
+    // coreProxy.readTextScreen()がreject(WORKER側の「initialize が完了していません」)し、
+    // `??`はrejectしたPromiseそのものをすり抜けさせる(Promiseオブジェクト自体はnullish
+    // ではないため)ため、呼び出し元で無言のunhandled rejectionになる(実測:
+    // scripts/verify-reset-persistence.mjsでpageerrorとして観測)。catchして安全側の
+    // nullへ倒す。
+    screenText: () => coreProxy?.readTextScreen().catch(() => null) ?? Promise.resolve(null),
     // KeyBuf(wasm内128バイトリングバッファ)の書き込みポインタと指定範囲を読む。
     // 計測スクリプト(scripts/measure-key.mjs)がブラウザ経路の末端到達を検証するためのフック。
     //
@@ -5360,8 +5372,10 @@ function toSlotId(value: string): SlotId {
 
 const bridgeHost: BridgeHost = {
   screenshot: () => Promise.resolve(canvas.toDataURL('image/png')),
+  // 2026-08-31追記: __webx68kDebug.screenTextと同じ理由でcatchが要る(上のコメント参照)。
+  // coreProxy.readTextScreen()がreject(Worker初期化未完了)した場合もこのフォールバック値へ倒す。
   screenText: async () =>
-    (await coreProxy?.readTextScreen()) ?? {
+    (await coreProxy?.readTextScreen().catch(() => null)) ?? {
       available: false,
       unavailableReason: 'コアが起動していません',
       lines: [],

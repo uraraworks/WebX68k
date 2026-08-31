@@ -685,6 +685,32 @@ export class WorkerCoreProxy implements LibretroHostProxy {
    * だった(=CPU速度/RAM構成/パッド種別/HDD永続化/マウス有効化/速度倍率の土台となる
    * no_wait_mode が、Worker経路では起動時から一度も設定されていなかった。
    * docs/STORAGE-SCSI.md「ワーカー移行 手順9」参照)。
+   *
+   * 2026-08-31追記(リセット復帰の欠陥修正、docs/STORAGE-SCSI.md「ワーカー移行 手順9：
+   * 異常系の検証」参照): biosIpl/biosCg/sram/initialDisks[].bytes は
+   * toOwnedArrayBuffer() ではなく copyArrayBuffer() で渡す。理由: 呼び出し元(main.ts)は
+   * biosIplBytes/biosCgBytes/slots.fdd0等.data を module-level に持ち続け、リセットの
+   * たびに「同じ Uint8Array インスタンス」をこの init() へ再度渡してくる(FDDを差し替えない
+   * 限り、それが正しい呼び出し方であり、main.ts 側にコピーの責務を負わせると呼び出し元
+   * ごとに同じ間違いが再発しうる)。toOwnedArrayBuffer() は「バッファ全体を覆っている
+   * Uint8Array ならコピーせず buffer をそのまま返す」ため、initialize command の transfer
+   * list に載って実際に detach されるのは main.ts が保持し続ける実体そのものだった。
+   * 1回目の起動でそれが detach され、2回目(リセット)で同じ実体を再度 postMessage しようと
+   * して `DataCloneError: ArrayBuffer at index 0 is already detached` になる(実測、
+   * どのバッファかは`node -e`でstructuredClone(buf,{transfer:[buf]})を2回呼んで確認済み)。
+   * copyArrayBuffer() は常に独立したコピーを作るため、渡した側の実体は無傷のまま保たれ、
+   * 何度リセットしても同じ形で成立する。
+   *
+   * コピー量について: これは毎フレーム経路(sendInput/returnFrameBuffer等)ではなく、
+   * 起動・リセット(ユーザー操作起点、低頻度)でしか呼ばれない initialize command でのみ
+   * 発生する。BIOS/CGROM/SRAMは数百KB程度、initialDisksは最大で合計40MB程度になりうるが、
+   * 1回のリセットあたり高々一度のメモリコピー(実測でミリ秒〜数十ミリ秒オーダー、
+   * toOwnedArrayBuffer側のstructuredClone実測コメント参照)であり、Worker終了・再生成・
+   * IndexedDBの書き戻し等リセット自体が持つ他のコストに比べて無視できる。sram は
+   * main.ts側がIndexedDBから読むたびに新規Uint8Arrayを受け取るため理論上はコピー不要だが、
+   * 「initialize の4引数はどれも呼び出し元の使い回しを想定してコピーする」という単純な
+   * 規則に揃えるため、ここでは区別せず同じ扱いにする(区別すると将来の変更で再び穴が
+   * 開く。9でもとの読み間違いだった。sram単体のコストはBIOS/CGROMよりさらに小さい)。
    */
   async init(
     biosIpl: Uint8Array,
@@ -694,13 +720,13 @@ export class WorkerCoreProxy implements LibretroHostProxy {
     options?: Record<string, string>,
   ): Promise<void> {
     await this.issue<unknown>('initialize', {
-      biosIpl: toOwnedArrayBuffer(biosIpl),
-      biosCg: toOwnedArrayBuffer(biosCg),
-      sram: sram ? toOwnedArrayBuffer(sram) : undefined,
+      biosIpl: copyArrayBuffer(biosIpl),
+      biosCg: copyArrayBuffer(biosCg),
+      sram: sram ? copyArrayBuffer(sram) : undefined,
       initialDisks: initialDisks?.map((d) => ({
         slot: d.slot,
         name: d.name,
-        bytes: toOwnedArrayBuffer(d.bytes),
+        bytes: copyArrayBuffer(d.bytes),
       })),
       options,
     });

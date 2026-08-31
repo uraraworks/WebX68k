@@ -4084,6 +4084,128 @@ px68kの`Eject`(`FDD_EjectFD`)は、実行中に呼ぶとコアのメモリ上�
 
 `npx tsc --noEmit`: エラーなし。`npm test`: **644件全て合格**(前節終了時点の635件から、`core-options.test.ts`新設ぶん6件と、手順9(異常系の検証)側で並行して作業中だった`worker-core-proxy.test.ts`の追加3件を合わせて+9件)。
 
+## ワーカー移行 手順9：リセット復帰の欠陥の修正(2026-08-31)
+
+### 症状と再現手順
+
+`?system=1&run=1&worker=1` で起動し `A>` へ到達後、`#btn-reset`(アプリ内リセット、`restartCore()`経路。リロードではない)をクリックすると、Worker経路だけが復帰しない。実際に踏んだ例外は次の全文:
+
+```
+Uncaught DataCloneError: Failed to execute 'postMessage' on 'Worker':
+  ArrayBuffer at index 0 is already detached.
+    at WorkerCoreProxy.dispatchCommand (src/core-proxy.ts:364:17)
+    at WorkerCoreProxy.handleMessage (src/core-proxy.ts:267:14)
+    at Worker.<anonymous> (src/core-proxy.ts:241:58)
+```
+
+コーディネータが最初に観測した表層の例外は `CoreProxyError: initialize が完了していません` だった。**この2つは別の原因であることが今回の調査で判明した**(後述)。
+
+**既定経路(`?worker=1`なし)は同じ操作で正常に復帰する。Worker経路だけの欠陥。**
+
+### 根本原因(1): `ArrayBuffer` の使い回し検出(DataCloneError)
+
+自分で裏を取った結果、detach されていたのは**複数**のバッファだった。`WorkerCoreProxy#init()`(`src/core-proxy.ts`)が `initialize` command の payload を組み立てる際、`biosIpl`/`biosCg`/`sram`/`initialDisks[].bytes` の4種すべてに `toOwnedArrayBuffer()` を使っていた。この関数は「渡された `Uint8Array` がバッファ全体を覆っているならコピーせず `buffer` をそのまま返す」実装で、返した `ArrayBuffer` はそのまま `postMessage` の transfer list に載って **実際に detach される**。
+
+一方、呼び出し元の `src/main.ts` 側は:
+- `biosIplBytes`/`biosCgBytes`(module-level、ファイル選択・bundled読み込み時に一度だけ作る)
+- `slots.fdd0.data`/`slots.fdd1.data`/`slots.hdd.data`(module-level の `Record<SlotId, PendingDisk | null>`)
+
+をそのまま `proxy.init()` に渡しており、**タブの生存期間中ずっと同じ `Uint8Array` インスタンスを保持し続け、起動のたびに(＝リセットのたびに)同じ実体を渡してくる**(FDDを差し替えない限りそれが正しい呼び方)。`sram` だけは `loadSramFile()` が IndexedDB から読むたびに新規 `Uint8Array` を返すため対象外(`src/sram-store.ts`)。
+
+再現の裏取り(Node、実際に `structuredClone` の transfer を2回呼ぶ):
+
+```
+$ node -e "
+const buf = new ArrayBuffer(8);
+structuredClone(buf, { transfer: [buf] });
+console.log(buf.byteLength); // -> 0 (detach済み)
+structuredClone(buf, { transfer: [buf] }); // -> DataCloneError
+"
+```
+
+1回目の起動で `biosIplBytes`/`biosCgBytes`/各 `slots.*.data` の実体が detach され、2回目の起動(リセット)で同じ実体を再び `postMessage` しようとして例外になる。**初回だけ動き2回目以降で必ず壊れる**という症状と完全に一致する。
+
+### 修正
+
+`WorkerCoreProxy#init()` 内で `toOwnedArrayBuffer()` の代わりに `copyArrayBuffer()`(既存の所有権ヘルパ。常に独立したコピーを作る版)を使うよう変更した。呼び出し元(`src/main.ts`)は一切変更していない — 修正を `init()` 1箇所に閉じ込めることで、「使い回されるバッファを渡してよい/いけない」という判断を呼び出し元に負わせず、proxy境界の内側だけで完結させた(既存の `toOwnedArrayBuffer()`/`copyArrayBuffer()` の使い分けの意図に沿う)。
+
+**コピー量について**: `initialize` command は起動・リセット(ユーザー操作起点、低頻度)でしか発行されない。毎フレーム経路(`sendInput`/`returnFrameBuffer`)には一切影響しない。BIOS/CGROMは数百KB、`initialDisks`は仕様上最大40MB程度になりうるが、1回のリセットあたり高々一度のメモリコピーであり(`toOwnedArrayBuffer()`のコスト実測コメント参照: 15MBで0.01〜1.3ms)、Worker終了・再生成・IndexedDBの書き戻し等リセット自体が持つ他のコストに比べて無視できる。`sram`は理論上コピー不要だが、「initializeの4引数はどれも呼び出し元の使い回しを想定してコピーする」という単純な規則に揃えるため区別しなかった(区別すると将来また同じ穴が開く)。**転送するのは所有権を手放してよいバッファだけ、という原則は崩していない**(コピーしたのは使い捨ての複製であり、渡した側の実体は無傷のまま)。
+
+### 単体テストと故障注入
+
+`test/worker-core-proxy.test.ts` に回帰テストを追加した(「2026-08-31: リセット復帰の欠陥の回帰テスト」):
+- 同じ `biosIpl`/`biosCg`/`initialDisks[].bytes` の実体を使い回して、別々の `WorkerCoreProxy` インスタンスで2回連続 `init()` を呼んでも成功すること。
+- 呼び出し側の実体(`sharedBiosIpl`等)が2回目の`init()`後も無傷(`byteLength`が変化しない)であること。
+- 実際に transfer list へ載ったのは複製であり(`.not.toBe(sharedBiosIpl.buffer)`)、その内容が正しいこと(`FakeWorker`に`transferredSnapshots`を追加し、detach直前の内容を保存して照合)。
+
+このテストのために `FakeWorker.postMessage()` を拡張し、実Workerの transfer 挙動を模して**実際に`structuredClone(buf, {transfer:[buf]})`でdetachする**ようにした(以前は`transfer`引数を無視していたため、detachに起因するバグをこのfakeでは検出できなかった)。
+
+**故障注入**: `WorkerCoreProxy#init()`内の`copyArrayBuffer()`呼び出しを`toOwnedArrayBuffer()`へ一時的に戻したところ、上記の回帰テストが実際に**症状で**redになることを確認した:
+
+```
+AssertionError: expected +0 to be 3 // Object.is equality
+ ❯ test/worker-core-proxy.test.ts:206:47
+   expect(sharedBiosIpl.buffer.byteLength).toBe(3);
+```
+
+(`byteLength`が3ではなく0=detach済みになっていた。修正前に戻すと必ずこの理由でredになる。修正を元に戻したことを確認後、`git diff`が空であることを確認済み。)
+
+`npx tsc --noEmit`: エラーなし。`npm test`: **645件全て合格**(前節終了時点の644件+今回の回帰テスト1件)。
+
+### 根本原因(2): `__webx68kDebug.screenText()`の未捕捉rejection(別原因、副産物として発見)
+
+上の修正だけでは、`scripts/verify-reset-persistence.mjs --worker`(後述)を実際に走らせたときに **別の**症状が残っていた: mkdir書き込み後にリセットすると、`readTextScreen`操作の`CoreProxyError: initialize が完了していません`が未捕捉のPromise rejectionとしてページに出て、リセット後の起動が60〜90秒待っても完了しないように見えた。
+
+原因を`unhandledrejection`のreason(`coreError.operation`)まで计装して特定した: `src/main.ts`の`__webx68kDebug.screenText`(および`bridgeHost.screenText`)が
+
+```ts
+screenText: () => coreProxy?.readTextScreen() ?? Promise.resolve(null),
+```
+
+という実装で、`coreProxy`が**非null**だがまだ`init()`が完了していない窓(`bootWorkerCore()`が`coreProxy = proxy`を代入した直後〜`await proxy.init()`完了まで)でこれが呼ばれると、`coreProxy.readTextScreen()`はWorker側の`host===null`ガードにより`initialize が完了していません`でrejectする。`??`は**Promiseオブジェクト自体はnullishではない**ためこのrejectionをすり抜けさせ、呼び出し元(`scripts/verify-*.mjs`のポーリング、`?bridge=1`のMCPブリッジ双方が同じ経路)で未処理のrejectionになる。
+
+このポーリングは`reference_webx68k_headless_driving.md`に書いたとおり全ての検証ハーネスが使う共通経路であり、**Worker経路の起動直後(初回・リセット後を問わず)に常に存在する窓**だった。`scripts/verify-reset-persistence.mjs`が100ms間隔でポーリングするため高確率で踏んでいた。
+
+`screenText: () => coreProxy?.readTextScreen().catch(() => null) ?? Promise.resolve(null)`(および`bridgeHost.screenText`の同型箇所)へ修正し、rejectionを安全側(`null`/`available:false`)へ倒した。**この修正を入れる前後で比較すると、修正前は`reset-boot`到達に60〜90秒待っても失敗していたのに対し、修正後は毎回安定して数秒〜十数秒で`reset-boot`に到達するようになった**(下の実行結果参照)。ArrayBuffer detach修正だけでは解決しない、独立した欠陥だったと判断する。
+
+### 打鍵落ち(ハーネスの弱点)の原因特定と対処
+
+`scripts/verify-reset-persistence.mjs`の既知の弱点として「コマンド行の打鍵が3回リトライしても一致しない」という`harness-error`が観測されていた。対症療法(リトライ上限を上げるだけ)にせず原因を特定した:
+
+`src/main.ts`のkeydownハンドラは `document.activeElement !== canvas || !shouldAcceptGuestKeyInput()` で早期returnする。`#btn-reset`をクリックするとフォーカスがボタンへ移り、初回起動時は呼び出し元が明示的に`canvas.focus()`を呼ぶのに対し、`restartCore()`(リセット経路)は`canvas.focus()`を呼ばない。そのため**リセット後は毎回確実に**(タイミングに依存せず)合成`keydown`が無視される。これは実際のユーザー操作でも同じで、リセット後はcanvasをクリックし直す必要がある些細な挙動であり、今回の主目的の外なので`src/main.ts`側は変更していない。
+
+ハーネス側で対処: リセット後、`DIR B:`を打鍵する前に`page.click('#screen')`でcanvasへフォーカスを戻すようにした(実ユーザーの操作を模す)。加えて、リセット直後は入力の受付までに一拍かかりうるため、`waitForPromptSettled()`でプロンプト表示が安定するのを待ってから打鍵する`waitForInputReady()`を追加した(A>表示直後ではなく安定を待つだけで、「打てば直る」まで待つわけではないので**打鍵落ちを検出できる性質は維持している**。真の取りこぼしは従来どおり`typeCommandVerified()`のリトライ機構が検出する)。
+
+副次的に、`page.goto()`の既定ナビゲーションタイムアウト(puppeteer既定30000ms)が`boot-timeout`より短く、負荷の高い環境でナビゲーション自体がタイムアウトして`HarnessError`に化けずクラッシュする問題も見つけたため、`page.setDefaultNavigationTimeout()`/`setDefaultTimeout()`を`boot-timeout`に揃え、`page.goto()`を`try/catch`で`HarnessError`化した。また多重セッションが同居する環境で他ウィンドウにフォーカスを奪われるとChromeがバックグラウンドタブの`requestAnimationFrame`/timerを間引く(バックグラウンドスロットリング)ため、Puppeteerの起動引数に`--disable-backgrounding-occluded-windows`/`--disable-renderer-backgrounding`/`--disable-background-timer-throttling`を追加した。
+
+### 末端での確認(実行結果、同期実行)
+
+`node scripts/verify-reset-persistence.mjs --worker`(既定経路の対照として`--worker`なしも実行、いずれも同期実行・バックグラウンド待機なし):
+
+| 実行 | 経路 | 故障注入 | 結果 | 備考 |
+|---|---|---|---|---|
+| 1 | Worker | なし | **pass** | steps: boot→mkdir-sent→mkdir-confirmed→reset-clicked→reset-boot→reset-check-passed、打鍵リトライ全て0 |
+| 2 | Worker | なし | **pass** | 再現性確認(dirAfterResetのみ1回リトライしたが最終的に一致=打鍵検出機構が正常動作している証拠) |
+| 3 | 既定 | なし | **pass** | 対照。既定経路は元々正常 |
+
+`--fault=disable-reset-flush`/`--fault=reset-flush-no-await`(前任者実装の故障注入)も実行したが、いずれも**pass**になった。原因を調べたところ、`mkdir`確認(`DIR B:`)に要する数秒の間に既存の定期オートセーブ(`AUTOSAVE_POLL_MS=1000ms`、`FDD_QUIET_MS=1500ms`)が既にIndexedDBへ書き戻しを済ませてしまい、`restartCore()`側の明示的なflushを注入で無効化しても症状が顕在化しない、という**この2つの故障注入固有の弱点**であって、今回の修正による退行ではない(この2つの故障注入は前任者の実装であり、今回のスコープ外として記録するに留める)。
+
+### 手順9・異常系4種の担保状況
+
+| 異常系 | 担保状況 | テスト |
+|---|---|---|
+| 正常reset | **今回追加**(単体テスト)+ 末端実行で確認 | `worker-core-proxy.test.ts`回帰テスト、`verify-reset-persistence.mjs --worker`(pass) |
+| crash(error/messageerror event) | 既存テストで担保済み | `Workerの異常終了(error event)でその世代の未完了Promiseが全てrejectされる`、`messageerrorでもその世代の未完了Promiseが全てrejectされる`、`setFailureHandlerはpendingなcommandが無くても呼ばれる`(前任者の未コミット分、今回コミットに含めた) |
+| timeout | 既存テストで担保済み | `応答timeoutがWORKER_FAILUREになる` |
+| 旧世代の遅延応答 | 既存テストで担保済み | `世代が異なるresponse/eventは無視する(response、およびframe event)` |
+
+### できなかったこと・未確認のこと
+
+- **`--fault=disable-reset-flush`/`--fault=reset-flush-no-await`が意図どおり不合格になることの確認はできなかった**(上述のオートセーブとの競合が原因と見られる。ハーネスの相互作用の調整は今回のスコープ外とした)。
+- 40MB規模の大きなHDDイメージを実際にマウントした状態でのリセット時コピー時間の実測はしていない(コスト見積もりは既存の`toOwnedArrayBuffer()`実測値からの類推)。
+- この検証セッション中、実行環境(並行する複数のClaude Codeセッションが同一マシンを共有)の負荷変動により、puppeteerでの初回試行が複数回不安定な結果(起動タイムアウト、`readTextScreen`のunhandledrejection連発)を示した。**この不安定さの調査自体が`__webx68kDebug.screenText()`の欠陥発見につながった**ため無駄ではなかったが、環境負荷そのものは制御できていない。
+- **重要な教訓として明記する: 今回の欠陥(ArrayBuffer detach、および`screenText()`の未捕捉rejection)はどちらも単体テスト644件を通過していた状態で存在していた。末端の実操作(実際にリセットボタンを押す)で初めて捕まった。** 単体テストは「その proxy 呼び出し規約に従えば動く」ことしか検証できず、「呼び出し元が実際にその規約を守っているか」「デバッグヘルパの未捕捉rejectionがハーネスの見た目の症状をすり替えないか」は末端(実ブラウザ・実際の操作シーケンス)でしか検出できなかった。
+
 ## 次にやること
 
 移行前基準は2組そろい、**ワーカー移行に着手できる状態になった**。
