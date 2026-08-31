@@ -1,3 +1,5 @@
+import { initialTrackerState, type KeyBufWriteTrackerState } from './keybuf-attribution';
+
 // 目的B(未決事項を決めるための材料)専用の計測フック。
 // docs/STORAGE-SCSI.md「目的B」表の「IndexedDBへのディスク全量書出し」「起動時のRAM展開」を
 // 実測するためだけに存在する。import.meta.env.DEV の内側でのみ window へ公開され、
@@ -196,4 +198,40 @@ export const frameProbe = new FrameProbe();
 
 if (import.meta.env.DEV && typeof window !== 'undefined') {
   (window as unknown as { __webx68kFrameProbe?: FrameProbe }).__webx68kFrameProbe = frameProbe;
+}
+
+// 既定経路(urlWorkerMode===false)の帰属計測(「注入の遅れ」「観測の遅れ」の切り分け)専用
+// プローブ。frameProbe/storageProbeと同じ作法: 既定 enabled=false で、無効時は呼び出し元
+// (libretro-host.ts runFrame()、main.ts applyKey/applyKeyMake)が `if (keybufAttributionProbe.
+// enabled)` で分岐し、計測コード自体を実行しない(常時コストを持ち込まない。特に
+// frameProbe.frameCounterとは意図的に別カウンタにしてある。frameProbe.enabledはvideoEvents等
+// 込みで重く、キー入力レイテンシの計測対象そのものを汚染しかねないため、このプローブは
+// frameProbeの状態に依存しない専用の軽量カウンタ(frameNo)を持つ)。
+//
+// Worker経路の帰属計測(src/core-worker.tsのkeyBufWriteTracker、main.tsの
+// workerLastKeyBufWriteFrameNo/workerLastInputSendFrameNo)と同じ定義・同じ数え方を、
+// src/keybuf-attribution.tsの共有ロジック(trackKeyBufWrite/frameDelta)で揃えている
+// (docs/STORAGE-SCSI.md「帰属の定義」参照)。
+export class KeybufAttributionProbe {
+  enabled = false;
+  /** このプローブが有効な間だけ進む、コアが完了したretro_run()の累積数。単一のクロック
+   * (docs参照)。Worker経路のframeNoと同じ役割。frameProbe.frameCounterとは独立。 */
+  frameNo = 0;
+  tracker: KeyBufWriteTrackerState = initialTrackerState();
+  /** 直近の applyKey/applyKeyMake 呼び出し(host.setKey/sendKeyMakeへ渡す直前)の時点で
+   * このプローブが知っていたframeNo。「注入の遅れ」の起点。 */
+  inputSendFrameNo: number | null = null;
+
+  reset(): void {
+    this.frameNo = 0;
+    this.tracker = initialTrackerState();
+    this.inputSendFrameNo = null;
+  }
+}
+
+export const keybufAttributionProbe = new KeybufAttributionProbe();
+
+if (import.meta.env.DEV && typeof window !== 'undefined') {
+  (window as unknown as { __webx68kKeybufAttributionProbe?: KeybufAttributionProbe }).__webx68kKeybufAttributionProbe =
+    keybufAttributionProbe;
 }

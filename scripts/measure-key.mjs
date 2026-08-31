@@ -23,6 +23,11 @@ const REPO_ROOT = fileURLToPath(new URL('..', import.meta.url));
 const DEFAULT_CHROME = '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome';
 const REQUIRED_STABLE_POLLS = 3;
 const VALID_FAULTS = new Set(['drop-make', 'wrong-code', 'drop-break']);
+// 位置同期の疑い(docs/STORAGE-SCSI.md「位相同期の疑い」参照)を親が介入実験で確かめられる
+// ようにするための、観測ポーリングの駆動方法の切り替え。既定は現行どおり rAF
+// (requestAnimationFrame)で、コアの駆動ループ(既定経路はメインスレッドのrAF系)と
+// 位相同期しうる。no-raf は setTimeout(0) で駆動し、rAFの位相に縛られない。
+const VALID_POLL_MODES = new Set(['raf', 'no-raf']);
 
 // RETROK_TO_SCANCODE(src/keyboard.ts)から、複数のスキャンコード領域にまたがるよう
 // 6キーを選んだ固定集合。0(RETROK[0])は make が2回書かれる特例のため avoid する
@@ -73,8 +78,12 @@ function parseArgs(argv) {
       values.worker = true;
       continue;
     }
+    if (arg === '--attribution') {
+      values.attribution = true;
+      continue;
+    }
     const match =
-      /^--(port|runs|fault-runs|boot-timeout|stimulus-timeout|poll-interval|key-hold|key-gap|clear-key-hold|clear-key-gap|output|fault)=(.+)$/.exec(
+      /^--(port|runs|fault-runs|boot-timeout|stimulus-timeout|poll-interval|key-hold|key-gap|clear-key-hold|clear-key-gap|output|fault|poll-mode)=(.+)$/.exec(
         arg,
       );
     if (!match) throw new Error(`不明な引数です: ${arg}`);
@@ -103,12 +112,25 @@ function printHelp() {
                                  Worker経路のKeyBufプローブ(frame event相乗り方式、
                                  docs/STORAGE-SCSI.md「KeyBufプローブのWorker対応」参照)
                                  を有効化する。未指定時の挙動には一切影響しない
+  --attribution                 既定経路(--worker未指定)でも帰属計測(注入/観測をフレーム数で
+                                 切り分ける、docs/STORAGE-SCSI.md「帰属の定義」参照)を有効化する。
+                                 keybufAttributionProbe(DEV限定・既定off)を有効化するため、
+                                 既定経路の通常のタイミング測定にわずかなコストが乗る
+                                 (frameNoカウンタの加算とKeyBuf書き込みポインタの読み取りが
+                                 毎フレーム走る)。基準値(移行前基準)を取り直す計測では
+                                 付けないこと。--worker指定時は元々常に有効(挙動不変)
+  --poll-mode=<raf|no-raf>       観測ポーリング(KeyBuf/TVRAM/起動待ち)の駆動方法(既定: raf)。
+                                 raf は requestAnimationFrame(既定のコア駆動ループと位相同期
+                                 しうる)。no-raf は setTimeout(0)(rAFの位相に縛られない)。
+                                 「位相同期が結果を歪めていないか」を親が介入実験で確かめる
+                                 ためのオプション(docs/STORAGE-SCSI.md「位相同期の疑い」参照)。
+                                 結果ファイルのconfig.pollModeに必ず記録される
 
 環境変数: WEBX68K_PORT, WEBX68K_KEY_RUNS, WEBX68K_KEY_FAULT_RUNS,
           WEBX68K_KEY_BOOT_TIMEOUT_MS, WEBX68K_KEY_STIMULUS_TIMEOUT_MS,
           WEBX68K_KEY_POLL_INTERVAL_MS, WEBX68K_KEY_HOLD_MS, WEBX68K_KEY_GAP_MS,
           WEBX68K_KEY_CLEAR_HOLD_MS, WEBX68K_KEY_CLEAR_GAP_MS,
-          WEBX68K_KEY_MEASURE_OUTPUT, WEBX68K_URL, CHROME_PATH`);
+          WEBX68K_KEY_MEASURE_OUTPUT, WEBX68K_URL, CHROME_PATH, WEBX68K_KEY_POLL_MODE`);
 }
 
 function defaultOutputPath() {
@@ -125,6 +147,10 @@ function buildConfig(args) {
   const fault = args.fault ?? null;
   if (fault !== null && !VALID_FAULTS.has(fault)) {
     throw new Error(`fault は drop-make・wrong-code・drop-break のいずれかを指定してください: ${fault}`);
+  }
+  const pollMode = args['poll-mode'] ?? process.env.WEBX68K_KEY_POLL_MODE ?? 'raf';
+  if (!VALID_POLL_MODES.has(pollMode)) {
+    throw new Error(`poll-mode は raf・no-raf のいずれかを指定してください: ${pollMode}`);
   }
   return {
     baseUrl: baseUrl.href.replace(/\/$/, ''),
@@ -164,6 +190,12 @@ function buildConfig(args) {
     // resultのconfigへそのまま乗るため、結果ファイルだけを見てどちらの経路の測定かが
     // 必ず分かる(過去に結果ファイルから条件が分からず比較が無効になった事故があるため)。
     worker: args.worker === true,
+    // 既定経路でも帰属計測を有効化するか(既定off。ファイル冒頭のヘルプ・上のコメント参照)。
+    // --worker指定時は元々常に帰属計測が有効なので、このフラグの値に関わらず有効。
+    attribution: args.attribution === true,
+    // 観測ポーリングの駆動方法(既定raf)。configへそのまま乗るため、結果ファイルだけで
+    // どちらの駆動で測ったかが必ず分かる。
+    pollMode,
   };
 }
 
@@ -278,15 +310,19 @@ async function clickNamedButton(page, selector) {
   if (!clicked) throw new Error(`ボタンが見つかりません: ${selector}`);
 }
 
-async function waitForBootPrompt(page, timeoutMs, pollIntervalMs) {
+async function waitForBootPrompt(page, timeoutMs, pollIntervalMs, pollMode) {
   return page.evaluate(
-    async ({ timeout, pollInterval, stablePolls }) => {
+    async ({ timeout, pollInterval, stablePolls, pollMode }) => {
+      const nextFrame =
+        pollMode === 'no-raf'
+          ? () => new Promise((resolveFrame) => setTimeout(resolveFrame, 0))
+          : () => new Promise((resolveFrame) => requestAnimationFrame(resolveFrame));
       const startedAt = performance.now();
       let lastPollAt = -Infinity;
       let consecutive = 0;
       let lastAPromptLine = null;
       while (performance.now() - startedAt < timeout) {
-        await new Promise((resolveFrame) => requestAnimationFrame(resolveFrame));
+        await nextFrame();
         const now = performance.now();
         if (now - lastPollAt < pollInterval) continue;
         lastPollAt = now;
@@ -312,7 +348,7 @@ async function waitForBootPrompt(page, timeoutMs, pollIntervalMs) {
       }
       return { success: false, durationMs: performance.now() - startedAt, lastAPromptLine };
     },
-    { timeout: timeoutMs, pollInterval: pollIntervalMs, stablePolls: REQUIRED_STABLE_POLLS },
+    { timeout: timeoutMs, pollInterval: pollIntervalMs, stablePolls: REQUIRED_STABLE_POLLS, pollMode },
   );
 }
 
@@ -328,8 +364,14 @@ async function waitForBootPrompt(page, timeoutMs, pollIntervalMs) {
  */
 function runStimulus(page, keySpec, wrongSpec, config, faultKind) {
   return page.evaluate(
-    async ({ spec, wrong, keyHold, keyGap, pollInterval, timeout, fault, worker }) => {
-      const nextFrame = () => new Promise((resolveFrame) => requestAnimationFrame(resolveFrame));
+    async ({ spec, wrong, keyHold, keyGap, pollInterval, timeout, fault, worker, attributionEnabled, pollMode }) => {
+      // 位相同期の疑い(docs/STORAGE-SCSI.md「位相同期の疑い」参照)を親が介入実験で確かめ
+      // られるようにするための切り替え。既定(raf)はコアの駆動ループ(既定経路はメイン
+      // スレッドのrAF系)と位相同期しうる観測方法、no-rafはsetTimeout(0)で位相を崩す。
+      const nextFrame =
+        pollMode === 'no-raf'
+          ? () => new Promise((resolveFrame) => setTimeout(resolveFrame, 0))
+          : () => new Promise((resolveFrame) => requestAnimationFrame(resolveFrame));
       const dispatch = (type, code, key) => {
         window.dispatchEvent(
           new KeyboardEvent(type, { code, key, bubbles: true, composed: true, cancelable: true }),
@@ -342,9 +384,12 @@ function runStimulus(page, keySpec, wrongSpec, config, faultKind) {
         return lines.filter((line) => line.startsWith('A>')).at(-1) ?? null;
       };
       const readKeyBuf = (start, count) => window.__webx68kDebug?.keybuf?.(start, count) ?? null;
-      // 帰属計測(コーディネータ指摘の訂正、docs/STORAGE-SCSI.md「帰属の切り分け」参照)。
-      // worker経路でのみ意味を持つ。frameNoベースなので既定経路(host直読み)には無関係。
-      const readAttribution = () => (worker ? (window.__webx68kDebug?.keybufAttribution?.() ?? null) : null);
+      // 帰属計測(コーディネータ指摘の訂正、2026-08-31両経路対応、
+      // docs/STORAGE-SCSI.md「帰属の定義」参照)。worker経路は常に有効、既定経路は
+      // --attribution指定時(attributionEnabled)だけ意味を持つ(keybufAttributionProbeが
+      // 有効化されているときだけキー入力レイテンシに帰属計測分のコストが乗る)。
+      const readAttribution = () =>
+        worker || attributionEnabled ? (window.__webx68kDebug?.keybufAttribution?.() ?? null) : null;
       // カーソルは点滅により行末へ1文字だけ付いたり消えたりし、U+FFFD として観測される
       // (docs/STORAGE-SCSI.md の予備確認結果)。実際に入力された文字の重複と区別するため、
       // 「target と完全一致」「target + 末尾ちょうど1個のU+FFFD」だけを一致とみなし、
@@ -508,8 +553,8 @@ function runStimulus(page, keySpec, wrongSpec, config, faultKind) {
         makeByte,
         makeAtMs: makeAt === null ? null : makeAt - t0,
         echoAtMs: echoAt === null ? null : echoAt - t0,
-        // 帰属計測(worker経路のみ非null。既定経路は常にnull)。
-        attribution: worker
+        // 帰属計測(worker経路は常に非null、既定経路は--attribution指定時のみ非null)。
+        attribution: worker || attributionEnabled
           ? {
               makeSendFrameNo,
               makeWriteFrameNo,
@@ -532,6 +577,8 @@ function runStimulus(page, keySpec, wrongSpec, config, faultKind) {
       timeout: config.stimulusTimeoutMs,
       fault: faultKind,
       worker: config.worker,
+      attributionEnabled: config.attribution,
+      pollMode: config.pollMode,
     },
   );
 }
@@ -637,7 +684,8 @@ function classifyStimulus(spec, wrongSpec, faultKind, raw) {
   const tvramWrongEcho = !tvramMissingEcho && raw.firstChangedLineClass === 'mismatch';
   const tvramDuplicateEcho = !tvramMissingEcho && raw.firstChangedLineClass === 'extra';
 
-  // 帰属(worker経路のみ、docs/STORAGE-SCSI.md「帰属の切り分け」参照)。
+  // 帰属(worker経路は常時、既定経路は--attribution指定時のみ、docs/STORAGE-SCSI.md
+  // 「帰属の定義」参照)。
   //   注入フレーム数 = writeFrameNo - sendFrameNo (keydown/keyup発生→updateInput送信→実際に
   //     適用されたフレームまでの遅れ)
   //   観測フレーム数 = observeFrameNo - writeFrameNo (書かれたフレーム→mainが知るフレームまでの遅れ)
@@ -710,7 +758,7 @@ async function measureOnce(browser, config, trial, faultKind, stimulusCount, env
     // 前試行が例外・タイムアウトで中断されていても、開始前に全キーを解放する。
     await releaseAllKeys(page);
     await clickNamedButton(page, '#btn-boot-system');
-    const boot = await waitForBootPrompt(page, config.bootTimeoutMs, config.pollIntervalMs);
+    const boot = await waitForBootPrompt(page, config.bootTimeoutMs, config.pollIntervalMs, config.pollMode);
     if (!boot.success) {
       throw new Error(`起動完了を確認できませんでした (lastAPromptLine=${boot.lastAPromptLine ?? 'なし'})`);
     }
@@ -721,27 +769,49 @@ async function measureOnce(browser, config, trial, faultKind, stimulusCount, env
       await page.evaluate(() => {
         window.__webx68kDebug?.keybufProbeEnable?.(true);
       });
-      const probeReady = await page.evaluate(async () => {
-        for (let i = 0; i < 120; i++) {
-          const probe = window.__webx68kDebug?.keybuf?.(0, 0);
-          if (probe && !probe.workerProbeDisabled && !probe.workerProbePending) return true;
-          await new Promise((resolveFrame) => requestAnimationFrame(resolveFrame));
-        }
-        return false;
-      });
+      const probeReady = await page.evaluate(
+        async ({ pollMode }) => {
+          const nextFrame =
+            pollMode === 'no-raf'
+              ? () => new Promise((resolveFrame) => setTimeout(resolveFrame, 0))
+              : () => new Promise((resolveFrame) => requestAnimationFrame(resolveFrame));
+          for (let i = 0; i < 120; i++) {
+            const probe = window.__webx68kDebug?.keybuf?.(0, 0);
+            if (probe && !probe.workerProbeDisabled && !probe.workerProbePending) return true;
+            await nextFrame();
+          }
+          return false;
+        },
+        { pollMode: config.pollMode },
+      );
       if (!probeReady) {
         throw new Error(
           'Worker経路のKeyBufプローブがkeybufProbeEnable(true)後も120フレーム以内に届きませんでした',
         );
       }
+    } else if (config.attribution) {
+      // 既定経路の帰属計測(--attribution、docs/STORAGE-SCSI.md「帰属の定義」参照)。
+      // 同一スレッド上の同期呼び出しなので、Worker経路のようなpending待ちは不要
+      // (次のrunFrame()から即座に有効)。念のため数フレームだけ待つ。
+      await page.evaluate(() => {
+        window.__webx68kDebug?.keybufProbeEnable?.(true);
+      });
     }
     // プロンプト安定判定はポーリング間隔の粒度で「連続3回」を見ているだけであり、
     // ゲスト側の入力ポーリングが同じ瞬間に確実に回っている保証ではない。実測で、安定判定
     // 直後の最初の刺激だけがまれにKeyBuf/TVRAMのどちらにも一切現れないことがあったため、
-    // 最初の刺激の前だけ数フレーム分の余裕を入れる(短いスリープの多用ではなくrAFベース)。
-    await page.evaluate(async () => {
-      for (let i = 0; i < 20; i++) await new Promise((resolveFrame) => requestAnimationFrame(resolveFrame));
-    });
+    // 最初の刺激の前だけ数フレーム分の余裕を入れる(短いスリープの多用ではなく、
+    // config.pollModeに従った観測ループベース)。
+    await page.evaluate(
+      async ({ pollMode }) => {
+        const nextFrame =
+          pollMode === 'no-raf'
+            ? () => new Promise((resolveFrame) => setTimeout(resolveFrame, 0))
+            : () => new Promise((resolveFrame) => requestAnimationFrame(resolveFrame));
+        for (let i = 0; i < 20; i++) await nextFrame();
+      },
+      { pollMode: config.pollMode },
+    );
     // 起動直後の行が想定外に汚れている場合に備え、最初に一度クリアしておく。
     const cleanBeforeAny = await ensureCleanPromptLine(page, config, faultKind);
 
@@ -965,8 +1035,9 @@ async function run() {
         .map((s) => s.tvram.echoAtMs);
       const keybufFailed = stimuli.filter((s) => !s.keybuf?.ok).length;
       const tvramFailed = stimuli.filter((s) => !s.tvram?.ok).length;
-      // 帰属(worker経路のみ、docs/STORAGE-SCSI.md「帰属の切り分け」参照)。フレーム数は
-      // 整数の小さな系列なので、summarize()のms向けラウンディングは使わずシンプルに集計する。
+      // 帰属(worker経路は常時、既定経路は--attribution指定時のみ、docs/STORAGE-SCSI.md
+      // 「帰属の定義」参照)。フレーム数は整数の小さな系列なので、summarize()のms向け
+      // ラウンディングは使わずシンプルに集計する。
       const frameStats = (values) => {
         const finite = values.filter((v) => Number.isFinite(v));
         if (finite.length === 0) return { sampleCount: 0, minFrames: null, medianFrames: null, maxFrames: null };
@@ -978,7 +1049,7 @@ async function run() {
           maxFrames: sorted.at(-1),
         };
       };
-      const attribution = config.worker
+      const attribution = config.worker || config.attribution
         ? {
             makeInjectionFrames: frameStats(stimuli.map((s) => s.attribution?.makeInjectionFrames)),
             makeObservationFrames: frameStats(stimuli.map((s) => s.attribution?.makeObservationFrames)),
@@ -1043,7 +1114,7 @@ async function run() {
       // 移行前基準の表は「機能失敗(欠落/誤字/重複)は0件、1件でも出たら不合格」と定めている。
       // 中央値等のtimingを先に読ませると位置づけを誤りやすいため、合否を必ず先頭に出す。
       console.log(
-        `キー入力計測(経路: ${config.worker ? 'worker' : '既定'}): ${s.success ? '合格' : '不合格'}` +
+        `キー入力計測(経路: ${config.worker ? 'worker' : '既定'}, poll-mode: ${config.pollMode}): ${s.success ? '合格' : '不合格'}` +
           `(機能失敗 keybuf ${s.keybuf.missingMake + s.keybuf.wrongMake + s.keybuf.missingBreak + s.keybuf.duplicate}件 / ` +
           `tvram ${s.tvram.missingEcho + s.tvram.wrongEcho + s.tvram.duplicateEcho}件), ` +
           `刺激数 ${s.totalStimuli}, 出力 ${config.outputPath}`,
@@ -1062,7 +1133,7 @@ async function run() {
       if (s.attribution) {
         const a = s.attribution;
         console.log(
-          `帰属(フレーム数、worker経路のみ): make注入 中央値${a.makeInjectionFrames.medianFrames ?? '-'} ` +
+          `帰属(フレーム数、worker経路は常時・既定経路は--attribution指定時): make注入 中央値${a.makeInjectionFrames.medianFrames ?? '-'} ` +
             `(${a.makeInjectionFrames.sampleCount}件), make観測 中央値${a.makeObservationFrames.medianFrames ?? '-'} ` +
             `(${a.makeObservationFrames.sampleCount}件), break注入 中央値${a.breakInjectionFrames.medianFrames ?? '-'} ` +
             `(${a.breakInjectionFrames.sampleCount}件), break観測 中央値${a.breakObservationFrames.medianFrames ?? '-'} ` +

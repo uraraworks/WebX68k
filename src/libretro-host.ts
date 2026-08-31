@@ -12,7 +12,8 @@ import {
   type TextScreenDump,
   unavailableTextScreenDump,
 } from './text-screen';
-import { storageProbe, verifyBytes, type RamExpansionKind, frameProbe } from './storage-probe';
+import { storageProbe, verifyBytes, type RamExpansionKind, frameProbe, keybufAttributionProbe } from './storage-probe';
+import { trackKeyBufWrite } from './keybuf-attribution';
 
 /**
  * 目的B「起動時のRAM展開」計測(docs/STORAGE-SCSI.md参照)。DEVかつ storageProbe.enabled の
@@ -1064,6 +1065,25 @@ export class LibretroHost {
         }
       }
       frameProbe.runEvents.push({ frameIndex, runStartAtMs, runEndAtMs, busyWaitInjectedMs });
+      return;
+    }
+    // 既定経路の帰属計測(docs/STORAGE-SCSI.md「帰属の定義」参照)。frameProbe.enabledとは
+    // 独立に、keybufAttributionProbe.enabledのときだけ動く軽量な専用カウンタを使う
+    // (frameProbe側のperformance.now()×2回・配列pushを持ち込むと、計測対象そのものである
+    // キー入力レイテンシを汚染しかねないため、あえて分けてある)。
+    if (import.meta.env.DEV && keybufAttributionProbe.enabled) {
+      this.mod._retro_run();
+      keybufAttributionProbe.frameNo++;
+      const writePointer = this.mod._webx68k_keybuf_write_pointer
+        ? this.mod._webx68k_keybuf_write_pointer()
+        : undefined;
+      if (writePointer !== undefined) {
+        keybufAttributionProbe.tracker = trackKeyBufWrite(
+          keybufAttributionProbe.tracker,
+          writePointer,
+          keybufAttributionProbe.frameNo,
+        );
+      }
       return;
     }
     this.mod._retro_run();

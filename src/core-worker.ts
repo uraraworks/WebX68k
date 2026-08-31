@@ -67,6 +67,7 @@ import { LibretroHost } from './libretro-host';
 import { computeFrameBudget } from './frameBudget';
 import { FrameBufferPool, runTick } from './worker-drive-loop';
 import { WorkerInputState } from './worker-input';
+import { initialTrackerState, trackKeyBufWrite, type KeyBufWriteTrackerState } from './keybuf-attribution';
 
 // --- DEV専用: 駆動ループ内訳プローブ (性能調査。既定off) --------------------------------
 //
@@ -171,8 +172,10 @@ let keyBufProbeEnabled = false;
 // 帰属計測用(2026-08-31訂正、「注入の遅れ」「観測の遅れ」の切り分け): writePointerが
 // 前回のsendFrame()から動いたかどうかを比較するための直近値と、動いた時点のframeNo。
 // enableのたびにリセットする(前回起動・前回の有効化区間の値を持ち越さない)。
-let lastKeyBufWritePointer = -1;
-let keyBufWriteFrameNo: number | null = null;
+// 実体(trackKeyBufWrite)はsrc/keybuf-attribution.tsへ切り出し、既定経路(libretro-host.ts)と
+// 同じ定義・同じ数え方を共有する(定義がずれると比較の意味が消えるため。
+// docs/STORAGE-SCSI.md「帰属の定義」参照)。
+let keyBufWriteTracker: KeyBufWriteTrackerState = initialTrackerState();
 
 interface DevKeyBufProbeControlMessage {
   kind: '__devKeyBufProbe';
@@ -415,12 +418,9 @@ function sendFrame(
       snapshot.keyBufProbe = keyBufProbe;
       // 帰属計測: writePointerが前回のsendFrame()時点から動いていれば、このtickの
       // frameNo(=このtickで最後に実行されたフレーム)を「書かれたフレーム」として覚える。
-      // 動いていなければ直前の値をそのまま保持する(sticky。ファイル冒頭コメント参照)。
-      if (keyBufProbe.writePointer !== lastKeyBufWritePointer) {
-        lastKeyBufWritePointer = keyBufProbe.writePointer;
-        keyBufWriteFrameNo = frameNo;
-      }
-      if (keyBufWriteFrameNo !== null) snapshot.keyBufWriteFrameNo = keyBufWriteFrameNo;
+      // 動いていなければ直前の値をそのまま保持する(sticky。src/keybuf-attribution.ts参照)。
+      keyBufWriteTracker = trackKeyBufWrite(keyBufWriteTracker, keyBufProbe.writePointer, frameNo);
+      if (keyBufWriteTracker.writeFrameNo !== null) snapshot.keyBufWriteFrameNo = keyBufWriteTracker.writeFrameNo;
     }
   }
   const postStart = onProbe ? ctx.performance.now() : 0;
@@ -634,8 +634,7 @@ ctx.onmessage = (ev) => {
     keyBufProbeEnabled = data.action === 'enable';
     if (data.action === 'enable') {
       // 前回の有効化区間の値を持ち越さない(帰属計測をこの有効化からの新規区間として扱う)。
-      lastKeyBufWritePointer = -1;
-      keyBufWriteFrameNo = null;
+      keyBufWriteTracker = initialTrackerState();
     }
     return;
   }

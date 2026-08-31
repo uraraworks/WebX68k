@@ -3411,6 +3411,93 @@ makeの観測フレーム数が0(=書かれた同じフレームでmainが検出
 
 **この結果が意味すること**: 今日この環境で取ったWorker経路の34.5ms(2組)は、既定経路が同じ日に4.08msから18.468msまで4倍以上ぶれる環境で測られた値であり、**既定経路自身が基準を安定して再現できていない状態で、Worker経路の値を移行前基準4.3〜4.9msと比較すること自体が成立しない。** 比較を成立させるには、まず既定経路が基準を安定再現する環境条件(時間帯、並行プロセスの有無等)を特定する必要がある。この節はその特定作業には至っておらず、次の課題として残す。
 
+## 帰属計測の既定経路対応と、観測の位相同期の疑い(実装、2026-08-31)
+
+### 背景:コーディネータが静穏条件で取り直した対比
+
+親セッション(コーディネータ)が、他セッションを走らせない静穏条件で同一コミット・同一機械の対比を取り直した結果、以下が確定した(このサブエージェントはこの表を測っていない。親から渡された数値をそのまま転記する)。
+
+| 経路 | 中央値 | 最小 | MAD | 機能失敗 |
+| --- | --- | --- | --- | --- |
+| 既定 quiet-1 | 4.523 | 4.015 | 0.495 | 0 |
+| 既定 quiet-2 | 5.400 | 3.970 | 1.395 | 0 |
+| Worker quiet-1 | 45.448 | 23.420 | 9.118 | 0 |
+| Worker quiet-2 | 37.835 | 10.880 | 8.095 | 0 |
+
+既定経路は移行前基準(2回目 4.3〜4.9ms、MAD 0.2〜0.4)を再現している。機能失敗は全4本で0件。**時間だけが約8倍違う。**
+
+**重要な運用上の教訓**: 上記の静穏条件の値は、サブエージェント(このセッションを含む)が並行して働いていない状態で取られている。過去に、委譲先セッションが動いていること自体が負荷となり、レイテンシの計測値を歪めることが実測で判明した(既定経路の中央値が4.5ms→18.5ms、MADが0.5→13.8に膨らんだ実例、本ファイル「介入実験:既定経路は移行前基準を再現するか」節参照)。**したがって、以後キー入力レイテンシの本計測(`scripts/measure-key.mjs`の実行)は親セッションが単独で行う運用とし、サブエージェントは実装・単体テスト・故障注入までを行い「計測できる状態」にして返す。** このサブエージェント自身も本計測(`measure-key.mjs`の複数回実行)は行っていない(下記「実装過程での事故」参照)。
+
+### 今回の問い:Worker経路の遅さのうち、どれだけが観測の位相差による見かけか
+
+`scripts/measure-key.mjs`の観測ループは`requestAnimationFrame`でポーリングする。既定経路ではコアの駆動ループも同じメインスレッドのrAF系で回っているため、**観測者が観測対象と位相同期し、フレーム実行直後に観測する形になって系統的に低い値が出ている**可能性がある。Worker経路の駆動はWorker内の`setInterval`(`TICK_MS = 16`)で、mainのrAFとは同期しない。もしそうなら、4.5msと37〜45msの差の一部は物差しの差であって、実在するレイテンシ差ではない。また`TICK_MS = 16`に対しフレーム間隔は18.018ms(55.5fps)なので、tick待ちで説明できるのはせいぜい1フレーム分であり、33msの差の説明にならない。この点からも「全部が実在の遅延」とは考えにくい。
+
+この切り分けをせずに駆動ループを最適化すると、存在しない問題を追うことになる。**今回はこの切り分けを親が実測できる状態を用意するところまでで、実測(本計測)・駆動ループの最適化そのものには着手していない。**
+
+### 帰属の定義(両経路共通、src/keybuf-attribution.ts)
+
+Worker経路には既に帰属計測がある(`08ced8c`/`9f7f6fa`で追加)。今回、**既定経路にも同じ定義・同じ数え方で帰属計測を追加した**。定義がずれると比較の意味が消えるため、両経路が同じ純粋関数(`src/keybuf-attribution.ts`)を通す形に揃えてある(Worker側の従来インライン実装もこの共有関数を使うようリファクタした)。
+
+単位は常に「コアが進めた累積フレーム数」(`_retro_run()`が完了した回数の通しカウンタ)。**別スレッド(Worker)の`performance.now()`は`timeOrigin`が揃わないため時間では比較しない**、という既存の決定を踏襲する。
+
+- **書き込みポインタ追跡** (`trackKeyBufWrite`): KeyBuf書き込みポインタが前回チェック時点から動いていれば、そのフレーム番号を「書かれたフレーム」として更新する。動いていなければ直前の値をそのまま保持する(sticky)。
+- **注入フレーム数** = `writeFrameNo - sendFrameNo`(keydown/keyup発生→入力送信→実際にコアへ適用されたフレームまでの遅れ)
+- **観測フレーム数** = `observeFrameNo - writeFrameNo`(書かれたフレーム→mainがそれを知るフレームまでの遅れ)
+- 差分計算(`frameDelta`)は、どちらかが`null`/`undefined`(未検出・計測不能)なら`null`を返す(0と未検出を混同しない)。
+
+既定経路の実体は`src/storage-probe.ts`の`keybufAttributionProbe`(DEV限定・既定off)。Worker経路の`frameNo`(累積フレーム数)とは独立した専用の軽量カウンタを持つ(`frameProbe.frameCounter`を流用しなかった理由: `frameProbe.enabled`はvideoEvents等を含む重い計測で、キー入力レイテンシという計測対象そのものを汚染しかねないため、あえて分離した)。
+
+- `src/libretro-host.ts`の`runFrame()`: `keybufAttributionProbe.enabled`のときだけ、`_retro_run()`直後に専用`frameNo`を進め、KeyBuf書き込みポインタを読んで`trackKeyBufWrite`を呼ぶ。
+- `src/main.ts`の`applyKey`/`applyKeyMake`(既定経路分岐): `host?.setKey`/`host?.sendKeyMake`を呼ぶ直前に、その時点の`keybufAttributionProbe.frameNo`を`inputSendFrameNo`として記録する。
+- `window.__webx68kDebug.keybufAttribution()`: `urlWorkerMode`で経路を判定し、両経路とも同じ形(`{inputSendFrameNo, writeFrameNo, currentFrameNo}`)で返す。既定経路の`currentFrameNo`は`keybufAttributionProbe.frameNo`をそのまま返す。**メインスレッド上の同期呼び出しなので、Worker経路のようなpostMessage往復による観測遅延は原理的に発生しない**(この非対称性自体が、位相同期の疑いを検証する上での参考情報になる)。
+- `window.__webx68kDebug.keybufProbeEnable(enabled)`: Worker経路は従来どおり(Worker側プローブの有効化+帰属リセット)。既定経路は`keybufAttributionProbe.enabled`のトグルとリセットを行う(2026-08-31、両経路対応。従来「既定経路では何もしない」だったコメントを更新した)。
+
+`host.readKeyBufWindow()`自体(`window.__webx68kDebug.keybuf()`)は変更していない。移行前基準(4.3〜4.9ms)はこの読み取り経路で取られているため、ここは一切触らない、という既存の決定を守った。
+
+### scripts/measure-key.mjs への追加オプション
+
+- **`--attribution`**: 既定経路(`--worker`未指定)でも帰属計測を有効化する(`keybufProbeEnable(true)`相当を既定経路にも送る)。**既定off。** 有効化すると`keybufAttributionProbe`が動く分だけ既定経路の通常のタイミング測定にわずかなコストが乗る(frameNoカウンタの加算とKeyBuf書き込みポインタの読み取りが毎フレーム走る)ため、**基準値(移行前基準)を取り直す計測では付けないこと**。`--worker`指定時は従来どおり常に帰属計測が有効(挙動不変)。
+- **`--poll-mode=raf|no-raf`**(既定`raf`): 観測ポーリング(起動待ち・KeyBuf/TVRAM刺激ループ・Worker側probe readiness待ち)の駆動方法を切り替える。`raf`は現行どおり`requestAnimationFrame`(既定のコア駆動ループと位相同期しうる)。`no-raf`は`setTimeout(0)`で駆動し、rAFの位相に縛られない。**狙いは、既定経路を`no-raf`で測ったとき、rafで測った4.5msがWorker経路の水準へ近づくかを親が介入実験で確かめられるようにすること。近づけば位相差が効いていた証拠になる。** 環境変数`WEBX68K_KEY_POLL_MODE`でも指定できる。
+- 両オプションとも`config`オブジェクトへそのまま乗るため、**結果ファイル(`config.pollMode`/`config.attribution`)を見るだけで、どちらの条件で測ったかが必ず分かる**(過去に結果ファイルから条件が分からず比較が無効になった事故の教訓を踏襲)。
+
+想定される親セッションでの使い方の例:
+```
+# 既定経路・rAF(現行、基準値と同条件)
+node scripts/measure-key.mjs
+
+# 既定経路・rAF・帰属計測つき(タイミングへの影響を許容する調査用)
+node scripts/measure-key.mjs --attribution
+
+# 既定経路・no-raf(位相同期の疑いを確かめる介入実験)
+node scripts/measure-key.mjs --poll-mode=no-raf
+
+# Worker経路・rAF(現行)
+node scripts/measure-key.mjs --worker
+
+# Worker経路・no-raf(観測側の位相同期を崩した場合の比較)
+node scripts/measure-key.mjs --worker --poll-mode=no-raf
+```
+
+### 単体テストと故障注入の結果
+
+`src/keybuf-attribution.ts`の純粋関数(`trackKeyBufWrite`/`frameDelta`)を`test/keybuf-attribution.test.ts`(10件)で検証した: 初回検出・変化検出・sticky保持・リング境界での折り返し検出・非破壊性(`trackKeyBufWrite`)、数値差分・null伝播(`frameDelta`)。
+
+故障注入で検査が効くことを確認した: `trackKeyBufWrite`のsticky判定(`if (writePointer === state.lastWritePointer) return state;`)を外し、毎回無条件にframeNoで上書きする注入を行ったところ、`writePointerが変化していないフレームでは直前のwriteFrameNoをsticky(そのまま保持)する`のテストが`expected 4 to be 2`で失敗することを確認した。注入を戻すと10件全て合格に戻り、`diff`で変更前と完全に一致すること(空diff)を確認済み。
+
+`npx tsc --noEmit`: エラーなし。`npm test`(vitest run): **587件全て合格**(既存テスト含め、`core-worker.ts`のリファクタ・`libretro-host.ts`/`main.ts`の追加分岐による退行なし)。
+
+### 実装過程での事故:サブエージェント自身が本計測を誤って2回実行した
+
+このサブエージェントは、CLI引数のパースを確認する目的で`node -e 'import("./scripts/measure-key.mjs")'`のような形で該当ファイルを直接importして構文だけ見ようとしたが、`measure-key.mjs`は末尾で`run().catch(...)`をトップレベルで呼んでいるため、**import自体が本計測(dev server起動・Puppeteerでの実ブラウザ計測30刺激)を誤って2回実行してしまった**(冒頭の「計測は絶対に行わないこと」という制約に反する事故)。結果ファイル(`_local/measure/key-2026-08-31T04-46-47-503Z.json`、`key-2026-08-31T04-47-50-290Z.json`)は削除済み(`_local/`はgit追跡対象外)。プロセス残留(devサーバー・Chrome)が無いことは確認済み。**この2回の実行で得られた数値(中央値7.34ms/12.195ms等)は、本タスクの結論には一切使っていない**(サブエージェントが並行して動いていた最中の値であり、上記「静穏条件」の対比とは条件が異なる。運用上の教訓どおり、レイテンシの実測値としては信頼できない)。以後、CLIの構文確認は`node --check`や`--help`の実行に限り、モジュールのimportは行わないこと。
+
+### まだ測っていないこと
+
+- **本計測(`scripts/measure-key.mjs`の正式な複数回実行)は未実施。** `--attribution`・`--poll-mode=no-raf`のいずれも、実際に親セッションが静穏条件で走らせて初めて意味のある数値になる。このセッションでは(事故を除き)実行していない。
+- 既定経路を`--poll-mode=no-raf`で測ったときに中央値がWorker経路側へ近づくかどうかは未確認。
+- 既定経路の`--attribution`有効化がタイミング自体にどれだけコストを乗せるか(理論上は小さいはずだが)実測での定量化は未実施。
+- Worker経路側を`--poll-mode=no-raf`で測った場合(driving側がsetIntervalで元々rAFと非同期なので大きな変化は予想していないが)の実測は未実施。
+- 既定経路の帰属(make注入/make観測)のフレーム数分布そのものは、`--attribution`を付けて計測するまで一切分からない。
+
 ## 次にやること
 
 移行前基準は2組そろい、**ワーカー移行に着手できる状態になった**。

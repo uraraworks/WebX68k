@@ -15,7 +15,7 @@ import {
   type FatEntry,
 } from './api/fat';
 import { loadBiosFile, saveBiosFile } from './bios-store';
-import { storageProbe, frameProbe } from './storage-probe';
+import { storageProbe, frameProbe, keybufAttributionProbe } from './storage-probe';
 import { loadSramFile, saveSramFile } from './sram-store';
 import {
   classifyDiskBytes,
@@ -696,6 +696,12 @@ function applyKey(retrok: number, down: boolean): void {
     sendWorkerInputUpdate();
     return;
   }
+  // 既定経路の帰属計測(docs/STORAGE-SCSI.md「帰属の定義」参照)。DEVかつ
+  // keybufAttributionProbe.enabledのときだけ、この送信時点でプローブが知っていた
+  // frameNoを「注入の遅れ」の起点として覚える(単純な代入でコストは無視できる)。
+  if (import.meta.env.DEV && keybufAttributionProbe.enabled) {
+    keybufAttributionProbe.inputSendFrameNo = keybufAttributionProbe.frameNo;
+  }
   host?.setKey(retrok, down);
 }
 
@@ -705,6 +711,9 @@ function applyKeyMake(retrok: number): void {
     workerInput.keyMake(retrok);
     sendWorkerInputUpdate();
     return;
+  }
+  if (import.meta.env.DEV && keybufAttributionProbe.enabled) {
+    keybufAttributionProbe.inputSendFrameNo = keybufAttributionProbe.frameNo;
   }
   host?.sendKeyMake(retrok);
 }
@@ -4185,28 +4194,50 @@ if (import.meta.env.DEV) {
     // 起動前に呼んでも(proxyがまだ無くても)意思だけ記録し、次の起動で即有効化される
     // (bootWorkerCore()のworkerKeyBufProbeWanted分岐参照)。既定経路では何もしない
     // (host.readKeyBufWindow()は常時受動的で、有効化操作を必要としない)。
+    // Worker経路(urlWorkerMode===true)ではWorker側のKeyBufプローブ+帰属計測(frame event
+    // 相乗り方式)を、既定経路(urlWorkerMode===false)ではhost.readKeyBufWindow()自体は
+    // 常時受動的で有効化不要だが、帰属計測(注入/観測をフレーム数で切り分ける、Worker経路と
+    // 同じ定義。src/keybuf-attribution.ts参照)専用のカウンタ(keybufAttributionProbe、
+    // DEV限定・既定off)をここで一緒に有効化/リセットする(2026-08-31、両経路対応)。
     keybufProbeEnable: (enabled: boolean) => {
-      workerKeyBufProbeWanted = enabled;
-      if (!enabled) workerLastKeyBufProbe = null;
-      // 帰属計測もこの有効化区間からやり直す(前回の有効化区間の値を持ち越さない。
-      // src/core-worker.tsのenable時リセットと対にしてある)。
-      workerLastKeyBufWriteFrameNo = null;
-      workerLastInputSendFrameNo = null;
-      workerCoreProxy?.devPostRawMessage({
-        kind: '__devKeyBufProbe',
-        action: enabled ? 'enable' : 'disable',
-      });
+      if (urlWorkerMode) {
+        workerKeyBufProbeWanted = enabled;
+        if (!enabled) workerLastKeyBufProbe = null;
+        // 帰属計測もこの有効化区間からやり直す(前回の有効化区間の値を持ち越さない。
+        // src/core-worker.tsのenable時リセットと対にしてある)。
+        workerLastKeyBufWriteFrameNo = null;
+        workerLastInputSendFrameNo = null;
+        workerCoreProxy?.devPostRawMessage({
+          kind: '__devKeyBufProbe',
+          action: enabled ? 'enable' : 'disable',
+        });
+        return;
+      }
+      keybufAttributionProbe.enabled = enabled;
+      keybufAttributionProbe.reset();
     },
-    // 帰属計測(2026-08-31訂正、docs/STORAGE-SCSI.md「帰属の切り分け」参照)。
+    // 帰属計測(2026-08-31訂正、2026-08-31両経路対応、docs/STORAGE-SCSI.md「帰属の定義」参照)。
     // 「keydown発生→updateInput送信」(注入)と「KeyBufへの書き込み→mainが知る」(観測)を
-    // フレーム数で切り分けるための読み取り専用フック。scripts/measure-key.mjsが
-    // --workerのときだけ使う。既定経路では意味を持たない値(null/現在のworkerLastFrameNo=0)
-    // をそのまま返す(呼び出しても副作用は無い)。
-    keybufAttribution: () => ({
-      inputSendFrameNo: workerLastInputSendFrameNo,
-      writeFrameNo: workerLastKeyBufWriteFrameNo,
-      currentFrameNo: workerLastFrameNo,
-    }),
+    // フレーム数で切り分けるための読み取り専用フック。scripts/measure-key.mjsが使う。
+    // urlWorkerModeで経路を判定し、それぞれの実体(Worker経路はworkerLastFrameNo系、
+    // 既定経路はkeybufAttributionProbe)を同じ形({inputSendFrameNo, writeFrameNo,
+    // currentFrameNo})で返す。既定経路のcurrentFrameNoはkeybufAttributionProbe.frameNoを
+    // そのまま返す(メインスレッド上の同期呼び出しなので、Worker経路のような
+    // postMessage往復による遅延は原理的に発生しない)。
+    keybufAttribution: () => {
+      if (urlWorkerMode) {
+        return {
+          inputSendFrameNo: workerLastInputSendFrameNo,
+          writeFrameNo: workerLastKeyBufWriteFrameNo,
+          currentFrameNo: workerLastFrameNo,
+        };
+      }
+      return {
+        inputSendFrameNo: keybufAttributionProbe.inputSendFrameNo,
+        writeFrameNo: keybufAttributionProbe.tracker.writeFrameNo,
+        currentFrameNo: keybufAttributionProbe.frameNo,
+      };
+    },
     // 音声振幅プローブ(予備確認: docs/STORAGE-SCSI.md「音声遅延」参照)。resetAudioProbe()で
     // 積算区間を開始し、readAudioProbe()で最大振幅・サンプル数・非無音サンプル数を読む。
     // queuedSecと違い、無音サンプルとの区別が付く。
