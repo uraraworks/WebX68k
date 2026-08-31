@@ -191,11 +191,14 @@ describe('WorkerCoreProxy', () => {
     expect(worker.sent.some((c) => c.op === 'setCoreOption')).toBe(false);
   });
 
-  it('世代が異なるresponse/eventは無視する', async () => {
+  it('世代が異なるresponse/eventは無視する(response、およびframe event)', async () => {
     const worker = new FakeWorker();
     worker.respond = () => []; // 自動応答を止め、手動でresponseを送る
     const proxy = new WorkerCoreProxy({ createWorker: () => worker });
     const { biosIpl, biosCg } = makeBios();
+
+    const received: CoreEvent[] = [];
+    proxy.setEventHandler((event) => received.push(event));
 
     const initPromise = proxy.init(biosIpl, biosCg);
     const sentCmd = worker.sent[0];
@@ -228,6 +231,25 @@ describe('WorkerCoreProxy', () => {
       result: undefined,
     });
     await initPromise;
+
+    // 手順9: 旧世代からの遅延frame eventも同じ理由で破棄されるはず(responseだけでなく
+    // event全般がgeneration不一致で捨てられることを確認する。実際の再生成は
+    // bootWorkerCore()がproxyインスタンスごと作り直す形で行われる=このテストのように
+    // 同一proxy内でgenerationがずれることは起きないが、フィルタ自体はresponse/eventで
+    // 共通のため、ここで一括して確認しておく)。
+    const staleSnapshot: FrameSnapshot = {
+      frameNo: 999,
+      av: { fps: 60, sampleRate: 44100, width: 768, height: 512 },
+      video: { kind: 'rgba', bytes: new ArrayBuffer(4), width: 1, height: 1 },
+      audio: { chunks: [], sampleFrames: 0 },
+      disk: { access: { fddReading: false, fddDrive: 0, hddAccessing: false }, dirty: { fddMask: 0, hdd: false } },
+      poolMisses: 0,
+    };
+    worker.emit({ kind: 'event', generation: sentCmd.generation + 1, event: 'frame', snapshot: staleSnapshot });
+    expect(received.some((e) => e.event === 'frame')).toBe(false); // 旧世代のframeは届かない
+
+    worker.emit({ kind: 'event', generation: sentCmd.generation, event: 'frame', snapshot: staleSnapshot });
+    expect(received.some((e) => e.event === 'frame')).toBe(true); // 正しい世代なら届く
   });
 
   it('Workerの異常終了(error event)でその世代の未完了Promiseが全てrejectされる', async () => {
@@ -274,6 +296,88 @@ describe('WorkerCoreProxy', () => {
     const p = proxy.fetchAvInfo();
     await expect(p).rejects.toMatchObject({ coreError: { code: 'WORKER_FAILURE' } });
     expect(worker.terminated).toBe(true);
+  });
+
+  it('手順9: setFailureHandlerはpendingなcommandが無くても呼ばれる(error/messageerror/timeout/fatal)', async () => {
+    // 「たまたま呼び出し中のcommandがあれば、そのcatch節でしか利用者に伝わらない」という
+    // 抜けを塞いだ通知経路(docs/STORAGE-SCSI.md「ワーカー移行 手順9」参照)。
+    // frame event配信中などpendingが空の状態でWorkerが壊れても必ず1回呼ばれることを確認する。
+    for (const trigger of ['error', 'messageerror', 'timeout', 'fatal'] as const) {
+      const worker = new FakeWorker();
+      const proxy = new WorkerCoreProxy({ createWorker: () => worker, responseTimeoutMs: 20 });
+      const { biosIpl, biosCg } = makeBios();
+      await proxy.init(biosIpl, biosCg);
+
+      const failures: string[] = [];
+      proxy.setFailureHandler((message) => failures.push(message));
+
+      // ここではあえて何もcommandを呼ばない(pendingが空の状態で失敗させる)。
+      switch (trigger) {
+        case 'error':
+          worker.emitError();
+          break;
+        case 'messageerror':
+          worker.emitMessageError();
+          break;
+        case 'timeout':
+          worker.respond = () => []; // 以後応答しない
+          // pendingを1件作ってからtimeoutさせる。rejectはWORKER_FAILUREになる想定どおりなので
+          // ここで拾っておき、unhandled rejectionにしない。
+          await expect(proxy.fetchAvInfo()).rejects.toMatchObject({ coreError: { code: 'WORKER_FAILURE' } });
+          break;
+        case 'fatal':
+          worker.emit({
+            kind: 'event',
+            generation: 0,
+            event: 'fatal',
+            error: { code: 'WORKER_FAILURE', message: 'handler内例外' },
+          });
+          break;
+      }
+
+      expect(failures, `trigger=${trigger}`).toHaveLength(1);
+    }
+  });
+
+  it('手順9: setFailureHandlerはerror/messageerrorが立て続けに来ても1回しか呼ばれない(二重処理防止)', async () => {
+    const worker = new FakeWorker();
+    const proxy = new WorkerCoreProxy({ createWorker: () => worker });
+    const { biosIpl, biosCg } = makeBios();
+    await proxy.init(biosIpl, biosCg);
+
+    const failures: string[] = [];
+    proxy.setFailureHandler((message) => failures.push(message));
+
+    worker.emitError();
+    worker.emitMessageError();
+    worker.emitError();
+
+    expect(failures).toHaveLength(1);
+  });
+
+  it('手順9: fatal eventはeventHandlerへは転送されずsetFailureHandler側にのみ通知される', async () => {
+    // src/core-proxy.tsのhandleMessage()はfatalをhandleWorkerFailure()へ横取りし、
+    // 通常のevent配信(setEventHandler)には流さない。main.ts側は以前ここに
+    // event.event === 'fatal' の死んだ分岐を持っていた(手順9で発見、setFailureHandlerへ一本化)。
+    const worker = new FakeWorker();
+    const proxy = new WorkerCoreProxy({ createWorker: () => worker });
+    const { biosIpl, biosCg } = makeBios();
+
+    const received: CoreEvent[] = [];
+    proxy.setEventHandler((event) => received.push(event));
+    const failures: string[] = [];
+    proxy.setFailureHandler((message) => failures.push(message));
+
+    await proxy.init(biosIpl, biosCg);
+    worker.emit({
+      kind: 'event',
+      generation: 0,
+      event: 'fatal',
+      error: { code: 'WORKER_FAILURE', message: 'boom' },
+    });
+
+    expect(received.some((e) => e.event === 'fatal')).toBe(false);
+    expect(failures).toHaveLength(1);
   });
 
   it('dispose()はcommandを送りWorkerをterminateする', async () => {

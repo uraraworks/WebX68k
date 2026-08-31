@@ -1139,6 +1139,17 @@ const urlAudioProbe = urlParams.get('audioProbe') === '1';
 // URLパラメータなのでリロードをまたいでも同じ値が効く(JS変数だとリロードで消える)。
 const urlDebugDisableAutosave = import.meta.env.DEV && urlParams.get('debugDisableAutosave') === '1';
 const urlDebugForceUrlRefetch = import.meta.env.DEV && urlParams.get('debugForceUrlRefetch') === '1';
+// debugDisableResetFlush=1 / debugResetFlushNoAwait=1: 上と同じ理由・同じ流儀(dev限定・既定off)。
+// scripts/verify-reset-persistence.mjs の --fault 用(docs/STORAGE-SCSI.md「ワーカー移行
+// 手順9：異常系の検証」節参照)。restartCore() が持つ「保存→終了→ready」の順序を
+// 実際に壊すためのフック。
+// debugDisableResetFlush=1: restartCore()内のflushAllSlots()/flushAllSlotsWorker()呼び出し
+// 自体を丸ごとスキップする(保存が起きない)。
+// debugResetFlushNoAwait=1: flushAllSlotsWorker()の完了を待たずにhost.dispose()/coreProxy=null
+// へ進めてしまう(Worker経路限定。既定経路のflushAllSlots()は同一スレッド同期処理のため
+// このフラグでは再現できない再現対象外)。
+const urlDebugDisableResetFlush = import.meta.env.DEV && urlParams.get('debugDisableResetFlush') === '1';
+const urlDebugResetFlushNoAwait = import.meta.env.DEV && urlParams.get('debugResetFlushNoAwait') === '1';
 
 function setBiosStatus(el: HTMLSpanElement, state: 'user' | 'bundled' | 'none'): void {
   if (state === 'user') {
@@ -2790,6 +2801,16 @@ async function bootWorkerCore(): Promise<void> {
     proxy.devPostRawMessage({ kind: '__devKeyBufProbe', action: 'enable' });
   }
 
+  // 手順9: error/messageerror/timeout/fatal のどれで壊れても、pendingなcommandの有無に
+  // 関わらず必ずここが呼ばれる(src/core-proxy.tsのfailureHandler参照)。従来は「たまたま
+  // その瞬間に呼び出し中だったcommandがあれば、そのcatch節でしか」利用者に伝わらず、
+  // frame event配信中(pendingが空)にWorkerが死ぬと無言で画面が静止したまま何も起きなかった。
+  proxy.setFailureHandler((message) => {
+    console.error('[worker] Workerコアが異常終了しました。', message);
+    showToast(`Workerコアが異常終了しました: ${message}`, null);
+    running = false;
+  });
+
   proxy.setEventHandler((event: CoreEvent) => {
     if (event.event === 'frame') {
       const snapshot: FrameSnapshot = event.snapshot;
@@ -2832,11 +2853,10 @@ async function bootWorkerCore(): Promise<void> {
       sendWorkerInputUpdate();
       return;
     }
-    if (event.event === 'fatal') {
-      showToast('Workerコアが異常終了しました', null);
-      running = false;
-      return;
-    }
+    // 'fatal' はここには来ない: src/core-proxy.tsのhandleMessage()がWORKER_FAILUREとして
+    // handleWorkerFailure()へ横取りし、eventHandlerへは転送しない(以前ここに書いてあった
+    // event.event === 'fatal' の分岐は実際には一度も実行されない死んだコードだった。
+    // 手順9で気づき、上のproxy.setFailureHandler()に一本化した)。
     if (event.event === 'mouseTrackDisabled') {
       // Worker側の閉ループが追従を諦めた(手順6後半)。既定経路(stepMouseTracking)と同じ
       // 通知を出す。無言で死なせないこと(docs/STORAGE-SCSI.md「ワーカー移行 手順6後半」参照)。
@@ -2850,6 +2870,13 @@ async function bootWorkerCore(): Promise<void> {
   const fdd0 = slots.fdd0;
   const fdd1 = slots.fdd1;
   const hdd = slots.hdd;
+  // 2026-08-31追記(リセット復帰の欠陥、docs/STORAGE-SCSI.md「ワーカー移行 手順9」参照):
+  // slots.fdd0/fdd1/hdd.data・biosIplBytes/biosCgBytesはmodule-levelに保持され、
+  // リセットのたびに同じインスタンスがWorkerCoreProxy#init()へ渡る。init()側が
+  // 呼び出し都度コピーしてから転送するよう修正した(src/core-proxy.ts WorkerCoreProxy#init()
+  // のコメント参照)ので、ここではそのまま渡してよい(以前はここでコピーする案も検討したが、
+  // 「所有権を渡す/コピーを渡す」の判断はproxy境界の内側に閉じ込めるほうが、この呼び出し元を
+  // 含む全呼び出し元で同じ間違いが起きなくなるため、init()側1箇所に寄せた)。
   const initialDisks: InitialDiskInput[] = [];
   if (fdd0) initialDisks.push({ slot: 'fdd0', name: sanitizeFileName(fdd0.name), bytes: fdd0.data });
   if (fdd1) initialDisks.push({ slot: 'fdd1', name: sanitizeFileName(fdd1.name), bytes: fdd1.data });
@@ -3085,8 +3112,22 @@ async function restartCore(): Promise<void> {
   // (既定経路のflushAllSlots()は同一スレッドの同期処理なのでawait不要。両者の違いは
   // 「ここでawaitするかどうか」だけで、どちらも書き戻しの完了を待ってから
   // bootCore()へ進む点は同じ)。
-  if (urlWorkerMode) await flushAllSlotsWorker();
-  else flushAllSlots();
+  //
+  // 手順9(異常系の検証)の故障注入用フック(dev限定・既定off、docs/STORAGE-SCSI.md
+  // 「ワーカー移行 手順9：異常系の検証」参照): scripts/verify-reset-persistence.mjs の
+  // --fault から実際に壊すための分岐。
+  // - urlDebugDisableResetFlush: 書き戻しそのものをスキップする(保存が起きない)。
+  // - urlDebugResetFlushNoAwait: Worker経路限定。flushAllSlotsWorker()の完了を待たずに
+  //   次へ進める(保存→終了→readyの順序を壊す。既定経路のflushAllSlots()は同一スレッド
+  //   同期処理でこの壊し方を再現できないため対象外)。
+  if (urlDebugDisableResetFlush) {
+    // 何もしない(書き戻しを丸ごと省略する)。
+  } else if (urlWorkerMode) {
+    if (urlDebugResetFlushNoAwait) void flushAllSlotsWorker();
+    else await flushAllSlotsWorker();
+  } else {
+    flushAllSlots();
+  }
   running = false;
   cancelScheduled();
   host?.dispose();

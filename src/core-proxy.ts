@@ -468,6 +468,12 @@ export class WorkerCoreProxy implements LibretroHostProxy {
    * 手順9(再生成)は今回のスコープ外のため、失敗後の自動再生成は行わない。 */
   private failed = false;
   private readonly pending = new Map<RequestId, PendingRequest>();
+  /** 手順9: error/messageerror/timeout/fatal のどれで壊れても呼び出し元へ即座に知らせるための
+   * 単一の通知窓口。従来は「たまたま pending な command があれば、その reject 経由でしか
+   * 呼び出し元に伝わらない」構造で、frame event 配信中(pendingが空)に Worker が死ぬと
+   * 誰にも通知されないまま画面だけが無言で静止するという抜けがあった
+   * (docs/STORAGE-SCSI.md「ワーカー移行 手順9：異常系の検証」参照)。 */
+  private failureHandler: ((message: string) => void) | null = null;
   /** 実測(docs/STORAGE-SCSI.md 手順4参照): `new Worker(...)` 直後に送った最初の command は
    * module worker側の import グラフ解決中に取りこぼされることがある(`self.onmessage` が
    * 実際にセットされる前だけでなく、セットされた後でも起きた)。Worker側(core-worker.ts)は
@@ -495,6 +501,13 @@ export class WorkerCoreProxy implements LibretroHostProxy {
   /** テスト・診断用。 */
   get currentGeneration(): Generation {
     return this.generation;
+  }
+
+  /** WORKER_FAILURE(error/messageerror/応答timeout/fatal event)が起きた瞬間に1回だけ
+   * 呼ばれる通知。pending な command が無くても必ず呼ばれる(上のfailureHandlerコメント参照)。
+   * 呼び出し元(main.ts)はここでトースト等、利用者に見える通知を出す。 */
+  setFailureHandler(handler: ((message: string) => void) | null): void {
+    this.failureHandler = handler;
   }
 
   private handleMessage(message: WorkerToMain): void {
@@ -587,6 +600,8 @@ export class WorkerCoreProxy implements LibretroHostProxy {
         // 既に終了している等は無視。
       }
     }
+    // pendingの有無に関わらず必ず1回呼ぶ(このメソッド自体がfailedガードで二重発火しない)。
+    this.failureHandler?.(message);
   }
 
   /** command を1件送り、対応する response を待つ Promise を返す。 */
