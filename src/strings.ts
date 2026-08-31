@@ -409,8 +409,9 @@ interface Dict {
   hostKeyProfileArrowsJoy6(): string;
   hostKeyProfileTenkey(): string;
 
-  /** `?worker=1` (段階移行のWorker経路)で、まだ移行していない機能(入力/音声/FDDホットマウント/
-   * SRAM/ステート保存・復元)を使おうとしたときのトースト文言。 */
+  /** `?worker=1` (段階移行のWorker経路)で、まだ移行していない機能(音声/SRAM/
+   * ステート保存・復元)を使おうとしたときのトースト文言(入力・FDDホットマウント/dirty
+   * capture/オートセーブ/終了flushは手順6・手順8で移行済み)。 */
   workerModeUnsupported(): string;
 }
 
@@ -726,7 +727,7 @@ const STRINGS: Record<Lang, Dict> = {
     hostKeyProfileArrowsJoy6: () => '矢印キー -> ジョイスティック(6ボタン)',
     hostKeyProfileTenkey: () => '矢印キー -> テンキー',
     workerModeUnsupported: () =>
-      '?worker=1 ではこの機能はまだ未対応です(音声・FDDホットマウント・SRAM・ステート保存/復元は次段で移行予定)。',
+      '?worker=1 ではこの機能はまだ未対応です(音声・SRAM・ステート保存/復元は次段で移行予定)。',
   },
   en: {
     title: () => 'WebX68k - X68000 Emulator',
@@ -1039,7 +1040,7 @@ const STRINGS: Record<Lang, Dict> = {
     hostKeyProfileArrowsJoy6: () => 'Arrows -> Joystick (6 Buttons)',
     hostKeyProfileTenkey: () => 'Arrows -> Numpad',
     workerModeUnsupported: () =>
-      'Not supported yet under ?worker=1 (audio, FDD hot-swap, SRAM, and save/load state are migrated in a later step).',
+      'Not supported yet under ?worker=1 (audio, SRAM, and save/load state are migrated in a later step).',
   },
 };
 

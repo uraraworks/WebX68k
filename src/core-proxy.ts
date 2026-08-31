@@ -18,6 +18,8 @@ import {
   MOUSE_TRACK_RESYNC_KIND,
   MOUSE_TRACK_UPDATE_KIND,
   RETURN_FRAME_BUFFER_KIND,
+  type CaptureDirtyMediaPayload,
+  type CaptureDirtyMediaResult,
   type CoreCommand,
   type CoreErrorCode,
   type CoreEvent,
@@ -25,6 +27,7 @@ import {
   type HotSwapFddPayload,
   type HotSwapFddResult,
   type InputUpdate,
+  type MarkDirtyPayload,
   type MouseTrackUpdate,
   type RequestId,
   type WorkerToMain,
@@ -389,7 +392,12 @@ export class LocalCoreProxy implements LibretroHostProxy {
 //   frame イベント / sramChanged イベントへ統合する対象 (手順5・7)。
 // - readDiskAccess/readDirtyState/clearDirty:
 //   文書に明記 (「アクセス/dirty の pull API は廃止。clear と吸い出しは不可分にする」)。
-//   captureDirtyMedia/finishDirtyCapture (手順8) に置き換わる。
+//   手順8(2026-08-31実装)で captureDirtyMedia/markDirty に置き換わった(WorkerCoreProxy固有の
+//   メソッドとして追加。LibretroHostProxyには含めていない。当初案のfinishDirtyCapture(token
+//   方式)ではなく、slot指定・token無しのmarkDirtyという単純な形にした。理由は
+//   src/core-protocol.ts の AtomicCommand コメント参照)。access(disk.access)は
+//   手順5で既に frame event 側に統合済みで、dirty(disk.dirty)も手順8で同じ frame event に
+//   相乗りさせた(src/core-worker.ts の sendFrame 参照。pull不要)。
 // - runFrame: 文書に明記の通り、runFrame に相当する RPC はここに作らない(手順7で Worker 所有)。
 // - resetAudioProbe/readAudioProbe: DEV限定の計測プローブであり、本番の proxy 境界の対象外。
 // - writeDiskImage: hotSwapFdd 内部で使う実装詳細として扱い、proxy の公開メソッドにはしない
@@ -742,8 +750,26 @@ export class WorkerCoreProxy implements LibretroHostProxy {
     return this.unsupported('readMemory');
   }
 
-  async hotSwapFdd(_payload: HotSwapFddPayload): Promise<HotSwapFddResult> {
-    return this.unsupported('hotSwapFdd');
+  /** 手順8: FDDホットマウント。Eject→旧内容回収→(新イメージがあれば)write→insert を
+   * Worker内の1つのcommandハンドラで完結させる(不可分性。src/core-worker.ts の
+   * handleHotSwapFdd、src/worker-dirty-capture.ts 参照)。 */
+  async hotSwapFdd(payload: HotSwapFddPayload): Promise<HotSwapFddResult> {
+    return this.issue<HotSwapFddResult>('hotSwapFdd', payload);
+  }
+
+  /** 手順8: 不可分ダーティキャプチャ。指定スロットの「読み出し」と「dirtyクリア」を
+   * Worker側の1つの同期呼び出し内で完結させる(LibretroHostProxyには無い、Worker経路
+   * 固有のメソッド。既定経路はmain.tsのpersistSlotToLibrary/flushAllSlotsが同じ役割を
+   * 同一スレッド上で果たすため不要)。 */
+  async captureDirtyMedia(payload: CaptureDirtyMediaPayload): Promise<CaptureDirtyMediaResult> {
+    return this.issue<CaptureDirtyMediaResult>('captureDirtyMedia', payload);
+  }
+
+  /** 手順8: 永続化(IndexedDBへの保存)失敗時の再dirty化。応答を待つ必要は無いが、
+   * main側が「送信できたか(Workerが生きているか)」を把握できるようPromiseは返す
+   * (returnFrameBuffer/sendInputと違い、失敗頻度が低く追跡コストが問題にならないため)。 */
+  async markDirty(payload: MarkDirtyPayload): Promise<void> {
+    await this.issue<void>('markDirty', payload);
   }
 
   async writeFile(_path: string, _data: ArrayBuffer): Promise<void> {

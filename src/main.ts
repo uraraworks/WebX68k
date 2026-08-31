@@ -1448,7 +1448,7 @@ function updateSlotDisplay(slot: SlotId, label: string | null): void {
 }
 
 /** FDD スロット(fdd0/fdd1)をドライブ番号へ変換する。HDD は対象外なので null。 */
-function fddDriveOf(slot: SlotId): number | null {
+function fddDriveOf(slot: SlotId): 0 | 1 | null {
   if (slot === 'fdd0') return 0;
   if (slot === 'fdd1') return 1;
   return null;
@@ -1504,6 +1504,61 @@ function hotSwapFdd(slot: SlotId, drive: number, image: { name: string; data: Ui
 }
 
 /**
+ * Worker経路(?worker=1)でのFDDホットマウント本体(手順8、docs/STORAGE-SCSI.md
+ * 「ワーカー移行 手順8」参照)。Eject→旧内容の回収→(必要なら)write→insert を
+ * WorkerCoreProxy#hotSwapFdd() 1回の呼び出しでWorker側の1つのcommandハンドラへ委譲する
+ * (src/core-worker.ts の handleHotSwapFdd、src/worker-dirty-capture.ts 参照)。
+ *
+ * 既定経路のhotSwapFdd()(上の関数)は旧内容の回収をしない(呼び出し元のejectSlot()が
+ * 別途persistSlotToLibrary()を先に呼ぶ2段構え。同一スレッドなので間にフレームが進まず
+ * 安全)。Worker経路はラウンドトリップを増やしたくないため、Worker側のhotSwapFddが
+ * 旧内容(previousImage)を一緒に返し、ここでライブラリへ書き戻す1段構えにした。
+ *
+ * previousSlot: 差し替え前のslots[slot](sourceKey/nameの由来)。呼び出し元がslots[slot]を
+ * 新しい内容で上書きする前に取っておいたものを渡すこと(上書き後では旧sourceKeyが失われる)。
+ */
+async function workerHotSwapFdd(
+  slot: SlotId,
+  drive: 0 | 1,
+  image: { name: string; data: Uint8Array } | null,
+  previousSlot: PendingDisk | null,
+): Promise<void> {
+  if (!workerCoreProxy) return;
+  let result: { previousImage: ArrayBuffer | null; mountedPath: string | null };
+  try {
+    result = await workerCoreProxy.hotSwapFdd({
+      drive,
+      image: image ? { name: sanitizeFileName(image.name), bytes: toOwnedArrayBuffer(image.data) } : null,
+    });
+  } catch (err) {
+    console.error('Worker経路のFDDホットマウントに失敗しました。', err);
+    showToast(t('workerModeUnsupported'));
+    return;
+  }
+  mountedPaths[slot] = result.mountedPath;
+  // 旧内容(previousImage)をライブラリへ書き戻す。既定経路のpersistSlotToLibrary()と同じ
+  // 条件(sourceKeyがあり、同梱ディスクではない)でだけ保存する。
+  if (result.previousImage && previousSlot?.sourceKey && previousSlot.sourceKey !== BUNDLED_DISK_SOURCE_KEY) {
+    try {
+      await saveDisk({
+        sourceKey: previousSlot.sourceKey,
+        name: previousSlot.name,
+        bytes: new Uint8Array(result.previousImage),
+        savedAt: Date.now(),
+      });
+      if (!libraryBackdrop.classList.contains('hidden')) void refreshLibraryList();
+    } catch (err) {
+      console.error('ディスクライブラリへの書き戻しに失敗しました(ホットマウント時の旧内容)。', err);
+      // 注: Worker側のhotSwapFddは旧スロットのdirty(コア本体+影)を既にクリア済み
+      // (captureDirtyMediaと同じ理由。src/worker-dirty-capture.ts 参照)。保存に失敗しても
+      // このスロットには既に新しいディスクがマウントされており、旧内容を指す
+      // マウントパス自体がもう存在しないため、captureDirtyMediaのような再dirty化による
+      // 再試行はできない(docs/STORAGE-SCSI.md「できなかったこと」参照)。
+    }
+  }
+}
+
+/**
  * ディスクをドライブへセットする(slots更新 + 表示更新)。
  * 起動中の場合、FDD は実機同様ホットマウントで差し替える(リセットは掛からない)。
  * HDD は起動中の交換を禁止しているため(isSlotLocked)、ここへ来るのは起動前だけ。
@@ -1520,12 +1575,19 @@ async function insertDiskBytes(
     alert(t('slotLockedWhileRunning'));
     return;
   }
-  // Worker経路(?worker=1)は起動中のFDDホットマウントが未移行(今回のスコープ外)。host(=
-  // メインスレッドのコア)が無いままslotsだけ書き換えると「UI上は挿入済みなのにゲストには
-  // 何も届いていない」という無言の食い違いになるため、起動中は弾いて利用者に知らせる。
-  // 起動前(!running)のスロット選択は従来どおり通す(起動時にまとめてマウントされる)。
+  const previousSlot = slots[slot];
+  // Worker経路(?worker=1)は手順8でFDDホットマウントに対応した。HDDの起動中差し替えは
+  // 既定経路と同じくisSlotLocked()で弾かれるためここへは来ないはずだが、念のため
+  // fddDriveOf()がnullを返す(=HDD)場合は警告して抜ける(無言のUI/実体食い違いを防ぐ)。
   if (urlWorkerMode && running) {
-    warnWorkerModeUnsupported();
+    const drive = fddDriveOf(slot);
+    if (drive === null) {
+      warnWorkerModeUnsupported();
+      return;
+    }
+    slots[slot] = { name, data, sourceKey };
+    updateSlotDisplay(slot, displayLabel ?? name);
+    await workerHotSwapFdd(slot, drive, { name, data }, previousSlot);
     return;
   }
   slots[slot] = { name, data, sourceKey };
@@ -1543,9 +1605,17 @@ function ejectSlot(slot: SlotId): void {
     alert(t('slotLockedWhileRunning'));
     return;
   }
-  // insertDiskBytes と同じ理由(FDDホットマウント未移行)で、起動中のWorker経路では弾く。
+  // insertDiskBytes と同じ理由(手順8でFDDホットマウントに対応した)。
   if (urlWorkerMode && running) {
-    warnWorkerModeUnsupported();
+    const drive = fddDriveOf(slot);
+    if (drive === null) {
+      warnWorkerModeUnsupported();
+      return;
+    }
+    const previousSlot = slots[slot];
+    slots[slot] = null;
+    updateSlotDisplay(slot, null);
+    void workerHotSwapFdd(slot, drive, null, previousSlot);
     return;
   }
   // 抜く前にゲストの書き込みを回収する(吸い出しは同期なので、ここを抜ける時点で取得済み)。
@@ -2610,11 +2680,13 @@ let workerAvInfo: AvInfo | null = null;
 
 /** `?worker=1` でだけ利用者へ見せる、未移行機能のトースト。
  * 手順6(2026-08-31)でキー・パッド・マウスボタン・加算マウスdelta、手順6後半(2026-08-31)で
- * マウスの閉ループ追従は対応した(このトーストの対象から外れた)。音声・FDDホットマウント・
- * SRAM・ステート保存/復元は今回もスコープ外のまま(docs/STORAGE-SCSI.md「段階移行の順序」参照)。
+ * マウスの閉ループ追従、手順8(2026-08-31)でFDDホットマウント/dirty capture/オートセーブ/
+ * 終了flushは対応した(このトーストの対象から外れた)。音声・SRAM・ステート保存/復元は
+ * 今回もスコープ外のまま(docs/STORAGE-SCSI.md「段階移行の順序」参照)。HDDの起動中差し替えは
+ * 元々既定経路でもisSlotLocked()で禁止されている機能で、Worker経路固有の制約ではない。
  * 無言のno-opにせず、必ずここを通してから抜けること。 */
 function warnWorkerModeUnsupported(): void {
-  console.warn('[worker] ?worker=1 ではこの機能はまだ未対応です(音声・FDDホットマウント・SRAM・ステート保存/復元)。');
+  console.warn('[worker] ?worker=1 ではこの機能はまだ未対応です(音声・SRAM・ステート保存/復元)。');
   showToast(t('workerModeUnsupported'));
 }
 
@@ -2715,6 +2787,10 @@ async function bootWorkerCore(): Promise<void> {
         workerCoreProxy?.returnFrameBuffer(bytes);
       }
       applyDiskAccess(performance.now(), snapshot.disk.access);
+      // 手順8: 既定経路のhost.readDirtyState()ポーリングに相当する値をframe eventから
+      // 更新し、同じframe eventを契機にオートセーブ判定を行う(pollDiskAccessと同じ考え方)。
+      workerLastDirty = snapshot.disk.dirty;
+      pollWorkerAutoSave(performance.now());
       // 入力(手順6): 受信した frame event を契機に1回だけ、既定経路の host.onPoll と
       // 同じ合成規則(bits0 | virtualPad.getJoyBits() | hostKeyJoyBits())でポート0/1の
       // ビットを合成し、workerInput へ書いてから送信する(未決事項だった「ゲームパッドを
@@ -2764,11 +2840,11 @@ async function bootWorkerCore(): Promise<void> {
   resetAccessLamps();
   // 音声は毎フレーム発生するため、押すたびにトーストを出すと使い物にならない。
   // 代わりに起動が完了したこの時点で1回だけ知らせる(無言のno-opにはしない。docs参照。
-  // FDDホットマウント/ステート保存復元は実際に操作したタイミングで個別に警告する
+  // ステート保存復元は実際に操作したタイミングで個別に警告する
   // (warnWorkerModeUnsupportedの他の呼び出し箇所参照)。手順6(2026-08-31)でキー・パッド・
-  // マウスボタン・加算マウスdelta、手順6後半(2026-08-31)でマウスの閉ループ追従は対応した
-  // ため、このトーストの対象からは外した(残るのは音声・FDDホットマウント・SRAM・
-  // ステート保存/復元)。
+  // マウスボタン・加算マウスdelta、手順6後半(2026-08-31)でマウスの閉ループ追従、
+  // 手順8(2026-08-31)でFDDホットマウント/dirty capture/オートセーブ/終了flushは対応した
+  // ため、このトーストの対象からは外した(残るのは音声・SRAM・ステート保存/復元)。
   console.warn('[worker] ?worker=1 で起動しました。音声は未対応です(段階移行の対象外)。');
   showToast(t('workerModeUnsupported'), 6000);
 }
@@ -2935,7 +3011,12 @@ async function bootCore(): Promise<void> {
 async function restartCore(): Promise<void> {
   // 載せ直すと slots[].data から書き直すことになるので、その前にゲストの書き込みを回収する
   // (設定変更でCPU速度を変えただけでセーブデータが消える、という事故を防ぐ)。
-  flushAllSlots();
+  // Worker経路(手順8)はpostMessageの往復を伴う正真正銘の非同期なのでawaitする
+  // (既定経路のflushAllSlots()は同一スレッドの同期処理なのでawait不要。両者の違いは
+  // 「ここでawaitするかどうか」だけで、どちらも書き戻しの完了を待ってから
+  // bootCore()へ進む点は同じ)。
+  if (urlWorkerMode) await flushAllSlotsWorker();
+  else flushAllSlots();
   running = false;
   cancelScheduled();
   host?.dispose();
@@ -4014,11 +4095,122 @@ function pollAutoSave(now: number): void {
   })();
 }
 
+// --- Worker経路(?worker=1)のオートセーブ・flush(手順8) --------------------------
+//
+// 既定経路のpersistSlotToLibrary/flushAllSlots/pollAutoSaveは「host.readDirtyState()で
+// 読む→readLiveSlotImage()で吸い出す→host.clearDirty()で消す」の3ステップを直接呼んでいるが、
+// これはhostが常にnullのWorker経路では最初から動かない(!hostで早期return)。
+// Worker経路はWorkerCoreProxy#captureDirtyMedia()(1コマンドで読み出し+dirtyクリアを完結、
+// src/core-worker.ts の handleHotSwapFdd/handleCaptureDirtyMedia、
+// src/worker-dirty-capture.ts 参照)を使って同じ役割を果たす。
+
+/** Worker側のframe eventが最後に伝えてきたdirty状態(コア本体+影のフラグの合成済み)。
+ * 既定経路のhost.readDirtyState()ポーリングに相当する値をここに保持する
+ * (bootWorkerCoreのproxy.setEventHandler内で毎frame更新する)。 */
+let workerLastDirty: { fddMask: number; hdd: boolean } = { fddMask: 0, hdd: false };
+
+/**
+ * captureDirtyMedia()が返した1スロットぶんの内容をライブラリへ書き戻す。
+ * 永続化(saveDisk)に失敗した場合、Worker側へmarkDirty()を送って汚れフラグを立て直す
+ * (「永続化失敗時の再dirty化」。docs/STORAGE-SCSI.md「ワーカー移行 手順8」参照)。
+ * markDirty()はfire-and-forgetでよい(応答を待つ必要が無い。次のpollWorkerAutoSaveの
+ * frame eventで結果が見える)。
+ */
+async function persistCapturedSlot(slot: SlotId, bytes: ArrayBuffer | null): Promise<boolean> {
+  const pending = slots[slot];
+  if (!bytes || !pending) return false;
+  const { sourceKey } = pending;
+  if (!sourceKey || sourceKey === BUNDLED_DISK_SOURCE_KEY) return false;
+  const data = new Uint8Array(bytes);
+  try {
+    await saveDisk({ sourceKey, name: pending.name, bytes: data, savedAt: Date.now() });
+  } catch (err) {
+    console.error('ディスクライブラリへの書き戻しに失敗しました。', err);
+    void workerCoreProxy?.markDirty({ slots: [slot] });
+    return false;
+  }
+  // 待っている間に排出・差し替えが起きているかもしれないので、同じディスクのままの
+  // ときだけスロット側も更新する(既定経路のpersistSlotToLibraryと同じ配慮)。
+  if (slots[slot]?.sourceKey === sourceKey) slots[slot] = { ...slots[slot]!, data };
+  if (!libraryBackdrop.classList.contains('hidden')) void refreshLibraryList();
+  return true;
+}
+
+/** 指定スロットをcaptureDirtyMedia()で不可分に捕獲し、順にライブラリへ書き戻す。 */
+async function persistWorkerSlots(targetSlots: SlotId[]): Promise<void> {
+  if (!workerCoreProxy || targetSlots.length === 0) return;
+  let result: { captured: Array<{ slot: SlotId; bytes: ArrayBuffer | null }> };
+  try {
+    result = await workerCoreProxy.captureDirtyMedia({ slots: targetSlots });
+  } catch (err) {
+    console.error('Worker経路のダーティキャプチャに失敗しました。', err);
+    return;
+  }
+  for (const item of result.captured) {
+    await persistCapturedSlot(item.slot, item.bytes);
+  }
+}
+
+/** flushAllSlots()のWorker経路版。既定経路と違い実際にpostMessageの往復を伴うため、
+ * 呼び出し元がawaitできる形にしてある(restartCore()等、書き戻し完了を待ちたい場面向け)。
+ * 「終了flushはあくまで保険で、主役は定期保存」という既定経路の設計方針は変えない
+ * (このawaitできる形も、離脱時イベントへの依存を増やす意図ではなく、restartCore()が
+ * コアを破棄する前に書き戻しを完走させたいという既存の要請に応えるためのもの)。 */
+function flushAllSlotsWorker(): Promise<void> {
+  if (!workerCoreProxy) return Promise.resolve();
+  const dirty = workerLastDirty;
+  const targets: SlotId[] = [];
+  for (const slot of SLOT_IDS) {
+    const drive = fddDriveOf(slot);
+    const isDirty = drive === null ? dirty.hdd : (dirty.fddMask & (1 << drive)) !== 0;
+    if (isDirty) targets.push(slot);
+  }
+  return persistWorkerSlots(targets);
+}
+
+let workerAutoSaveRunning = false;
+let workerLastAutoSaveCheckAt = 0;
+
+/** pollAutoSave()のWorker経路版。既定経路と同じ間隔・静穏条件(FDD_QUIET_MS/
+ * HDD_MIN_INTERVAL_MS)を使う。bootWorkerCoreのframe eventハンドラから毎フレーム呼ぶ
+ * (Worker経路にはloop()に相当する周期処理が無いため、frame eventの到着そのものを
+ * 周期のトリガに使う。既定経路のpollDiskAccess()呼び出しと同じ考え方)。 */
+function pollWorkerAutoSave(now: number): void {
+  if (!workerCoreProxy || !running || workerAutoSaveRunning) return;
+  if (now - workerLastAutoSaveCheckAt < AUTOSAVE_POLL_MS) return;
+  workerLastAutoSaveCheckAt = now;
+  if (isFileManagerOpen()) return;
+
+  const dirty = workerLastDirty;
+  const targets: SlotId[] = [];
+  for (const slot of ['fdd0', 'fdd1'] as const) {
+    const drive = fddDriveOf(slot)!;
+    if ((dirty.fddMask & (1 << drive)) === 0) continue;
+    if (now - lastAccessAt[slot] < FDD_QUIET_MS) continue;
+    targets.push(slot);
+  }
+  if (dirty.hdd && now - lastHddSaveAt >= HDD_MIN_INTERVAL_MS) targets.push('hdd');
+  if (targets.length === 0) return;
+
+  workerAutoSaveRunning = true;
+  void (async () => {
+    try {
+      await persistWorkerSlots(targets);
+      if (targets.includes('hdd')) lastHddSaveAt = performance.now();
+    } finally {
+      workerAutoSaveRunning = false;
+    }
+  })();
+}
+
 // ページ離脱時の保険。beforeunload/unload は非同期処理を完走できず、モバイル Safari では
 // そもそも発火しないことがあるため、最後に信頼できる visibilitychange(hidden) で叩く。
 // ただし主役はあくまで上の定期保存で、こちらは取りこぼしを拾うだけ。
 document.addEventListener('visibilitychange', () => {
-  if (document.visibilityState === 'hidden') flushAllSlots();
+  if (document.visibilityState === 'hidden') {
+    if (urlWorkerMode) void flushAllSlotsWorker();
+    else flushAllSlots();
+  }
 });
 
 // iOS はアプリ切替/画面ロックで AudioContext を suspend し、復帰時に自動では

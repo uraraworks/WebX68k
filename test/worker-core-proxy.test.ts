@@ -121,6 +121,12 @@ function defaultAutoResponder(cmd: CoreCommand): WorkerToMain[] {
       return [{ ...base, ok: true, completedFrameNo: 0, result: undefined }];
     case 'readTextScreen':
       return [{ ...base, ok: true, completedFrameNo: 0, result: TEXT_SCREEN_STUB }];
+    case 'hotSwapFdd':
+      return [{ ...base, ok: true, completedFrameNo: 0, result: { previousImage: null, mountedPath: '/game/fdd0_x.xdf' } }];
+    case 'captureDirtyMedia':
+      return [{ ...base, ok: true, completedFrameNo: 0, result: { captured: [] } }];
+    case 'markDirty':
+      return [{ ...base, ok: true, completedFrameNo: 0, result: undefined }];
     default:
       return [];
   }
@@ -143,6 +149,27 @@ describe('WorkerCoreProxy', () => {
 
     expect(worker.sent.map((c) => c.op)).toEqual(['initialize', 'loadGame', 'fetchAvInfo', 'dispose']);
     expect(worker.terminated).toBe(true);
+  });
+
+  it('手順8: hotSwapFdd/captureDirtyMedia/markDirtyがcommand/responseとして往復する(proxyの結線のみ確認。不可分性そのものはtest/worker-dirty-capture.test.ts参照)', async () => {
+    const worker = new FakeWorker();
+    const proxy = new WorkerCoreProxy({ createWorker: () => worker });
+    await proxy.init(...(Object.values(makeBios()) as [Uint8Array, Uint8Array]));
+
+    const image = new Uint8Array([1, 2, 3]).buffer;
+    await expect(
+      proxy.hotSwapFdd({ drive: 0, image: { name: 'x.xdf', bytes: image } }),
+    ).resolves.toEqual({ previousImage: null, mountedPath: '/game/fdd0_x.xdf' });
+
+    await expect(proxy.captureDirtyMedia({ slots: ['fdd0', 'hdd'] })).resolves.toEqual({ captured: [] });
+    await expect(proxy.markDirty({ slots: ['fdd0'] })).resolves.toBeUndefined();
+
+    const ops = worker.sent.map((c) => c.op);
+    expect(ops).toContain('hotSwapFdd');
+    expect(ops).toContain('captureDirtyMedia');
+    expect(ops).toContain('markDirty');
+    const captureCmd = worker.sent.find((c) => c.op === 'captureDirtyMedia');
+    expect(captureCmd && 'payload' in captureCmd ? captureCmd.payload : null).toEqual({ slots: ['fdd0', 'hdd'] });
   });
 
   it('未実装のop(setCoreOption等)はUNSUPPORTEDでrejectする(手順5以降の宿題)', async () => {

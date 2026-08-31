@@ -2,14 +2,16 @@
 //
 // `?worker=1` のとき、この Worker 上のコアが本体そのものとして使われる(メインスレッド側には
 // もう1本のコアは立たない。src/main.ts 参照)。実装しているのは
-// initialize→ready / loadGame / fetchAvInfo / setRunning / readTextScreen / dispose の
-// command/response、映像を運ぶ frame event、バッファ返却、入力更新(INPUT_UPDATE_KIND、
-// 手順6)の4系統。
-// 音声・FDDホットマウント・SRAM・ステート保存/復元は今回のスコープ外で、
+// initialize→ready / loadGame / fetchAvInfo / setRunning / readTextScreen / dispose /
+// hotSwapFdd / captureDirtyMedia / markDirty の command/response、映像を運ぶ frame event、
+// バッファ返却、入力更新(INPUT_UPDATE_KIND、手順6)の系統。
+// 音声・SRAM・ステート保存/復元は今回のスコープ外で、
 // 该当opは引き続き UNSUPPORTED を返す(src/main.ts 側で「未対応」を利用者に見える形にする)。
 // マウスの閉ループ追従(手順6後半、2026-08-31実装)はこのファイル内で完結する(mouseTracker、
 // MOUSE_TRACK_UPDATE_KIND/MOUSE_TRACK_RESYNC_KIND ハンドラ参照。docs/STORAGE-SCSI.md
-// 「ワーカー移行 手順6後半」参照)。
+// 「ワーカー移行 手順6後半」参照)。FDD/MEMFSの不可分操作とオートセーブ(手順8、
+// 2026-08-31実装)は src/worker-dirty-capture.ts の WorkerMediaState、および
+// handleHotSwapFdd/handleCaptureDirtyMedia/handleMarkDirty 参照。
 //
 // 実コアの駆動には既存の LibretroHost / LocalCoreProxy をそのまま再利用する。
 // LibretroHost は内部で canvas.getContext('2d') / width / height / createImageData /
@@ -65,13 +67,14 @@ import {
   type InputUpdate,
   type WorkerToMain,
 } from './core-protocol';
-import { LocalCoreProxy } from './core-proxy';
+import { LocalCoreProxy, toOwnedArrayBuffer } from './core-proxy';
 import { LibretroHost } from './libretro-host';
 import { computeFrameBudget } from './frameBudget';
 import { FrameBufferPool, runTick } from './worker-drive-loop';
 import { WorkerInputState } from './worker-input';
 import { MouseTracker } from './mouse-track';
 import { initialTrackerState, trackKeyBufWrite, type KeyBufWriteTrackerState } from './keybuf-attribution';
+import { WorkerMediaState, type DiskSlotId } from './worker-dirty-capture';
 
 // --- DEV専用: 駆動ループ内訳プローブ (性能調査。既定off) --------------------------------
 //
@@ -279,6 +282,18 @@ function releaseBuffer(buffer: ArrayBuffer): void {
 // 結線だけを持つ。
 const workerInputState = new WorkerInputState();
 
+// --- FDD/MEMFSの不可分操作とオートセーブ (手順8) ------------------------------
+//
+// 「dirtyか読む→イメージを読み出す→dirtyを落とす」「Eject→旧内容回収→write→insert」の
+// 不可分性そのものは src/worker-dirty-capture.ts の WorkerMediaState に切り出してあり、
+// 単体テスト(test/worker-dirty-capture.test.ts)の対象にしてある(前例: 上記と同じ作法)。
+// ここでは実 host(LibretroHost)への結線と、initialize時のマウントパス登録だけを持つ。
+const mediaState = new WorkerMediaState();
+
+function slotForDrive(drive: 0 | 1): DiskSlotId {
+  return drive === 0 ? 'fdd0' : 'fdd1';
+}
+
 // --- マウス閉ループ追従 (手順6後半) -------------------------------------------
 //
 // 決定(docs/STORAGE-SCSI.md「ワーカー移行 手順6後半」): 閉ループ(cursor読み取り→差分計算→
@@ -458,9 +473,11 @@ function sendFrame(
     audio: { chunks: [], sampleFrames: 0 },
     disk: {
       access,
-      // dirty(オートセーブ用フラグ)の pull は今回のスコープ外
-      // (SRAM/ステート/FDDホットマウントと同じく未移行)。常に false で送る。
-      dirty: { fddMask: 0, hdd: false },
+      // 手順8: コア本体のダーティフラグ(host.readDirtyState())とJS側の影のフラグ
+      // (WorkerMediaState、永続化失敗時の再dirty化用)を合成して送る。main側はこれを
+      // 既定経路の host.readDirtyState() ポーリングと同じ扱いでオートセーブ判定に使う
+      // (src/main.ts の workerLastDirty 参照)。
+      dirty: mediaState.dirtyState(host.readDirtyState()),
     },
     poolMisses: framePool.misses,
   };
@@ -519,8 +536,9 @@ async function handleInitialize(
       }
     }
     // 初期ディスクのマウント(src/main.ts の bootCore() 末尾と同じ手順を Worker 内へ移した版)。
-    // FDDホットマウント(実行中の差し替え。今回のスコープ外)とは違い、起動前の1回きりの
-    // 書き込みなのでここで完結させる(InitPayload.initialDisks のコメント参照)。
+    // FDDホットマウント(実行中の差し替え。手順8でhandleHotSwapFddとして実装)とは違い、
+    // こちらは起動前の1回きりの書き込みなのでここで完結させる(InitPayload.initialDisks の
+    // コメント参照)。
     const disksBySlot = new Map(
       (payload.initialDisks ?? []).map((d) => [d.slot, d] as const),
     );
@@ -529,14 +547,21 @@ async function handleInitialize(
     const hdd = disksBySlot.get('hdd');
     const fdd0Path = fdd0 ? newHost.writeDiskImage(`fdd0_${fdd0.name}`, new Uint8Array(fdd0.bytes)) : '';
     const fdd1Path = fdd1 ? newHost.writeDiskImage(`fdd1_${fdd1.name}`, new Uint8Array(fdd1.bytes)) : '';
+    let hddPath = '';
     if (hdd) {
-      const hddPath = newHost.writeDiskImage(`hdd_${hdd.name}`, new Uint8Array(hdd.bytes));
+      hddPath = newHost.writeDiskImage(`hdd_${hdd.name}`, new Uint8Array(hdd.bytes));
       const iniText = `[WinX68k]\r\nHDD0=${hddPath}\r\n`;
       newHost.writeFile('/system/keropi/config', new TextEncoder().encode(iniText));
     }
     // px68k-libretro の "px68k <fd0> <fd1>" 形式(bootCore()と同じ)。空スロットは空文字列。
     const cmdText = `px68k "${fdd0Path}" "${fdd1Path}"\n`;
     newHost.writeFile('/game/boot.cmd', new TextEncoder().encode(cmdText));
+
+    // 手順8: 不可分キャプチャ/ホットマウント(WorkerMediaState)へ、起動時にマウントした
+    // 各スロットのFS上のパスを登録する(空スロットはnull)。
+    mediaState.setMountedPath('fdd0', fdd0 ? fdd0Path : null);
+    mediaState.setMountedPath('fdd1', fdd1 ? fdd1Path : null);
+    mediaState.setMountedPath('hdd', hdd ? hddPath : null);
 
     host = newHost;
     proxy = new LocalCoreProxy(newHost, { initialized: true });
@@ -643,6 +668,75 @@ function handleSetRunning(cmd: Extract<CoreCommand, { op: 'setRunning' }>): void
   running = payload.running;
   if (running) startDriveLoop();
   else stopDriveLoop();
+  post({ kind: 'response', generation, requestId, ok: true, completedFrameNo: frameNo, result: undefined });
+}
+
+/**
+ * 手順8: FDDホットマウント。WorkerMediaState#hotSwapFdd() 1回の同期呼び出しで
+ * Eject→旧内容回収→(新イメージがあれば)write→insert を完結させる(ファイル冒頭の
+ * mediaState コメント、src/worker-dirty-capture.ts 参照)。この関数自体はasyncだが、
+ * mediaState.hotSwapFdd() の呼び出し自体はawaitを挟まない同期呼び出しであり、
+ * その内部でretro_run()等が割り込む余地は無い(不可分性はここで保たれる)。
+ */
+function handleHotSwapFdd(cmd: Extract<CoreCommand, { op: 'hotSwapFdd' }>): void {
+  const { generation, requestId, payload } = cmd;
+  if (!host) {
+    post({
+      kind: 'response',
+      generation,
+      requestId,
+      ok: false,
+      error: createCoreError('INVALID_STATE', 'initialize が完了していません', { operation: 'hotSwapFdd' }),
+    });
+    return;
+  }
+  const slot = slotForDrive(payload.drive);
+  const image = payload.image ? { name: payload.image.name, bytes: new Uint8Array(payload.image.bytes) } : null;
+  const outcome = mediaState.hotSwapFdd(slot, payload.drive, image, host);
+  post({
+    kind: 'response',
+    generation,
+    requestId,
+    ok: true,
+    completedFrameNo: frameNo,
+    result: {
+      previousImage: outcome.previousImage ? toOwnedArrayBuffer(outcome.previousImage) : null,
+      mountedPath: outcome.mountedPath,
+    },
+  });
+}
+
+/**
+ * 手順8: 不可分ダーティキャプチャ。main が指定したスロットについて、
+ * 「イメージを読み出す」と「dirty(コア本体+影)を落とす」を1回の同期呼び出し内で
+ * 完結させる(WorkerMediaState#captureSlots()。ファイル冒頭コメント参照)。
+ */
+function handleCaptureDirtyMedia(cmd: Extract<CoreCommand, { op: 'captureDirtyMedia' }>): void {
+  const { generation, requestId, payload } = cmd;
+  if (!host) {
+    post({
+      kind: 'response',
+      generation,
+      requestId,
+      ok: false,
+      error: createCoreError('INVALID_STATE', 'initialize が完了していません', { operation: 'captureDirtyMedia' }),
+    });
+    return;
+  }
+  const captured = mediaState.captureSlots(payload.slots, host).map((entry) => ({
+    slot: entry.slot,
+    bytes: entry.bytes ? toOwnedArrayBuffer(entry.bytes) : null,
+  }));
+  post({ kind: 'response', generation, requestId, ok: true, completedFrameNo: frameNo, result: { captured } });
+}
+
+/**
+ * 手順8: 永続化(IndexedDBへの保存)が失敗したときの再dirty化。px68k本体にはフラグを外から
+ * 立てるAPIが無いため、WorkerMediaStateの影のフラグを立てるだけ(冪等。docs参照)。
+ */
+function handleMarkDirty(cmd: Extract<CoreCommand, { op: 'markDirty' }>): void {
+  const { generation, requestId, payload } = cmd;
+  mediaState.markDirty(payload.slots);
   post({ kind: 'response', generation, requestId, ok: true, completedFrameNo: frameNo, result: undefined });
 }
 
@@ -753,12 +847,24 @@ ctx.onmessage = (ev) => {
     case 'dispose':
       recordCommandTiming(cmd.op, commandStartAtMs, handleDispose(cmd));
       return;
-    // 以下は今回のスコープ外(音声・FDDホットマウント・SRAM・ステート保存/復元)。
-    // UNSUPPORTED を返す。main.ts 側で「?worker=1 では未対応」と利用者に見える形にする
-    // (無言のno-opにしない。docs/STORAGE-SCSI.md参照)。入力(手順6)は
-    // INPUT_UPDATE_KIND の専用メッセージへ移したため、この switch には含まれない
-    // (ctx.onmessage 冒頭の isInputUpdateMessage 分岐を参照)。
+    // 手順8(FDD/MEMFSの不可分操作とオートセーブ、docs/STORAGE-SCSI.md参照)。
     case 'hotSwapFdd':
+      handleHotSwapFdd(cmd);
+      recordCommandTiming(cmd.op, commandStartAtMs, undefined);
+      return;
+    case 'captureDirtyMedia':
+      handleCaptureDirtyMedia(cmd);
+      recordCommandTiming(cmd.op, commandStartAtMs, undefined);
+      return;
+    case 'markDirty':
+      handleMarkDirty(cmd);
+      recordCommandTiming(cmd.op, commandStartAtMs, undefined);
+      return;
+    // 以下は今回もスコープ外(音声・SRAM・ステート保存/復元)。UNSUPPORTED を返す。
+    // main.ts 側で「?worker=1 では未対応」と利用者に見える形にする(無言のno-opにしない。
+    // docs/STORAGE-SCSI.md参照)。入力(手順6)は INPUT_UPDATE_KIND の専用メッセージへ
+    // 移したため、この switch には含まれない(ctx.onmessage 冒頭の isInputUpdateMessage
+    // 分岐を参照)。
     case 'readMemory': {
       post({
         kind: 'response',

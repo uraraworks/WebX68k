@@ -177,6 +177,27 @@ export type CoreCommand =
       kind: 'command';
       generation: Generation;
       requestId: RequestId;
+      // 手順8(FDD/MEMFSの不可分操作とオートセーブ、docs/STORAGE-SCSI.md参照): 「dirtyか読む→
+      // イメージを読み出す→dirtyを落とす」を1つのcommandに折り畳んだもの。main側は
+      // 対象スロットを指定するだけで、読み出しとdirtyクリアはWorker内の1つのハンドラで
+      // 完結する(src/worker-dirty-capture.ts の WorkerMediaState#captureSlot 参照)。
+      op: 'captureDirtyMedia';
+      payload: CaptureDirtyMediaPayload;
+    }
+  | {
+      kind: 'command';
+      generation: Generation;
+      requestId: RequestId;
+      // 手順8: 永続化(IndexedDBへの保存)が失敗したとき、そのスロットのダーティフラグを
+      // 立て直す(再dirty化)。px68k本体にはフラグを外から立てるAPIが無いため、Worker側の
+      // 影のフラグ(WorkerMediaState#markDirty)を操作する(src/worker-dirty-capture.ts参照)。
+      op: 'markDirty';
+      payload: MarkDirtyPayload;
+    }
+  | {
+      kind: 'command';
+      generation: Generation;
+      requestId: RequestId;
       op: 'serialize' | 'readTextScreen' | 'screenshot';
       payload: Record<string, never>;
     }
@@ -440,6 +461,8 @@ export interface KeyBufFrameProbe {
 
 // --- command と不可分操作 -----------------------------------------------
 
+export type DiskSlotId = 'fdd0' | 'fdd1' | 'hdd';
+
 export interface HotSwapFddPayload {
   drive: 0 | 1;
   image: null | { name: string; bytes: ArrayBuffer };
@@ -454,13 +477,46 @@ export interface HotSwapFddResult {
  * Worker 内の一つの handler で完了させる不可分操作。
  * 交換: eject旧 → 旧イメージ読出し → 新イメージwrite → insert新
  * 排出: eject旧 → 旧イメージ読出し → 不要ファイルunlink
+ *
+ * 手順8実装時の訂正(docs/STORAGE-SCSI.md「ワーカー移行 手順8」参照): 実際に CoreCommand へ
+ * 足したのは `hotSwapFdd`(既存)と `captureDirtyMedia`/`markDirty` の3opのみ。
+ * `exportLiveMedia`/`flushAndClose` はここでは実装しなかった(前者はファイルマネージャ用の
+ * openSlotVolume()経由の吸い出しに相当し、今回の手順8のスコープ(hot swap/dirty
+ * capture/オートセーブ/終了flush)には含めていない。後者は「終了flush」に相当するが、
+ * 専用opは作らず既存の captureDirtyMedia を main側から呼ぶ形にした。理由は「離脱時
+ * イベントに保存を託さず平常時に短間隔で保存する」設計方針により、終了flushはあくまで
+ * 保険でしかないため、専用のcommandを増やすほどの理由がないと判断したため)。
+ * `finishDirtyCapture` はtoken方式(captureが返すtokenをfinishへ渡して照合する設計)を
+ * 想定していたが、実装では `markDirty(slots)` という slot 指定・token 無しの単純な形に
+ * 変えた。永続化の成否に関わらず「再dirty化」は単に対象スロットの影のフラグを立てる
+ * だけの操作であり(src/worker-dirty-capture.ts の WorkerMediaState 参照)、次に同じ
+ * スロットが captureDirtyMedia されるまで何度立てても副作用が無い(冪等)ため、
+ * 呼び出しの順序や重複を token で厳密に照合する必要が無いと判断した。
  */
 export type AtomicCommand =
   | { op: 'hotSwapFdd'; payload: HotSwapFddPayload }
-  | { op: 'exportLiveMedia'; payload: { slot: 'fdd0' | 'fdd1' | 'hdd' } }
-  | { op: 'captureDirtyMedia'; payload: { slots: Array<'fdd0' | 'fdd1' | 'hdd'> } }
+  | { op: 'exportLiveMedia'; payload: { slot: DiskSlotId } }
+  | { op: 'captureDirtyMedia'; payload: { slots: DiskSlotId[] } }
   | { op: 'finishDirtyCapture'; payload: { token: string; persisted: boolean } }
   | { op: 'flushAndClose'; payload: Record<string, never> };
+
+export interface CaptureDirtyMediaPayload {
+  slots: DiskSlotId[];
+}
+
+export interface CapturedMediaEntry {
+  slot: DiskSlotId;
+  /** マウントされていないスロットが指定された場合は null。 */
+  bytes: ArrayBuffer | null;
+}
+
+export interface CaptureDirtyMediaResult {
+  captured: CapturedMediaEntry[];
+}
+
+export interface MarkDirtyPayload {
+  slots: DiskSlotId[];
+}
 
 // --- proxy の公開形状 --------------------------------------------------
 
@@ -558,6 +614,11 @@ export function collectTransferables(
       case 'fetchAvInfo':
       case 'dispose':
       case 'readMemory':
+      // captureDirtyMedia/markDirty の payload はスロット名の配列だけで ArrayBuffer を
+      // 含まない(結果側の captured[].bytes だけが transferable。下の
+      // collectResultTransferables 参照)。
+      case 'captureDirtyMedia':
+      case 'markDirty':
         break;
       default: {
         const _exhaustive: never = message;
@@ -600,8 +661,9 @@ export function collectTransferables(
 
 /**
  * response.result は unknown なので op ごとの形は分からない。ただし transferable になり得る
- * 形は文書上限られている(ArrayBuffer 単体・ArrayBuffer|null・HotSwapFddResult)ので、
- * それらだけを構造で判定して拾う。未知の形は無視する(=素の値のまま構造化複製される)。
+ * 形は文書上限られている(ArrayBuffer 単体・ArrayBuffer|null・HotSwapFddResult・
+ * CaptureDirtyMediaResult)ので、それらだけを構造で判定して拾う。未知の形は無視する
+ * (=素の値のまま構造化複製される)。
  */
 function collectResultTransferables(_requestId: RequestId, result: unknown, out: Transferable[]): void {
   if (result instanceof ArrayBuffer) {
@@ -609,9 +671,14 @@ function collectResultTransferables(_requestId: RequestId, result: unknown, out:
     return;
   }
   if (result && typeof result === 'object') {
-    const r = result as Partial<HotSwapFddResult>;
+    const r = result as Partial<HotSwapFddResult> & Partial<CaptureDirtyMediaResult>;
     if ('previousImage' in r && (r.previousImage instanceof ArrayBuffer || r.previousImage === null)) {
       if (r.previousImage instanceof ArrayBuffer) out.push(r.previousImage);
+    }
+    if ('captured' in r && Array.isArray(r.captured)) {
+      for (const entry of r.captured) {
+        if (entry && entry.bytes instanceof ArrayBuffer) out.push(entry.bytes);
+      }
     }
   }
 }
