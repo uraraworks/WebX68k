@@ -51,7 +51,8 @@ import {
   type InitialDiskInput,
   type LibretroHostProxy,
 } from './core-proxy';
-import type { CoreEvent, FrameSnapshot, InputUpdate } from './core-protocol';
+import type { CoreEvent, FrameSnapshot } from './core-protocol';
+import { MainInputSnapshot } from './worker-input';
 import {
   parseAspectModeParam,
   parseCpuSpeedParam,
@@ -653,27 +654,17 @@ btnGamepad.addEventListener('click', () => gamepadDialog.open());
 // 避けるため。urlWorkerMode は起動時に固定される定数なので、既定経路(urlWorkerMode===false)
 // では常に host 分岐だけが通り、挙動は変わらない。
 //
-// workerInput: Worker経路でのみ使う、main側が保持する入力スナップショット。frame event契機
-// (未決事項の1つだった「ゲームパッドをどう poll するか」への回答。docs参照)で1回だけ
-// 正規化・合成してWorkerへ送る。mouseDelta/keyMakesは送信のたびに main 側でゼロ/空へ戻す
-// (加算値・追加注入分であり、状態ではないため)。
-const workerInput = {
-  keys: new Set<number>(),
-  pads: [0, 0] as [number, number],
-  mouseButtonLeft: false,
-  mouseButtonRight: false,
-  mouseDeltaX: 0,
-  mouseDeltaY: 0,
-  keyMakes: [] as number[],
-  /** blur/visibility(hidden)のたびに進める入力世代。Worker側は古い世代の更新を無視する
-   * (決定「世代付き clear」)。 */
-  generation: 0,
-};
+// workerInput: Worker経路でのみ使う、main側が保持する入力スナップショット。実体は
+// src/worker-input.ts の MainInputSnapshot(DOM/hostに依存しない純粋な状態機械。
+// WorkerInputStateと対になっており、単体テスト(test/worker-input.test.ts)の対象にしてある)。
+// frame event契機(未決事項の1つだった「ゲームパッドをどう poll するか」への回答。docs参照)で
+// 1回だけ正規化・合成してWorkerへ送る。mouseDelta/keyMakesは送信(take())のたびに
+// MainInputSnapshot内部でゼロ/空へ戻る(加算値・追加注入分であり、状態ではないため)。
+const workerInput = new MainInputSnapshot();
 
 function applyKey(retrok: number, down: boolean): void {
   if (urlWorkerMode) {
-    if (down) workerInput.keys.add(retrok);
-    else workerInput.keys.delete(retrok);
+    workerInput.key(retrok, down);
     return;
   }
   host?.setKey(retrok, down);
@@ -682,7 +673,7 @@ function applyKey(retrok: number, down: boolean): void {
 /** KeyRepeaterからの、押下状態を変えないmake注入。 */
 function applyKeyMake(retrok: number): void {
   if (urlWorkerMode) {
-    workerInput.keyMakes.push(retrok);
+    workerInput.keyMake(retrok);
     return;
   }
   host?.sendKeyMake(retrok);
@@ -690,8 +681,7 @@ function applyKeyMake(retrok: number): void {
 
 function applyMouseDelta(dx: number, dy: number): void {
   if (urlWorkerMode) {
-    workerInput.mouseDeltaX += dx;
-    workerInput.mouseDeltaY += dy;
+    workerInput.mouseDelta(dx, dy);
     return;
   }
   host?.addMouseDelta(dx, dy);
@@ -699,8 +689,7 @@ function applyMouseDelta(dx: number, dy: number): void {
 
 function applyMouseButton(button: 'left' | 'right', down: boolean): void {
   if (urlWorkerMode) {
-    if (button === 'left') workerInput.mouseButtonLeft = down;
-    else workerInput.mouseButtonRight = down;
+    workerInput.mouseButton(button, down);
     return;
   }
   host?.setMouseButton(button, down);
@@ -708,31 +697,20 @@ function applyMouseButton(button: 'left' | 'right', down: boolean): void {
 
 function applyJoyState(port: 0 | 1, bits: number): void {
   if (urlWorkerMode) {
-    workerInput.pads[port] = bits;
+    workerInput.joyState(port, bits);
     return;
   }
   host?.setJoyState(port, bits);
 }
 
 /**
- * workerInput の現在値を InputUpdate として Worker へ送り、加算値(mouseDelta)・
- * 追加注入分(keyMakes)を送信後にクリアする(main 側の責務。決定「加算 mouseDelta」参照)。
+ * workerInput.take() が作った InputUpdate を Worker へ送る(take() 自体が加算値(mouseDelta)・
+ * 追加注入分(keyMakes)を送信相当のタイミングでクリアする。決定「加算 mouseDelta」参照)。
  * Worker経路以外(既定経路)では何もしない。
  */
 function sendWorkerInputUpdate(): void {
   if (!urlWorkerMode || !workerCoreProxy) return;
-  const update: InputUpdate = {
-    keys: Array.from(workerInput.keys),
-    pads: [workerInput.pads[0], workerInput.pads[1]],
-    mouseButtons: { left: workerInput.mouseButtonLeft, right: workerInput.mouseButtonRight },
-    mouseDelta: { dx: workerInput.mouseDeltaX, dy: workerInput.mouseDeltaY },
-    inputGeneration: workerInput.generation,
-    keyMakes: workerInput.keyMakes,
-  };
-  workerCoreProxy.sendInput(update);
-  workerInput.mouseDeltaX = 0;
-  workerInput.mouseDeltaY = 0;
-  workerInput.keyMakes = [];
+  workerCoreProxy.sendInput(workerInput.take());
 }
 
 /**
@@ -744,15 +722,7 @@ function sendWorkerInputUpdate(): void {
  */
 function clearWorkerInputGeneration(): void {
   if (!urlWorkerMode || !workerCoreProxy) return;
-  workerInput.generation++;
-  workerInput.keys.clear();
-  workerInput.pads[0] = 0;
-  workerInput.pads[1] = 0;
-  workerInput.mouseButtonLeft = false;
-  workerInput.mouseButtonRight = false;
-  workerInput.mouseDeltaX = 0;
-  workerInput.mouseDeltaY = 0;
-  workerInput.keyMakes = [];
+  workerInput.bumpGeneration();
   sendWorkerInputUpdate();
 }
 

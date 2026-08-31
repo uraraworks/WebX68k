@@ -1,16 +1,24 @@
-// Worker側入力適用の純粋ロジック(段階移行 手順6「入力」)。
+// 入力(段階移行 手順6)の main 側/Worker 側それぞれの純粋ロジックの対。
 //
-// core-worker.ts 自体は実Workerグローバル(self/OffscreenCanvas/fetch)に依存するため、
+// - MainInputSnapshot: main 側(src/main.ts)が保持する入力スナップショット。DOM/Gamepad の
+//   実イベントにも host(LibretroHost)にも依存しない。applyKey等の中央関数(main.ts)から
+//   呼ばれ、frame event契機で take() が呼ばれて送信用の InputUpdate を作る。
+// - WorkerInputState: Worker側(src/core-worker.ts)が保持する「最後に適用したコア入力状態」。
+//   受信した InputUpdate を host(LibretroHost)へ適用する。
+//
+// どちらも実Workerグローバル(self/OffscreenCanvas/fetch)やDOMに依存しないため、
 // 前例(src/worker-drive-loop.ts、test/core-worker-build-format.test.ts参照)と同様、
-// ここではグローバルに依存しない「受信したInputUpdateをコア入力状態へ適用する」部分だけを
-// 切り出し、実行可能なテスト対象にする。
+// ロジックだけを切り出して実行可能なテスト対象にしてある。
 //
 // docs/STORAGE-SCSI.md「ワーカー移行 手順6」の決定:
 // - 世代付きclear: 受信したinputGenerationが保持値より小さければ丸ごと無視する。大きければ、
-//   適用前にコア入力状態を先に完全にクリアしてから適用する(押しっぱなし固着の予防)。
-// - 加算mouseDelta: host.addMouseDelta()自体が端数繰り越しを持つ(src/libretro-host.ts)ため、
-//   ここでは受け取った値をそのまま渡すだけでよい。
-// - keyMakes(決定8): 押下状態を変えず、KeyRepeaterのmakeだけを追加で注入する。
+//   適用前にコア入力状態を先に完全にクリアしてから適用する(押しっぱなし固着の予防)。main側も
+//   blur/visibility(hidden)で同様に世代を進め、スナップショットを全クリアしてから送信する。
+// - 加算mouseDelta: main側は前回送信からの累積を持ち、take()(=送信)のたびにゼロへ戻す。
+//   Worker側はhost.addMouseDelta()にそのまま渡すだけでよい(端数繰り越しはhost側が持つ。
+//   src/libretro-host.ts参照)。
+// - keyMakes(決定8): 押下状態を変えず、KeyRepeaterのmakeだけを追加で注入する。main側は
+//   take()のたびに空へ戻す(mouseDeltaと同じ「加算値・追加注入分であり状態ではない」扱い)。
 
 import type { InputUpdate } from './core-protocol';
 
@@ -80,5 +88,94 @@ export class WorkerInputState {
     host.setJoyState(0, 0);
     host.setJoyState(1, 0);
     host.clearMouseState();
+  }
+}
+
+/**
+ * main 側が保持する「次に送る入力更新」のスナップショット。DOM/Gamepad の実イベントにも
+ * host(LibretroHost、既定経路専用)にも依存しない純粋な状態機械で、src/main.ts の
+ * applyKey/applyKeyMake/applyMouseDelta/applyMouseButton/applyJoyState(urlWorkerMode時)から
+ * 呼ばれる。
+ *
+ * mouseDelta と keyMakes は「加算値・追加注入分」であり、状態そのものではない。
+ * そのため take() は送信用の InputUpdate を作ると同時に、この2つだけをリセットする
+ * (keys/pads/mouseButtons/generation は状態なので take() では変えない)。
+ */
+export class MainInputSnapshot {
+  private keys = new Set<number>();
+  private pads: [number, number] = [0, 0];
+  private mouseButtonLeft = false;
+  private mouseButtonRight = false;
+  private mouseDeltaX = 0;
+  private mouseDeltaY = 0;
+  private keyMakes: number[] = [];
+  /** blur/visibility(hidden)のたびに進める入力世代。Worker側は古い世代の更新を無視する
+   * (決定「世代付き clear」)。 */
+  private generation = 0;
+
+  /** テスト・診断用。 */
+  get currentGeneration(): number {
+    return this.generation;
+  }
+
+  key(retrok: number, down: boolean): void {
+    if (down) this.keys.add(retrok);
+    else this.keys.delete(retrok);
+  }
+
+  /** KeyRepeaterからの、押下状態を変えないmake注入。 */
+  keyMake(retrok: number): void {
+    this.keyMakes.push(retrok);
+  }
+
+  mouseDelta(dx: number, dy: number): void {
+    this.mouseDeltaX += dx;
+    this.mouseDeltaY += dy;
+  }
+
+  mouseButton(button: 'left' | 'right', down: boolean): void {
+    if (button === 'left') this.mouseButtonLeft = down;
+    else this.mouseButtonRight = down;
+  }
+
+  joyState(port: 0 | 1, bits: number): void {
+    this.pads[port] = bits;
+  }
+
+  /**
+   * blur/visibility(hidden)専用: 入力世代を進め、押下状態・パッド・ボタン・加算値・
+   * 追加注入分をすべて初期状態へ戻す(決定「世代付き clear」。Worker側は世代が上がった
+   * 更新を適用する前にコア側の状態を先に完全クリアする。src/core-worker.ts参照)。
+   */
+  bumpGeneration(): void {
+    this.generation++;
+    this.keys.clear();
+    this.pads[0] = 0;
+    this.pads[1] = 0;
+    this.mouseButtonLeft = false;
+    this.mouseButtonRight = false;
+    this.mouseDeltaX = 0;
+    this.mouseDeltaY = 0;
+    this.keyMakes = [];
+  }
+
+  /**
+   * 送信用の InputUpdate を作って返す。同時に、加算値(mouseDelta)と追加注入分(keyMakes)を
+   * ゼロ/空へ戻す(main側の責務。決定「加算 mouseDelta」参照)。keys/pads/mouseButtons/
+   * generationは状態であり、送信のたびに消えるものではないため変更しない。
+   */
+  take(): InputUpdate {
+    const update: InputUpdate = {
+      keys: Array.from(this.keys),
+      pads: [this.pads[0], this.pads[1]],
+      mouseButtons: { left: this.mouseButtonLeft, right: this.mouseButtonRight },
+      mouseDelta: { dx: this.mouseDeltaX, dy: this.mouseDeltaY },
+      inputGeneration: this.generation,
+      keyMakes: this.keyMakes,
+    };
+    this.mouseDeltaX = 0;
+    this.mouseDeltaY = 0;
+    this.keyMakes = [];
+    return update;
   }
 }

@@ -3080,21 +3080,28 @@ Worker側(`src/core-worker.ts`)は `INPUT_UPDATE_KIND` のメッセージを、�
 ### 追加・変更したファイル
 
 - `src/core-protocol.ts`: `INPUT_UPDATE_KIND`/`InputUpdateMessage`/`isInputUpdateMessage`を追加。`CoreCommand`から`updateInput` opを削除。`InputUpdate`に`keyMakes: number[]`を追加。
-- `src/worker-input.ts`(新規): `WorkerInputState`(世代付きclearと差分適用の純粋ロジック)、`InputHost`(必要最小限の構造型)。
+- `src/worker-input.ts`(新規、2026-08-31訂正版): `WorkerInputState`(Worker側。世代付きclearと差分適用の純粋ロジック)、`InputHost`(必要最小限の構造型)に加え、`MainInputSnapshot`(main側。DOM/hostに依存しない入力スナップショット。keys/pads/mouseButtons/mouseDelta/keyMakes/generationを保持し、`take()`が送信用`InputUpdate`を作ると同時に加算値mouseDeltaと追加注入分keyMakesをゼロ/空へ戻す)を追加。
 - `src/core-worker.ts`: `ctx.onmessage`に`isInputUpdateMessage`分岐を追加。`applyInputUpdate()`が`WorkerInputState`へ委譲。`updateInput`のUNSUPPORTEDケースを削除。ファイル冒頭コメントを更新。
 - `src/core-proxy.ts`: `WorkerCoreProxy#sendInput()`を追加(fire-and-forget)。「proxyに載せなかった既存メソッド」コメントを更新。
-- `src/main.ts`: `applyKey`/`applyKeyMake`/`applyMouseDelta`/`applyMouseButton`/`applyJoyState`/`sendWorkerInputUpdate`/`clearWorkerInputGeneration`を新設。`sharedKeyInput`/`keyRepeater`のコールバック、blur/visibilitychangeハンドラ、canvasのmousemove/mousedown、windowのmouseup、`bridgeHost`の`mouseMove`/`mouseButton`/`typeText`、DEV専用`__webx68kDebug`の`moveMouse`/`mouseButton`をこれらの中央関数経由に変更。`bootWorkerCore()`の`frame`イベント処理にゲームパッド合成・送信を追加。`warnWorkerModeUnsupported()`と起動時トーストの文言を更新(「入力」を外し、マウス閉ループ追従を明記)。
+- `src/main.ts`: `applyKey`/`applyKeyMake`/`applyMouseDelta`/`applyMouseButton`/`applyJoyState`/`sendWorkerInputUpdate`/`clearWorkerInputGeneration`を新設。`sharedKeyInput`/`keyRepeater`のコールバック、blur/visibilitychangeハンドラ、canvasのmousemove/mousedown、windowのmouseup、`bridgeHost`の`mouseMove`/`mouseButton`/`typeText`、DEV専用`__webx68kDebug`の`moveMouse`/`mouseButton`をこれらの中央関数経由に変更。`bootWorkerCore()`の`frame`イベント処理にゲームパッド合成・送信を追加。`warnWorkerModeUnsupported()`と起動時トーストの文言を更新(「入力」を外し、マウス閉ループ追従を明記)。**2026-08-31訂正で**、main側が保持していた生の入力スナップショット(`workerInput`オブジェクトリテラルと各中央関数の内部実装)を`src/worker-input.ts`の`MainInputSnapshot`クラスへ切り出し、`main.ts`側はこのクラスのメソッド呼び出しに置き換えた(既定経路(`urlWorkerMode`による分岐)自体は変えていない)。
 - `src/strings.ts`: `workerModeUnsupported`(ja/en)の文言を更新。
 - `test/core-protocol.test.ts`: `isInputUpdateMessage`の型ガードテストを追加。
 - `test/worker-core-proxy.test.ts`: `sendInput()`が一方向メッセージとして送られること、dispose後は送らないことのテストを追加。`FakeWorker.postMessage`に`INPUT_UPDATE_KIND`の早期returnを追加。
-- `test/worker-input.test.ts`(新規): `WorkerInputState`の単体テスト8件。
+- `test/worker-input.test.ts`(新規、2026-08-31訂正で`MainInputSnapshot`のテスト6件を追加): `WorkerInputState`の単体テスト8件+`MainInputSnapshot`の単体テスト6件=計14件。
 
 ### テストと故障注入の結果
 
-`npx tsc --noEmit`・`npm test`とも通過(561件、既存550件+新規11件)。故障注入(陽性対照)は`test/worker-input.test.ts`に対して実施し、いずれも一時的に実装を壊して該当テストがredになることを確認してから元に戻した(diffで完全に元通りであることを確認済み):
+`npx tsc --noEmit`・`npm test`とも通過(実装時点で561件、既存550件+新規11件)。故障注入(陽性対照)は`test/worker-input.test.ts`に対して実施し、いずれも一時的に実装を壊して該当テストがredになることを確認してから元に戻した(diffで完全に元通りであることを確認済み):
 
 - (a) `WorkerInputState.apply()`の世代チェック(`if (update.inputGeneration < this.generation) return;`)を削除 → 「古い世代の更新は丸ごと無視される」テストがred(本来空のはずの`host.calls`に6件のメソッド呼び出しが記録され、`host.pads`が古い世代の値`[7,7]`で上書きされた)。
-- (b) 世代が上がる際のクリア呼び出し(`this.clear(host)`)を削除 → 「世代が上がる更新は、適用前にコア入力状態を完全クリアしてから適用する」テストがred(`setKey(1,false)`/`setKey(2,false)`/`clearMouseState()`が一切呼ばれず、`indexOf`が`-1`を返した)。
+- (b') 世代が上がる際のクリア呼び出し(`this.clear(host)`)を削除 → 「世代が上がる更新は、適用前にコア入力状態を完全クリアしてから適用する」テストがred(`setKey(1,false)`/`setKey(2,false)`/`clearMouseState()`が一切呼ばれず、`indexOf`が`-1`を返した)。
+
+**訂正(2026-08-31、コーディネータ指摘)**: 上の(b')は当初「指示された故障注入(b)」として報告したが、実際に指示されていたのは「main側のmouseDeltaゼロクリアを外す」検査であり、(b')(Worker側`WorkerInputState`の世代クリア削除)は別物だった。指摘を受け、`src/worker-input.ts`から`MainInputSnapshot`を切り出したうえで、指示どおりの故障注入を追加実施した(いずれも一時的に注入しredを確認後、元に戻した。diffで完全に元通りであることを確認済み):
+
+- (b1) `MainInputSnapshot.take()`内、mouseDeltaのゼロクリア(`this.mouseDeltaX = 0; this.mouseDeltaY = 0;`)を削除 → 「take()後、mouseDeltaは0/0に戻る」テストがred(2回目の`take()`が`{dx:10,dy:20}`を返し、期待値`{dx:0,dy:0}`と食い違った)。
+- (b2) `MainInputSnapshot.take()`内、keyMakesのクリア(`this.keyMakes = [];`)を削除 → 「take()後、keyMakesは空になる」テストがred(2回目の`take()`が`[1,2]`を返し、期待値`[]`と食い違った)。
+
+再訂正後の合計: `npx tsc --noEmit`・`npm test`とも通過(567件、当初561件+`MainInputSnapshot`テスト6件)。
 
 ### 今回できなかったこと・未確認のこと
 
