@@ -67,6 +67,16 @@ describe('Worker生成のビルド形式(静的検査)', () => {
     expect(code).toMatch(/\(0,\s*eval\)\(/);
   });
 
+  it('core-worker.ts の tick() は runTick() にWORKER_MAX_FRAMES_PER_TICKを渡している', () => {
+    // 2026-08-31: Worker注入レイテンシ対策(1tickあたりの連続実行フレーム数上限)の配線が
+    // 外れると、runTick()自体の単体テスト(test/worker-drive-loop.test.ts)は落ちない
+    // (runTick()は引数を渡されなければ従来どおり無制限に動くだけの正しい関数のため)。
+    // 配線忘れ自体を検出するには実ファイルを読むしかない(core-worker.tsは前例(このファイル
+    // 冒頭コメント参照)によりvitestから直接importしない)。
+    const code = stripComments(readSrc('src/core-worker.ts'));
+    expect(code).toMatch(/runTick\(\s*dt[\s\S]*?WORKER_MAX_FRAMES_PER_TICK\s*\)/);
+  });
+
   it('陽性対照: 検出ロジック自体は悪い形を実際に落とせる(合成ソースで確認)', () => {
     // 上のテストが「常にpass」する壊れた検査になっていないことを、実ファイルではなく
     // 合成した文字列で確認する(本物のファイルを一時的に壊す代わりに、ここでロジックだけ検証)。

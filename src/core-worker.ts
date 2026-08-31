@@ -65,7 +65,7 @@ import {
 import { LocalCoreProxy } from './core-proxy';
 import { LibretroHost } from './libretro-host';
 import { computeFrameBudget } from './frameBudget';
-import { FrameBufferPool, runTick } from './worker-drive-loop';
+import { FrameBufferPool, runTick, WORKER_MAX_FRAMES_PER_TICK } from './worker-drive-loop';
 import { WorkerInputState } from './worker-input';
 import { initialTrackerState, trackKeyBufWrite, type KeyBufWriteTrackerState } from './keybuf-attribution';
 
@@ -339,7 +339,7 @@ function tick(): void {
     frameNo++;
     // runFrame() 直後でないとコア側がクリアしてしまう(LibretroHost#readDiskAccessのコメント参照)。
     return currentHost.readDiskAccess();
-  });
+  }, WORKER_MAX_FRAMES_PER_TICK);
   accumulator = result.accumulator;
 
   let convertMs: number | null = null;
