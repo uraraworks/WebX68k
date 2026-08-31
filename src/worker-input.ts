@@ -42,6 +42,16 @@ export interface InputHost {
 export class WorkerInputState {
   private generation = 0;
   private appliedKeys = new Set<number>();
+  // 2026-08-31三訂正(「break側の帰属が壊れている」の修正、docs/STORAGE-SCSI.md参照):
+  // 帰属計測(inputApplyFrameNo)は「実際に何か状態が変わったapply()呼び出し」だけを
+  // 記録したい。sendWorkerInputUpdate()はframe event契機で(ゲームパッド未接続・
+  // マウス未操作でも)毎フレーム無条件に呼ばれる片道メッセージで、内容が前回と同じ
+  // ことが大半のため、host.setJoyState()/setMouseButton()自体は従来どおり毎回
+  // 呼ぶが(既存の副作用タイミングは変えない)、「本当に変わったか」を判定するために
+  // 直近に適用したpads/mouseButtonsをここに保持しておく。
+  private appliedPads: [number, number] = [0, 0];
+  private appliedMouseLeft = false;
+  private appliedMouseRight = false;
 
   /** テスト・診断用。 */
   get currentGeneration(): number {
@@ -53,38 +63,76 @@ export class WorkerInputState {
     return this.appliedKeys;
   }
 
-  apply(update: InputUpdate, host: InputHost): void {
-    if (update.inputGeneration < this.generation) return; // 古い世代は丸ごと無視する。
+  /**
+   * @returns この呼び出しで実際にコア入力状態が変化したか(世代の切り替わり、keyの
+   *   押下/解放、pads/mouseButtonsの値変化、mouseDeltaの非ゼロ、keyMakesの送出の
+   *   いずれか)。呼び出し側(src/core-worker.ts)はこれを使って、帰属計測用の
+   *   「実際に適用された瞬間のframeNo」を、内容の変わらない連続送信では上書きしない
+   *   ようにする(2026-08-31三訂正: 旧実装はこの戻り値が無く、無条件に「適用した」と
+   *   みなしていたため、frame event契機の毎フレーム送信(内容不変がほとんど)のたびに
+   *   帰属計測の基準時刻が上書きされ続け、検出が遅れがちなbreak側で
+   *   `writeFrameNo < applyFrameNo`という定義上ありえない負値を生んでいた。
+   *   makeは検出が速いため実害が出にくかっただけで、同じ欠陥を抱えていた)。
+   */
+  apply(update: InputUpdate, host: InputHost): boolean {
+    let changed = false;
+    if (update.inputGeneration < this.generation) return false; // 古い世代は丸ごと無視する。
     if (update.inputGeneration > this.generation) {
       // 世代が上がる更新を適用する前に、コア側の状態を先に完全クリアする(決定「世代付き clear」)。
       this.clear(host);
       this.generation = update.inputGeneration;
+      changed = true; // 世代の切り替わり(clear)自体を状態変化として数える。
     }
 
     const nextKeys = new Set(update.keys);
     for (const retrok of this.appliedKeys) {
-      if (!nextKeys.has(retrok)) host.setKey(retrok, false);
+      if (!nextKeys.has(retrok)) {
+        host.setKey(retrok, false);
+        changed = true;
+      }
     }
     for (const retrok of nextKeys) {
-      if (!this.appliedKeys.has(retrok)) host.setKey(retrok, true);
+      if (!this.appliedKeys.has(retrok)) {
+        host.setKey(retrok, true);
+        changed = true;
+      }
     }
     this.appliedKeys = nextKeys;
 
+    if (this.appliedPads[0] !== update.pads[0] || this.appliedPads[1] !== update.pads[1]) changed = true;
+    this.appliedPads = [update.pads[0], update.pads[1]];
     host.setJoyState(0, update.pads[0]);
     host.setJoyState(1, update.pads[1]);
+
+    if (
+      this.appliedMouseLeft !== update.mouseButtons.left ||
+      this.appliedMouseRight !== update.mouseButtons.right
+    ) {
+      changed = true;
+    }
+    this.appliedMouseLeft = update.mouseButtons.left;
+    this.appliedMouseRight = update.mouseButtons.right;
     host.setMouseButton('left', update.mouseButtons.left);
     host.setMouseButton('right', update.mouseButtons.right);
+
     // 加算 delta: 同じ世代の mouse delta は受信順に加算する(docs参照)。0/0は呼ばなくてよい。
     if (update.mouseDelta.dx !== 0 || update.mouseDelta.dy !== 0) {
       host.addMouseDelta(update.mouseDelta.dx, update.mouseDelta.dy);
+      changed = true;
     }
     // KeyRepeaterのmake注入(決定8)。押下状態は変えず、makeだけを追加で送る。
     for (const retrok of update.keyMakes) host.sendKeyMake(retrok);
+    if (update.keyMakes.length > 0) changed = true;
+
+    return changed;
   }
 
   private clear(host: InputHost): void {
     for (const retrok of this.appliedKeys) host.setKey(retrok, false);
     this.appliedKeys = new Set();
+    this.appliedPads = [0, 0];
+    this.appliedMouseLeft = false;
+    this.appliedMouseRight = false;
     host.setJoyState(0, 0);
     host.setJoyState(1, 0);
     host.clearMouseState();

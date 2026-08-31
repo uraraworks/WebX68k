@@ -277,10 +277,16 @@ const workerInputState = new WorkerInputState();
 
 function applyInputUpdate(update: InputUpdate): void {
   if (!host) return; // initialize前に届いた更新は捨てる(送信元は起動後にしか送らない想定)。
-  workerInputState.apply(update, host);
-  // 帰属計測(2026-08-31再訂正): 実際に適用した瞬間のframeNoをWorker自身の単一クロックで
-  // 記録する。DEVかつプローブ有効時のみ(既存フックと同じ作法。ファイル冒頭コメント参照)。
-  if (import.meta.env.DEV && keyBufProbeEnabled) lastInputApplyFrameNo = frameNo;
+  const changed = workerInputState.apply(update, host);
+  // 帰属計測(2026-08-31三訂正、「break側の帰属が壊れている」の修正、
+  // docs/STORAGE-SCSI.md参照): 実際に何か状態が変わったapply()呼び出しのときだけ、
+  // 適用した瞬間のframeNoをWorker自身の単一クロックで記録する。DEVかつプローブ有効時のみ
+  // (既存フックと同じ作法。ファイル冒頭コメント参照)。changedを見ずに毎回上書きすると、
+  // frame event契機で内容不変のまま毎フレーム届く連続送信(ゲームパッド未接続時のjoyState等)
+  // によって、この値が実質「現在のframeNo」を追い続けるだけになり、検出が遅れがちな
+  // break側で書き込みフレームより後に見える(writeFrameNo<applyFrameNoという定義上
+  // ありえない負値になる)欠陥があった。
+  if (import.meta.env.DEV && keyBufProbeEnabled && changed) lastInputApplyFrameNo = frameNo;
 }
 
 // --- 駆動ループ (手順7) ------------------------------------------------------

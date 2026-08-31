@@ -186,6 +186,96 @@ describe('WorkerInputState.apply', () => {
   });
 });
 
+// apply()の戻り値(changed): 2026-08-31三訂正(「break側の帰属が壊れている」の修正、
+// docs/STORAGE-SCSI.md参照)。src/core-worker.tsはこの戻り値を使って、帰属計測用の
+// 「実際に適用された瞬間のframeNo」を、内容の変わらない連続送信では上書きしないように
+// している。frame event契機の毎フレーム送信(ゲームパッド未接続・マウス未操作なら内容不変)が
+// 継続する中でも、実際に意味のある変化(keydown/keyup/keyMake/pads/mouseButtons/mouseDelta)
+// があった呼び出しだけがtrueを返すことを検証する。
+describe('WorkerInputState.apply の戻り値(changed)', () => {
+  it('keyの押下/解放を伴う適用はtrueを返す', () => {
+    const state = new WorkerInputState();
+    const host = new FakeInputHost();
+    expect(state.apply(makeUpdate({ keys: [1] }), host)).toBe(true);
+    expect(state.apply(makeUpdate({ keys: [] }), host)).toBe(true); // 1のrelease
+  });
+
+  it('前回と全く同じ内容(keys/pads/mouseButtons/mouseDelta=0/0/keyMakes=空)の適用はfalseを返す(sticky維持の土台)', () => {
+    const state = new WorkerInputState();
+    const host = new FakeInputHost();
+    // 1回目: keyの押下を含むので当然true。
+    expect(state.apply(makeUpdate({ keys: [1], pads: [3, 4] }), host)).toBe(true);
+    // 2回目以降: frame event契機の毎フレーム送信を模して、内容が完全に同じupdateを
+    // 繰り返し適用しても、何も変わっていないのでfalseになる
+    // (これがcore-worker.tsのlastInputApplyFrameNoを上書きしない根拠になる)。
+    expect(state.apply(makeUpdate({ keys: [1], pads: [3, 4] }), host)).toBe(false);
+    expect(state.apply(makeUpdate({ keys: [1], pads: [3, 4] }), host)).toBe(false);
+    expect(state.apply(makeUpdate({ keys: [1], pads: [3, 4] }), host)).toBe(false);
+  });
+
+  it('padsの値が変化した適用はtrueを返す', () => {
+    const state = new WorkerInputState();
+    const host = new FakeInputHost();
+    expect(state.apply(makeUpdate({ pads: [0, 0] }), host)).toBe(false); // 初期値と同じ(0,0)
+    expect(state.apply(makeUpdate({ pads: [1, 0] }), host)).toBe(true);
+    expect(state.apply(makeUpdate({ pads: [1, 0] }), host)).toBe(false); // 変化なし
+  });
+
+  it('mouseButtonsの値が変化した適用はtrueを返す', () => {
+    const state = new WorkerInputState();
+    const host = new FakeInputHost();
+    expect(state.apply(makeUpdate({ mouseButtons: { left: false, right: false } }), host)).toBe(false);
+    expect(state.apply(makeUpdate({ mouseButtons: { left: true, right: false } }), host)).toBe(true);
+    expect(state.apply(makeUpdate({ mouseButtons: { left: true, right: false } }), host)).toBe(false);
+  });
+
+  it('mouseDeltaが非ゼロの適用はtrueを返す(0/0はfalse)', () => {
+    const state = new WorkerInputState();
+    const host = new FakeInputHost();
+    expect(state.apply(makeUpdate({ mouseDelta: { dx: 0, dy: 0 } }), host)).toBe(false);
+    expect(state.apply(makeUpdate({ mouseDelta: { dx: 1, dy: 0 } }), host)).toBe(true);
+  });
+
+  it('keyMakesを含む適用はtrueを返す(押下状態自体は変わらなくても)', () => {
+    const state = new WorkerInputState();
+    const host = new FakeInputHost();
+    expect(state.apply(makeUpdate({ keyMakes: [10] }), host)).toBe(true);
+  });
+
+  it('世代が上がる更新(クリアを伴う)はtrueを返す。古い世代は無視されfalseを返す', () => {
+    const state = new WorkerInputState();
+    const host = new FakeInputHost();
+    expect(state.apply(makeUpdate({ keys: [1], inputGeneration: 1 }), host)).toBe(true);
+    expect(state.apply(makeUpdate({ keys: [1], inputGeneration: 0 }), host)).toBe(false); // 古い世代
+  });
+
+  it('本題の再現: makeで一度trueを返した後、内容不変の連続送信を挟んでbreak(release)が来ても、真ん中の連続送信はfalseのまま(coreworkerのstickyを壊さない)', () => {
+    // 実際の欠陥は、frame event契機の毎フレーム送信(内容不変)が「適用された」と
+    // 誤カウントされ続け、帰属計測の基準時刻(applyFrameNo)がbreakの書き込み検出より
+    // 先に進んでしまうことだった。この再現テストは、make→(不変送信×N)→breakという
+    // 実際の時系列で、不変送信の区間だけがfalseになる(=core-worker.tsがsticky値を
+    // 保ったままになる)ことを保証する。
+    const state = new WorkerInputState();
+    const host = new FakeInputHost();
+
+    // make: keydown相当
+    expect(state.apply(makeUpdate({ keys: [1] }), host)).toBe(true);
+
+    // 保持中: frame event契機の毎フレーム送信(内容は直前と完全に同じ)が何度も挟まる。
+    for (let i = 0; i < 5; i++) {
+      expect(state.apply(makeUpdate({ keys: [1] }), host)).toBe(false);
+    }
+
+    // break: keyup相当
+    expect(state.apply(makeUpdate({ keys: [] }), host)).toBe(true);
+
+    // break後もさらに不変送信が続く。
+    for (let i = 0; i < 3; i++) {
+      expect(state.apply(makeUpdate({ keys: [] }), host)).toBe(false);
+    }
+  });
+});
+
 describe('MainInputSnapshot', () => {
   it('take()の戻り値に、その時点のkeys/pads/mouseButtons/mouseDelta/keyMakes/generationが載る', () => {
     const snap = new MainInputSnapshot();
