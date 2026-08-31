@@ -160,6 +160,26 @@ function isDevTickProbeControlMessage(data: unknown): data is DevTickProbeContro
   );
 }
 
+// --- DEV専用: KeyBufプローブのWorker対応 (docs/STORAGE-SCSI.md「KeyBufプローブの
+// Worker対応」参照) ---------------------------------------------------------------
+//
+// workerTickProbeと同じ作法: 既定 enabled=false で、`if (keyBufProbeEnabled)` の外側では
+// 毎フレームの host.readKeyBufWindow(0, 128) 呼び出しそのものを行わない
+// (常時コストを持ち込まない)。main側の結線は src/main.ts の keybufProbeEnable/keybuf
+// フック、src/core-protocol.ts の FrameSnapshot.keyBufProbe / KeyBufFrameProbe 参照。
+let keyBufProbeEnabled = false;
+
+interface DevKeyBufProbeControlMessage {
+  kind: '__devKeyBufProbe';
+  action: 'enable' | 'disable';
+}
+
+function isDevKeyBufProbeControlMessage(data: unknown): data is DevKeyBufProbeControlMessage {
+  return (
+    typeof data === 'object' && data !== null && (data as { kind?: unknown }).kind === '__devKeyBufProbe'
+  );
+}
+
 /**
  * DOM lib と webworker lib は同一 tsconfig 内で共存できない(グローバル `self` の型が
  * 競合する)ため、tsconfig.json の lib はプロジェクト共通の ["ES2020","DOM","DOM.Iterable"]
@@ -382,6 +402,12 @@ function sendFrame(
     },
     poolMisses: framePool.misses,
   };
+  // DEV専用・既定off(ファイル冒頭コメント参照)。有効化時のみ host.readKeyBufWindow(0, 128)
+  // を毎フレーム呼ぶ(受動読み取りのみで、コアの駆動そのものには関与しない)。
+  if (import.meta.env.DEV && keyBufProbeEnabled) {
+    const keyBufProbe = host.readKeyBufWindow(0, 128);
+    if (keyBufProbe) snapshot.keyBufProbe = keyBufProbe;
+  }
   const postStart = onProbe ? ctx.performance.now() : 0;
   post({ kind: 'event', generation: currentGeneration, event: 'frame', snapshot });
   const postEnd = onProbe ? ctx.performance.now() : 0;
@@ -585,6 +611,12 @@ ctx.onmessage = (ev) => {
         });
         break;
     }
+    return;
+  }
+  // DEV専用のKeyBufプローブ制御(ファイル冒頭コメント参照)。同じく生メッセージなので
+  // 他のどの分岐よりも先に見て早期returnする。
+  if (import.meta.env.DEV && isDevKeyBufProbeControlMessage(data)) {
+    keyBufProbeEnabled = data.action === 'enable';
     return;
   }
   // バッファ返却は generation/requestId を持たない専用メッセージ(core-protocol.ts参照)。

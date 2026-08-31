@@ -51,7 +51,8 @@ import {
   type InitialDiskInput,
   type LibretroHostProxy,
 } from './core-proxy';
-import type { CoreEvent, FrameSnapshot } from './core-protocol';
+import type { CoreEvent, FrameSnapshot, KeyBufFrameProbe } from './core-protocol';
+import { sliceKeyBufSnapshot } from './keybuf-probe';
 import { computeShouldAcceptGuestKeyInput, MainInputSnapshot } from './worker-input';
 import {
   parseAspectModeParam,
@@ -448,6 +449,13 @@ interface WorkerTickProbeReadResult {
   commandEvents: unknown[];
 }
 let pendingWorkerTickProbeRead: ((result: WorkerTickProbeReadResult) => void) | null = null;
+// DEV専用: KeyBufプローブ(src/core-worker.ts の keyBufProbeEnabled、docs/STORAGE-SCSI.md
+// 「KeyBufプローブのWorker対応」参照)。workerTickProbeWantedと同じ理由(proxy作り直し)で
+// 意思を持ち回る。workerLastKeyBufProbeは直近のframe eventで受け取ったKeyBuf全体の
+// スナップショットで、__webx68kDebug.keybuf()がこれを同期のまま切り出して返す
+// (Workerへ往復問い合わせしない。物差しを変えないための決定)。
+let workerKeyBufProbeWanted = false;
+let workerLastKeyBufProbe: KeyBufFrameProbe | null = null;
 let running = false;
 let bootStarted = false;
 
@@ -2566,6 +2574,7 @@ async function bootWorkerCore(): Promise<void> {
     workerCoreProxy = null;
     coreProxy = null;
     workerAvInfo = null;
+    workerLastKeyBufProbe = null;
     try {
       await previous.dispose();
     } catch (err) {
@@ -2607,12 +2616,17 @@ async function bootWorkerCore(): Promise<void> {
   if (workerTickProbeBusyWaitFaultWanted) {
     proxy.devPostRawMessage({ kind: '__devTickProbe', action: 'setBusyWaitFault', value: true });
   }
+  // KeyBufプローブも同様(docs/STORAGE-SCSI.md「KeyBufプローブのWorker対応」参照)。
+  if (workerKeyBufProbeWanted) {
+    proxy.devPostRawMessage({ kind: '__devKeyBufProbe', action: 'enable' });
+  }
 
   proxy.setEventHandler((event: CoreEvent) => {
     if (event.event === 'frame') {
       const snapshot: FrameSnapshot = event.snapshot;
       workerLastPoolMisses = snapshot.poolMisses;
       workerLastFrameNo = snapshot.frameNo;
+      if (snapshot.keyBufProbe) workerLastKeyBufProbe = snapshot.keyBufProbe;
       if (snapshot.video.kind === 'rgba') {
         const { bytes, width, height } = snapshot.video;
         if (canvas.width !== width || canvas.height !== height) {
@@ -4113,8 +4127,42 @@ if (import.meta.env.DEV) {
     screenText: () => coreProxy?.readTextScreen() ?? Promise.resolve(null),
     // KeyBuf(wasm内128バイトリングバッファ)の書き込みポインタと指定範囲を読む。
     // 計測スクリプト(scripts/measure-key.mjs)がブラウザ経路の末端到達を検証するためのフック。
-    // 呼ばれたときだけHEAPを読む受動的なAPIで、毎フレーム処理には一切関与しない。
-    keybuf: (start: number, count: number) => host?.readKeyBufWindow(start, count) ?? null,
+    //
+    // 既定経路(urlWorkerMode===false)は従来どおり host.readKeyBufWindow() を直接呼ぶ同期
+    // 呼び出しで、呼ばれたときだけHEAPを読む受動的なAPI(毎フレーム処理には一切関与しない)。
+    // 移行前基準(4.3〜4.9ms、docs/STORAGE-SCSI.md「移行前基準の確定」)はこの経路で取られて
+    // いるため、ここは一切変更しない。
+    //
+    // Worker経路(urlWorkerMode===true)はhostが常にnullで直接読めない。async化して
+    // Workerへ往復問い合わせすると、その遅延が上記の主指標にそのまま乗ってしまうため
+    // (docs「KeyBufプローブのWorker対応」参照)採用しない。代わりに直近のframe eventで
+    // 受け取ったスナップショット(workerLastKeyBufProbe)から**同期のまま**切り出す。
+    // 戻り値は3通りに分かれ、呼び出し側(計測スクリプト)が「未対応(既定経路の古いwasm)」と
+    // 「Worker経路でプローブ未有効化」を無言のnullで混同しないようにしてある:
+    //   - { writePointer, bytes }        … 通常(既定経路、またはWorker経路で受信済み)
+    //   - null                            … 既定経路のみ: exportの無い古いwasm
+    //   - { workerProbeDisabled: true }   … Worker経路: keybufProbeEnable(true)未呼び出し
+    //   - { workerProbePending: true }    … Worker経路: 有効化直後でまだ1フレームも未受信
+    keybuf: (start: number, count: number) => {
+      if (urlWorkerMode) {
+        if (!workerKeyBufProbeWanted) return { workerProbeDisabled: true as const };
+        if (!workerLastKeyBufProbe) return { workerProbePending: true as const };
+        return sliceKeyBufSnapshot(workerLastKeyBufProbe, start, count);
+      }
+      return host?.readKeyBufWindow(start, count) ?? null;
+    },
+    // KeyBufプローブ(Worker経路専用)の有効化フック。workerTickProbeEnableと同じ作法で、
+    // 起動前に呼んでも(proxyがまだ無くても)意思だけ記録し、次の起動で即有効化される
+    // (bootWorkerCore()のworkerKeyBufProbeWanted分岐参照)。既定経路では何もしない
+    // (host.readKeyBufWindow()は常時受動的で、有効化操作を必要としない)。
+    keybufProbeEnable: (enabled: boolean) => {
+      workerKeyBufProbeWanted = enabled;
+      if (!enabled) workerLastKeyBufProbe = null;
+      workerCoreProxy?.devPostRawMessage({
+        kind: '__devKeyBufProbe',
+        action: enabled ? 'enable' : 'disable',
+      });
+    },
     // 音声振幅プローブ(予備確認: docs/STORAGE-SCSI.md「音声遅延」参照)。resetAudioProbe()で
     // 積算区間を開始し、readAudioProbe()で最大振幅・サンプル数・非無音サンプル数を読む。
     // queuedSecと違い、無音サンプルとの区別が付く。

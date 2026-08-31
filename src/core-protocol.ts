@@ -285,6 +285,35 @@ export interface FrameSnapshot {
    * 返却が黙って失敗している(取りこぼし)ときに気づけるようにするための観測値
    * (docs/STORAGE-SCSI.md 参照。「効果があった」の確認ではなく、取りこぼしの検知が目的)。 */
   poolMisses: number;
+  /**
+   * DEV専用・既定off: KeyBuf(wasm内128バイトリングバッファ)全体のスナップショット
+   * (docs/STORAGE-SCSI.md「KeyBufプローブのWorker対応」参照)。
+   *
+   * Worker経路(?worker=1)では host が main 側に無いため、既定経路の
+   * host.readKeyBufWindow()(HEAPを直接読む同期呼び出し)が使えない。しかし
+   * これをそのままasync化してWorkerへrequest/responseで問い合わせると、
+   * postMessageの往復遅延が回帰検出の主指標(「キー KeyBuf 2回目」)にそのまま乗り、
+   * 移行前基準(4.3〜4.9ms)と比較できなくなる(物差しが変わる)。
+   *
+   * そのため、Workerが毎フレームこのフィールドへ KeyBuf 全体
+   * (LibretroHost.readKeyBufWindow(0, 128) と同じ、index 0..127 の物理位置)と
+   * その時点の writePointer を frame event に相乗りさせ、main 側は直近受信分から
+   * **同期のまま** 切り出して返す(src/keybuf-probe.ts の sliceKeyBufSnapshot、
+   * src/main.ts の __webx68kDebug.keybuf())。frame event 単位でしか更新されないため、
+   * 最大1フレーム(60fpsで約16.7ms)分の遅れを持ちうる。
+   *
+   * 128バイト/フレームを常時運ぶのは計測専用のコストなので、既存の workerTickProbe /
+   * frameProbe / storageProbe と同じ作法で `import.meta.env.DEV` かつ既定offにし、
+   * 有効化して初めて載る(src/core-worker.ts の '__devKeyBufProbe' 制御メッセージ参照)。
+   * 無効時・prodビルドではこのフィールド自体が存在しない(undefined)。
+   */
+  keyBufProbe?: KeyBufFrameProbe;
+}
+
+export interface KeyBufFrameProbe {
+  writePointer: number;
+  /** index 0..127(物理位置)。LibretroHost.readKeyBufWindow(0, 128) の bytes と同じ並び。 */
+  bytes: number[];
 }
 
 // --- command と不可分操作 -----------------------------------------------

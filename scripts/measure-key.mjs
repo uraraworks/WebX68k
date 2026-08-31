@@ -69,6 +69,10 @@ function parseArgs(argv) {
       values.help = true;
       continue;
     }
+    if (arg === '--worker') {
+      values.worker = true;
+      continue;
+    }
     const match =
       /^--(port|runs|fault-runs|boot-timeout|stimulus-timeout|poll-interval|key-hold|key-gap|clear-key-hold|clear-key-gap|output|fault)=(.+)$/.exec(
         arg,
@@ -94,6 +98,11 @@ function printHelp() {
   --clear-key-gap=<ms>           コマンド行クリア用Backspaceの間隔 (既定: 40)
   --output=<path>               JSON の保存先
   --fault=<drop-make|wrong-code|drop-break>  故障注入。先に故障なしの陽性対照を行う
+  --worker                      計測対象URLに ?worker=1 を付け、起動完了後に
+                                 window.__webx68kDebug.keybufProbeEnable(true) を呼んで
+                                 Worker経路のKeyBufプローブ(frame event相乗り方式、
+                                 docs/STORAGE-SCSI.md「KeyBufプローブのWorker対応」参照)
+                                 を有効化する。未指定時の挙動には一切影響しない
 
 環境変数: WEBX68K_PORT, WEBX68K_KEY_RUNS, WEBX68K_KEY_FAULT_RUNS,
           WEBX68K_KEY_BOOT_TIMEOUT_MS, WEBX68K_KEY_STIMULUS_TIMEOUT_MS,
@@ -150,6 +159,11 @@ function buildConfig(args) {
     outputPath: isAbsolute(outputValue) ? outputValue : resolve(REPO_ROOT, outputValue),
     executablePath: process.env.CHROME_PATH ?? DEFAULT_CHROME,
     fault,
+    // Worker経路(?worker=1)の計測かどうか。既定はfalseで、既定計測(measurementUrl組み立て・
+    // その他すべての挙動)には一切影響しない(scripts/measure-boot.mjsのworkerと同じ作法)。
+    // resultのconfigへそのまま乗るため、結果ファイルだけを見てどちらの経路の測定かが
+    // 必ず分かる(過去に結果ファイルから条件が分からず比較が無効になった事故があるため)。
+    worker: args.worker === true,
   };
 }
 
@@ -314,7 +328,7 @@ async function waitForBootPrompt(page, timeoutMs, pollIntervalMs) {
  */
 function runStimulus(page, keySpec, wrongSpec, config, faultKind) {
   return page.evaluate(
-    async ({ spec, wrong, keyHold, keyGap, pollInterval, timeout, fault }) => {
+    async ({ spec, wrong, keyHold, keyGap, pollInterval, timeout, fault, worker }) => {
       const nextFrame = () => new Promise((resolveFrame) => requestAnimationFrame(resolveFrame));
       const dispatch = (type, code, key) => {
         window.dispatchEvent(
@@ -352,11 +366,23 @@ function runStimulus(page, keySpec, wrongSpec, config, faultKind) {
       const baselineLine = await readPromptLine();
       const baselineContent = stripTrailingCursor(baselineLine);
       const startProbe = readKeyBuf(0, 0);
-      if (startProbe === null) {
-        return {
-          harnessError:
-            'KeyBufプローブが利用できません。古いwasmの可能性があります(scripts/build-core.sh で再ビルドが必要)',
-        };
+      if (startProbe === null || startProbe.workerProbeDisabled || startProbe.workerProbePending) {
+        // null(既定経路のみ): wasmにexportが無い(古いwasmの可能性)。
+        // workerProbeDisabled(Worker経路のみ): keybufProbeEnable(true)を呼び忘れている。
+        // workerProbePending(Worker経路のみ): 有効化直後でまだ1フレームも届いていない
+        // (通常はmeasureOnce側の起動直後の待機で解消されるはずだが、念のため個々の刺激でも
+        // 区別できるようにしてある)。
+        let harnessError;
+        if (startProbe && startProbe.workerProbeDisabled) {
+          harnessError =
+            'Worker経路のKeyBufプローブが無効です(window.__webx68kDebug.keybufProbeEnable(true)を呼び忘れています)';
+        } else if (startProbe && startProbe.workerProbePending) {
+          harnessError = 'Worker経路のKeyBufプローブがまだ1フレームも届いていません(起動直後の可能性があります)';
+        } else {
+          harnessError =
+            'KeyBufプローブが利用できません。既定経路の古いwasmの可能性があります(scripts/build-core.sh で再ビルドが必要)';
+        }
+        return { harnessError };
       }
       const startWp = startProbe.writePointer;
 
@@ -411,8 +437,24 @@ function runStimulus(page, keySpec, wrongSpec, config, faultKind) {
           if (fault !== 'drop-make' && fault !== 'drop-break') dispatch('keyup', dispatchCode, dispatchKey);
         }
         // make・echo・keyupが出揃ってから、break到達確認のため最低でも数フレーム分は
-        // 観測を続ける(直後に打ち切ると残留押下を取りこぼす)。
-        if (makeAt !== null && echoAt !== null && keyupAt !== null && now - keyupAt > pollInterval * 6) {
+        // 観測を続ける(直後に打ち切ると残留押下を取りこぼす)。Worker経路はKeyBufが
+        // frame event相乗り方式(docs/STORAGE-SCSI.md「KeyBufプローブのWorker対応」参照)で、
+        // 入力の反映(main→Worker)と観測(Worker→main)の両方にpostMessageの往復が挟まるため、
+        // 既定経路の6ポーリングぶんの余裕では足りず陽性対照がまれに揺らぐことを実測で確認した。
+        // そのため経路ごとに余裕を変える(既定経路の挙動・タイミングは変えない)。
+        //
+        // ただし drop-break だけは例外にする: この故障注入は「観測窓の間 keyup を送らない」
+        // ことで break 欠落を作るため、keyupAt はここでは実際の送出時刻ではなく単なる目印で
+        // あり、margin を延ばすほどキーを物理的に押しっぱなしにする時間(keyHold + margin)が
+        // 延びる。Worker側の余裕(18ポーリング=288ms)まで延ばすと合計保持時間が
+        // KeyRepeaterのリピート開始しきい値を越え、観測窓の間に自動リピートのmakeが
+        // KeyBufへ追加注入されてしまい、break欠落ではなく「誤字/重複」として誤検出される
+        // ことを実測で確認した(worker経路固有。Worker側のSRAMキーリピート追従は未移行の
+        // ため既定のリピート間隔で走る)。drop-break は元々この延長を必要としない
+        // (keyupを送っていないのだから、待っても break は書かれない)ため、常に既定経路と
+        // 同じ短い margin のままにする。
+        const breakMarginPolls = worker && fault !== 'drop-break' ? 18 : 6;
+        if (makeAt !== null && echoAt !== null && keyupAt !== null && now - keyupAt > pollInterval * breakMarginPolls) {
           break;
         }
       }
@@ -453,6 +495,7 @@ function runStimulus(page, keySpec, wrongSpec, config, faultKind) {
       pollInterval: config.pollIntervalMs,
       timeout: config.stimulusTimeoutMs,
       fault: faultKind,
+      worker: config.worker,
     },
   );
 }
@@ -600,7 +643,15 @@ async function measureOnce(browser, config, trial, faultKind, stimulusCount, env
     page = await context.newPage();
     await page.setViewport({ width: 900, height: 700, deviceScaleFactor: 2 });
     await page.bringToFront();
-    await page.goto(config.baseUrl, { waitUntil: 'networkidle2' });
+    let measurementUrl = config.baseUrl;
+    if (config.worker) {
+      // 既定(--worker未指定)ではこの分岐に入らず、measurementUrl は従来どおり
+      // (scripts/measure-boot.mjs と同じ作法)。
+      const url = new URL(measurementUrl);
+      url.searchParams.set('worker', '1');
+      measurementUrl = url.href;
+    }
+    await page.goto(measurementUrl, { waitUntil: 'networkidle2' });
     await page.bringToFront();
 
     // 前試行が例外・タイムアウトで中断されていても、開始前に全キーを解放する。
@@ -609,6 +660,27 @@ async function measureOnce(browser, config, trial, faultKind, stimulusCount, env
     const boot = await waitForBootPrompt(page, config.bootTimeoutMs, config.pollIntervalMs);
     if (!boot.success) {
       throw new Error(`起動完了を確認できませんでした (lastAPromptLine=${boot.lastAPromptLine ?? 'なし'})`);
+    }
+    if (config.worker) {
+      // Worker経路のKeyBufプローブ(frame event相乗り方式)を有効化する。刺激開始前に、
+      // 実際に1フレームぶんのデータが届くまで待つ(有効化直後はまだ workerProbePending の
+      // ことがある。docs/STORAGE-SCSI.md「KeyBufプローブのWorker対応」参照)。
+      await page.evaluate(() => {
+        window.__webx68kDebug?.keybufProbeEnable?.(true);
+      });
+      const probeReady = await page.evaluate(async () => {
+        for (let i = 0; i < 120; i++) {
+          const probe = window.__webx68kDebug?.keybuf?.(0, 0);
+          if (probe && !probe.workerProbeDisabled && !probe.workerProbePending) return true;
+          await new Promise((resolveFrame) => requestAnimationFrame(resolveFrame));
+        }
+        return false;
+      });
+      if (!probeReady) {
+        throw new Error(
+          'Worker経路のKeyBufプローブがkeybufProbeEnable(true)後も120フレーム以内に届きませんでした',
+        );
+      }
     }
     // プロンプト安定判定はポーリング間隔の粒度で「連続3回」を見ているだけであり、
     // ゲスト側の入力ポーリングが同じ瞬間に確実に回っている保証ではない。実測で、安定判定
@@ -894,7 +966,8 @@ async function run() {
     } else {
       const s = result.summary;
       console.log(
-        `キー入力計測: 成功 ${s.success ? 'はい' : 'いいえ'}, 刺激数 ${s.totalStimuli}, 出力 ${config.outputPath}`,
+        `キー入力計測(経路: ${config.worker ? 'worker' : '既定'}): 成功 ${s.success ? 'はい' : 'いいえ'}, ` +
+          `刺激数 ${s.totalStimuli}, 出力 ${config.outputPath}`,
       );
       console.log(
         `KeyBuf経路: ok ${s.keybuf.sampleCount}/${s.totalStimuli}, 中央値 ${s.keybuf.medianMs ?? '-'} ms, ` +
