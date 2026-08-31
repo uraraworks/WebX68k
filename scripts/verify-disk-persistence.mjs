@@ -9,7 +9,8 @@
 // 検証手順:
 //   1. ?system=1&run=1&fd2=/system/human302.xdf (--worker指定時は&worker=1) で起動しA>を待つ
 //   2. fd2ディスクがライブラリ(IndexedDB)に登録されていることを確認(無ければハーネスエラー)
-//   3. ゲストに B: へ書き込ませる(MKDIR B:WKTEST)
+//   3. ゲストに B: へ書き込ませる(MKDIR B:WKTEST)。打鍵後にコマンド行を読み直して検証し、
+//      食い違っていれば行をクリアして打ち直す(リトライ)。
 //   4. DIR B: でWKTESTが作成できたことを画面で確認(できていなければハーネスエラー)
 //   5. オートセーブでライブラリのレコードが更新されるのを待つ(固定sleepではなくポーリング)
 //   6. ページをリロードし、同じURLで再起動
@@ -17,13 +18,29 @@
 //
 // 「ハーネスエラー」(前提条件が満たせず検証が成立しなかった)と「不合格」(検証は成立したが
 // 症状(WKTESTが無い)が出た)を区別する。SKIPが合格の顔をする事故(過去の教訓)を避けるため。
+//
+// 2026-08-31追記(コーディネータ指摘への対応、2巡目):
+// (1) --fault は当初、引数パース・ヘルプ・結果JSONへの記録だけで実際に何も壊していなかった
+//     (陽性対照として機能しない、実行者が誤解する事故が実際に起きた)。src/main.ts に
+//     dev限定・既定offのURLパラメータ(debugDisableAutosave=1 / debugForceUrlRefetch=1、
+//     docs/STORAGE-SCSI.md「末端の永続化検証」参照)を追加し、--fault 指定時はこれらの
+//     URLパラメータを実際に付与して起動することで、ソースの手編集なしで陽性対照を
+//     再現できるようにした。URLパラメータなのでページのリロードをまたいでも同じ値が効く
+//     (JS変数だとリロードで消える。--fault=disable-reload-resume はまさにリロードを
+//     またいで効く必要がある)。
+// (2) 負荷が高いと合成キー入力が取りこぼされ(実測: 'k'や't'が落ちる)、
+//     `harness-error`になる(判定としては正しいが回帰ゲートとして使いにくい)ことが
+//     報告された。打鍵直後にコマンド行を読み直して期待どおりか検証し、食い違っていれば
+//     行をクリアして打ち直すリトライ機構を入れた(measure-key.mjsのBackspaceによる行クリア
+//     作法を流用)。リトライ回数は結果JSONに記録する(黙って隠さない)。ただしこれが
+//     ハーネス固有の問題かエミュレータ本体の入力取りこぼしなのかは切り分けていない
+//     (docs参照。断定しない)。
 
 import { spawn } from 'node:child_process';
-import { mkdtemp } from 'node:fs/promises';
+import { mkdir, mkdtemp, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { dirname, isAbsolute, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { mkdir, writeFile } from 'node:fs/promises';
 import puppeteer from 'puppeteer-core';
 
 const REPO_ROOT = fileURLToPath(new URL('..', import.meta.url));
@@ -46,6 +63,14 @@ function parsePositiveInteger(value, name) {
   return parsed;
 }
 
+function parseNonNegativeInteger(value, name) {
+  const parsed = Number(value);
+  if (!Number.isSafeInteger(parsed) || parsed < 0) {
+    throw new Error(`${name} は0以上の整数で指定してください: ${value}`);
+  }
+  return parsed;
+}
+
 function parseArgs(argv) {
   const values = {};
   for (const arg of argv) {
@@ -57,9 +82,10 @@ function parseArgs(argv) {
       values.worker = true;
       continue;
     }
-    const match = /^--(port|boot-timeout|autosave-timeout|poll-interval|key-hold|key-gap|output|fault)=(.+)$/.exec(
-      arg,
-    );
+    const match =
+      /^--(port|boot-timeout|autosave-timeout|poll-interval|key-hold|key-gap|type-retries|output|fault)=(.+)$/.exec(
+        arg,
+      );
     if (!match) throw new Error(`不明な引数です: ${arg}`);
     values[match[1]] = match[2];
   }
@@ -79,10 +105,15 @@ function printHelp() {
   --poll-interval=<ms>       ライブラリレコード更新のポーリング間隔 (既定: 500)
   --key-hold=<ms>            合成キー押下の保持時間 (既定: 70)
   --key-gap=<ms>             合成キー間の間隔 (既定: 70)
+  --type-retries=<number>    コマンド行の打鍵検証・リトライ上限 (既定: 3)
   --output=<path>            結果JSONの保存先
   --fault=<disable-autosave|disable-reload-resume>
-                             故障注入の動作確認用(実装側を一時的に壊した状態で使う。
-                             詳細は本ファイルのコメントおよびdocsを参照)
+                             故障注入。実装側(src/main.ts)に用意した
+                             dev限定・既定offのURLパラメータを実際に付与して起動する
+                             (ソースの手編集は不要。付与するパラメータ:
+                             disable-autosave -> debugDisableAutosave=1,
+                             disable-reload-resume -> debugForceUrlRefetch=1)。
+                             不合格(fail)になることを確認する陽性対照用。
 
 環境変数: WEBX68K_PORT, WEBX68K_VERIFY_BOOT_TIMEOUT_MS, WEBX68K_VERIFY_OUTPUT,
           WEBX68K_URL, CHROME_PATH`);
@@ -115,6 +146,7 @@ function buildConfig(args) {
     pollIntervalMs: parsePositiveInteger(args['poll-interval'] ?? '500', 'poll-interval'),
     keyHoldMs: parsePositiveInteger(args['key-hold'] ?? '70', 'key-hold'),
     keyGapMs: parsePositiveInteger(args['key-gap'] ?? '70', 'key-gap'),
+    typeRetries: parseNonNegativeInteger(args['type-retries'] ?? '3', 'type-retries'),
     outputPath: isAbsolute(outputValue) ? outputValue : resolve(REPO_ROOT, outputValue),
     executablePath: process.env.CHROME_PATH ?? DEFAULT_CHROME,
     fault,
@@ -157,12 +189,16 @@ function stopServer(child) {
   });
 }
 
+/** 故障注入は src/main.ts に用意した dev限定・既定offのURLパラメータを実際に付与する形で
+ * 行う(コメント冒頭の2026-08-31追記(1)参照)。ソースの手編集は不要。 */
 function buildUrl(config) {
   const url = new URL(config.baseUrl);
   url.searchParams.set('system', '1');
   url.searchParams.set('run', '1');
   url.searchParams.set('fd2', FD2_PATH);
   if (config.worker) url.searchParams.set('worker', '1');
+  if (config.fault === 'disable-autosave') url.searchParams.set('debugDisableAutosave', '1');
+  if (config.fault === 'disable-reload-resume') url.searchParams.set('debugForceUrlRefetch', '1');
   return url.href;
 }
 
@@ -189,12 +225,10 @@ function keySpecForChar(ch) {
   throw new Error(`keySpecForChar: 未対応の文字です: ${JSON.stringify(ch)}`);
 }
 
-/** コマンド文字列を打鍵しEnterを送る。ページ内で完結させる(measure-drives.mjsのexecuteDirと
- * 同じ理由: ゲストはフレーム単位でキーをポーリングするため、keyup直後の次のkeydownまでに
- * ポーリングが複数回走るよう、保持時間とキー間隔を十分に空ける必要がある)。 */
-async function typeCommandAndEnter(page, command, config) {
-  const specs = Array.from(command).map((ch) => keySpecForChar(ch));
-  specs.push({ code: 'Enter', key: 'Enter' });
+/** 合成KeyboardEventの配列をページ内で順に送る(keydown→保持→keyup→間隔)。measure-drives.mjs
+ * のexecuteDirと同じ理由でページ内で完結させる(ゲストはフレーム単位でキーをポーリングする
+ * ため、keyup直後の次のkeydownまでにポーリングが複数回走るよう間隔を十分空ける必要がある)。 */
+async function dispatchKeys(page, specs, config) {
   await page.evaluate(
     async ({ keySpecs, keyHold, keyGap }) => {
       const wait = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -220,14 +254,26 @@ async function readScreenLines(page) {
   });
 }
 
+async function readPromptLine(page) {
+  const lines = await readScreenLines(page);
+  return lines.filter((l) => l.startsWith('A>')).at(-1) ?? null;
+}
+
+/** カーソルが行末に1文字だけ付くことがある(measure-drives.mjsのcommandLineMatchesと同じ
+ * 配慮)。完全一致、または「期待値+末尾ちょうど1文字」だけを一致とみなす。 */
+function promptLineMatches(line, expected) {
+  if (line === expected) return true;
+  if (line === null || !line.startsWith(expected)) return false;
+  return Array.from(line.slice(expected.length)).length === 1;
+}
+
 /** 直近のプロンプト行(A>...)が確定するまで待つ(打鍵直後はTVRAM反映にラグがあるため)。 */
 async function waitForPromptSettled(page, timeoutMs, pollIntervalMs) {
   const deadline = Date.now() + timeoutMs;
   let lastLine = null;
   let stableCount = 0;
   while (Date.now() < deadline) {
-    const lines = await readScreenLines(page);
-    const line = lines.filter((l) => l.startsWith('A>')).at(-1) ?? null;
+    const line = await readPromptLine(page);
     if (line !== null && line === lastLine) {
       stableCount++;
       if (stableCount >= 3) return line;
@@ -240,14 +286,51 @@ async function waitForPromptSettled(page, timeoutMs, pollIntervalMs) {
   return lastLine;
 }
 
-/** DIR B: を実行し、直後の画面出力にMARKERが含まれるかを返す。 */
+/**
+ * コマンド文字列を打鍵し、コマンド行を読み直して期待どおりかを検証する。食い違っていれば
+ * (負荷による打鍵取りこぼし等)行をクリアして打ち直す。Enterは送らない(呼び出し側が
+ * 検証成功後に別途送る)。
+ *
+ * 2026-08-31追記(2)への対応: 負荷が高いと合成キーが落ちる実測(measure-drives.mjsのDIR入力
+ * でも同種の対策あり)を踏まえ、無検証で送りっぱなしにしない。リトライしても一致しなければ
+ * HarnessErrorとして報告する(症状ではなく前提条件の欠落として扱う。打鍵そのものの信頼性は
+ * 検証対象の外側にあるため)。
+ */
+async function typeCommandVerified(page, command, config) {
+  const expected = `A>${command}`;
+  for (let attempt = 0; attempt <= config.typeRetries; attempt++) {
+    if (attempt > 0) {
+      const current = await readPromptLine(page);
+      const typedLength = current && current.startsWith('A>') ? Array.from(current.slice(2)).length : 0;
+      const backspaceCount = Math.max(8, Math.min(80, typedLength + 4));
+      const backspaces = Array.from({ length: backspaceCount }, () => ({ code: 'Backspace', key: 'Backspace' }));
+      await dispatchKeys(page, backspaces, config);
+      await sleep(300);
+    }
+    const specs = Array.from(command).map((ch) => keySpecForChar(ch));
+    await dispatchKeys(page, specs, config);
+    await sleep(300);
+    const line = await readPromptLine(page);
+    if (promptLineMatches(line, expected)) {
+      return { retries: attempt, observedLine: line };
+    }
+  }
+  const finalLine = await readPromptLine(page);
+  throw new HarnessError(
+    `コマンド行の打鍵が${config.typeRetries}回リトライしても一致しませんでした(症状ではなくハーネスの入力信頼性の問題として扱う): ` +
+      `expected=${JSON.stringify(expected)}, observed=${JSON.stringify(finalLine)}`,
+  );
+}
+
+/** DIR B: を実行し、直後の画面出力にMARKERが含まれるかを返す。打鍵はtypeCommandVerified経由。 */
 async function checkMarkerViaDir(page, config) {
-  await typeCommandAndEnter(page, 'dir b:', config);
+  const typing = await typeCommandVerified(page, 'dir b:', config);
+  await dispatchKeys(page, [{ code: 'Enter', key: 'Enter' }], config);
   // DIRの出力が揃うまで少し待つ(ドライブ内容は小さいので長くは掛からない)。
   await sleep(Math.max(1000, config.keyHoldMs + config.keyGapMs) * 3);
   const lines = await readScreenLines(page);
   const text = lines.join('\n').toUpperCase();
-  return { found: text.includes(MARKER), lines };
+  return { found: text.includes(MARKER), lines, retries: typing.retries };
 }
 
 /** ライブラリ(IndexedDB)のsourceKey一覧を軽量な形(bytesを含まない)で読む。 */
@@ -280,10 +363,11 @@ async function verifyOnce(browser, config) {
   await page.bringToFront();
   const url = buildUrl(config);
   const steps = [];
+  const retries = {};
 
   const closeAndReturn = async (result) => {
     await context.close();
-    return result;
+    return { ...result, retries };
   };
 
   await page.goto(url, { waitUntil: 'networkidle2' });
@@ -306,13 +390,16 @@ async function verifyOnce(browser, config) {
   steps.push('library-registered');
   const baseline = { savedAt: fd2Entry.savedAt, byteLength: fd2Entry.byteLength };
 
-  // 手順3: B: へ書き込ませる。
-  await typeCommandAndEnter(page, 'mkdir b:wktest', config);
+  // 手順3: B: へ書き込ませる(打鍵検証・リトライ込み)。
+  const mkdirTyping = await typeCommandVerified(page, 'mkdir b:wktest', config);
+  retries.mkdir = mkdirTyping.retries;
+  await dispatchKeys(page, [{ code: 'Enter', key: 'Enter' }], config);
   await waitForPromptSettled(page, 8000, 200);
   steps.push('mkdir-sent');
 
   // 手順4: DIR B: で作成できたことを画面で確認。
   const createdCheck = await checkMarkerViaDir(page, config);
+  retries.dirAfterMkdir = createdCheck.retries;
   if (!createdCheck.found) {
     throw new HarnessError(
       `MKDIR B:WKTEST の作成を画面で確認できませんでした(DIR B: の出力にWKTESTが無い)。出力: ${JSON.stringify(createdCheck.lines)}`,
@@ -344,6 +431,7 @@ async function verifyOnce(browser, config) {
 
   // 手順7: DIR B: でWKTESTが残っていることを確認。
   const survivedCheck = await checkMarkerViaDir(page, config);
+  retries.dirAfterReload = survivedCheck.retries;
   if (!survivedCheck.found) {
     return closeAndReturn({
       result: 'fail',
@@ -382,7 +470,7 @@ async function run() {
       outcome = await verifyOnce(browser, config);
     } catch (err) {
       if (err instanceof HarnessError) {
-        outcome = { result: 'harness-error', reason: err.message, steps: [] };
+        outcome = { result: 'harness-error', reason: err.message, steps: [], retries: {} };
       } else {
         throw err;
       }
@@ -400,6 +488,7 @@ async function run() {
       port: config.port,
       bootTimeoutMs: config.bootTimeoutMs,
       autosaveTimeoutMs: config.autosaveTimeoutMs,
+      typeRetries: config.typeRetries,
       fault: config.fault,
     },
     outcome,
@@ -409,9 +498,11 @@ async function run() {
   await writeFile(config.outputPath, JSON.stringify(report, null, 2));
 
   console.log(`経路: ${config.worker ? 'Worker(?worker=1)' : '既定'}`);
+  console.log(`故障注入: ${config.fault ?? '(なし)'}`);
   console.log(`結果: ${outcome.result}`);
   console.log(`理由: ${outcome.reason}`);
   console.log(`ステップ: ${outcome.steps.join(' -> ')}`);
+  console.log(`打鍵リトライ: ${JSON.stringify(outcome.retries)}`);
   console.log(`結果JSON: ${config.outputPath}`);
 
   if (outcome.result !== 'pass') process.exitCode = 1;

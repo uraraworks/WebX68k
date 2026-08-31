@@ -1113,6 +1113,18 @@ const urlLib = urlParams.getAll('lib').filter((v) => v !== '');
 // (docs/STORAGE-SCSI.md「基準値：音声遅延」の作業0参照。常時onはdev計測全般にコストが
 // 乗るため既定を変更した)。
 const urlAudioProbe = urlParams.get('audioProbe') === '1';
+// debugDisableAutosave=1 / debugForceUrlRefetch=1: dev限定・既定off。
+// scripts/verify-disk-persistence.mjs の --fault 用に追加した「ページ側から実際に
+// 壊せるフック」(docs/STORAGE-SCSI.md「末端の永続化検証」節参照)。ソースの手編集を
+// 要求すると陽性対照が再現できない(実行者が誤解した実績あり)ため、URLパラメータで
+// 切り替えられるようにした。既定はoffで、いずれも指定しなければ挙動は変わらない。
+// debugDisableAutosave=1: pollAutoSave()/pollWorkerAutoSave()の先頭で即returnする
+// (captureDirtyMedia/readDirtyStateの結果を捨てるのと等価)。
+// debugForceUrlRefetch=1: resolveUrlToLibrary()の「既にライブラリに保存済みなら
+// 再利用する」分岐(plainStored)を無効化し、毎回ネットワークから再取得させる。
+// URLパラメータなのでリロードをまたいでも同じ値が効く(JS変数だとリロードで消える)。
+const urlDebugDisableAutosave = import.meta.env.DEV && urlParams.get('debugDisableAutosave') === '1';
+const urlDebugForceUrlRefetch = import.meta.env.DEV && urlParams.get('debugForceUrlRefetch') === '1';
 
 function setBiosStatus(el: HTMLSpanElement, state: 'user' | 'bundled' | 'none'): void {
   if (state === 'user') {
@@ -1252,7 +1264,9 @@ async function resolveUrlToLibrary(url: string, label: string): Promise<UrlLibra
   }
 
   // 非アーカイブの単体ディスクとして既に保存済みなら(従来どおり sourceKey===url)、そちらを使う。
-  const plainStored = await getDisk(url);
+  // urlDebugForceUrlRefetchは検証ハーネス専用の故障注入(dev限定・既定off)。この分岐を
+  // 無効化し、常にネットワークから再取得させる(docs/STORAGE-SCSI.md「末端の永続化検証」参照)。
+  const plainStored = urlDebugForceUrlRefetch ? undefined : await getDisk(url);
   if (plainStored) {
     showToast(t('urlDiskResumed', { label, name: plainStored.name }));
     return {
@@ -4066,6 +4080,8 @@ function flushAllSlots(): void {
 }
 
 function pollAutoSave(now: number): void {
+  // 検証ハーネス専用の故障注入(dev限定・既定off)。docs/STORAGE-SCSI.md「末端の永続化検証」参照。
+  if (urlDebugDisableAutosave) return;
   if (!host || !running || autoSaveRunning) return;
   if (now - lastAutoSaveCheckAt < AUTOSAVE_POLL_MS) return;
   lastAutoSaveCheckAt = now;
@@ -4205,6 +4221,8 @@ let workerLastAutoSaveCheckAt = 0;
  * (Worker経路にはloop()に相当する周期処理が無いため、frame eventの到着そのものを
  * 周期のトリガに使う。既定経路のpollDiskAccess()呼び出しと同じ考え方)。 */
 function pollWorkerAutoSave(now: number): void {
+  // 検証ハーネス専用の故障注入(dev限定・既定off)。docs/STORAGE-SCSI.md「末端の永続化検証」参照。
+  if (urlDebugDisableAutosave) return;
   if (!workerCoreProxy || !running || workerAutoSaveRunning) return;
   if (now - workerLastAutoSaveCheckAt < AUTOSAVE_POLL_MS) return;
   workerLastAutoSaveCheckAt = now;
