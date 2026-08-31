@@ -96,6 +96,54 @@ export function isInputUpdateMessage(message: unknown): message is InputUpdateMe
   );
 }
 
+// --- マウス閉ループ追従 (手順6後半: マウスの閉ループ追従、docs/STORAGE-SCSI.md
+// 「ワーカー移行 手順6後半」参照) ------------------------------------------------
+//
+// 決定: ラウンドトリップ方式(main が cursor を運んでもらい main が計算して delta を送り返す)
+// は採らない。閉ループが1フレーム以上の遅延を持つと ack 待ち・stall 判定の前提が壊れ、
+// 収束しなくなるため。閉ループそのもの(cursor読み取り→差分計算→addMouseDelta)は Worker
+// (src/core-worker.ts)内で完結させ、main→Worker は「目標比率と有効/無効」だけを送る
+// 低頻度の片道メッセージにする(INPUT_UPDATE_KINDと同じ「requestIdを持たない専用メッセージ」)。
+export const MOUSE_TRACK_UPDATE_KIND = 'mouseTrackUpdate' as const;
+
+export interface MouseTrackUpdate {
+  /** 追従モードが今アクティブか(ENABLE_MOUSE_TRACKING && running && !isMouseCaptured()、
+   * main側で計算した値をそのまま渡す。pointer lock の状態はmainにしか分からないため)。 */
+  enabled: boolean;
+  /** ホスト側カーソルの canvas 内相対位置(0..1)。 */
+  ratioX: number;
+  ratioY: number;
+}
+
+export interface MouseTrackUpdateMessage {
+  kind: typeof MOUSE_TRACK_UPDATE_KIND;
+  update: MouseTrackUpdate;
+}
+
+export function isMouseTrackUpdateMessage(message: unknown): message is MouseTrackUpdateMessage {
+  return (
+    typeof message === 'object' &&
+    message !== null &&
+    (message as { kind?: unknown }).kind === MOUSE_TRACK_UPDATE_KIND
+  );
+}
+
+/** ツールバーの「マウス再同期」。ユーザー操作契機の低頻度メッセージなので、これも
+ * generation/requestId を持たない専用メッセージにする(応答を待つ必要が無いため)。 */
+export const MOUSE_TRACK_RESYNC_KIND = 'mouseTrackResync' as const;
+
+export interface MouseTrackResyncMessage {
+  kind: typeof MOUSE_TRACK_RESYNC_KIND;
+}
+
+export function isMouseTrackResyncMessage(message: unknown): message is MouseTrackResyncMessage {
+  return (
+    typeof message === 'object' &&
+    message !== null &&
+    (message as { kind?: unknown }).kind === MOUSE_TRACK_RESYNC_KIND
+  );
+}
+
 export type CoreCommand =
   | {
       kind: 'command';
@@ -186,7 +234,8 @@ export type CoreEvent =
       bytes: ArrayBuffer;
       keyRepeat?: KeyRepeatConfig;
     }
-  | { kind: 'event'; generation: Generation; event: 'fatal'; error: CoreError };
+  | { kind: 'event'; generation: Generation; event: 'fatal'; error: CoreError }
+  | { kind: 'event'; generation: Generation; event: 'mouseTrackDisabled' };
 
 export interface KeyRepeatConfig {
   delayMs: number;
@@ -345,6 +394,42 @@ export interface FrameSnapshot {
    * 有効化直後・まだ一度も適用が無い間は undefined。
    */
   inputApplyFrameNo?: FrameNo;
+  /**
+   * DEV専用・既定off(2026-08-31、手順6後半「マウス閉ループ追従の移行」追加)。
+   * `__webx68kDebug.mouse()`(src/main.ts)をWorker経路でも同期のまま返すための、
+   * KeyBufプローブと同じ「frame event 相乗り＋main側は直近スナップショットを同期で返す」方式。
+   * 有効化フラグは keyBufProbe と共用する(`__devKeyBufProbe`。専用の制御メッセージを別に
+   * 増やすほどの理由が無いため。docs/STORAGE-SCSI.md参照)。無効時・prodビルドではこの
+   * フィールド自体が存在しない(undefined)。main側は「未対応」(urlWorkerModeでない)と
+   * 「無効」(プローブ未有効化)と「有効だがまだ1フレームも受信していない」を区別できる形
+   * (workerProbeDisabled/workerProbePending)で返す(keybuf()フックと同じ作法)。
+   */
+  mouseTrackProbe?: MouseTrackFrameProbe;
+}
+
+export interface MouseTrackFrameProbe {
+  /** host.hasPendingMouseDelta()。 */
+  pending: boolean;
+  /** host.readGuestCursor()。ワークエリア未初期化なら null。 */
+  cursor: {
+    x: number;
+    y: number;
+    minX: number;
+    minY: number;
+    maxX: number;
+    maxY: number;
+    visible: boolean;
+  } | null;
+  /** host.readMouseState()。 */
+  core: {
+    dx: number;
+    dy: number;
+    stat: number;
+    enabled: boolean;
+    sccX: number;
+    sccY: number;
+    sccStat: number;
+  };
 }
 
 export interface KeyBufFrameProbe {
@@ -503,6 +588,7 @@ export function collectTransferables(
       break;
     case 'ready':
     case 'fatal':
+    case 'mouseTrackDisabled':
       break;
     default: {
       const _exhaustive: never = message;

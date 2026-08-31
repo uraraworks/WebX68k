@@ -52,9 +52,10 @@ import {
   type InitialDiskInput,
   type LibretroHostProxy,
 } from './core-proxy';
-import type { CoreEvent, FrameSnapshot, KeyBufFrameProbe } from './core-protocol';
+import type { CoreEvent, FrameSnapshot, KeyBufFrameProbe, MouseTrackFrameProbe } from './core-protocol';
 import { sliceKeyBufSnapshot } from './keybuf-probe';
 import { computeShouldAcceptGuestKeyInput, MainInputSnapshot } from './worker-input';
+import { MouseTracker } from './mouse-track';
 import {
   parseAspectModeParam,
   parseCpuSpeedParam,
@@ -468,6 +469,11 @@ let workerLastKeyBufProbe: KeyBufFrameProbe | null = null;
 let workerLastKeyBufWriteFrameNo: number | null = null;
 let workerLastInputSendFrameNo: number | null = null;
 let workerLastInputApplyFrameNo: number | null = null;
+// マウス閉ループ追従(手順6後半)のデバッグスナップショット。keyBufProbeと同じ有効化フラグ
+// (workerKeyBufProbeWanted)を共用する(専用のtoggleを増やさない。core-protocol.tsの
+// FrameSnapshot.mouseTrackProbeコメント参照)。__webx68kDebug.mouse()がこれを同期のまま
+// 切り出して返す。
+let workerLastMouseTrackProbe: MouseTrackFrameProbe | null = null;
 let running = false;
 let bootStarted = false;
 
@@ -765,6 +771,21 @@ function sendWorkerInputUpdate(): void {
   // 単純な代入でコストは無視できるためDEVガードは付けない(host読み取り等は伴わない)。
   workerLastInputSendFrameNo = workerLastFrameNo;
   workerCoreProxy.sendInput(workerInput.take());
+}
+
+/**
+ * マウス閉ループ追従(手順6後半)の目標更新をWorkerへ送る。既定経路(!urlWorkerMode)では
+ * 何もしない(閉ループそのものがWorker側にしか無いため)。低頻度(mousemove/
+ * pointerlockchange契機)の片道メッセージで、main側の mouseTracker(ratioの記録専用。実際の
+ * 閉ループ計算はWorker側の別インスタンスが行う)から現在値を読んで渡す。
+ */
+function sendWorkerMouseTrackUpdate(): void {
+  if (!urlWorkerMode || !workerCoreProxy) return;
+  workerCoreProxy.sendMouseTrack({
+    enabled: isMouseTracking(),
+    ratioX: mouseTracker.ratioX,
+    ratioY: mouseTracker.ratioY,
+  });
 }
 
 /**
@@ -2588,14 +2609,12 @@ let workerLastFrameNo = 0;
 let workerAvInfo: AvInfo | null = null;
 
 /** `?worker=1` でだけ利用者へ見せる、未移行機能のトースト。
- * 手順6(2026-08-31)でキー・パッド・マウスボタン・加算マウスdeltaは対応した(このトーストの
- * 対象から外れた)が、マウスの閉ループ追従・音声・FDDホットマウント・SRAM・
- * ステート保存/復元は今回もスコープ外のまま(docs/STORAGE-SCSI.md「段階移行の順序」参照)。
+ * 手順6(2026-08-31)でキー・パッド・マウスボタン・加算マウスdelta、手順6後半(2026-08-31)で
+ * マウスの閉ループ追従は対応した(このトーストの対象から外れた)。音声・FDDホットマウント・
+ * SRAM・ステート保存/復元は今回もスコープ外のまま(docs/STORAGE-SCSI.md「段階移行の順序」参照)。
  * 無言のno-opにせず、必ずここを通してから抜けること。 */
 function warnWorkerModeUnsupported(): void {
-  console.warn(
-    '[worker] ?worker=1 ではこの機能はまだ未対応です(マウスの閉ループ追従・音声・FDDホットマウント・SRAM・ステート保存/復元)。',
-  );
+  console.warn('[worker] ?worker=1 ではこの機能はまだ未対応です(音声・FDDホットマウント・SRAM・ステート保存/復元)。');
   showToast(t('workerModeUnsupported'));
 }
 
@@ -2624,6 +2643,7 @@ async function bootWorkerCore(): Promise<void> {
     workerLastKeyBufWriteFrameNo = null;
     workerLastInputSendFrameNo = null;
     workerLastInputApplyFrameNo = null;
+    workerLastMouseTrackProbe = null;
     try {
       await previous.dispose();
     } catch (err) {
@@ -2678,6 +2698,7 @@ async function bootWorkerCore(): Promise<void> {
       if (snapshot.keyBufProbe) workerLastKeyBufProbe = snapshot.keyBufProbe;
       if (snapshot.keyBufWriteFrameNo !== undefined) workerLastKeyBufWriteFrameNo = snapshot.keyBufWriteFrameNo;
       if (snapshot.inputApplyFrameNo !== undefined) workerLastInputApplyFrameNo = snapshot.inputApplyFrameNo;
+      if (snapshot.mouseTrackProbe) workerLastMouseTrackProbe = snapshot.mouseTrackProbe;
       if (snapshot.video.kind === 'rgba') {
         const { bytes, width, height } = snapshot.video;
         if (canvas.width !== width || canvas.height !== height) {
@@ -2710,6 +2731,13 @@ async function bootWorkerCore(): Promise<void> {
     if (event.event === 'fatal') {
       showToast('Workerコアが異常終了しました', null);
       running = false;
+      return;
+    }
+    if (event.event === 'mouseTrackDisabled') {
+      // Worker側の閉ループが追従を諦めた(手順6後半)。既定経路(stepMouseTracking)と同じ
+      // 通知を出す。無言で死なせないこと(docs/STORAGE-SCSI.md「ワーカー移行 手順6後半」参照)。
+      showToast(t('mouseTrackUnavailable'));
+      return;
     }
     // 'ready'/'sramChanged' はこの経路では特に処理しない
     // (avInfoはfetchAvInfo()の戻り値を、SRAM監視は今回スコープ外のため)。
@@ -2738,11 +2766,10 @@ async function bootWorkerCore(): Promise<void> {
   // 代わりに起動が完了したこの時点で1回だけ知らせる(無言のno-opにはしない。docs参照。
   // FDDホットマウント/ステート保存復元は実際に操作したタイミングで個別に警告する
   // (warnWorkerModeUnsupportedの他の呼び出し箇所参照)。手順6(2026-08-31)でキー・パッド・
-  // マウスボタン・加算マウスdeltaは対応したため、このトーストの対象からは外した
-  // (マウスの閉ループ追従は引き続き未対応)。
-  console.warn(
-    '[worker] ?worker=1 で起動しました。マウスの閉ループ追従と音声は未対応です(段階移行の対象外)。',
-  );
+  // マウスボタン・加算マウスdelta、手順6後半(2026-08-31)でマウスの閉ループ追従は対応した
+  // ため、このトーストの対象からは外した(残るのは音声・FDDホットマウント・SRAM・
+  // ステート保存/復元)。
+  console.warn('[worker] ?worker=1 で起動しました。音声は未対応です(段階移行の対象外)。');
   showToast(t('workerModeUnsupported'), 6000);
 }
 
@@ -3232,64 +3259,19 @@ const RIGHT_DOUBLE_CLICK_MS = 500;
  * 持っている($ACE/$AD0 と $A9A..$AA0)。そこを毎フレーム読んで差分を送る閉ループにしている。
  */
 const ENABLE_MOUSE_TRACKING = true;
-/**
- * IOCS のマウス加速テーブル(実測値)。[送信量, 実際に動くドット数]。
- *
- * IOCS は移動量に加速をかけるため、誤差をそのまま送ると**最大7.5倍に増幅されて行き過ぎ**、
- * 画面端から端へ発振する。3以下は加速がかからず 1:1 で、16 を境に急に倍率が上がる。
- * 逆引きして「予測移動量が誤差を超えない範囲で最大の送信量」を選べば必ず不足側に倒れるので、
- * 行き過ぎが原理的に起きない。残りは次フレーム以降の閉ループが詰め、最後は 1:1 の領域に
- * 入るのでぴたりと止まる。
- *
- * 加速の効き方は IOCS の設定で変わり得るが、この表は「行き過ぎないための上限見積もり」
- * としてしか使わないので、多少ずれても収束する。
- */
-const MOUSE_ACCEL_TABLE: Array<[send: number, move: number]> = [
-  [1, 1],
-  [2, 2],
-  [3, 3],
-  [4, 5],
-  [5, 6],
-  [6, 7],
-  [7, 8],
-  [8, 10],
-  [10, 12],
-  [12, 15],
-  [14, 17],
-  [16, 40],
-  [20, 50],
-  [24, 90],
-  [32, 160],
-  [48, 360],
-];
-/** カーソルが実際に動いたのを確認できるまで待つ最大フレーム数 */
-const MOUSE_TRACK_ACK_FRAMES = 12;
-/** IOCS ワークが読めないソフト向けフォールバックで、画面外まで押し切るための余白(ドット) */
-const MOUSE_HOMING_MARGIN = 64;
 
-/** 目標移動量(絶対値)に対して、行き過ぎない範囲で最大の送信量を返す。 */
-function sendAmountFor(distance: number): number {
-  const abs = Math.abs(distance);
-  let send = 0;
-  for (const [candidate, move] of MOUSE_ACCEL_TABLE) {
-    if (move <= abs) send = candidate;
-    else break;
-  }
-  return distance < 0 ? -send : send;
-}
-
-/** ホスト側カーソルの canvas 内相対位置(0..1)。実際の目標座標はゲストの可動範囲から毎フレーム決める。 */
-let desiredRatioX = 0;
-let desiredRatioY = 0;
-let hasDesiredRatio = false;
-/** 追従が空回りしている(送っているのにカーソルが動かない)ことを検出するためのカウンタ */
-let trackStallFrames = 0;
-let trackDisabled = false;
-/** 送信後、カーソルが実際に動くのを待っている間の状態 */
-let trackAckPending = false;
-let trackAckFrames = 0;
-let trackSentAtX = -1;
-let trackSentAtY = -1;
+// 閉ループの計算(加速テーブル・ack待ち・stall判定)そのものは src/mouse-track.ts の
+// MouseTracker(純粋クラス、単体テストは test/mouse-track.test.ts)に切り出してある
+// (段階移行 手順6後半、docs/STORAGE-SCSI.md参照)。既定経路(このファイル)はそのクラスを
+// そのまま呼ぶだけで、旧実装(stepMouseTracking/resyncGuestMouse に直書きしていた計算)と
+// 完全に同じ計算になる(切り出しに伴う書き換えをしていない)。
+//
+// mouseTracker: 既定経路(host = メインスレッドの LibretroHost)専用のインスタンス。
+// Worker経路(?worker=1)は Worker 内(src/core-worker.ts)に別インスタンスを持ち、main側は
+// 目標比率(desiredRatio)と有効/無効の送信・再同期コマンドの発行・診断表示用のミラーとして
+// このインスタンスを使う(実際の閉ループ計算はWorker側が行う。下の
+// mirrorMouseTrackTargetForDebug 呼び出し箇所のコメント参照)。
+const mouseTracker = new MouseTracker();
 
 function isMouseCaptured(): boolean {
   return document.pointerLockElement === canvas;
@@ -3300,85 +3282,27 @@ function isMouseTracking(): boolean {
 }
 
 /**
- * 追従モードの1フレーム分の追い込み(閉ループ)。
- *
- * X68000 のマウスは相対量しか送れないが、IOCS はワークエリアにカーソルの実座標と可動範囲を
- * 持っている($ACE/$AD0 と $A9A..$AA0)。そこを毎フレーム読んで「目標との差分」を送るため、
- * ホスト側で位置を推定する必要がなく、ズレも自動的に吸収される。
- * ±128/回でしか送れないので、大きなジャンプは数フレームかけて収束する。
+ * 追従モードの1フレーム分の追い込み(閉ループ)。既定経路(host = メインスレッドの
+ * LibretroHost)専用。Worker経路の閉ループは src/core-worker.ts の tick() 内で
+ * Worker側の mouseTracker が担う(host がWorker経路では常にnullのため、この関数自体が
+ * 一度も意味のある処理をしない)。
  */
 function stepMouseTracking(): void {
-  if (!host || !isMouseTracking() || !hasDesiredRatio || trackDisabled) return;
-  const cur = host.readGuestCursor();
-  // マウスを使っていないソフトではワークエリアが初期化されていない。その場合は何もしない。
-  if (!cur) return;
-
-  // 送った直後は、ゲストがまだ反映していない可能性がある。実際に動いたのを確認する前に
-  // 次を送ると、同じ誤差に対して二重に送ることになって行き過ぎる。
-  if (trackAckPending) {
-    if (cur.x !== trackSentAtX || cur.y !== trackSentAtY) {
-      trackAckPending = false;
-      trackStallFrames = 0;
-    } else if (++trackAckFrames > MOUSE_TRACK_ACK_FRAMES) {
-      // 動かないまま待ち続けても仕方ないので、いったん待ちを解いて空回り判定に回す
-      trackAckPending = false;
-      trackStallFrames += MOUSE_TRACK_ACK_FRAMES;
-    } else {
-      return;
-    }
-  }
-
-  if (host.hasPendingMouseDelta()) return;
-
-  const targetX = Math.round(cur.minX + desiredRatioX * (cur.maxX - cur.minX));
-  const targetY = Math.round(cur.minY + desiredRatioY * (cur.maxY - cur.minY));
-  const dx = targetX - cur.x;
-  const dy = targetY - cur.y;
-  if (dx === 0 && dy === 0) {
-    trackStallFrames = 0;
-    return;
-  }
-
-  // 安全弁: 目標に届いていないのにカーソルがまったく動かない(IOCS ワークを使わず
-  // 自前でカーソルを管理するソフト等)場合、送り続けても無駄なので追従を止める。
-  if (trackStallFrames > 90) {
-    trackDisabled = true;
-    host.clearMouseState();
-    showToast(t('mouseTrackUnavailable'));
-    return;
-  }
-
-  const sendX = sendAmountFor(dx);
-  const sendY = sendAmountFor(dy);
-  // 加速の下限(1ドット)未満しか誤差が無い軸は動かさない
-  if (sendX === 0 && sendY === 0) {
-    trackStallFrames = 0;
-    return;
-  }
-
-  host.addMouseDelta(sendX, sendY);
-  trackSentAtX = cur.x;
-  trackSentAtY = cur.y;
-  trackAckPending = true;
-  trackAckFrames = 0;
+  if (!host) return;
+  const result = mouseTracker.step(host, isMouseTracking());
+  if (result === 'disabled') showToast(t('mouseTrackUnavailable'));
 }
 
 /**
- * 強制的に基準を取り直す(ツールバーの「マウス再同期」)。
- * 閉ループ追従が効いていれば本来ズレないが、IOCS ワークを使わず自前でカーソルを管理する
- * ソフトのために、左上へ押し付ける従来のホーミングをフォールバックとして残す。
+ * 強制的に基準を取り直す(ツールバーの「マウス再同期」)。既定経路は mouseTracker.resync() を
+ * 直接呼ぶ。Worker経路は host が無いためここでは何もできず、呼び出し元
+ * (btnMouseResync のクリックハンドラ)が urlWorkerMode を見て Worker へコマンドを送る。
  */
 function resyncGuestMouse(): void {
   if (!host) return;
-  // 止めていた追従を再開させる
-  trackDisabled = false;
-  trackStallFrames = 0;
-  trackAckPending = false;
-  if (host.readGuestCursor()) return; // 閉ループが効いているので押し付け不要
   const w = host.avInfo?.baseWidth || canvas.width;
   const h = host.avInfo?.baseHeight || canvas.height;
-  const distance = Math.max(w, h) + MOUSE_HOMING_MARGIN;
-  host.addMouseDelta(-distance, -distance);
+  mouseTracker.resync(host, { width: w, height: h });
 }
 
 function setMouseCaptured(capture: boolean): void {
@@ -3405,6 +3329,9 @@ document.addEventListener('pointerlockchange', () => {
     host?.clearMouseState();
     if (running) showToast(t('mouseReleased'));
   }
+  // 追従モードの有効/無効(isMouseTracking())が変わったことをWorkerへ伝える(手順6後半)。
+  // 既定経路では何もしない(sendWorkerMouseTrackUpdate内部のurlWorkerModeガード参照)。
+  sendWorkerMouseTrackUpdate();
   updateMouseControls();
 });
 
@@ -3436,17 +3363,18 @@ canvas.addEventListener('mousemove', (e) => {
     applyMouseDelta(e.movementX * scaleX * mouseSensitivity, e.movementY * scaleY * mouseSensitivity);
     return;
   }
-  // 追従モード(閉ループ追従。マウスの閉ループ追従は今回のスコープ外。docs/STORAGE-SCSI.md
-  // 「ワーカー移行 手順6」参照)は host 経由でしか成立しない。Worker経路では host が
-  // 常にnullなので、desiredRatioの記録自体は行うがstepMouseTracking() 側の
-  // host ガードで実際の送信は起きない。
-  if (!host) return;
-  // 追従モード: canvas 内の相対位置(0..1)だけ記録し、実際の送信は stepMouseTracking に任せる
+  // 追従モード: canvas 内の相対位置(0..1)だけ記録する。既定経路は実際の送信を
+  // stepMouseTracking()(loop() 契機)に任せる。Worker経路(手順6後半、2026-08-31実装)は
+  // 閉ループ自体がWorker側にあるため、目標比率をここで即座にWorkerへ送る(低頻度の
+  // 片道メッセージ。docs/STORAGE-SCSI.md「ワーカー移行 手順6後半」参照)。
+  // 前回の欠陥(`if (!host) return;` で Worker経路がここへ一度も届かなかった)の再発防止として、
+  // このハンドラ自体は host の有無で早期returnしない(表はdocsの「hostガードの洗い出し」節参照)。
   const rect = canvas.getBoundingClientRect();
   if (rect.width <= 0 || rect.height <= 0) return;
-  desiredRatioX = Math.max(0, Math.min(1, (e.clientX - rect.left) / rect.width));
-  desiredRatioY = Math.max(0, Math.min(1, (e.clientY - rect.top) / rect.height));
-  hasDesiredRatio = true;
+  const ratioX = (e.clientX - rect.left) / rect.width;
+  const ratioY = (e.clientY - rect.top) / rect.height;
+  mouseTracker.setDesiredRatio(ratioX, ratioY);
+  sendWorkerMouseTrackUpdate();
 });
 
 // ボタンはキャプチャ中だけゲストへ渡す。
@@ -3479,7 +3407,12 @@ function updateMouseControls(): void {
 btnMouseCapture.addEventListener('click', () => setMouseCaptured(!isMouseCaptured()));
 btnMouseResync.addEventListener('click', () => {
   if (!isMouseTracking()) return;
-  resyncGuestMouse();
+  if (urlWorkerMode) {
+    // 閉ループ自体がWorker側にあるため、resync命令をそのまま送るだけ(手順6後半)。
+    workerCoreProxy?.sendMouseTrackResync();
+  } else {
+    resyncGuestMouse();
+  }
   showToast(t('mouseResynced'));
 });
 
@@ -4105,7 +4038,42 @@ if (import.meta.env.DEV) {
     stat: () => ({ queuedSec: audio?.queuedSeconds ?? null, fps: host?.avInfo?.fps ?? workerAvInfo?.fps ?? null }),
     // 計測環境記録(scripts/measure-env.mjs)用。AudioContext未生成ならnull。
     audioEnv: () => audio?.audioEnv() ?? null,
-    mouse: () => ({ captured: isMouseCaptured(), tracking: isMouseTracking(), ratio: { x: desiredRatioX, y: desiredRatioY }, pending: host?.hasPendingMouseDelta() ?? null, cursor: host?.readGuestCursor() ?? null, sensitivity: mouseSensitivity, core: host?.readMouseState() ?? null }),
+    // マウス閉ループ追従(手順6後半)のデバッグフック。captured/tracking/ratio/sensitivity は
+    // 両経路とも main側の値をそのまま返す(pointer lock・ENABLE_MOUSE_TRACKING・
+    // 直近の目標比率はmain側にしかない/両経路で共通)。pending/cursor/core だけが経路で
+    // 分かれる: 既定経路は host から同期で直接読む(従来どおり)。Worker経路は
+    // keyBufProbeと同じ有効化フラグ(workerKeyBufProbeWanted)に相乗りしたframe event
+    // (workerLastMouseTrackProbe)から同期のまま切り出す(Workerへ往復問い合わせしない)。
+    // keybuf()と同じ作法で、「未対応(urlWorkerModeでない)」と区別できるよう
+    // workerProbeDisabled/workerProbePendingを無言のnullに埋没させない。
+    mouse: () => {
+      const base = {
+        captured: isMouseCaptured(),
+        tracking: isMouseTracking(),
+        ratio: { x: mouseTracker.ratioX, y: mouseTracker.ratioY },
+        sensitivity: mouseSensitivity,
+      };
+      if (urlWorkerMode) {
+        if (!workerKeyBufProbeWanted) {
+          return { ...base, pending: null, cursor: null, core: null, workerProbeDisabled: true as const };
+        }
+        if (!workerLastMouseTrackProbe) {
+          return { ...base, pending: null, cursor: null, core: null, workerProbePending: true as const };
+        }
+        return {
+          ...base,
+          pending: workerLastMouseTrackProbe.pending,
+          cursor: workerLastMouseTrackProbe.cursor,
+          core: workerLastMouseTrackProbe.core,
+        };
+      }
+      return {
+        ...base,
+        pending: host?.hasPendingMouseDelta() ?? null,
+        cursor: host?.readGuestCursor() ?? null,
+        core: host?.readMouseState() ?? null,
+      };
+    },
     // Pointer Lock を経由せずに相対移動/ボタンを注入する。自動テスト用で、
     // 将来の MCP ブリッジ(mouse_move 相当)もこの経路をそのまま使う想定。
     peek: (addr: number) => host?.peekWord(addr) ?? null,

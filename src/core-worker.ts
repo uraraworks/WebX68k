@@ -7,8 +7,9 @@
 // 手順6)の4系統。
 // 音声・FDDホットマウント・SRAM・ステート保存/復元は今回のスコープ外で、
 // 该当opは引き続き UNSUPPORTED を返す(src/main.ts 側で「未対応」を利用者に見える形にする)。
-// マウスの閉ループ追従(trackGuestMouse/readGuestCursor)も手順6の対象外のまま
-// (docs/STORAGE-SCSI.md「ワーカー移行 手順6」参照)。
+// マウスの閉ループ追従(手順6後半、2026-08-31実装)はこのファイル内で完結する(mouseTracker、
+// MOUSE_TRACK_UPDATE_KIND/MOUSE_TRACK_RESYNC_KIND ハンドラ参照。docs/STORAGE-SCSI.md
+// 「ワーカー移行 手順6後半」参照)。
 //
 // 実コアの駆動には既存の LibretroHost / LocalCoreProxy をそのまま再利用する。
 // LibretroHost は内部で canvas.getContext('2d') / width / height / createImageData /
@@ -53,6 +54,8 @@ import {
   createCoreError,
   CoreProxyError,
   isInputUpdateMessage,
+  isMouseTrackResyncMessage,
+  isMouseTrackUpdateMessage,
   isReturnFrameBufferMessage,
   WORKER_BOOT_ACK_KIND,
   type CoreCommand,
@@ -67,6 +70,7 @@ import { LibretroHost } from './libretro-host';
 import { computeFrameBudget } from './frameBudget';
 import { FrameBufferPool, runTick } from './worker-drive-loop';
 import { WorkerInputState } from './worker-input';
+import { MouseTracker } from './mouse-track';
 import { initialTrackerState, trackKeyBufWrite, type KeyBufWriteTrackerState } from './keybuf-attribution';
 
 // --- DEV専用: 駆動ループ内訳プローブ (性能調査。既定off) --------------------------------
@@ -275,6 +279,32 @@ function releaseBuffer(buffer: ArrayBuffer): void {
 // 結線だけを持つ。
 const workerInputState = new WorkerInputState();
 
+// --- マウス閉ループ追従 (手順6後半) -------------------------------------------
+//
+// 決定(docs/STORAGE-SCSI.md「ワーカー移行 手順6後半」): 閉ループ(cursor読み取り→差分計算→
+// addMouseDelta)そのものをここで回す。main は目標比率(ratioX/Y)と有効/無効(enabled)だけを
+// 低頻度(mousemove/pointerlockchange契機)の片道メッセージ(MOUSE_TRACK_UPDATE_KIND)で送る。
+// 実体(純粋クラス)は src/mouse-track.ts の MouseTracker で、既定経路(src/main.ts)と
+// 完全に同じ計算をする別インスタンス。
+const mouseTracker = new MouseTracker();
+/** 直近に main から受け取った「追従モードが今アクティブか」。tick() 契機の毎フレーム計算では
+ * なく、mousemove/pointerlockchange契機でしか更新されない値なので、mouseTracker.step() には
+ * 常にこの変数をそのまま渡す。 */
+let mouseTrackEnabled = false;
+
+function applyMouseTrackUpdate(update: { enabled: boolean; ratioX: number; ratioY: number }): void {
+  mouseTrackEnabled = update.enabled;
+  mouseTracker.setDesiredRatio(update.ratioX, update.ratioY);
+}
+
+function applyMouseTrackResync(): void {
+  if (!host) return;
+  const avInfo = host.avInfo;
+  const w = avInfo?.baseWidth || 0;
+  const h = avInfo?.baseHeight || 0;
+  mouseTracker.resync(host, { width: w, height: h });
+}
+
 function applyInputUpdate(update: InputUpdate): void {
   if (!host) return; // initialize前に届いた更新は捨てる(送信元は起動後にしか送らない想定)。
   const changed = workerInputState.apply(update, host);
@@ -356,6 +386,15 @@ function tick(): void {
     return currentHost.readDiskAccess();
   });
   accumulator = result.accumulator;
+
+  // マウス閉ループ追従(手順6後半)。既定経路(src/main.ts の loop())が「実際にコアを1フレーム
+  // 以上進めた回だけ stepMouseTracking() を呼ぶ」のと同じ条件(ran > 0)で呼ぶ。
+  if (result.ranFrames > 0 && host) {
+    const trackResult = mouseTracker.step(host, mouseTrackEnabled);
+    if (trackResult === 'disabled') {
+      post({ kind: 'event', generation: currentGeneration, event: 'mouseTrackDisabled' });
+    }
+  }
 
   let convertMs: number | null = null;
   let postMs: number | null = null;
@@ -441,6 +480,14 @@ function sendFrame(
     // frameNo」をframe eventに相乗りさせる(keyBufWriteFrameNoと同じくsticky。まだ一度も
     // 適用が無ければ載せない)。
     if (lastInputApplyFrameNo !== null) snapshot.inputApplyFrameNo = lastInputApplyFrameNo;
+    // マウス閉ループ追従のデバッグスナップショット(手順6後半)。`__webx68kDebug.mouse()`
+    // (src/main.ts)をWorker経路でも同期のまま返すための相乗り(keyBufProbeと同じ有効化
+    // フラグを共用。core-protocol.ts の FrameSnapshot.mouseTrackProbe コメント参照)。
+    snapshot.mouseTrackProbe = {
+      pending: host.hasPendingMouseDelta(),
+      cursor: host.readGuestCursor(),
+      core: host.readMouseState(),
+    };
   }
   const postStart = onProbe ? ctx.performance.now() : 0;
   post({ kind: 'event', generation: currentGeneration, event: 'frame', snapshot });
@@ -668,6 +715,15 @@ ctx.onmessage = (ev) => {
   // 毎フレーム届く高頻度メッセージなので、通常のcommand分岐より先に見る。
   if (isInputUpdateMessage(data)) {
     applyInputUpdate(data.update);
+    return;
+  }
+  // マウス閉ループ追従(手順6後半)の目標更新・再同期コマンド。同じく低頻度の専用メッセージ。
+  if (isMouseTrackUpdateMessage(data)) {
+    applyMouseTrackUpdate(data.update);
+    return;
+  }
+  if (isMouseTrackResyncMessage(data)) {
+    applyMouseTrackResync();
     return;
   }
   const cmd = data as CoreCommand;

@@ -15,6 +15,8 @@ import {
   INPUT_UPDATE_KIND,
   isCoreResponse,
   isWorkerBootAck,
+  MOUSE_TRACK_RESYNC_KIND,
+  MOUSE_TRACK_UPDATE_KIND,
   RETURN_FRAME_BUFFER_KIND,
   type CoreCommand,
   type CoreErrorCode,
@@ -23,6 +25,7 @@ import {
   type HotSwapFddPayload,
   type HotSwapFddResult,
   type InputUpdate,
+  type MouseTrackUpdate,
   type RequestId,
   type WorkerToMain,
 } from './core-protocol';
@@ -375,11 +378,13 @@ export class LocalCoreProxy implements LibretroHostProxy {
 //   手順6(2026-08-31実装)で INPUT_UPDATE_KIND の片道メッセージ(WorkerCoreProxy#sendInput())
 //   に統合された(毎フレーム呼ぶ状態更新であり、1メソッド1RPCにする対象ではないため。
 //   決定7参照。command/response の枠には乗せていない)。
-// - hasPendingMouseDelta:
-//   マウス閉ループ追従(readGuestCursor等)専用の補助であり、手順6では未移行のまま
-//   (docs/STORAGE-SCSI.md「ワーカー移行 手順6」参照)。
-// - readGuestCursor/clearMouseState/readMouseState/readKeyBufWindow/readKeyRepeatConfig/readSram/
-//   startSramAutosave/stopSramAutosave:
+// - hasPendingMouseDelta/readGuestCursor/clearMouseState:
+//   マウス閉ループ追従専用の補助。手順6後半(2026-08-31実装)で閉ループそのものをWorker側
+//   (src/core-worker.ts)へ移したため、proxy越しのRPCにはしていない(WorkerCoreProxy#
+//   sendMouseTrack()/sendMouseTrackResync() という別の片道メッセージで目標だけを送る。
+//   docs/STORAGE-SCSI.md「ワーカー移行 手順6後半」参照)。
+// - readMouseState/readKeyBufWindow/readKeyRepeatConfig/readSram/startSramAutosave/
+//   stopSramAutosave:
 //   「アクセス・ダーティ」「SRAM・キーリピート」の節により、pull API は廃止し
 //   frame イベント / sramChanged イベントへ統合する対象 (手順5・7)。
 // - readDiskAccess/readDirtyState/clearDirty:
@@ -716,6 +721,21 @@ export class WorkerCoreProxy implements LibretroHostProxy {
   sendInput(update: InputUpdate): void {
     if (this.disposed || this.failed) return;
     this.worker.postMessage({ kind: INPUT_UPDATE_KIND, update });
+  }
+
+  /** マウス閉ループ追従の目標更新(手順6後半)。command/response の枠には乗せない一方向の
+   * fire-and-forget(sendInput と同じ扱い。core-protocol.ts の MOUSE_TRACK_UPDATE_KIND
+   * コメント参照)。低頻度(mousemove/pointerlockchange契機)なので毎フレームは呼ばれない。 */
+  sendMouseTrack(update: MouseTrackUpdate): void {
+    if (this.disposed || this.failed) return;
+    this.worker.postMessage({ kind: MOUSE_TRACK_UPDATE_KIND, update });
+  }
+
+  /** マウス閉ループ追従の強制再同期(ツールバーの「マウス再同期」)。ユーザー操作契機の
+   * fire-and-forget。 */
+  sendMouseTrackResync(): void {
+    if (this.disposed || this.failed) return;
+    this.worker.postMessage({ kind: MOUSE_TRACK_RESYNC_KIND });
   }
 
   async readMemory(_address: number, _length: number): Promise<ArrayBuffer> {

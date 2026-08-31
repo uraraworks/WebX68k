@@ -726,7 +726,7 @@ const STRINGS: Record<Lang, Dict> = {
     hostKeyProfileArrowsJoy6: () => '矢印キー -> ジョイスティック(6ボタン)',
     hostKeyProfileTenkey: () => '矢印キー -> テンキー',
     workerModeUnsupported: () =>
-      '?worker=1 ではこの機能はまだ未対応です(マウスの閉ループ追従・音声・FDDホットマウント・SRAM・ステート保存/復元は次段で移行予定)。',
+      '?worker=1 ではこの機能はまだ未対応です(音声・FDDホットマウント・SRAM・ステート保存/復元は次段で移行予定)。',
   },
   en: {
     title: () => 'WebX68k - X68000 Emulator',
@@ -1039,7 +1039,7 @@ const STRINGS: Record<Lang, Dict> = {
     hostKeyProfileArrowsJoy6: () => 'Arrows -> Joystick (6 Buttons)',
     hostKeyProfileTenkey: () => 'Arrows -> Numpad',
     workerModeUnsupported: () =>
-      'Not supported yet under ?worker=1 (closed-loop mouse tracking, audio, FDD hot-swap, SRAM, and save/load state are migrated in a later step).',
+      'Not supported yet under ?worker=1 (audio, FDD hot-swap, SRAM, and save/load state are migrated in a later step).',
   },
 };
 
