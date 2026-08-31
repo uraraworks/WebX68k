@@ -456,6 +456,13 @@ let pendingWorkerTickProbeRead: ((result: WorkerTickProbeReadResult) => void) | 
 // (Workerへ往復問い合わせしない。物差しを変えないための決定)。
 let workerKeyBufProbeWanted = false;
 let workerLastKeyBufProbe: KeyBufFrameProbe | null = null;
+// 帰属計測(2026-08-31訂正、「注入の遅れ」「観測の遅れ」の切り分け)。
+// workerLastKeyBufWriteFrameNo: 直近のframe eventで受け取ったkeyBufWriteFrameNo(KeyBufへ
+// 最後に何か書かれたフレーム)。workerLastInputSendFrameNo: sendWorkerInputUpdate()を
+// 最後に呼んだ時点でmainが知っていた直近のWorker側frameNo(workerLastFrameNo)。
+// 両方ともDEV専用・__webx68kDebug.keybufAttribution()経由でのみ読む。
+let workerLastKeyBufWriteFrameNo: number | null = null;
+let workerLastInputSendFrameNo: number | null = null;
 let running = false;
 let bootStarted = false;
 
@@ -670,9 +677,23 @@ btnGamepad.addEventListener('click', () => gamepadDialog.open());
 // MainInputSnapshot内部でゼロ/空へ戻る(加算値・追加注入分であり、状態ではないため)。
 const workerInput = new MainInputSnapshot();
 
+// 決定9(2026-08-31、コーディネータ指摘): キー押下/解放・keyMakes・マウスボタンのような
+// **離散イベント**は、発生した時点で即座に updateInput を送る(sendWorkerInputUpdate()を
+// その場で呼ぶ)。従来は frame event 契機(次の frame event が来るまで最大1フレーム
+// 送信そのものが遅れる)のみだったため、コアがmakeを書くタイミングそのものが
+// 「利用者が実際に受ける入力レイテンシ」として不必要に遅れていた(3fad878の実測で
+// KeyBuf中央値が既定経路の約8倍になった一因。docs/STORAGE-SCSI.md「KeyBufプローブの
+// Worker対応」節参照)。ゲームパッドのビット合成とマウスの加算deltaは連続的な状態で
+// あり、frame event契機のままでよい(「ゲームパッドを何契機でpollするか」への回答
+// (frame event契機)は送信タイミング全体を縛るものではない)。
+// sendWorkerInputUpdate()は片道メッセージで「最新が勝つ」設計であり、1フレームに
+// 複数回送っても加算値(mouseDelta)・追加注入分(keyMakes)はtake()のたびにリセットされる
+// ため取りこぼさない(test/worker-input.test.ts参照)。
+
 function applyKey(retrok: number, down: boolean): void {
   if (urlWorkerMode) {
     workerInput.key(retrok, down);
+    sendWorkerInputUpdate();
     return;
   }
   host?.setKey(retrok, down);
@@ -682,6 +703,7 @@ function applyKey(retrok: number, down: boolean): void {
 function applyKeyMake(retrok: number): void {
   if (urlWorkerMode) {
     workerInput.keyMake(retrok);
+    sendWorkerInputUpdate();
     return;
   }
   host?.sendKeyMake(retrok);
@@ -698,6 +720,7 @@ function applyMouseDelta(dx: number, dy: number): void {
 function applyMouseButton(button: 'left' | 'right', down: boolean): void {
   if (urlWorkerMode) {
     workerInput.mouseButton(button, down);
+    sendWorkerInputUpdate();
     return;
   }
   host?.setMouseButton(button, down);
@@ -718,6 +741,10 @@ function applyJoyState(port: 0 | 1, bits: number): void {
  */
 function sendWorkerInputUpdate(): void {
   if (!urlWorkerMode || !workerCoreProxy) return;
+  // 帰属計測(2026-08-31訂正): この送信時点でmainが知っていた直近のWorker側frameNoを
+  // 覚えておく。__webx68kDebug.keybufAttribution()経由で「注入の遅れ」の起点として使う。
+  // 単純な代入でコストは無視できるためDEVガードは付けない(host読み取り等は伴わない)。
+  workerLastInputSendFrameNo = workerLastFrameNo;
   workerCoreProxy.sendInput(workerInput.take());
 }
 
@@ -2575,6 +2602,8 @@ async function bootWorkerCore(): Promise<void> {
     coreProxy = null;
     workerAvInfo = null;
     workerLastKeyBufProbe = null;
+    workerLastKeyBufWriteFrameNo = null;
+    workerLastInputSendFrameNo = null;
     try {
       await previous.dispose();
     } catch (err) {
@@ -2627,6 +2656,7 @@ async function bootWorkerCore(): Promise<void> {
       workerLastPoolMisses = snapshot.poolMisses;
       workerLastFrameNo = snapshot.frameNo;
       if (snapshot.keyBufProbe) workerLastKeyBufProbe = snapshot.keyBufProbe;
+      if (snapshot.keyBufWriteFrameNo !== undefined) workerLastKeyBufWriteFrameNo = snapshot.keyBufWriteFrameNo;
       if (snapshot.video.kind === 'rgba') {
         const { bytes, width, height } = snapshot.video;
         if (canvas.width !== width || canvas.height !== height) {
@@ -4158,11 +4188,25 @@ if (import.meta.env.DEV) {
     keybufProbeEnable: (enabled: boolean) => {
       workerKeyBufProbeWanted = enabled;
       if (!enabled) workerLastKeyBufProbe = null;
+      // 帰属計測もこの有効化区間からやり直す(前回の有効化区間の値を持ち越さない。
+      // src/core-worker.tsのenable時リセットと対にしてある)。
+      workerLastKeyBufWriteFrameNo = null;
+      workerLastInputSendFrameNo = null;
       workerCoreProxy?.devPostRawMessage({
         kind: '__devKeyBufProbe',
         action: enabled ? 'enable' : 'disable',
       });
     },
+    // 帰属計測(2026-08-31訂正、docs/STORAGE-SCSI.md「帰属の切り分け」参照)。
+    // 「keydown発生→updateInput送信」(注入)と「KeyBufへの書き込み→mainが知る」(観測)を
+    // フレーム数で切り分けるための読み取り専用フック。scripts/measure-key.mjsが
+    // --workerのときだけ使う。既定経路では意味を持たない値(null/現在のworkerLastFrameNo=0)
+    // をそのまま返す(呼び出しても副作用は無い)。
+    keybufAttribution: () => ({
+      inputSendFrameNo: workerLastInputSendFrameNo,
+      writeFrameNo: workerLastKeyBufWriteFrameNo,
+      currentFrameNo: workerLastFrameNo,
+    }),
     // 音声振幅プローブ(予備確認: docs/STORAGE-SCSI.md「音声遅延」参照)。resetAudioProbe()で
     // 積算区間を開始し、readAudioProbe()で最大振幅・サンプル数・非無音サンプル数を読む。
     // queuedSecと違い、無音サンプルとの区別が付く。

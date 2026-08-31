@@ -168,6 +168,11 @@ function isDevTickProbeControlMessage(data: unknown): data is DevTickProbeContro
 // (常時コストを持ち込まない)。main側の結線は src/main.ts の keybufProbeEnable/keybuf
 // フック、src/core-protocol.ts の FrameSnapshot.keyBufProbe / KeyBufFrameProbe 参照。
 let keyBufProbeEnabled = false;
+// 帰属計測用(2026-08-31訂正、「注入の遅れ」「観測の遅れ」の切り分け): writePointerが
+// 前回のsendFrame()から動いたかどうかを比較するための直近値と、動いた時点のframeNo。
+// enableのたびにリセットする(前回起動・前回の有効化区間の値を持ち越さない)。
+let lastKeyBufWritePointer = -1;
+let keyBufWriteFrameNo: number | null = null;
 
 interface DevKeyBufProbeControlMessage {
   kind: '__devKeyBufProbe';
@@ -406,7 +411,17 @@ function sendFrame(
   // を毎フレーム呼ぶ(受動読み取りのみで、コアの駆動そのものには関与しない)。
   if (import.meta.env.DEV && keyBufProbeEnabled) {
     const keyBufProbe = host.readKeyBufWindow(0, 128);
-    if (keyBufProbe) snapshot.keyBufProbe = keyBufProbe;
+    if (keyBufProbe) {
+      snapshot.keyBufProbe = keyBufProbe;
+      // 帰属計測: writePointerが前回のsendFrame()時点から動いていれば、このtickの
+      // frameNo(=このtickで最後に実行されたフレーム)を「書かれたフレーム」として覚える。
+      // 動いていなければ直前の値をそのまま保持する(sticky。ファイル冒頭コメント参照)。
+      if (keyBufProbe.writePointer !== lastKeyBufWritePointer) {
+        lastKeyBufWritePointer = keyBufProbe.writePointer;
+        keyBufWriteFrameNo = frameNo;
+      }
+      if (keyBufWriteFrameNo !== null) snapshot.keyBufWriteFrameNo = keyBufWriteFrameNo;
+    }
   }
   const postStart = onProbe ? ctx.performance.now() : 0;
   post({ kind: 'event', generation: currentGeneration, event: 'frame', snapshot });
@@ -617,6 +632,11 @@ ctx.onmessage = (ev) => {
   // 他のどの分岐よりも先に見て早期returnする。
   if (import.meta.env.DEV && isDevKeyBufProbeControlMessage(data)) {
     keyBufProbeEnabled = data.action === 'enable';
+    if (data.action === 'enable') {
+      // 前回の有効化区間の値を持ち越さない(帰属計測をこの有効化からの新規区間として扱う)。
+      lastKeyBufWritePointer = -1;
+      keyBufWriteFrameNo = null;
+    }
     return;
   }
   // バッファ返却は generation/requestId を持たない専用メッセージ(core-protocol.ts参照)。

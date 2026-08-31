@@ -308,6 +308,24 @@ export interface FrameSnapshot {
    * 無効時・prodビルドではこのフィールド自体が存在しない(undefined)。
    */
   keyBufProbe?: KeyBufFrameProbe;
+  /**
+   * DEV専用・既定off(keyBufProbeと同じ有効化フラグに相乗り): KeyBufの writePointer が
+   * 最後に動いた(=何か書かれた)ときの frameNo。「注入の遅れ」(keydown発生→updateInput
+   * 送信→実際に適用されたフレーム)と「観測の遅れ」(書かれたフレーム→mainが知るフレーム)
+   * を切り分けるための帰属計測専用フィールド(docs/STORAGE-SCSI.md「KeyBufプローブの
+   * Worker対応」節、2026-08-31訂正の「帰属の切り分け」参照)。
+   *
+   * 時刻(performance.now())ではなくフレーム数で持つ理由: main と Worker は別スレッドで
+   * timeOrigin が揃わないため、2つのログを1本の時計に載せられない(過去の教訓
+   * 「2つのログには1本のクロックが要る」)。frameNo は境界上の唯一の時系列識別子
+   * (このファイル冒頭のコメント参照)であり、スレッドをまたいでも比較可能。
+   *
+   * 1tickで複数フレーム進んだ場合(取り戻し発生時)、この値は「そのtickで最後に実行された
+   * フレームのframeNo」になる(tick内のどの内部フレームで実際に書かれたかまでは区別
+   * しない。sendFrame()は1tickにつき1回しか呼ばれないため)。書き込みが無いフレームでは
+   * 直前の値を保持する(sticky)。有効化直後・書き込みがまだ一度も無い間は undefined。
+   */
+  keyBufWriteFrameNo?: FrameNo;
 }
 
 export interface KeyBufFrameProbe {
