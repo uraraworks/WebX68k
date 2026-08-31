@@ -10,6 +10,7 @@ import { describe, expect, it } from 'vitest';
 import {
   INPUT_UPDATE_KIND,
   RETURN_FRAME_BUFFER_KIND,
+  SPEED_UPDATE_KIND,
   WORKER_BOOT_ACK_KIND,
   type CoreCommand,
   type CoreEvent,
@@ -40,8 +41,13 @@ class FakeWorker implements WorkerLike {
   postMessage(message: unknown): void {
     this.rawSent.push(message);
     const asRecord = message as { kind?: unknown };
-    // 応答不要のfire-and-forget(RETURN_FRAME_BUFFER_KIND/INPUT_UPDATE_KIND)。
-    if (asRecord.kind === RETURN_FRAME_BUFFER_KIND || asRecord.kind === INPUT_UPDATE_KIND) return;
+    // 応答不要のfire-and-forget(RETURN_FRAME_BUFFER_KIND/INPUT_UPDATE_KIND/SPEED_UPDATE_KIND)。
+    if (
+      asRecord.kind === RETURN_FRAME_BUFFER_KIND ||
+      asRecord.kind === INPUT_UPDATE_KIND ||
+      asRecord.kind === SPEED_UPDATE_KIND
+    )
+      return;
     const cmd = message as CoreCommand;
     this.sent.push(cmd);
     for (const out of this.respond(cmd)) this.emit(out);
@@ -323,6 +329,54 @@ describe('WorkerCoreProxy', () => {
     expect(worker.sent.some((c) => (c as unknown as { kind: unknown }).kind === RETURN_FRAME_BUFFER_KIND)).toBe(
       false,
     );
+  });
+
+  it('手順9: setSpeedMultiplier()はgeneration/requestIdを持たない一方向メッセージを送る(応答を待たない)', async () => {
+    // コーディネータ指摘への対応: 「速度ボタンがWorker経路で効かないのに効いたように見える」
+    // 欠陥を修正した際に追加。sendInput/sendMouseTrackと同じfire-and-forgetの枠組み。
+    const worker = new FakeWorker();
+    const proxy = new WorkerCoreProxy({ createWorker: () => worker });
+    const { biosIpl, biosCg } = makeBios();
+    await proxy.init(biosIpl, biosCg);
+
+    proxy.setSpeedMultiplier(2);
+
+    expect(worker.rawSent).toContainEqual({ kind: SPEED_UPDATE_KIND, multiplier: 2 });
+    expect(worker.sent.some((c) => (c as unknown as { kind: unknown }).kind === SPEED_UPDATE_KIND)).toBe(false);
+  });
+
+  it('手順9: dispose後にsetSpeedMultiplier()を呼んでも何も送らない(fire-and-forgetの安全側。sendInputと同じ規約)', async () => {
+    const worker = new FakeWorker();
+    const proxy = new WorkerCoreProxy({ createWorker: () => worker });
+    const { biosIpl, biosCg } = makeBios();
+    await proxy.init(biosIpl, biosCg);
+    await proxy.dispose();
+
+    const rawSentCountBefore = worker.rawSent.length;
+    proxy.setSpeedMultiplier(2);
+    expect(worker.rawSent.length).toBe(rawSentCountBefore);
+  });
+
+  it('手順9: init()にoptionsを渡すとinitializeコマンドのpayload.optionsとして送られる(px68k_cpuspeed等)', async () => {
+    // コーディネータ指摘への対応: src/core-worker.tsのhandleInitialize()はpayload.optionsを
+    // 読んでsetCoreOption()を回す実装が既にあったが、呼び出し元(ここ)が一度もoptionsを
+    // 渡していなかったため常に未設定だった欠陥の修正。
+    const worker = new FakeWorker();
+    const proxy = new WorkerCoreProxy({ createWorker: () => worker });
+    const { biosIpl, biosCg } = makeBios();
+
+    await proxy.init(biosIpl, biosCg, undefined, undefined, {
+      px68k_cpuspeed: '16MHz(標準)',
+      px68k_ramsize: '2MB(標準)',
+      px68k_no_wait_mode: 'enabled',
+    });
+
+    const initCmd = worker.sent.find((c) => c.op === 'initialize');
+    expect(initCmd && 'payload' in initCmd ? (initCmd.payload as { options?: unknown }).options : null).toEqual({
+      px68k_cpuspeed: '16MHz(標準)',
+      px68k_ramsize: '2MB(標準)',
+      px68k_no_wait_mode: 'enabled',
+    });
   });
 
   it('sendInput()はgeneration/requestIdを持たない一方向メッセージを送る(応答を待たない。決定7)', async () => {

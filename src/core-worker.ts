@@ -34,8 +34,21 @@
 // 不十分)。既存メインループ(src/main.ts の loop())が使っている computeFrameBudget()
 // (src/frameBudget.ts)をそのまま呼ぶ。ただしメインループにある「音声キュー深さによる
 // ±2%のフレーム間隔補正」は今回入れない(音声が未移行のため補正すべきキューが無い)。
-// computeFrameBudget() には queued=0, speedMultiplier=1 を渡す(補正なし・速度ボタンは
-// 未移行のため常に等倍)。
+// computeFrameBudget() には queued=0 を渡す(音声キュー由来の補正なし)。
+//
+// 速度倍率(手順9で対応。SPEED_UPDATE_KIND): 以前はspeedMultiplier=1固定だった
+// (「速度ボタンは未移行」)。ところがUI側(src/main.tsのbtnSpeed/cfgSpeed)はWorker経路でも
+// 押し込み表示・倍率バッジを出していたため、実際には何も変わらないのに変わったかのような
+// 嘘をつく状態になっていた(コーディネータ指摘、docs/STORAGE-SCSI.md「ワーカー移行 手順9」
+// 参照)。ここでは実装コストが小さいと判断し、実体を追加した: main側から低頻度の
+// fire-and-forgetでmultiplierを受け取り、tick()のframeInterval計算とcomputeFrameBudget()
+// の両方に渡す。既定経路のloop()と同じ「frameInterval = 1/(fps*speedMultiplier)」。
+// 音声は引き続き未移行のため、速度を上げても音は出ない(既定経路のresampleSpeedに相当する
+// 仕組みがWorker側に無い)。この制約はdocsに明記した。
+// また、px68k-libretro側で速度倍率が実際に効くには px68k_no_wait_mode='enabled' が
+// 必須(既定経路のbootCore()コメント参照)。この設定自体もWorker経路では一度も
+// 送られていなかった(InitPayload.options未使用)ため、手順9で InitPayload.options の
+// 実配線もあわせて行った(main.tsのbootWorkerCore()参照)。
 //
 // Worker のビルド形式について(実測により訂正): vite dev server はクラシックworker
 // 指定(type省略)でも、返す中身に ESM の import 文をそのまま残す(`?worker_file&type=classic`
@@ -59,6 +72,7 @@ import {
   isMouseTrackResyncMessage,
   isMouseTrackUpdateMessage,
   isReturnFrameBufferMessage,
+  isSpeedUpdateMessage,
   WORKER_BOOT_ACK_KIND,
   type CoreCommand,
   type CoreError,
@@ -340,7 +354,8 @@ function applyInputUpdate(update: InputUpdate): void {
 // setIntervalは遅れた回を取り戻さないため、両方の弱点を避けるために既存メインループ
 // (src/main.ts の loop())と同じ考え方(runTick()=computeFrameBudget()による取り戻し)を
 // 持ち込む。メインループと違い音声キューが無いため、frameIntervalの±2%補正(音声キュー深さ
-// 由来)は入れない(runTick()内でqueued=0, speedMultiplier=1固定でcomputeFrameBudget()を呼ぶ)。
+// 由来)は入れない(runTick()内でqueued=0固定でcomputeFrameBudget()を呼ぶ。speedMultiplierは
+// 下のSPEED_UPDATE_KINDハンドラで更新されるspeedMultiplier変数をそのまま渡す)。
 const TICK_MS = 16;
 let running = false;
 let driveIntervalId: ReturnType<typeof setInterval> | undefined;
@@ -348,6 +363,9 @@ let lastTickAtMs = 0;
 let accumulator = 0;
 /** 起動後に完了した retro_run() の累積数。境界上の唯一の時系列識別子(docs参照)。 */
 let frameNo = 0;
+/** 手順9で追加。main側(src/main.ts)からSPEED_UPDATE_KINDで送られる実効速度倍率。
+ * 1が等倍。ファイル冒頭コメント「速度倍率」参照。 */
+let speedMultiplier = 1;
 
 function stopDriveLoop(): void {
   if (driveIntervalId !== undefined) {
@@ -392,7 +410,7 @@ function tick(): void {
   const fps = host.avInfo?.fps ?? 60;
   const currentHost = host;
   let runTotalMs = 0;
-  const result = runTick(dt, fps, accumulator, () => {
+  const result = runTick(dt, fps, accumulator, speedMultiplier, () => {
     const runStart = probing ? ctx.performance.now() : 0;
     currentHost.runFrame();
     if (probing) runTotalMs += ctx.performance.now() - runStart;
@@ -818,6 +836,13 @@ ctx.onmessage = (ev) => {
   }
   if (isMouseTrackResyncMessage(data)) {
     applyMouseTrackResync();
+    return;
+  }
+  // 速度倍率更新(手順9)。同じく低頻度の専用メッセージ。0以下・非有限値は1(等倍)に丸め、
+  // 不正な値でtick()のframeIntervalが0除算・負値になるのを防ぐ(main.ts側のSPEED_STEPSは
+  // 正の値しか持たないが、防御的に受信側でも丸める)。
+  if (isSpeedUpdateMessage(data)) {
+    speedMultiplier = Number.isFinite(data.multiplier) && data.multiplier > 0 ? data.multiplier : 1;
     return;
   }
   const cmd = data as CoreCommand;

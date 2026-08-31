@@ -18,6 +18,7 @@ import {
   MOUSE_TRACK_RESYNC_KIND,
   MOUSE_TRACK_UPDATE_KIND,
   RETURN_FRAME_BUFFER_KIND,
+  SPEED_UPDATE_KIND,
   type CaptureDirtyMediaPayload,
   type CaptureDirtyMediaResult,
   type CoreCommand,
@@ -660,12 +661,22 @@ export class WorkerCoreProxy implements LibretroHostProxy {
    * ここで一緒に渡す必要がある(core-protocol.ts の InitPayload.initialDisks コメント参照)。
    * LocalCoreProxy は既存経路のとおり src/main.ts の bootCore() が host.writeDiskImage() を
    * 直接呼ぶため、この引数を持たない(オプション引数なのでインタフェースの構造的両立性は保たれる)。
+   *
+   * options: 手順9で追加。px68k_cpuspeed/px68k_ramsize等のコアオプション(既定経路が
+   * bootCore()内でhost.setCoreOption()を直接呼んでいるのと同じもの)を渡す。
+   * src/core-worker.ts の handleInitialize() は InitPayload.options を読んで
+   * newHost.setCoreOption() を回す実装が(この引数を追加する前から)既に入っていたが、
+   * 呼び出し元のここが options を一度も渡していなかったため、実際には常に未設定のまま
+   * だった(=CPU速度/RAM構成/パッド種別/HDD永続化/マウス有効化/速度倍率の土台となる
+   * no_wait_mode が、Worker経路では起動時から一度も設定されていなかった。
+   * docs/STORAGE-SCSI.md「ワーカー移行 手順9」参照)。
    */
   async init(
     biosIpl: Uint8Array,
     biosCg: Uint8Array,
     sram?: Uint8Array,
     initialDisks?: InitialDiskInput[],
+    options?: Record<string, string>,
   ): Promise<void> {
     await this.issue<unknown>('initialize', {
       biosIpl: toOwnedArrayBuffer(biosIpl),
@@ -676,6 +687,7 @@ export class WorkerCoreProxy implements LibretroHostProxy {
         name: d.name,
         bytes: toOwnedArrayBuffer(d.bytes),
       })),
+      options,
     });
   }
 
@@ -744,6 +756,14 @@ export class WorkerCoreProxy implements LibretroHostProxy {
   sendMouseTrackResync(): void {
     if (this.disposed || this.failed) return;
     this.worker.postMessage({ kind: MOUSE_TRACK_RESYNC_KIND });
+  }
+
+  /** 速度倍率の更新(手順9でWorker対応。docs/STORAGE-SCSI.md「ワーカー移行 手順9」参照)。
+   * sendMouseTrack と同じ扱いのfire-and-forget。ユーザー操作契機(速度ボタン/設定モーダル)の
+   * 低頻度メッセージ。 */
+  setSpeedMultiplier(multiplier: number): void {
+    if (this.disposed || this.failed) return;
+    this.worker.postMessage({ kind: SPEED_UPDATE_KIND, multiplier });
   }
 
   async readMemory(_address: number, _length: number): Promise<ArrayBuffer> {

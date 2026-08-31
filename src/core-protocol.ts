@@ -144,6 +144,31 @@ export function isMouseTrackResyncMessage(message: unknown): message is MouseTra
   );
 }
 
+// --- 速度倍率(コーディネータ指摘への対応、2026-08-31: 「速度変更がWorker経路で
+// 効かないのに効いたように見える」欠陥の是正) --------------------------------------
+//
+// 手順5・7時点では「速度ボタンは未移行」としてWorker側をspeedMultiplier=1固定にしていたが、
+// UI側(src/main.tsのbtnSpeed/cfgSpeed)はurlWorkerModeを見ずに押し込み表示・バッジを
+// 出していたため、実際には何も変わらないのに変わったかのような嘘をつく状態になっていた
+// (docs/STORAGE-SCSI.md「ワーカー移行 手順9」内「Worker経路で効かないのに効いたように
+// 見える機能の洗い出し」参照)。MOUSE_TRACK_UPDATE_KINDと同じ理由(低頻度・応答不要)で
+// generation/requestIdを持たない専用メッセージにする。
+export const SPEED_UPDATE_KIND = 'speedUpdate' as const;
+
+export interface SpeedUpdateMessage {
+  kind: typeof SPEED_UPDATE_KIND;
+  /** 実効速度倍率。1が等倍(ボタンOFF相当)。0以下や非有限値は受信側で1に丸める。 */
+  multiplier: number;
+}
+
+export function isSpeedUpdateMessage(message: unknown): message is SpeedUpdateMessage {
+  return (
+    typeof message === 'object' &&
+    message !== null &&
+    (message as { kind?: unknown }).kind === SPEED_UPDATE_KIND
+  );
+}
+
 export type CoreCommand =
   | {
       kind: 'command';

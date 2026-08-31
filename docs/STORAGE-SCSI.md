@@ -3978,6 +3978,61 @@ px68kの`Eject`(`FDD_EjectFD`)は、実行中に呼ぶとコアのメモリ上�
 
 `npx tsc --noEmit`: エラーなし。`npm test`(`npx vitest run`): **630件全て合格**(前節から変更なし)。
 
+## ワーカー移行 手順9への割り込み：「Worker経路で効かないのにUIが反応する」機能の洗い出しと修正(2026-08-31、利用者指摘)
+
+**手順9(異常系の検証)に着手した直後、利用者からの指摘でコーディネータが発見した欠陥への対応を優先して行った。** 発端は「速度変更がWorker経路で効かないのに効いたように見える」という指摘。
+
+### 発見の経緯(正直に書く)
+
+`src/core-protocol.ts`/`src/core-proxy.ts`にspeed/速度を示す語が1つも無く、`src/worker-drive-loop.ts`/`src/core-worker.ts`は`computeFrameBudget()`を`speedMultiplier=1`固定で呼んでいた(ファイル冒頭コメントにも「速度ボタンは未移行」と明記されていた)。ところが`src/main.ts`の`btnSpeed`クリックハンドラ・`cfgSpeed`変更ハンドラは`urlWorkerMode`を一切見ておらず、Worker経路でもボタンが押し込み表示になり倍率バッジまで表示されていた。**「未移行」とコメントには正しく書いていたが、それを利用者に見える形にする側の対応が漏れていた。** 手順5・7・6・6後半・8はいずれもUI側の対応(`warnWorkerModeUnsupported()`呼び出しや`urlWorkerMode`分岐)を都度入れてきたが、速度ボタンだけ既存の(Worker移行前からある)ハンドラがそのまま素通りしており、**単体テストにもレビューにも引っかからなかった**(単体テストは「Worker側がspeedMultiplier=1固定であること」は担保していたが、「UI側がWorker経路でそれを踏まえた表示をするか」は検査対象にしていなかった)。自動検査・レビューいずれでも捕まえられず、利用者の実際の操作によって初めて発覚した。
+
+### (1) 洗い出し
+
+ツールバー・設定ダイアログの全コントロールを1つずつ確認した。
+
+| 機能 | UI操作 | Worker経路で効くか(修正前) | 利用者に見えるか(修正前) | 対応 |
+|---|---|---|---|---|
+| 速度ボタン(`btn-speed`)・速度倍率(`cfg-speed`) | 押す/選択 | **効かない**(speedMultiplier=1固定) | **見えない**(押し込み表示・バッジが出て「効いた」ように見える) | **(A)実装**。SPEED_UPDATE_KINDでWorkerへ送信、`worker-drive-loop.ts`の`runTick()`が実際に反映 |
+| CPU速度(`cfg-cpuspeed`) | 選択→リセット | **効かない**(`WorkerCoreProxy.init()`が`options`を一度も送っていなかった) | **見えない**(「変更を反映するにはリセットが必要です」の注記どおりリセットすれば効くように見えるが、Worker経路では効かない) | **(A)実装**。`InitPayload.options`経由でWorker初期化時に送信(受け側`handleInitialize`は既に実装済みだった) |
+| RAM構成(`cfg-ramsize`) | 選択→リセット | 同上 | 同上 | 同上 |
+| パッド種別(ゲームパッド設定ダイアログ) | 選択 | `px68k_joytype1/2`コアオプションが送られていなかった。ただしボタン割当自体は`bitsForPad()`がJS側で計算しており、コア側オプションに依存せず機能面は動いていた(既定経路と同じ制約=実行中反映不可・要リセット、gamepad-ui.ts側の案内は既存のまま有効) | 見える(既存の`isCoreRunning()`案内があり、Worker固有の追加の嘘は無かった) | `options`に含めて併せて送信(低リスクなため) |
+| HDD永続化(`px68k_save_hdd_path`)・マウス有効化(`px68k_joy_mouse`)・`px68k_no_wait_mode` | (利用者操作なし、起動時の内部設定) | 送られていなかった。特に`px68k_no_wait_mode`は速度倍率が機能するための前提条件そのもの(既定経路のbootCore()コメント参照)なので、これが無いままではspeed対応を実装しても効かなかった | 利用者向けUIは無いため「見た目が嘘をつく」問題は無いが、機能としては欠落していた | `options`に含めて送信 |
+| ステート保存/復元(`btn-save-state`/`btn-load-state`) | 押す | 効かない(スコープ外) | **見える**(`urlWorkerMode`で分岐し`warnWorkerModeUnsupported()`、UI状態は変えない) | 対応不要(既存で正しい) |
+| FDD挿入/排出(HDD差し替え含む) | 操作 | HDDの実行中差し替えのみ効かない(スコープ外、`isSlotLocked()`で元から弾かれる経路) | **見える**(`warnWorkerModeUnsupported()`) | 対応不要(既存で正しい) |
+| 音声 | (操作なし、常時) | 効かない(スコープ外) | **見える**(起動完了時に1回`showToast`で明示) | 対応不要(既存で正しい) |
+| SRAM監視(キーリピート追従) | (操作なし) | 効かない(スコープ外) | 利用者向け直接操作が無いため見た目の嘘は生じない | 対応不要 |
+| マウスキャプチャ/再同期/閉ループ追従 | 操作 | 手順6後半で対応済み | 見える(`mouseTrackUnavailable`等) | 対応不要(既存で正しい) |
+| フルスクリーン/仮想キーボード/スクリーンショット/4:3表示/ホストキー割当 | 操作 | JS側のみで完結(コア非依存)、経路に関係なく機能する | 該当なし | 対応不要 |
+
+**`warnWorkerModeUnsupported()`の4箇所の呼び出し(insertDiskBytes/ejectSlotのHDD分岐、handleSaveState、handleLoadState)は、この洗い出しの結果、未移行機能全体を正しくカバーしていることを確認した。** 速度・CPU速度/RAM・パッド種別は今回「効くようにする」側で解決したため、新たな警告呼び出しは増やしていない。
+
+### (3) 実装するか見える化のみに留めるかの判断
+
+- **速度ボタン・CPU速度・RAM構成・パッド種別・関連コアオプション: (A)実装を選んだ。** 理由: `src/core-worker.ts`の`handleInitialize()`は`InitPayload.options`を読んで`setCoreOption()`を回す実装を(この対応より前から)既に持っており、呼び出し元(`WorkerCoreProxy.init()`)が一度も`options`を渡していなかっただけだった。つまり受け側の実装コストはゼロで、繋ぎ込みだけで完結する低リスクな修正だった。速度倍率自体は`SPEED_UPDATE_KIND`という新規の低頻度fire-and-forgetメッセージ1つと、`worker-drive-loop.ts`の`runTick()`へのパラメータ追加(`speedMultiplier`を`frameInterval`の計算とcomputeFrameBudget()に反映)で完結し、駆動ループの「取り戻し」ロジック自体は変更していない(既定経路の`loop()`と同じ式を踏襲)。
+- **音声のリサンプル(速度を上げたときのピッチ変化): 音声そのものがWorker経路で未移行なため、今回は対応しない。** 速度を上げてもWorker経路では無音のままである(既定経路の`resampleSpeed`に相当する仕組みがWorker側に無い)。この制約は`src/core-worker.ts`冒頭コメントおよび`bootWorkerCore()`の起動完了トーストの説明コメントに明記した。
+
+### 変更したファイル
+
+- `src/core-protocol.ts`: `SPEED_UPDATE_KIND`/`SpeedUpdateMessage`/`isSpeedUpdateMessage`を追加。
+- `src/core-proxy.ts`: `WorkerCoreProxy.init()`に`options`引数を追加(`InitPayload.options`として送信)。`setSpeedMultiplier()`を追加(fire-and-forget)。
+- `src/core-worker.ts`: `speedMultiplier`をモジュールスコープに追加、`SPEED_UPDATE_KIND`受信で更新、`tick()`内の`runTick()`呼び出しに反映。
+- `src/worker-drive-loop.ts`: `runTick()`が`speedMultiplier`引数を取り、`frameInterval = 1/(fps*speedMultiplier)`として`computeFrameBudget()`に反映するよう変更(既存呼び出し元は全て更新)。
+- `src/main.ts`: `bootWorkerCore()`で`px68k_cpuspeed`/`px68k_ramsize`/`px68k_save_hdd_path`/`px68k_joy_mouse`/`px68k_no_wait_mode`/`px68k_joytype1`/`px68k_joytype2`を`options`として`proxy.init()`に渡し、起動直後に`proxy.setSpeedMultiplier()`で初期倍率(既定1)を送信。`btnSpeed`/`cfgSpeed`のハンドラに`urlWorkerMode`分岐を追加し、Worker経路では`workerCoreProxy.setSpeedMultiplier()`を呼ぶ(UI更新自体は既定経路と共通の`updateSpeedButtonUi()`を使うため、表示と実体が一致する)。
+
+### 単体テストと故障注入の結果
+
+- `test/worker-drive-loop.test.ts`: `speedMultiplier=2`が等倍より多くフレームを進めること、`speedMultiplier=0.5`が等倍より少なく進めることを確認する2件を追加。**故障注入**: `frameInterval`の計算式から`speedMultiplier`を外すと(`1/fps`に戻すと)、上記2件が実際に red になることを確認してから元に戻した(`git diff`空を確認済み)。
+- `test/worker-core-proxy.test.ts`: `setSpeedMultiplier()`がgeneration/requestIdを持たない一方向メッセージを送ること、dispose後は送らないこと、`init()`に渡した`options`が`initialize`コマンドの`payload.options`として送られることを確認する3件を追加。**故障注入**: `setSpeedMultiplier()`内の`postMessage`呼び出しを無効化すると該当テストが実際に red になることを確認してから元に戻した(`git diff`空を確認済み)。
+
+`npx tsc --noEmit`: エラーなし。`npm test`: **635件全て合格**(手順8終了時点の630件から、上記の追加5件を含めて+5件)。
+
+### できなかったこと・未確認のこと
+
+- **実ブラウザでの速度変更の実動作確認は未実施。** 単体テスト(`runTick()`のフレーム数)と結線テスト(`postMessage`/`initialize`payload)のみで確認しており、実際にWorker経路で速度ボタンを押して体感速度が変わることは確認していない(親セッションによる実測が必要)。
+- **CPU速度/RAM構成をWorker経路で変更してリセットし、実際にHuman68kの挙動(メモリ容量表示等)が変わることも未確認。**
+- **パッド種別の実際のボタン割当が、コアオプション追加後もJS側の`bitsForPad()`と矛盾しないこと**は確認したが(コード読解ベース)、実機・実ブラウザでの押下確認はしていない。
+- 今回の洗い出しは「ツールバー・設定ダイアログのコントロール」を対象にした。`window.__webx68kDebug`経由のデバッグ専用フック類は対象外(利用者向けUIではないため)。
+
 ## 次にやること
 
 移行前基準は2組そろい、**ワーカー移行に着手できる状態になった**。

@@ -380,12 +380,24 @@ function updateSpeedButtonUi(): void {
   }
 }
 
+// 手順9: Worker経路(?worker=1)対応。以前はurlWorkerModeを見ずに常にspeedEnabled/badgeを
+// 更新していたため、実際には何も変わらないのにボタンだけ押し込み表示・倍率バッジが出る
+// (=UIが「効いている」と嘘をつく)状態だった(コーディネータ指摘、docs/STORAGE-SCSI.md
+// 「ワーカー移行 手順9」参照)。実装コストを見積もった結果、既にWorker側にInitPayload.options
+// 経由の土台(px68k_no_wait_mode等、上のbootWorkerCore()参照)があったため対応した:
+// Worker経路ではworkerCoreProxy.setSpeedMultiplier()で実際に反映しつつ、UI更新は
+// 既定経路と共通のupdateSpeedButtonUi()をそのまま使う(表示と実体が一致する)。
+function applySpeedChangeToWorker(): void {
+  if (urlWorkerMode) workerCoreProxy?.setSpeedMultiplier(speedMultiplier);
+}
+
 cfgSpeed.value = String(selectedSpeed);
 cfgSpeed.addEventListener('change', () => {
   selectedSpeed = parseSpeedStep(cfgSpeed.value);
   if (speedEnabled) {
     recomputeSpeedMultiplier();
-    resetSpeedState();
+    if (urlWorkerMode) applySpeedChangeToWorker();
+    else resetSpeedState();
   }
   updateSpeedButtonUi();
 });
@@ -393,7 +405,8 @@ cfgSpeed.addEventListener('change', () => {
 btnSpeed.addEventListener('click', () => {
   speedEnabled = !speedEnabled;
   recomputeSpeedMultiplier();
-  resetSpeedState();
+  if (urlWorkerMode) applySpeedChangeToWorker();
+  else resetSpeedState();
   updateSpeedButtonUi();
 });
 
@@ -2844,10 +2857,33 @@ async function bootWorkerCore(): Promise<void> {
   mountedPaths.fdd1 = fdd1 ? fdd1.name : null;
   mountedPaths.hdd = hdd ? hdd.name : null;
 
-  await proxy.init(biosIplBytes, biosCgBytes, savedSram ?? undefined, initialDisks);
+  // 手順9: コアオプション(既定経路がbootCore()内でhost.setCoreOption()を直接呼んでいるのと
+  // 同じもの)。src/core-worker.ts の handleInitialize() は InitPayload.options を読んで
+  // setCoreOption() を回す実装を(この配線を追加する前から)既に持っていたが、ここが
+  // 一度もoptionsを渡していなかったため、Worker経路ではCPU速度/RAM構成/パッド種別/
+  // HDD永続化/マウス有効化、そして速度倍率が実際に効くために必須のpx68k_no_wait_mode
+  // (下のbtnSpeed/cfgSpeedハンドラ、および既定経路のbootCore()コメント参照)が
+  // 一度も設定されていなかった(コーディネータ指摘、docs/STORAGE-SCSI.md「ワーカー移行
+  // 手順9」参照)。既定経路のオプション一覧(bootCore()内のhost.setCoreOption()群)と
+  // 揃える。
+  const workerCoreOptions: Record<string, string> = {
+    px68k_cpuspeed: cpuSpeed,
+    px68k_ramsize: ramSize,
+    px68k_save_hdd_path: 'enabled',
+    px68k_joy_mouse: 'Mouse',
+    px68k_no_wait_mode: 'enabled',
+    px68k_joytype1: PAD_TYPE_CORE_OPTION_VALUE[gamepadStore.joyType[0]],
+    px68k_joytype2: PAD_TYPE_CORE_OPTION_VALUE[gamepadStore.joyType[1]],
+  };
+  virtualPad.setPadType(gamepadStore.joyType[0]);
+
+  await proxy.init(biosIplBytes, biosCgBytes, savedSram ?? undefined, initialDisks, workerCoreOptions);
   await proxy.loadGame('/game/boot.cmd');
   workerAvInfo = await proxy.fetchAvInfo();
   await proxy.setRunning(true);
+  // 起動直後の実効速度をWorkerへ知らせる(通常は1=等倍。速度ボタンは既定でOFFに揃えてある。
+  // 上のspeedEnabled=falseと合わせ、Worker再生成のたびに必ず等倍から始まる)。
+  proxy.setSpeedMultiplier(speedMultiplier);
 
   running = true;
   updateSlotControls();
@@ -2858,7 +2894,10 @@ async function bootWorkerCore(): Promise<void> {
   // (warnWorkerModeUnsupportedの他の呼び出し箇所参照)。手順6(2026-08-31)でキー・パッド・
   // マウスボタン・加算マウスdelta、手順6後半(2026-08-31)でマウスの閉ループ追従、
   // 手順8(2026-08-31)でFDDホットマウント/dirty capture/オートセーブ/終了flushは対応した
-  // ため、このトーストの対象からは外した(残るのは音声・SRAM・ステート保存/復元)。
+  // ため、このトーストの対象からは外した。手順9(2026-08-31、コーディネータ指摘への対応)で
+  // 速度ボタン・CPU速度/RAM構成/パッド種別のコアオプション配線も対応したため同様に外した
+  // (残るのは音声・SRAM・ステート保存/復元。速度は上のsetSpeedMultiplier()で反映するが
+  // 音声自体が未移行のため「速度を上げても音は出ない」制約が残る。docs参照)。
   console.warn('[worker] ?worker=1 で起動しました。音声は未対応です(段階移行の対象外)。');
   showToast(t('workerModeUnsupported'), 6000);
 }

@@ -10,7 +10,11 @@
 // よる取り戻し)。1フレーム進める処理(runFrameOnce)を呼び出し側から注入してもらう形にして、
 // 実コア(LibretroHost)に依存せずテストできるようにしてある。メインループと違い音声キューが
 // 無いため、frameIntervalの±2%補正(音声キュー深さ由来)はここでは行わない
-// (computeFrameBudget()にはqueued=0, speedMultiplier=1を渡す。docs/STORAGE-SCSI.md参照)。
+// (computeFrameBudget()にはqueued=0を渡す。docs/STORAGE-SCSI.md参照)。
+//
+// speedMultiplier(手順9で追加): 以前は1固定だった(「速度ボタンは未移行」)。呼び出し側
+// (src/core-worker.ts)がSPEED_UPDATE_KINDで受け取った値をそのまま渡す。既定経路の
+// loop()と同じ式(frameInterval = 1/(fps*speedMultiplier))をここでも使う。
 
 import { computeFrameBudget } from './frameBudget';
 
@@ -39,6 +43,8 @@ const NO_ACCESS: DiskAccessFlags = { fddReading: false, fddDrive: -1, hddAccessi
  *   実測差分を渡すこと。タイマーの遅延・スロットリングを取り戻すにはこれが必須)。
  * @param fps コアの現在fps(host.avInfo?.fps)。
  * @param accumulatorIn 前tickから持ち越したaccumulator(秒)。
+ * @param speedMultiplier 実効速度倍率(1が等倍)。手順9で追加。0以下・非有限値は
+ *   呼び出し側(src/core-worker.ts)で1に丸めてから渡すこと(ここでは丸めない)。
  * @param runFrameOnce 1フレーム進め、そのフレームのディスクアクセス状態を返すコールバック
  *   (呼び出し側が host.runFrame() + host.readDiskAccess() をまとめて渡す)。
  */
@@ -46,12 +52,13 @@ export function runTick(
   dt: number,
   fps: number,
   accumulatorIn: number,
+  speedMultiplier: number,
   runFrameOnce: () => DiskAccessFlags,
 ): TickResult {
-  const frameInterval = 1 / fps;
+  const frameInterval = 1 / (fps * speedMultiplier);
   let accumulator = accumulatorIn + dt;
-  // 音声キュー未移行のため queued=0, speedMultiplier=1 固定(±2%補正なし。ファイル冒頭コメント参照)。
-  const budget = computeFrameBudget(dt, frameInterval, 0, 1);
+  // 音声キュー未移行のため queued=0 固定(±2%補正なし。ファイル冒頭コメント参照)。
+  const budget = computeFrameBudget(dt, frameInterval, 0, speedMultiplier);
 
   let ranFrames = 0;
   let fddReading = false;

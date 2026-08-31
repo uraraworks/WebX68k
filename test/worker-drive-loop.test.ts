@@ -15,7 +15,7 @@ const FRAME_INTERVAL_60 = 1 / FPS_60;
 
 describe('runTick', () => {
   it('通常のdt(≈1フレームぶん)では1〜2フレーム進む', () => {
-    const result = runTick(FRAME_INTERVAL_60, FPS_60, 0, () => ({
+    const result = runTick(FRAME_INTERVAL_60, FPS_60, 0, 1, () => ({
       fddReading: false,
       fddDrive: -1,
       hddAccessing: false,
@@ -26,7 +26,7 @@ describe('runTick', () => {
 
   it('遅れたtick(dt≈5フレームぶん)では取り戻しで複数フレーム進む', () => {
     const dt = FRAME_INTERVAL_60 * 5;
-    const result = runTick(dt, FPS_60, 0, () => ({
+    const result = runTick(dt, FPS_60, 0, 1, () => ({
       fddReading: false,
       fddDrive: -1,
       hddAccessing: false,
@@ -39,7 +39,7 @@ describe('runTick', () => {
 
   it('runFrameOnceの呼び出し回数はranFramesと一致する', () => {
     let calls = 0;
-    const result = runTick(FRAME_INTERVAL_60 * 3, FPS_60, 0, () => {
+    const result = runTick(FRAME_INTERVAL_60 * 3, FPS_60, 0, 1, () => {
       calls++;
       return { fddReading: false, fddDrive: -1, hddAccessing: false };
     });
@@ -47,7 +47,7 @@ describe('runTick', () => {
   });
 
   it('タブ復帰直後等の異常なdt(数秒)ではaccumulatorが破棄され蓄積が残らない', () => {
-    const result = runTick(5, FPS_60, 0, () => ({
+    const result = runTick(5, FPS_60, 0, 1, () => ({
       fddReading: false,
       fddDrive: -1,
       hddAccessing: false,
@@ -59,7 +59,7 @@ describe('runTick', () => {
   it('1フレームも進まなかったtickではaccessが常にfalse/-1になる(dupe扱い)', () => {
     // budgetが0になる状況(音声キュー枯渇/過多はWorker側では常にqueued=0固定なので
     // 起きないが、dt=0のようにaccumulatorが閾値未満のケースで再現する)。
-    const result = runTick(0, FPS_60, 0, () => {
+    const result = runTick(0, FPS_60, 0, 1, () => {
       throw new Error('呼ばれてはいけない');
     });
     expect(result.ranFrames).toBe(0);
@@ -68,7 +68,7 @@ describe('runTick', () => {
 
   it('tick内の複数フレームのいずれかでアクセスがあればORで合成する', () => {
     let call = 0;
-    const result = runTick(FRAME_INTERVAL_60 * 3, FPS_60, 0, () => {
+    const result = runTick(FRAME_INTERVAL_60 * 3, FPS_60, 0, 1, () => {
       call++;
       // 2フレーム目だけFDD1にアクセスがあったことにする。
       if (call === 2) return { fddReading: true, fddDrive: 1, hddAccessing: false };
@@ -77,6 +77,24 @@ describe('runTick', () => {
     expect(result.ranFrames).toBeGreaterThanOrEqual(2);
     expect(result.access).toEqual({ fddReading: true, fddDrive: 1, hddAccessing: false });
   });
+});
+
+describe('runTick: 速度倍率(手順9で追加。以前はspeedMultiplier=1固定だった)', () => {
+  it('speedMultiplier=2は等倍の約2倍のフレームを進める(同じdtで比較)', () => {
+    const dt = FRAME_INTERVAL_60 * 4;
+    const at1x = runTick(dt, FPS_60, 0, 1, () => ({ fddReading: false, fddDrive: -1, hddAccessing: false }));
+    const at2x = runTick(dt, FPS_60, 0, 2, () => ({ fddReading: false, fddDrive: -1, hddAccessing: false }));
+    // frameIntervalが半分になる(1/(fps*2))ため、同じdtでも約2倍のフレームを消化できる。
+    expect(at2x.ranFrames).toBeGreaterThan(at1x.ranFrames);
+  });
+
+  it('speedMultiplier=0.5は等倍より進むフレーム数が少ない', () => {
+    const dt = FRAME_INTERVAL_60 * 4;
+    const at1x = runTick(dt, FPS_60, 0, 1, () => ({ fddReading: false, fddDrive: -1, hddAccessing: false }));
+    const atHalf = runTick(dt, FPS_60, 0, 0.5, () => ({ fddReading: false, fddDrive: -1, hddAccessing: false }));
+    expect(atHalf.ranFrames).toBeLessThan(at1x.ranFrames);
+  });
+
 });
 
 describe('FrameBufferPool', () => {
