@@ -8,11 +8,13 @@
 // 一時的にソースを壊して実施した(このファイル自体は正常経路の検査のみを持つ)。
 import { describe, expect, it } from 'vitest';
 import {
+  INPUT_UPDATE_KIND,
   RETURN_FRAME_BUFFER_KIND,
   WORKER_BOOT_ACK_KIND,
   type CoreCommand,
   type CoreEvent,
   type FrameSnapshot,
+  type InputUpdate,
   type WorkerToMain,
 } from '../src/core-protocol';
 import { WorkerCoreProxy, type WorkerLike } from '../src/core-proxy';
@@ -38,7 +40,8 @@ class FakeWorker implements WorkerLike {
   postMessage(message: unknown): void {
     this.rawSent.push(message);
     const asRecord = message as { kind?: unknown };
-    if (asRecord.kind === RETURN_FRAME_BUFFER_KIND) return; // 応答不要のfire-and-forget。
+    // 応答不要のfire-and-forget(RETURN_FRAME_BUFFER_KIND/INPUT_UPDATE_KIND)。
+    if (asRecord.kind === RETURN_FRAME_BUFFER_KIND || asRecord.kind === INPUT_UPDATE_KIND) return;
     const cmd = message as CoreCommand;
     this.sent.push(cmd);
     for (const out of this.respond(cmd)) this.emit(out);
@@ -293,6 +296,46 @@ describe('WorkerCoreProxy', () => {
     expect(worker.sent.some((c) => (c as unknown as { kind: unknown }).kind === RETURN_FRAME_BUFFER_KIND)).toBe(
       false,
     );
+  });
+
+  it('sendInput()はgeneration/requestIdを持たない一方向メッセージを送る(応答を待たない。決定7)', async () => {
+    const worker = new FakeWorker();
+    const proxy = new WorkerCoreProxy({ createWorker: () => worker });
+    const { biosIpl, biosCg } = makeBios();
+    await proxy.init(biosIpl, biosCg);
+
+    const update: InputUpdate = {
+      keys: [1, 2],
+      pads: [3, 0],
+      mouseButtons: { left: true, right: false },
+      mouseDelta: { dx: 5, dy: -2 },
+      inputGeneration: 0,
+      keyMakes: [7],
+    };
+    proxy.sendInput(update);
+
+    expect(worker.rawSent).toContainEqual({ kind: INPUT_UPDATE_KIND, update });
+    // command/responseの往復には乗らない(sentに積まれるのはcommandだけ)。
+    expect(worker.sent.some((c) => (c as unknown as { kind: unknown }).kind === INPUT_UPDATE_KIND)).toBe(false);
+  });
+
+  it('dispose後にsendInput()を呼んでも何も送らない(fire-and-forgetの安全側)', async () => {
+    const worker = new FakeWorker();
+    const proxy = new WorkerCoreProxy({ createWorker: () => worker });
+    const { biosIpl, biosCg } = makeBios();
+    await proxy.init(biosIpl, biosCg);
+    await proxy.dispose();
+
+    const rawSentCountBeforeSendInput = worker.rawSent.length;
+    proxy.sendInput({
+      keys: [],
+      pads: [0, 0],
+      mouseButtons: { left: false, right: false },
+      mouseDelta: { dx: 0, dy: 0 },
+      inputGeneration: 0,
+      keyMakes: [],
+    });
+    expect(worker.rawSent.length).toBe(rawSentCountBeforeSendInput);
   });
 
   it('setEventHandler()で登録した購読者へframe/ready eventがそのまま転送される(手順5・7の橋渡し)', async () => {

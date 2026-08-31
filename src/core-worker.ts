@@ -3,9 +3,12 @@
 // `?worker=1` のとき、この Worker 上のコアが本体そのものとして使われる(メインスレッド側には
 // もう1本のコアは立たない。src/main.ts 参照)。実装しているのは
 // initialize→ready / loadGame / fetchAvInfo / setRunning / readTextScreen / dispose の
-// command/response と、映像を運ぶ frame event、バッファ返却の3系統。
-// 入力・音声・FDDホットマウント・SRAM・ステート保存/復元は今回のスコープ外で、
+// command/response、映像を運ぶ frame event、バッファ返却、入力更新(INPUT_UPDATE_KIND、
+// 手順6)の4系統。
+// 音声・FDDホットマウント・SRAM・ステート保存/復元は今回のスコープ外で、
 // 该当opは引き続き UNSUPPORTED を返す(src/main.ts 側で「未対応」を利用者に見える形にする)。
+// マウスの閉ループ追従(trackGuestMouse/readGuestCursor)も手順6の対象外のまま
+// (docs/STORAGE-SCSI.md「ワーカー移行 手順6」参照)。
 //
 // 実コアの駆動には既存の LibretroHost / LocalCoreProxy をそのまま再利用する。
 // LibretroHost は内部で canvas.getContext('2d') / width / height / createImageData /
@@ -49,18 +52,21 @@ import {
   collectTransferables,
   createCoreError,
   CoreProxyError,
+  isInputUpdateMessage,
   isReturnFrameBufferMessage,
   WORKER_BOOT_ACK_KIND,
   type CoreCommand,
   type CoreError,
   type FrameSnapshot,
   type Generation,
+  type InputUpdate,
   type WorkerToMain,
 } from './core-protocol';
 import { LocalCoreProxy } from './core-proxy';
 import { LibretroHost } from './libretro-host';
 import { computeFrameBudget } from './frameBudget';
 import { FrameBufferPool, runTick } from './worker-drive-loop';
+import { WorkerInputState } from './worker-input';
 
 // --- DEV専用: 駆動ループ内訳プローブ (性能調査。既定off) --------------------------------
 //
@@ -220,6 +226,24 @@ const framePool = new FrameBufferPool();
 
 function releaseBuffer(buffer: ArrayBuffer): void {
   framePool.release(buffer);
+}
+
+// --- 入力 (手順6) ------------------------------------------------------------
+//
+// main 側が frame event を契機に正規化・合成した InputUpdate を、片道メッセージ
+// (INPUT_UPDATE_KIND)で受け取り、そのままコアの入力状態(host)へ適用するだけの薄い層。
+// Worker はここで「受信済みスナップショットを見る」役に徹し、DOM/Gamepad の正規化は
+// 一切行わない(docs/STORAGE-SCSI.md「段階移行の順序」6項)。
+//
+// 世代付きclearと差分適用の実体(純粋ロジック)は src/worker-input.ts の WorkerInputState に
+// 切り出してあり、単体テスト(test/worker-input.test.ts)の対象にしてある
+// (前例: src/worker-drive-loop.ts と同じ作法)。ここでは実 host(LibretroHost)への
+// 結線だけを持つ。
+const workerInputState = new WorkerInputState();
+
+function applyInputUpdate(update: InputUpdate): void {
+  if (!host) return; // initialize前に届いた更新は捨てる(送信元は起動後にしか送らない想定)。
+  workerInputState.apply(update, host);
 }
 
 // --- 駆動ループ (手順7) ------------------------------------------------------
@@ -569,6 +593,12 @@ ctx.onmessage = (ev) => {
     releaseBuffer(data.buffer);
     return;
   }
+  // 入力更新も同様に generation/requestId を持たない専用メッセージ(手順6・決定7)。
+  // 毎フレーム届く高頻度メッセージなので、通常のcommand分岐より先に見る。
+  if (isInputUpdateMessage(data)) {
+    applyInputUpdate(data.update);
+    return;
+  }
   const cmd = data as CoreCommand;
   // DEVかつプローブ有効時のみ、command処理の開始/終了時刻を記録する(空白との突き合わせ用。
   // recordCommandTiming内部で import.meta.env.DEV && workerTickProbe.enabled を見て
@@ -596,10 +626,11 @@ ctx.onmessage = (ev) => {
     case 'dispose':
       recordCommandTiming(cmd.op, commandStartAtMs, handleDispose(cmd));
       return;
-    // 以下は今回のスコープ外(入力・音声・FDDホットマウント・SRAM・ステート保存/復元)。
+    // 以下は今回のスコープ外(音声・FDDホットマウント・SRAM・ステート保存/復元)。
     // UNSUPPORTED を返す。main.ts 側で「?worker=1 では未対応」と利用者に見える形にする
-    // (無言のno-opにしない。docs/STORAGE-SCSI.md参照)。
-    case 'updateInput':
+    // (無言のno-opにしない。docs/STORAGE-SCSI.md参照)。入力(手順6)は
+    // INPUT_UPDATE_KIND の専用メッセージへ移したため、この switch には含まれない
+    // (ctx.onmessage 冒頭の isInputUpdateMessage 分岐を参照)。
     case 'hotSwapFdd':
     case 'readMemory': {
       post({

@@ -51,7 +51,7 @@ import {
   type InitialDiskInput,
   type LibretroHostProxy,
 } from './core-proxy';
-import type { CoreEvent, FrameSnapshot } from './core-protocol';
+import type { CoreEvent, FrameSnapshot, InputUpdate } from './core-protocol';
 import {
   parseAspectModeParam,
   parseCpuSpeedParam,
@@ -642,26 +642,142 @@ const gamepadDialog = buildGamepadDialog(gamepadRoot, {
   isCoreRunning: () => running,
 });
 btnGamepad.addEventListener('click', () => gamepadDialog.open());
+
+// --- 入力の集約(手順6「入力」。docs/STORAGE-SCSI.md「ワーカー移行 手順6」参照) --------------
+//
+// 物理キーボード・仮想キーボード・ブリッジ(setKey/typeText)・ゲームパッド・バーチャルパッド・
+// ホストキー割り当て・マウスのすべてが、既定経路(host = メインスレッドの LibretroHost)と
+// Worker経路(?worker=1)の両方で、必ずこの1か所(applyKey/applyKeyMake/applyMouseDelta/
+// applyMouseButton/applyJoyState)を通す。呼び出し側で個別に urlWorkerMode 分岐を書かないのは、
+// 片方に足し忘れても無症状で通ってしまう事故(「入力源は末端の唯一の窓口へ集約する」の教訓)を
+// 避けるため。urlWorkerMode は起動時に固定される定数なので、既定経路(urlWorkerMode===false)
+// では常に host 分岐だけが通り、挙動は変わらない。
+//
+// workerInput: Worker経路でのみ使う、main側が保持する入力スナップショット。frame event契機
+// (未決事項の1つだった「ゲームパッドをどう poll するか」への回答。docs参照)で1回だけ
+// 正規化・合成してWorkerへ送る。mouseDelta/keyMakesは送信のたびに main 側でゼロ/空へ戻す
+// (加算値・追加注入分であり、状態ではないため)。
+const workerInput = {
+  keys: new Set<number>(),
+  pads: [0, 0] as [number, number],
+  mouseButtonLeft: false,
+  mouseButtonRight: false,
+  mouseDeltaX: 0,
+  mouseDeltaY: 0,
+  keyMakes: [] as number[],
+  /** blur/visibility(hidden)のたびに進める入力世代。Worker側は古い世代の更新を無視する
+   * (決定「世代付き clear」)。 */
+  generation: 0,
+};
+
+function applyKey(retrok: number, down: boolean): void {
+  if (urlWorkerMode) {
+    if (down) workerInput.keys.add(retrok);
+    else workerInput.keys.delete(retrok);
+    return;
+  }
+  host?.setKey(retrok, down);
+}
+
+/** KeyRepeaterからの、押下状態を変えないmake注入。 */
+function applyKeyMake(retrok: number): void {
+  if (urlWorkerMode) {
+    workerInput.keyMakes.push(retrok);
+    return;
+  }
+  host?.sendKeyMake(retrok);
+}
+
+function applyMouseDelta(dx: number, dy: number): void {
+  if (urlWorkerMode) {
+    workerInput.mouseDeltaX += dx;
+    workerInput.mouseDeltaY += dy;
+    return;
+  }
+  host?.addMouseDelta(dx, dy);
+}
+
+function applyMouseButton(button: 'left' | 'right', down: boolean): void {
+  if (urlWorkerMode) {
+    if (button === 'left') workerInput.mouseButtonLeft = down;
+    else workerInput.mouseButtonRight = down;
+    return;
+  }
+  host?.setMouseButton(button, down);
+}
+
+function applyJoyState(port: 0 | 1, bits: number): void {
+  if (urlWorkerMode) {
+    workerInput.pads[port] = bits;
+    return;
+  }
+  host?.setJoyState(port, bits);
+}
+
+/**
+ * workerInput の現在値を InputUpdate として Worker へ送り、加算値(mouseDelta)・
+ * 追加注入分(keyMakes)を送信後にクリアする(main 側の責務。決定「加算 mouseDelta」参照)。
+ * Worker経路以外(既定経路)では何もしない。
+ */
+function sendWorkerInputUpdate(): void {
+  if (!urlWorkerMode || !workerCoreProxy) return;
+  const update: InputUpdate = {
+    keys: Array.from(workerInput.keys),
+    pads: [workerInput.pads[0], workerInput.pads[1]],
+    mouseButtons: { left: workerInput.mouseButtonLeft, right: workerInput.mouseButtonRight },
+    mouseDelta: { dx: workerInput.mouseDeltaX, dy: workerInput.mouseDeltaY },
+    inputGeneration: workerInput.generation,
+    keyMakes: workerInput.keyMakes,
+  };
+  workerCoreProxy.sendInput(update);
+  workerInput.mouseDeltaX = 0;
+  workerInput.mouseDeltaY = 0;
+  workerInput.keyMakes = [];
+}
+
+/**
+ * Worker経路専用: blur/visibility(hidden)で入力世代を進め、押下状態をすべてmain側の
+ * スナップショットからも落として即送信する(決定「世代付き clear」。Worker側は世代が
+ * 上がった更新を適用する前にコア側の状態を先に完全クリアする。src/core-worker.ts参照)。
+ * 既定経路では何もしない(既定経路の clear は既存の host?.setJoyState(...)/
+ * releaseAllGamepadKeys() のまま変えない)。
+ */
+function clearWorkerInputGeneration(): void {
+  if (!urlWorkerMode || !workerCoreProxy) return;
+  workerInput.generation++;
+  workerInput.keys.clear();
+  workerInput.pads[0] = 0;
+  workerInput.pads[1] = 0;
+  workerInput.mouseButtonLeft = false;
+  workerInput.mouseButtonRight = false;
+  workerInput.mouseDeltaX = 0;
+  workerInput.mouseDeltaY = 0;
+  workerInput.keyMakes = [];
+  sendWorkerInputUpdate();
+}
+
 // 押しっぱなし固着の予防(仮想キーボードの releaseAll と同じ思想)。
 // フォーカスが外れた/タブが隠れた瞬間の入力は届いても意味がないので、コア側の状態を明示的に0へ戻す。
 window.addEventListener('blur', () => {
   host?.setJoyState(0, 0);
   host?.setJoyState(1, 0);
   releaseAllGamepadKeys();
+  clearWorkerInputGeneration();
 });
 document.addEventListener('visibilitychange', () => {
   if (document.visibilityState === 'hidden') {
     host?.setJoyState(0, 0);
     host?.setJoyState(1, 0);
     releaseAllGamepadKeys();
+    clearWorkerInputGeneration();
   }
 });
 
 // 物理・仮想・ブリッジ入力を入力元ごとに保持し、同じキーの片側だけが先に離れても
 // コア側の押下状態が消えないよう集約する。
-const sharedKeyInput = new SharedKeyInput((retrok, down) => host?.setKey(retrok, down));
+const sharedKeyInput = new SharedKeyInput((retrok, down) => applyKey(retrok, down));
 // 物理・仮想キーボードで同じインスタンスを共有し、押下状態を保ったままmakeだけを注入する。
-const keyRepeater = new KeyRepeater((retrok) => host?.sendKeyMake(retrok));
+const keyRepeater = new KeyRepeater((retrok) => applyKeyMake(retrok));
 const virtualKeyboard = createVirtualKeyboard(
   virtualKeyboardPanel,
   sharedKeyInput,
@@ -2436,11 +2552,15 @@ let workerLastFrameNo = 0;
  * 「Worker経路の起動時間：同一ビルドA/B」参照。host.avInfoと同様、以後更新しない)。 */
 let workerAvInfo: AvInfo | null = null;
 
-/** `?worker=1` でだけ利用者へ見せる、未移行機能のトースト。入力・音声・FDDホットマウント・
- * SRAM・ステート保存/復元は今回のスコープ外(docs/STORAGE-SCSI.md「段階移行の順序」参照)。
+/** `?worker=1` でだけ利用者へ見せる、未移行機能のトースト。
+ * 手順6(2026-08-31)でキー・パッド・マウスボタン・加算マウスdeltaは対応した(このトーストの
+ * 対象から外れた)が、マウスの閉ループ追従・音声・FDDホットマウント・SRAM・
+ * ステート保存/復元は今回もスコープ外のまま(docs/STORAGE-SCSI.md「段階移行の順序」参照)。
  * 無言のno-opにせず、必ずここを通してから抜けること。 */
 function warnWorkerModeUnsupported(): void {
-  console.warn('[worker] ?worker=1 ではこの機能はまだ未対応です(入力・音声・FDDホットマウント・SRAM・ステート保存/復元)。');
+  console.warn(
+    '[worker] ?worker=1 ではこの機能はまだ未対応です(マウスの閉ループ追従・音声・FDDホットマウント・SRAM・ステート保存/復元)。',
+  );
   showToast(t('workerModeUnsupported'));
 }
 
@@ -2528,6 +2648,17 @@ async function bootWorkerCore(): Promise<void> {
         workerCoreProxy?.returnFrameBuffer(bytes);
       }
       applyDiskAccess(performance.now(), snapshot.disk.access);
+      // 入力(手順6): 受信した frame event を契機に1回だけ、既定経路の host.onPoll と
+      // 同じ合成規則(bits0 | virtualPad.getJoyBits() | hostKeyJoyBits())でポート0/1の
+      // ビットを合成し、workerInput へ書いてから送信する(未決事項だった「ゲームパッドを
+      // 何を契機にpollするか」への回答。docs/STORAGE-SCSI.md「ワーカー移行 手順6」参照。
+      // 余分なタイマーを増やさないため、専用のpollループは持たない)。
+      const pads = gamepadsByPort();
+      const [bits0, bits1] = pollBitsByPort(pads);
+      applyJoyState(0, bits0 | virtualPad.getJoyBits() | hostKeyJoyBits());
+      applyJoyState(1, bits1);
+      syncGamepadKeys(pads);
+      sendWorkerInputUpdate();
       return;
     }
     if (event.event === 'fatal') {
@@ -2557,12 +2688,14 @@ async function bootWorkerCore(): Promise<void> {
   running = true;
   updateSlotControls();
   resetAccessLamps();
-  // 入力・音声は毎フレーム/毎キー発生するため、押すたびにトーストを出すと使い物にならない。
+  // 音声は毎フレーム発生するため、押すたびにトーストを出すと使い物にならない。
   // 代わりに起動が完了したこの時点で1回だけ知らせる(無言のno-opにはしない。docs参照。
   // FDDホットマウント/ステート保存復元は実際に操作したタイミングで個別に警告する
-  // (warnWorkerModeUnsupportedの他の呼び出し箇所参照)。
+  // (warnWorkerModeUnsupportedの他の呼び出し箇所参照)。手順6(2026-08-31)でキー・パッド・
+  // マウスボタン・加算マウスdeltaは対応したため、このトーストの対象からは外した
+  // (マウスの閉ループ追従は引き続き未対応)。
   console.warn(
-    '[worker] ?worker=1 で起動しました。入力(キーボード/マウス/ゲームパッド)と音声は未対応です(段階移行の対象外)。',
+    '[worker] ?worker=1 で起動しました。マウスの閉ループ追従と音声は未対応です(段階移行の対象外)。',
   );
   showToast(t('workerModeUnsupported'), 6000);
 }
@@ -3247,16 +3380,21 @@ canvas.addEventListener('contextmenu', (e) => {
 });
 
 canvas.addEventListener('mousemove', (e) => {
-  if (!host || !running) return;
+  if (!running) return;
   if (isMouseCaptured()) {
     // movementX/Y は CSS ピクセル単位。canvas は拡大表示されるので、ゲスト側の1ドットへ換算する。
     // 4:3表示モードでは表示上の縦横比とcanvasの実解像度比が食い違うため、X/Yを別々の倍率で
     // 換算する必要がある(等倍/整数倍のドット等倍モードではscaleX===scaleYになるので実質同じ)。
     const scaleX = canvas.clientWidth > 0 ? canvas.width / canvas.clientWidth : 1;
     const scaleY = canvas.clientHeight > 0 ? canvas.height / canvas.clientHeight : 1;
-    host.addMouseDelta(e.movementX * scaleX * mouseSensitivity, e.movementY * scaleY * mouseSensitivity);
+    applyMouseDelta(e.movementX * scaleX * mouseSensitivity, e.movementY * scaleY * mouseSensitivity);
     return;
   }
+  // 追従モード(閉ループ追従。マウスの閉ループ追従は今回のスコープ外。docs/STORAGE-SCSI.md
+  // 「ワーカー移行 手順6」参照)は host 経由でしか成立しない。Worker経路では host が
+  // 常にnullなので、desiredRatioの記録自体は行うがstepMouseTracking() 側の
+  // host ガードで実際の送信は起きない。
+  if (!host) return;
   // 追従モード: canvas 内の相対位置(0..1)だけ記録し、実際の送信は stepMouseTracking に任せる
   const rect = canvas.getBoundingClientRect();
   if (rect.width <= 0 || rect.height <= 0) return;
@@ -3269,16 +3407,15 @@ canvas.addEventListener('mousemove', (e) => {
 // 非キャプチャ時にも渡すと、キャプチャ開始の右ダブルクリックがそのままゲストに届いてしまい、
 // X68000 側のソフトキーボード(ASK68K)が開くなど、意図しない反応を起こす。
 canvas.addEventListener('mousedown', (e) => {
-  if (!host || !isMouseCaptured()) return;
-  if (e.button === 0) host.setMouseButton('left', true);
-  else if (e.button === 2) host.setMouseButton('right', true);
+  if (!isMouseCaptured()) return;
+  if (e.button === 0) applyMouseButton('left', true);
+  else if (e.button === 2) applyMouseButton('right', true);
   e.preventDefault();
 });
 
 window.addEventListener('mouseup', (e) => {
-  if (!host) return;
-  if (e.button === 0) host.setMouseButton('left', false);
-  else if (e.button === 2) host.setMouseButton('right', false);
+  if (e.button === 0) applyMouseButton('left', false);
+  else if (e.button === 2) applyMouseButton('right', false);
 });
 
 /** マウス関連ボタンの活性・表示状態を現在のモードに合わせる。 */
@@ -3926,8 +4063,8 @@ if (import.meta.env.DEV) {
     // Pointer Lock を経由せずに相対移動/ボタンを注入する。自動テスト用で、
     // 将来の MCP ブリッジ(mouse_move 相当)もこの経路をそのまま使う想定。
     peek: (addr: number) => host?.peekWord(addr) ?? null,
-    moveMouse: (dx: number, dy: number) => host?.addMouseDelta(dx, dy),
-    mouseButton: (button: 'left' | 'right', down: boolean) => host?.setMouseButton(button, down),
+    moveMouse: (dx: number, dy: number) => applyMouseDelta(dx, dy),
+    mouseButton: (button: 'left' | 'right', down: boolean) => applyMouseButton(button, down),
     // 各ポートの解決済みRetroPadビットマスクと、解決前の生の入力(pressed/axes)を返す。
     // ヘッドレスでの検証用(ブラウザUIを開かなくても割当が効いているか確認できる)。
     //
@@ -4803,7 +4940,9 @@ const bridgeHost: BridgeHost = {
     ? sharedKeyInput.press('bridge:key', retrok)
     : sharedKeyInput.release('bridge:key', retrok),
   typeText: async (text) => {
-    if (!host) throw new Error('not booted');
+    // Worker経路(?worker=1)ではhostが常にnullなので、`running`で起動済みかを判定する
+    // (host基準のままだとWorker経路のキー入力(手順6で対応済み)がtypeTextだけ塞がれてしまう)。
+    if (!running) throw new Error('not booted');
     const skipped: string[] = [];
     let typed = 0;
     for (const ch of text) {
@@ -4822,8 +4961,8 @@ const bridgeHost: BridgeHost = {
     }
     return { typed, skipped };
   },
-  mouseMove: (dx, dy) => host?.addMouseDelta(dx, dy),
-  mouseButton: (button, down) => host?.setMouseButton(button, down),
+  mouseMove: (dx, dy) => applyMouseDelta(dx, dy),
+  mouseButton: (button, down) => applyMouseButton(button, down),
   saveState: () => handleSaveState(),
   loadState: () => handleLoadState(),
   listDisks: () =>

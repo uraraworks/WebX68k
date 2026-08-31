@@ -73,6 +73,29 @@ export function isReturnFrameBufferMessage(message: unknown): message is ReturnF
   );
 }
 
+// --- 入力更新 (手順6: 入力) ---------------------------------------------
+//
+// 決定7(2026-08-31、docs/STORAGE-SCSI.md「ワーカー移行 手順6」参照): 当初 updateInput は
+// CoreCommand の一員(generation/requestId付きでresponseを期待する形)だったが、毎フレーム
+// 送るには往復が無駄である。入力は「最新が勝つ」性質で個別の成否確認に意味がなく、
+// inputGeneration による世代破棄の設計と整合するため、RETURN_FRAME_BUFFER_KIND と同様の
+// 「requestId を持たない専用メッセージ」に変更した。postMessage は順序保証があるため、
+// 加算 mouseDelta が片道でも取りこぼされない。
+export const INPUT_UPDATE_KIND = 'inputUpdate' as const;
+
+export interface InputUpdateMessage {
+  kind: typeof INPUT_UPDATE_KIND;
+  update: InputUpdate;
+}
+
+export function isInputUpdateMessage(message: unknown): message is InputUpdateMessage {
+  return (
+    typeof message === 'object' &&
+    message !== null &&
+    (message as { kind?: unknown }).kind === INPUT_UPDATE_KIND
+  );
+}
+
 export type CoreCommand =
   | {
       kind: 'command';
@@ -94,13 +117,6 @@ export type CoreCommand =
       requestId: RequestId;
       op: 'setRunning';
       payload: { running: boolean };
-    }
-  | {
-      kind: 'command';
-      generation: Generation;
-      requestId: RequestId;
-      op: 'updateInput';
-      payload: InputUpdate;
     }
   | {
       kind: 'command';
@@ -232,6 +248,13 @@ export interface InputUpdate {
   mouseDelta: { dx: number; dy: number };
   /** blur/visibility の clearInput で進める入力世代。古い世代の更新は Worker 側で無視する。 */
   inputGeneration: number;
+  /**
+   * 決定8(2026-08-31): KeyRepeater は押下状態を変えずに make だけを注入する
+   * (host.sendKeyMake(retrok))。この経路が無いとキーリピートが Worker 経路で死ぬため、
+   * 「この更新で追加注入する make の RETROK 配列」を持たせる。main 側は送信後にクリアする
+   * (加算 mouseDelta と同じ扱い)。
+   */
+  keyMakes: number[];
 }
 
 // --- フレームスナップショット -----------------------------------------------
@@ -378,7 +401,6 @@ export function collectTransferables(
       }
       case 'loadGame':
       case 'setRunning':
-      case 'updateInput':
       case 'serialize':
       case 'readTextScreen':
       case 'screenshot':

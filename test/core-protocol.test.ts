@@ -8,13 +8,16 @@ import {
   collectTransferables,
   createCoreError,
   CoreProxyError,
+  INPUT_UPDATE_KIND,
   isCoreEvent,
   isCoreResponse,
+  isInputUpdateMessage,
   type CoreCommand,
   type CoreEvent,
   type CoreResponse,
   type FrameSnapshot,
   type HotSwapFddResult,
+  type InputUpdate,
 } from '../src/core-protocol';
 
 function makeSnapshot(overrides?: Partial<FrameSnapshot>): FrameSnapshot {
@@ -50,6 +53,25 @@ describe('型ガード', () => {
     expect(isCoreEvent(response)).toBe(false);
     expect(isCoreResponse(event)).toBe(false);
     expect(isCoreEvent(event)).toBe(true);
+  });
+
+  it('isInputUpdateMessage は kind:"inputUpdate" のメッセージだけを true にする(決定7: 片道メッセージ)', () => {
+    const update: InputUpdate = {
+      keys: [1, 2],
+      pads: [0, 0],
+      mouseButtons: { left: false, right: false },
+      mouseDelta: { dx: 0, dy: 0 },
+      inputGeneration: 0,
+      keyMakes: [],
+    };
+    const message = { kind: INPUT_UPDATE_KIND, update };
+
+    expect(isInputUpdateMessage(message)).toBe(true);
+    expect(isInputUpdateMessage({ kind: 'returnFrameBuffer', buffer: new ArrayBuffer(0) })).toBe(false);
+    expect(isInputUpdateMessage(null)).toBe(false);
+    expect(isInputUpdateMessage(undefined)).toBe(false);
+    expect(isInputUpdateMessage({})).toBe(false);
+    expect(isInputUpdateMessage(42)).toBe(false);
   });
 });
 

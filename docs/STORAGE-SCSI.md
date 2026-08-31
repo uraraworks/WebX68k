@@ -3053,11 +3053,63 @@ Workerの`gapCommandOverlapSummary`(`unaccountedMs > 50ms`のtickを「空白」
 
 4条件×3試行=12試行、**全12試行完走**(タイムアウト・失敗なし)。
 
+## ワーカー移行 手順6：入力の実装（2026-08-31）
+
+「段階移行の順序」手順6として、キー・パッド・マウスボタン・加算マウスdelta・世代付きclearを実装した。**マウスの閉ループ追従(`trackGuestMouse`系、`readGuestCursor`)は今回もスコープ外**とし、次回に回す(手順6の定義自体が「世代付き clear と加算 mouse delta を先に検証し、その後に閉ループ追従を Worker へ移す」という2段階を想定しているため、今回はその前半にとどまる)。
+
+### 決定7：`updateInput` を片道メッセージ化した
+
+当初 `updateInput` は `CoreCommand` の一員(generation/requestId付きでresponseを期待する形)だったが、毎フレーム送るには往復が無駄だった。入力は「最新が勝つ」性質で個別の成否確認に意味がなく、`inputGeneration` による世代破棄の設計と整合するため、`RETURN_FRAME_BUFFER_KIND` と同様の「requestId を持たない専用メッセージ」(`INPUT_UPDATE_KIND`、`src/core-protocol.ts`)に変更した。postMessage は順序保証があるため、加算 mouseDelta が片道でも取りこぼされない。`CoreCommand` union から `updateInput` op 自体を削除し、`collectTransferables` の網羅チェックも追随させた。
+
+### 決定8：`InputUpdate` に `keyMakes: number[]` を足した
+
+`KeyRepeater` は押下状態を変えずに make だけを注入する(`host.sendKeyMake(retrok)`)。この経路が無いとキーリピートが Worker 経路で死ぬため、`InputUpdate` に「この更新で追加注入する make の RETROK 配列」を足した。main 側は送信後に配列をクリアする(加算 mouseDelta と同じ扱い)。
+
+### frame event 契機を採用した理由
+
+「未決事項」に残っていた「ゲームパッドを独立タイマーで poll するか、受信した `frame` event を契機に poll するか」が今回の実装で決着した。**frame event 契機を採用した。** 理由は、余分なタイマーを増やさずに済むこと、既定経路の `host.onPoll`(毎フレーム呼ばれる)と同じ頻度・同じタイミングで入力を合成できることの2点。`src/main.ts` の `bootWorkerCore()` 内、`proxy.setEventHandler()` の `frame` イベント処理の中で、`gamepadsByPort()` / `pollBitsByPort()` / `virtualPad.getJoyBits()` / `hostKeyJoyBits()` / `syncGamepadKeys()` を呼んでポート0/1のビットを合成し、`sendWorkerInputUpdate()` で送信する。合成規則(`bits0 | virtualPad.getJoyBits() | hostKeyJoyBits()`)は既定経路の `host.onPoll` と完全に同じにした。
+
+### 入力源を1か所へ集約した設計
+
+過去の教訓(「入力源は末端の唯一の窓口へ集約する」)に従い、物理キーボード・仮想キーボード・ブリッジ(`__webx68kDebug.setKey`/`typeText`/`moveMouse`/`mouseButton`)・ゲームパッド・仮想パッド・ホストキー割り当て・マウスのすべてが、既定経路とWorker経路で同じ1か所を通るようにした。具体的には `src/main.ts` に `applyKey`/`applyKeyMake`/`applyMouseDelta`/`applyMouseButton`/`applyJoyState` の5つの中央関数を新設し、内部で `urlWorkerMode`(起動時に固定される定数)による分岐を持たせた。呼び出し側(`sharedKeyInput`/`keyRepeater`のコールバック、`canvas`のmousemove/mousedown、`window`のmouseup、`bridgeHost`、DEV専用の`__webx68kDebug`)からは個別の分岐を一切書かず、必ずこの5関数を通す。`urlWorkerMode`が`false`(既定経路)の間は、これらの関数は従来どおり`host?.xxx(...)`を呼ぶだけなので、**既定経路の挙動は一切変えていない**。
+
+Worker経路では、これらの関数は `workerInput`(main側が保持する入力スナップショット: keys/pads/mouseButtons/mouseDelta/keyMakes/generation)を更新するだけで、実際の送信は前述の frame event 契機の `sendWorkerInputUpdate()` が担う。blur/visibilitychange(hidden) では `clearWorkerInputGeneration()` が世代を+1し、スナップショットを全クリアして即送信する(既定経路の `host?.setJoyState(0,0)`/`releaseAllGamepadKeys()` はそのまま残し、Worker経路専用の処理を追加する形にした)。
+
+Worker側(`src/core-worker.ts`)は `INPUT_UPDATE_KIND` のメッセージを、通常の command 分岐より先(`isReturnFrameBufferMessage` と同じ位置)で受け取り、`applyInputUpdate()` が `host` へ適用する。世代付きclearと差分適用の実体は `src/worker-input.ts` の `WorkerInputState` クラスへ切り出した(`src/worker-drive-loop.ts` と同じ作法: `core-worker.ts` 自体は実Workerグローバル(`self`)に依存するため単体テストできず、グローバルに依存しない部分だけを別ファイルへ抽出してテスト対象にする)。
+
+### 追加・変更したファイル
+
+- `src/core-protocol.ts`: `INPUT_UPDATE_KIND`/`InputUpdateMessage`/`isInputUpdateMessage`を追加。`CoreCommand`から`updateInput` opを削除。`InputUpdate`に`keyMakes: number[]`を追加。
+- `src/worker-input.ts`(新規): `WorkerInputState`(世代付きclearと差分適用の純粋ロジック)、`InputHost`(必要最小限の構造型)。
+- `src/core-worker.ts`: `ctx.onmessage`に`isInputUpdateMessage`分岐を追加。`applyInputUpdate()`が`WorkerInputState`へ委譲。`updateInput`のUNSUPPORTEDケースを削除。ファイル冒頭コメントを更新。
+- `src/core-proxy.ts`: `WorkerCoreProxy#sendInput()`を追加(fire-and-forget)。「proxyに載せなかった既存メソッド」コメントを更新。
+- `src/main.ts`: `applyKey`/`applyKeyMake`/`applyMouseDelta`/`applyMouseButton`/`applyJoyState`/`sendWorkerInputUpdate`/`clearWorkerInputGeneration`を新設。`sharedKeyInput`/`keyRepeater`のコールバック、blur/visibilitychangeハンドラ、canvasのmousemove/mousedown、windowのmouseup、`bridgeHost`の`mouseMove`/`mouseButton`/`typeText`、DEV専用`__webx68kDebug`の`moveMouse`/`mouseButton`をこれらの中央関数経由に変更。`bootWorkerCore()`の`frame`イベント処理にゲームパッド合成・送信を追加。`warnWorkerModeUnsupported()`と起動時トーストの文言を更新(「入力」を外し、マウス閉ループ追従を明記)。
+- `src/strings.ts`: `workerModeUnsupported`(ja/en)の文言を更新。
+- `test/core-protocol.test.ts`: `isInputUpdateMessage`の型ガードテストを追加。
+- `test/worker-core-proxy.test.ts`: `sendInput()`が一方向メッセージとして送られること、dispose後は送らないことのテストを追加。`FakeWorker.postMessage`に`INPUT_UPDATE_KIND`の早期returnを追加。
+- `test/worker-input.test.ts`(新規): `WorkerInputState`の単体テスト8件。
+
+### テストと故障注入の結果
+
+`npx tsc --noEmit`・`npm test`とも通過(561件、既存550件+新規11件)。故障注入(陽性対照)は`test/worker-input.test.ts`に対して実施し、いずれも一時的に実装を壊して該当テストがredになることを確認してから元に戻した(diffで完全に元通りであることを確認済み):
+
+- (a) `WorkerInputState.apply()`の世代チェック(`if (update.inputGeneration < this.generation) return;`)を削除 → 「古い世代の更新は丸ごと無視される」テストがred(本来空のはずの`host.calls`に6件のメソッド呼び出しが記録され、`host.pads`が古い世代の値`[7,7]`で上書きされた)。
+- (b) 世代が上がる際のクリア呼び出し(`this.clear(host)`)を削除 → 「世代が上がる更新は、適用前にコア入力状態を完全クリアしてから適用する」テストがred(`setKey(1,false)`/`setKey(2,false)`/`clearMouseState()`が一切呼ばれず、`indexOf`が`-1`を返した)。
+
+### 今回できなかったこと・未確認のこと
+
+- **マウスの閉ループ追従(`trackGuestMouse`系、`readGuestCursor`、`hasPendingMouseDelta`、`resyncGuestMouse`)は未移行のまま。** `canvas`のmousemove(非captured/追従モード)は`desiredRatioX/Y`を記録するだけで、実際の送信を担う`stepMouseTracking()`が`host`ガードを持つため、Worker経路では従来どおり何もしない。
+- **SRAM由来のキーリピート設定追従(`readKeyRepeatConfig`)は未移行。** `KeyRepeater`は既定値のまま動く。
+- **`__webx68kDebug.keybuf`(KeyBufプローブ)は未対応のまま。** `scripts/measure-key.mjs`が同期APIとして使っているため、Worker経路対応には計測スクリプト側の改修が要る。
+- **実ブラウザでの動作確認は行っていない。** `?worker=1`を付けた実ブラウザでキーボード/ゲームパッド/マウスボタンが実際にHuman68kへ届くかは未確認。
+- **キー入力の実測(末端到達・欠落/重複/残留押下の計測)は未実施。** 目的Aの基準表(「キー入力の末端到達」節)に沿った計測はまだ行っていない。
+- 音声・FDDホットマウント・SRAM・ステート保存/復元は従来どおり未移行(変更なし)。
+
 ## 次にやること
 
 移行前基準は2組そろい、**ワーカー移行に着手できる状態になった**。
 
-1. ~~ワーカー移行の手順3(ステートと単純なFS転送)に進む。~~ → **2026-08-28 実施済み**（「ワーカー移行 手順3：ステートとFS転送の非同期化（実装）」参照）。~~次はワーカー移行の手順4(初期化、オプション、load/AV)に進む。~~ → **2026-08-28 実施済み**（「ワーカー移行 手順4：初期化・load/AVのスケルトン実装」参照）。~~手順5・7(映像・駆動ループ)に進む。~~ → **2026-08-28 実施済み**（「ワーカー移行 手順5・7：映像・駆動ループの実装、`?worker=1` を本体経路化」参照）。`?worker=1` でHuman68kが`A>`プロンプトまで到達することをdev・本番ビルド双方で確認済み。**次はワーカー移行の手順6(入力)に進む。**
+1. ~~ワーカー移行の手順3(ステートと単純なFS転送)に進む。~~ → **2026-08-28 実施済み**（「ワーカー移行 手順3：ステートとFS転送の非同期化（実装）」参照）。~~次はワーカー移行の手順4(初期化、オプション、load/AV)に進む。~~ → **2026-08-28 実施済み**（「ワーカー移行 手順4：初期化・load/AVのスケルトン実装」参照）。~~手順5・7(映像・駆動ループ)に進む。~~ → **2026-08-28 実施済み**（「ワーカー移行 手順5・7：映像・駆動ループの実装、`?worker=1` を本体経路化」参照）。`?worker=1` でHuman68kが`A>`プロンプトまで到達することをdev・本番ビルド双方で確認済み。~~次はワーカー移行の手順6(入力)に進む。~~ → **2026-08-31、前半(キー・パッド・マウスボタン・加算マウスdelta・世代付きclear)を実装済み**（「ワーカー移行 手順6：入力の実装（2026-08-31）」参照）。単体テストと故障注入は通したが、**実ブラウザでの動作確認と、マウスの閉ループ追従(手順6の後半)はまだ行っていない。** 次はその2点に進む。
 2. **計測時に既定出力デバイスを内蔵スピーカーに固定する。**条件 (a)(b)(c) に加えて (d) とする。ハーネスが記録するようになったので、結果ファイルで照合できる。
 3. **`persist()` の切り分け。**普段使いのプロファイルで `node scripts/probe-opfs.mjs --serve` のページを開き、`false` が使い捨てプロファイル固有かどうかを見る。
 4. ~~iOS WebKit での確認。~~ → **2026-08-26 に確認済み**（「OPFS前提条件の実機確認（iOS、実測、2026-08-26）」参照）。A〜Eは成立し、決定2の対象範囲は変更不要と判断した。
