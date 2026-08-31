@@ -4151,6 +4151,35 @@ async function persistWorkerSlots(targetSlots: SlotId[]): Promise<void> {
   }
 }
 
+/**
+ * persistSlotToLibrary()のWorker経路版(1スロットを即座に強制captureDirtyMedia()し、
+ * ライブラリへ書き戻す。既定経路のpersistSlotToLibrary()と同じ「dirty状態に関わらず
+ * 現在の内容を強制的に書き戻す」意味論)。
+ *
+ * 2026-08-31追記(コーディネータ指摘への対応): `storageProbeSaveSlot`(下の
+ * __webx68kDebug 参照)は元々`persistSlotToLibrary(slot)`に直結していたため、hostが
+ * 常にnullのWorker経路では常にfalseを返すだけで、実際には何も試みていなかった
+ * (「未対応」でも「無効」でもなく、無言で「失敗」を偽装していた)。この関数を新設し、
+ * Worker経路でも実際にcaptureDirtyMedia経由の永続化を試みたうえでtrue/falseを返すように
+ * した(scripts/verify-disk-persistence.mjs による末端検証、および手動デバッグの両方で
+ * Worker経路の永続化を直接確認できるようにするため)。
+ */
+async function persistSlotToLibraryWorker(slot: SlotId): Promise<boolean> {
+  if (!workerCoreProxy || !running) return false;
+  const pending = slots[slot];
+  if (!pending) return false;
+  let result: { captured: Array<{ slot: SlotId; bytes: ArrayBuffer | null }> };
+  try {
+    result = await workerCoreProxy.captureDirtyMedia({ slots: [slot] });
+  } catch (err) {
+    console.error('Worker経路のダーティキャプチャに失敗しました(storageProbeSaveSlot)。', err);
+    return false;
+  }
+  const entry = result.captured.find((c) => c.slot === slot);
+  if (!entry || !entry.bytes) return false; // 未マウント等、保存対象が無い。
+  return persistCapturedSlot(slot, entry.bytes);
+}
+
 /** flushAllSlots()のWorker経路版。既定経路と違い実際にpostMessageの往復を伴うため、
  * 呼び出し元がawaitできる形にしてある(restartCore()等、書き戻し完了を待ちたい場面向け)。
  * 「終了flushはあくまで保険で、主役は定期保存」という既定経路の設計方針は変えない
@@ -4318,9 +4347,13 @@ if (import.meta.env.DEV) {
     storageProbeSetNextRamFault: (fault: 'skip-write' | 'truncate-tail' | 'corrupt-checksum' | null) => {
       storageProbe.nextRamFault = fault;
     },
-    // 指定スロットを即座にライブラリ(IndexedDB)へ書き戻す(persistSlotToLibraryを直接叩く)。
+    // 指定スロットを即座にライブラリ(IndexedDB)へ書き戻す。既定経路はpersistSlotToLibrary、
+    // Worker経路はcaptureDirtyMedia経由のpersistSlotToLibraryWorkerを叩く(手順8、
+    // 2026-08-31。以前はurlWorkerModeを見ずpersistSlotToLibraryへ直結しており、hostが
+    // 常にnullのWorker経路では無条件にfalseを返すだけで実際には何も試みていなかった)。
     // 戻り値は保存できたか(スロットが空/未マウントならfalse)。
-    storageProbeSaveSlot: (slot: SlotId) => persistSlotToLibrary(slot),
+    storageProbeSaveSlot: (slot: SlotId) =>
+      urlWorkerMode ? persistSlotToLibraryWorker(slot) : persistSlotToLibrary(slot),
     // ライブラリ(IndexedDB)のディスクを指定スロットへ読み込む(insertFromLibraryを直接叩く)。
     storageProbeLoadFromLibrary: (sourceKey: string, slot: SlotId) => insertFromLibrary(sourceKey, slot),
     // ライブラリから指定キーを削除する(次回のstorageProbeSaveSlotを「初回追加」にするための
