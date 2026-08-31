@@ -221,11 +221,17 @@ export class KeybufAttributionProbe {
   /** 直近の applyKey/applyKeyMake 呼び出し(host.setKey/sendKeyMakeへ渡す直前)の時点で
    * このプローブが知っていたframeNo。「注入の遅れ」の起点。 */
   inputSendFrameNo: number | null = null;
+  /** 2026-08-31再訂正(「帰属の定義の誤りと訂正」参照): 実際に入力が適用された瞬間の
+   * frameNo。既定経路は送信と適用が同一呼び出しの中で起きるため、常に inputSendFrameNo と
+   * 同値になる(Worker経路との式(trueInjectionFrames = writeFrameNo - applyFrameNo)を
+   * 揃えるためだけに持つフィールドで、既定経路単独では意味のある差を生まない)。 */
+  applyFrameNo: number | null = null;
 
   reset(): void {
     this.frameNo = 0;
     this.tracker = initialTrackerState();
     this.inputSendFrameNo = null;
+    this.applyFrameNo = null;
   }
 }
 

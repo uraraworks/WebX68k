@@ -16,6 +16,7 @@ import {
 } from './api/fat';
 import { loadBiosFile, saveBiosFile } from './bios-store';
 import { storageProbe, frameProbe, keybufAttributionProbe } from './storage-probe';
+import { computeAttributionBreakdown } from './keybuf-attribution';
 import { loadSramFile, saveSramFile } from './sram-store';
 import {
   classifyDiskBytes,
@@ -456,13 +457,17 @@ let pendingWorkerTickProbeRead: ((result: WorkerTickProbeReadResult) => void) | 
 // (Workerへ往復問い合わせしない。物差しを変えないための決定)。
 let workerKeyBufProbeWanted = false;
 let workerLastKeyBufProbe: KeyBufFrameProbe | null = null;
-// 帰属計測(2026-08-31訂正、「注入の遅れ」「観測の遅れ」の切り分け)。
+// 帰属計測(2026-08-31訂正、2026-08-31再訂正「帰属の定義の誤りと訂正」参照)。
 // workerLastKeyBufWriteFrameNo: 直近のframe eventで受け取ったkeyBufWriteFrameNo(KeyBufへ
 // 最後に何か書かれたフレーム)。workerLastInputSendFrameNo: sendWorkerInputUpdate()を
-// 最後に呼んだ時点でmainが知っていた直近のWorker側frameNo(workerLastFrameNo)。
-// 両方ともDEV専用・__webx68kDebug.keybufAttribution()経由でのみ読む。
+// 最後に呼んだ時点でmainが知っていた直近のWorker側frameNo(workerLastFrameNo。構造的に
+// 古くなりうる値。「伝送＋陳腐化」の起点にのみ使う)。workerLastInputApplyFrameNo: 直近の
+// frame eventで受け取ったinputApplyFrameNo(Workerが実際にInputUpdateを適用した瞬間の、
+// Worker自身の単一クロック上のframeNo。「真の注入」の起点)。
+// 3つともDEV専用・__webx68kDebug.keybufAttribution()経由でのみ読む。
 let workerLastKeyBufWriteFrameNo: number | null = null;
 let workerLastInputSendFrameNo: number | null = null;
+let workerLastInputApplyFrameNo: number | null = null;
 let running = false;
 let bootStarted = false;
 
@@ -696,11 +701,15 @@ function applyKey(retrok: number, down: boolean): void {
     sendWorkerInputUpdate();
     return;
   }
-  // 既定経路の帰属計測(docs/STORAGE-SCSI.md「帰属の定義」参照)。DEVかつ
+  // 既定経路の帰属計測(docs/STORAGE-SCSI.md「帰属の定義の誤りと訂正」参照)。DEVかつ
   // keybufAttributionProbe.enabledのときだけ、この送信時点でプローブが知っていた
   // frameNoを「注入の遅れ」の起点として覚える(単純な代入でコストは無視できる)。
+  // applyFrameNoも同じ値・同じ場所で記録する: 既定経路は送信と適用(直後のhost?.setKey)が
+  // 同一スレッド上の同じ呼び出しの中で起きるため、Worker経路のような陳腐化が原理的に
+  // 発生しない(2026-08-31再訂正で追加。Worker経路との式を揃えるための対)。
   if (import.meta.env.DEV && keybufAttributionProbe.enabled) {
     keybufAttributionProbe.inputSendFrameNo = keybufAttributionProbe.frameNo;
+    keybufAttributionProbe.applyFrameNo = keybufAttributionProbe.frameNo;
   }
   host?.setKey(retrok, down);
 }
@@ -714,6 +723,7 @@ function applyKeyMake(retrok: number): void {
   }
   if (import.meta.env.DEV && keybufAttributionProbe.enabled) {
     keybufAttributionProbe.inputSendFrameNo = keybufAttributionProbe.frameNo;
+    keybufAttributionProbe.applyFrameNo = keybufAttributionProbe.frameNo;
   }
   host?.sendKeyMake(retrok);
 }
@@ -2613,6 +2623,7 @@ async function bootWorkerCore(): Promise<void> {
     workerLastKeyBufProbe = null;
     workerLastKeyBufWriteFrameNo = null;
     workerLastInputSendFrameNo = null;
+    workerLastInputApplyFrameNo = null;
     try {
       await previous.dispose();
     } catch (err) {
@@ -2666,6 +2677,7 @@ async function bootWorkerCore(): Promise<void> {
       workerLastFrameNo = snapshot.frameNo;
       if (snapshot.keyBufProbe) workerLastKeyBufProbe = snapshot.keyBufProbe;
       if (snapshot.keyBufWriteFrameNo !== undefined) workerLastKeyBufWriteFrameNo = snapshot.keyBufWriteFrameNo;
+      if (snapshot.inputApplyFrameNo !== undefined) workerLastInputApplyFrameNo = snapshot.inputApplyFrameNo;
       if (snapshot.video.kind === 'rgba') {
         const { bytes, width, height } = snapshot.video;
         if (canvas.width !== width || canvas.height !== height) {
@@ -4207,6 +4219,7 @@ if (import.meta.env.DEV) {
         // src/core-worker.tsのenable時リセットと対にしてある)。
         workerLastKeyBufWriteFrameNo = null;
         workerLastInputSendFrameNo = null;
+        workerLastInputApplyFrameNo = null;
         workerCoreProxy?.devPostRawMessage({
           kind: '__devKeyBufProbe',
           action: enabled ? 'enable' : 'disable',
@@ -4216,26 +4229,50 @@ if (import.meta.env.DEV) {
       keybufAttributionProbe.enabled = enabled;
       keybufAttributionProbe.reset();
     },
-    // 帰属計測(2026-08-31訂正、2026-08-31両経路対応、docs/STORAGE-SCSI.md「帰属の定義」参照)。
+    // 帰属計測(2026-08-31訂正、2026-08-31両経路対応、2026-08-31再訂正
+    // 「帰属の定義の誤りと訂正」、docs/STORAGE-SCSI.md参照)。
     // 「keydown発生→updateInput送信」(注入)と「KeyBufへの書き込み→mainが知る」(観測)を
     // フレーム数で切り分けるための読み取り専用フック。scripts/measure-key.mjsが使う。
     // urlWorkerModeで経路を判定し、それぞれの実体(Worker経路はworkerLastFrameNo系、
-    // 既定経路はkeybufAttributionProbe)を同じ形({inputSendFrameNo, writeFrameNo,
-    // currentFrameNo})で返す。既定経路のcurrentFrameNoはkeybufAttributionProbe.frameNoを
-    // そのまま返す(メインスレッド上の同期呼び出しなので、Worker経路のような
-    // postMessage往復による遅延は原理的に発生しない)。
+    // 既定経路はkeybufAttributionProbe)を同じ形({inputSendFrameNo, applyFrameNo,
+    // writeFrameNo, currentFrameNo, trueInjectionFrames, transmissionStalenessFrames})で
+    // 返す。既定経路のcurrentFrameNoはkeybufAttributionProbe.frameNoをそのまま返す
+    // (メインスレッド上の同期呼び出しなので、Worker経路のようなpostMessage往復による
+    // 遅延は原理的に発生しない)。
+    //
+    // trueInjectionFrames/transmissionStalenessFramesはsrc/keybuf-attribution.tsの
+    // computeAttributionBreakdown()(純粋関数、両経路共通)で計算する。旧来の
+    // 「writeFrameNo - inputSendFrameNo」という単純な差分は、Worker経路では
+    // inputSendFrameNo(main視点の古い値)が混入しており既定経路と同じ量になっていな
+    // かった(旧定義の誤り。訂正の経緯はdocs参照)。
     keybufAttribution: () => {
       if (urlWorkerMode) {
+        const breakdown = computeAttributionBreakdown(
+          workerLastInputSendFrameNo,
+          workerLastInputApplyFrameNo,
+          workerLastKeyBufWriteFrameNo,
+        );
         return {
           inputSendFrameNo: workerLastInputSendFrameNo,
+          applyFrameNo: workerLastInputApplyFrameNo,
           writeFrameNo: workerLastKeyBufWriteFrameNo,
           currentFrameNo: workerLastFrameNo,
+          trueInjectionFrames: breakdown.trueInjectionFrames,
+          transmissionStalenessFrames: breakdown.transmissionStalenessFrames,
         };
       }
+      const breakdown = computeAttributionBreakdown(
+        keybufAttributionProbe.inputSendFrameNo,
+        keybufAttributionProbe.applyFrameNo,
+        keybufAttributionProbe.tracker.writeFrameNo,
+      );
       return {
         inputSendFrameNo: keybufAttributionProbe.inputSendFrameNo,
+        applyFrameNo: keybufAttributionProbe.applyFrameNo,
         writeFrameNo: keybufAttributionProbe.tracker.writeFrameNo,
         currentFrameNo: keybufAttributionProbe.frameNo,
+        trueInjectionFrames: breakdown.trueInjectionFrames,
+        transmissionStalenessFrames: breakdown.transmissionStalenessFrames,
       };
     },
     // 音声振幅プローブ(予備確認: docs/STORAGE-SCSI.md「音声遅延」参照)。resetAudioProbe()で

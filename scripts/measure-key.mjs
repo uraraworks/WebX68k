@@ -455,11 +455,16 @@ function runStimulus(page, keySpec, wrongSpec, config, faultKind) {
       let makeAt = null;
       let makeWriteFrameNo = null;
       let makeObserveFrameNo = null;
+      // 2026-08-31再訂正(「帰属の定義の誤りと訂正」): applyFrameNoはWorker自身が単一クロック
+      // 上で記録した「実際に適用された瞬間」のframeNo。makeSendFrameNo(mainが送信時点で
+      // 知っていた古いWorker時計)とは別に控え、「真の注入」(makeWriteFrameNo基準)と
+      // 「伝送＋陳腐化」を分けて計算できるようにする。
       let firstChangedLine = null;
       let firstChangedLineClass = null;
       let echoAt = null;
       let keyupAt = null;
       let breakSendFrameNo = null;
+      let makeApplyFrameNo = null;
       const holdDeadline = t0 + keyHold;
       let lastPollAt = -Infinity;
 
@@ -483,6 +488,7 @@ function runStimulus(page, keySpec, wrongSpec, config, faultKind) {
               if (attribution) {
                 makeWriteFrameNo = attribution.writeFrameNo;
                 makeObserveFrameNo = attribution.currentFrameNo;
+                makeApplyFrameNo = attribution.applyFrameNo ?? null;
               }
             }
           }
@@ -539,6 +545,7 @@ function runStimulus(page, keySpec, wrongSpec, config, faultKind) {
       const breakByte = breakProbe ? breakProbe.bytes[1] : null;
       const finalWp = breakProbe ? breakProbe.writePointer : null;
       const breakAttribution = readAttribution();
+      const breakApplyFrameNo = breakAttribution?.applyFrameNo ?? null;
 
       return {
         harnessError: null,
@@ -557,9 +564,11 @@ function runStimulus(page, keySpec, wrongSpec, config, faultKind) {
         attribution: worker || attributionEnabled
           ? {
               makeSendFrameNo,
+              makeApplyFrameNo,
               makeWriteFrameNo,
               makeObserveFrameNo,
               breakSendFrameNo,
+              breakApplyFrameNo,
               breakWriteFrameNo: breakAttribution?.writeFrameNo ?? null,
               breakObserveFrameNo: breakAttribution?.currentFrameNo ?? null,
             }
@@ -691,12 +700,22 @@ function classifyStimulus(spec, wrongSpec, faultKind, raw) {
   //   観測フレーム数 = observeFrameNo - writeFrameNo (書かれたフレーム→mainが知るフレームまでの遅れ)
   // いずれかがnullなら計算できない(未検出・既定経路)ためnullのまま残す。
   const framesDiff = (a, b) => (a === null || a === undefined || b === null || b === undefined ? null : a - b);
+  // 2026-08-31再訂正: 旧定義(makeInjectionFrames等、sendFrameNo基準)は、Worker経路では
+  // sendFrameNoがmain視点の古い値であり既定経路と同じ量を測っていなかった(docs参照)。
+  // applyFrameNo基準の新定義を並記する: makeTrueInjectionFrames(=writeFrameNo-applyFrameNo、
+  // 既定経路と直接比較できる量)とmakeTransmissionStalenessFrames(=applyFrameNo-sendFrameNo、
+  // mainの古い視点が混じる量。実時間の遅延そのものではない)。旧定義のフィールドは比較のため
+  // 消さずに残す。
   const attribution = raw.attribution
     ? {
         makeInjectionFrames: framesDiff(raw.attribution.makeWriteFrameNo, raw.attribution.makeSendFrameNo),
         makeObservationFrames: framesDiff(raw.attribution.makeObserveFrameNo, raw.attribution.makeWriteFrameNo),
+        makeTrueInjectionFrames: framesDiff(raw.attribution.makeWriteFrameNo, raw.attribution.makeApplyFrameNo),
+        makeTransmissionStalenessFrames: framesDiff(raw.attribution.makeApplyFrameNo, raw.attribution.makeSendFrameNo),
         breakInjectionFrames: framesDiff(raw.attribution.breakWriteFrameNo, raw.attribution.breakSendFrameNo),
         breakObservationFrames: framesDiff(raw.attribution.breakObserveFrameNo, raw.attribution.breakWriteFrameNo),
+        breakTrueInjectionFrames: framesDiff(raw.attribution.breakWriteFrameNo, raw.attribution.breakApplyFrameNo),
+        breakTransmissionStalenessFrames: framesDiff(raw.attribution.breakApplyFrameNo, raw.attribution.breakSendFrameNo),
         raw: raw.attribution,
       }
     : null;
@@ -1053,8 +1072,18 @@ async function run() {
         ? {
             makeInjectionFrames: frameStats(stimuli.map((s) => s.attribution?.makeInjectionFrames)),
             makeObservationFrames: frameStats(stimuli.map((s) => s.attribution?.makeObservationFrames)),
+            // 2026-08-31再訂正(「帰属の定義の誤りと訂正」): applyFrameNo基準の新定義。
+            // makeTrueInjectionFramesが既定経路の1/1/1と直接比較できる量。
+            makeTrueInjectionFrames: frameStats(stimuli.map((s) => s.attribution?.makeTrueInjectionFrames)),
+            makeTransmissionStalenessFrames: frameStats(
+              stimuli.map((s) => s.attribution?.makeTransmissionStalenessFrames),
+            ),
             breakInjectionFrames: frameStats(stimuli.map((s) => s.attribution?.breakInjectionFrames)),
             breakObservationFrames: frameStats(stimuli.map((s) => s.attribution?.breakObservationFrames)),
+            breakTrueInjectionFrames: frameStats(stimuli.map((s) => s.attribution?.breakTrueInjectionFrames)),
+            breakTransmissionStalenessFrames: frameStats(
+              stimuli.map((s) => s.attribution?.breakTransmissionStalenessFrames),
+            ),
           }
         : null;
       result = {
@@ -1138,6 +1167,15 @@ async function run() {
             `(${a.makeObservationFrames.sampleCount}件), break注入 中央値${a.breakInjectionFrames.medianFrames ?? '-'} ` +
             `(${a.breakInjectionFrames.sampleCount}件), break観測 中央値${a.breakObservationFrames.medianFrames ?? '-'} ` +
             `(${a.breakObservationFrames.sampleCount}件)`,
+        );
+        // 2026-08-31再訂正: applyFrameNo基準の新定義(既定経路と直接比較できる「真の注入」と、
+        // mainの古い視点が混じる「伝送＋陳腐化」)。旧定義の行とは別に出す。
+        console.log(
+          `帰属(訂正後・applyFrameNo基準): make真の注入 中央値${a.makeTrueInjectionFrames.medianFrames ?? '-'} ` +
+            `(${a.makeTrueInjectionFrames.sampleCount}件), make伝送+陳腐化 中央値${a.makeTransmissionStalenessFrames.medianFrames ?? '-'} ` +
+            `(${a.makeTransmissionStalenessFrames.sampleCount}件), break真の注入 中央値${a.breakTrueInjectionFrames.medianFrames ?? '-'} ` +
+            `(${a.breakTrueInjectionFrames.sampleCount}件), break伝送+陳腐化 中央値${a.breakTransmissionStalenessFrames.medianFrames ?? '-'} ` +
+            `(${a.breakTransmissionStalenessFrames.sampleCount}件)`,
         );
       }
       if (!s.success) process.exitCode = 1;

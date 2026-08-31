@@ -14,29 +14,6 @@
 
 import { computeFrameBudget } from './frameBudget';
 
-// --- Worker注入レイテンシ対策 (2026-08-31、KeyBuf帰属計測での実測を受けての対応) --------
-//
-// Worker は単一スレッドなので、`runTick()` の while ループ(取り戻しで複数フレームを
-// 連続実行する区間)の最中は `ctx.onmessage`(INPUT_UPDATE_KINDを含む)が一切割り込めない。
-// 届いた入力更新はそのtickの実行が終わってから初めてイベントループに乗り、次tick以降の
-// フレームで初めて反映される。取り戻しバーストが長いほど、その間に届いた入力の反映が
-// 遅れる(親セッションが実測した「make注入フレーム数」の裾: 既定経路は1/1/1で決定的なのに対し
-// Worker経路は中央2・最大13)。
-//
-// computeFrameBudget() 自体(既定経路のmain.ts loop()も使う共通ロジック)には手を入れない
-// (docs/STORAGE-SCSI.md「決定C」: 取り戻しがあるからこそ55.5fpsを維持できているため、
-// 取り戻し量そのものは変えてはいけない)。代わりに、runTick() 呼び出し側(Worker専用)が
-// 1tickあたりに連続実行してよいフレーム数の上限を追加で絞り、余った取り戻し分は
-// accumulatorへ持ち越して次tick(TICK_MS=16ms後の次のsetInterval発火、すなわち
-// ctx.onmessageが割り込める本物のマクロタスク境界)へ回す。
-//
-// 値の根拠(シミュレーションで確認。docs/STORAGE-SCSI.md参照): X68000のfps=55.5
-// (frameInterval=18.018ms) はTICK_MS=16msよりわずかに長いため、定常状態では1tickあたり
-// 1フレーム未満〜1フレームしか要らない。上限を2に絞っても、dtに数百ms相当のスパイクを
-// 注入したシミュレーションで実効fpsは55.5付近を維持したまま(取り戻しに要するtick数が
-// 増えるだけで、取り戻しきれず恒常的に遅れていく退行は起きない)。
-export const WORKER_MAX_FRAMES_PER_TICK = 2;
-
 export interface DiskAccessFlags {
   fddReading: boolean;
   fddDrive: number;
@@ -64,29 +41,23 @@ const NO_ACCESS: DiskAccessFlags = { fddReading: false, fddDrive: -1, hddAccessi
  * @param accumulatorIn 前tickから持ち越したaccumulator(秒)。
  * @param runFrameOnce 1フレーム進め、そのフレームのディスクアクセス状態を返すコールバック
  *   (呼び出し側が host.runFrame() + host.readDiskAccess() をまとめて渡す)。
- * @param maxFramesPerTick 1tickで連続実行してよいフレーム数の追加上限(省略時は無制限=
- *   computeFrameBudget()の値のみでクランプ)。Worker側のctx.onmessage割り込み不能区間を
- *   短く保つための呼び出し側ポリシー(WORKER_MAX_FRAMES_PER_TICK参照)。computeFrameBudget()
- *   による取り戻し量そのものは変えない(超過分はaccumulatorに残り次tickへ持ち越される)。
  */
 export function runTick(
   dt: number,
   fps: number,
   accumulatorIn: number,
   runFrameOnce: () => DiskAccessFlags,
-  maxFramesPerTick?: number,
 ): TickResult {
   const frameInterval = 1 / fps;
   let accumulator = accumulatorIn + dt;
   // 音声キュー未移行のため queued=0, speedMultiplier=1 固定(±2%補正なし。ファイル冒頭コメント参照)。
   const budget = computeFrameBudget(dt, frameInterval, 0, 1);
-  const effectiveBudget = maxFramesPerTick !== undefined ? Math.min(budget, maxFramesPerTick) : budget;
 
   let ranFrames = 0;
   let fddReading = false;
   let fddDrive = -1;
   let hddAccessing = false;
-  while (accumulator >= frameInterval && ranFrames < effectiveBudget) {
+  while (accumulator >= frameInterval && ranFrames < budget) {
     const access = runFrameOnce();
     if (access.fddReading) {
       fddReading = true;

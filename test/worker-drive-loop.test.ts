@@ -8,7 +8,7 @@
 // 「取り戻しで複数フレーム走ること」のテストが実際に red になることを確認してから元に戻した
 // (2026-08-28、実装時に確認済み)。
 import { describe, expect, it } from 'vitest';
-import { FrameBufferPool, runTick, WORKER_MAX_FRAMES_PER_TICK } from '../src/worker-drive-loop';
+import { FrameBufferPool, runTick } from '../src/worker-drive-loop';
 
 const FPS_60 = 60;
 const FRAME_INTERVAL_60 = 1 / FPS_60;
@@ -76,86 +76,6 @@ describe('runTick', () => {
     });
     expect(result.ranFrames).toBeGreaterThanOrEqual(2);
     expect(result.access).toEqual({ fddReading: true, fddDrive: 1, hddAccessing: false });
-  });
-});
-
-describe('runTick maxFramesPerTick (Worker注入レイテンシ対策)', () => {
-  // 2026-08-31: 親セッションが実測したKeyBuf帰属計測(make注入フレーム数)で、Worker経路は
-  // 中央2・最大13フレームの裾を持つことが分かった。原因は「取り戻しバースト中は
-  // ctx.onmessageが割り込めず、届いた入力の反映がバースト終了まで遅れる」こと
-  // (src/worker-drive-loop.ts冒頭コメント参照)。maxFramesPerTickはこのバーストの長さを
-  // 追加で絞り、超過分をaccumulatorへ持ち越して次tick(=次のonmessage割り込み機会)へ回す。
-
-  it('省略時(既定main.ts loop()相当)は取り戻しでcomputeFrameBudget()いっぱいまで進む(従来どおり)', () => {
-    const dt = FRAME_INTERVAL_60 * 5;
-    const result = runTick(dt, FPS_60, 0, () => ({
-      fddReading: false,
-      fddDrive: -1,
-      hddAccessing: false,
-    }));
-    expect(result.ranFrames).toBeGreaterThan(WORKER_MAX_FRAMES_PER_TICK);
-  });
-
-  it('maxFramesPerTickを指定すると、大きく遅れたtickでも1tickの実行フレーム数がその上限を超えない', () => {
-    const dt = FRAME_INTERVAL_60 * 5; // 取り戻しが本来なら複数フレーム走るはずの遅れ
-    const result = runTick(
-      dt,
-      FPS_60,
-      0,
-      () => ({ fddReading: false, fddDrive: -1, hddAccessing: false }),
-      WORKER_MAX_FRAMES_PER_TICK,
-    );
-    expect(result.ranFrames).toBeLessThanOrEqual(WORKER_MAX_FRAMES_PER_TICK);
-  });
-
-  it('上限で切り詰めた分はaccumulatorに残り、次tickへ持ち越される(取り戻し量そのものは失われない)', () => {
-    const dt = FRAME_INTERVAL_60 * 5;
-    const capped = runTick(
-      dt,
-      FPS_60,
-      0,
-      () => ({ fddReading: false, fddDrive: -1, hddAccessing: false }),
-      WORKER_MAX_FRAMES_PER_TICK,
-    );
-    const uncapped = runTick(dt, FPS_60, 0, () => ({
-      fddReading: false,
-      fddDrive: -1,
-      hddAccessing: false,
-    }));
-    // 上限で切り詰めた分だけ、cappedのaccumulatorがuncappedより多く残る。
-    expect(capped.accumulator).toBeGreaterThan(uncapped.accumulator);
-    // 次tickにdt=0で呼べば、持ち越したaccumulatorから残りのフレームが進むこと
-    // (取り戻し量そのものが消えていないことの確認)。
-    let remaining = 0;
-    let acc = capped.accumulator;
-    while (acc >= FRAME_INTERVAL_60) {
-      const r = runTick(
-        0,
-        FPS_60,
-        acc,
-        () => ({ fddReading: false, fddDrive: -1, hddAccessing: false }),
-        WORKER_MAX_FRAMES_PER_TICK,
-      );
-      if (r.ranFrames === 0) break;
-      remaining += r.ranFrames;
-      acc = r.accumulator;
-    }
-    expect(capped.ranFrames + remaining).toBeGreaterThanOrEqual(uncapped.ranFrames);
-  });
-
-  it('故障注入: 上限を無効化した(undefinedのまま渡す)状態に戻すと、1tickの実行フレーム数上限を検査するテストが落ちる', () => {
-    // 「maxFramesPerTickを指定すると1tickの実行フレーム数がその上限を超えない」テストの
-    // 検査対象を、実装がそれを無視した場合(=引数を渡し忘れた場合)を模して確認する
-    // (受け入れ条件: この故障注入で当該テストがredになること。2026-08-31確認)。
-    const dt = FRAME_INTERVAL_60 * 5;
-    const withoutCap = runTick(dt, FPS_60, 0, () => ({
-      fddReading: false,
-      fddDrive: -1,
-      hddAccessing: false,
-    })); // maxFramesPerTickを渡さない = core-worker.ts側で配線を忘れた状態を模擬
-    // このアサーションは「上限を指定すれば守られる」テストとは別に、
-    // 「指定を忘れると守られない(=検査が対象を実際に踏んでいる)」ことを示す陽性対照。
-    expect(withoutCap.ranFrames).toBeGreaterThan(WORKER_MAX_FRAMES_PER_TICK);
   });
 });
 

@@ -65,7 +65,7 @@ import {
 import { LocalCoreProxy } from './core-proxy';
 import { LibretroHost } from './libretro-host';
 import { computeFrameBudget } from './frameBudget';
-import { FrameBufferPool, runTick, WORKER_MAX_FRAMES_PER_TICK } from './worker-drive-loop';
+import { FrameBufferPool, runTick } from './worker-drive-loop';
 import { WorkerInputState } from './worker-input';
 import { initialTrackerState, trackKeyBufWrite, type KeyBufWriteTrackerState } from './keybuf-attribution';
 
@@ -176,6 +176,12 @@ let keyBufProbeEnabled = false;
 // 同じ定義・同じ数え方を共有する(定義がずれると比較の意味が消えるため。
 // docs/STORAGE-SCSI.md「帰属の定義」参照)。
 let keyBufWriteTracker: KeyBufWriteTrackerState = initialTrackerState();
+// 帰属計測用(2026-08-31再訂正、「帰属の定義の誤りと訂正」参照): applyInputUpdate()が
+// 実際に走った時点でWorker自身が読んだframeNo。mainのworkerLastFrameNo(直近に受け取った
+// frame eventのframeNo)は構造的に古くなりうるため、「真の注入」の起点にはこの値
+// (Worker自身の単一クロック上の生きた値)を使う。keyBufWriteTrackerと同じくsticky
+// (適用が無いフレームでは直前の値を保持)。enableのたびにリセットする。
+let lastInputApplyFrameNo: number | null = null;
 
 interface DevKeyBufProbeControlMessage {
   kind: '__devKeyBufProbe';
@@ -272,6 +278,9 @@ const workerInputState = new WorkerInputState();
 function applyInputUpdate(update: InputUpdate): void {
   if (!host) return; // initialize前に届いた更新は捨てる(送信元は起動後にしか送らない想定)。
   workerInputState.apply(update, host);
+  // 帰属計測(2026-08-31再訂正): 実際に適用した瞬間のframeNoをWorker自身の単一クロックで
+  // 記録する。DEVかつプローブ有効時のみ(既存フックと同じ作法。ファイル冒頭コメント参照)。
+  if (import.meta.env.DEV && keyBufProbeEnabled) lastInputApplyFrameNo = frameNo;
 }
 
 // --- 駆動ループ (手順7) ------------------------------------------------------
@@ -339,7 +348,7 @@ function tick(): void {
     frameNo++;
     // runFrame() 直後でないとコア側がクリアしてしまう(LibretroHost#readDiskAccessのコメント参照)。
     return currentHost.readDiskAccess();
-  }, WORKER_MAX_FRAMES_PER_TICK);
+  });
   accumulator = result.accumulator;
 
   let convertMs: number | null = null;
@@ -422,6 +431,10 @@ function sendFrame(
       keyBufWriteTracker = trackKeyBufWrite(keyBufWriteTracker, keyBufProbe.writePointer, frameNo);
       if (keyBufWriteTracker.writeFrameNo !== null) snapshot.keyBufWriteFrameNo = keyBufWriteTracker.writeFrameNo;
     }
+    // 帰属計測(2026-08-31再訂正): applyInputUpdate()が記録した「実際に適用した瞬間の
+    // frameNo」をframe eventに相乗りさせる(keyBufWriteFrameNoと同じくsticky。まだ一度も
+    // 適用が無ければ載せない)。
+    if (lastInputApplyFrameNo !== null) snapshot.inputApplyFrameNo = lastInputApplyFrameNo;
   }
   const postStart = onProbe ? ctx.performance.now() : 0;
   post({ kind: 'event', generation: currentGeneration, event: 'frame', snapshot });
@@ -635,6 +648,7 @@ ctx.onmessage = (ev) => {
     if (data.action === 'enable') {
       // 前回の有効化区間の値を持ち越さない(帰属計測をこの有効化からの新規区間として扱う)。
       keyBufWriteTracker = initialTrackerState();
+      lastInputApplyFrameNo = null;
     }
     return;
   }

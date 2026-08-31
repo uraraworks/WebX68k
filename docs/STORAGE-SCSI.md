@@ -3561,6 +3561,71 @@ node scripts/measure-key.mjs --worker --poll-mode=no-raf
 
 **本セッションでは`scripts/measure-key.mjs`によるレイテンシの実測を一切行っていない。** 上記の対策がgoal A(make注入中央値2→1)・goal B(最大13フレームの裾の解消)をどれだけ改善するかは未確認であり、この節には改善の数値を一切書いていない。親セッションが同じ静穏条件・2×2の介入実験で計測することで初めて判定できる。
 
+### 訂正(2026-08-31、親セッションが実測): 目標A・Bとも未達成、見立ては介入で否定された
+
+親セッションがコミット`eb009f4`(この節で実装した`WORKER_MAX_FRAMES_PER_TICK`対策)を同じ静穏条件で測定した結果:
+
+| 条件 | 中央値 | 最小 | MAD | p95 | 失敗 | make注入 min/med/max |
+|---|---|---|---|---|---|---|
+| 修正前 worker/raf | 46.535 | 13.120 | 12.123 | 82.935 | 0 | 1/2/13 |
+| 修正前 worker/no-raf | 35.763 | 17.950 | 2.015 | 87.958 | 0 | 1/2/10 |
+| 修正後 worker/raf 1 | 33.525 | 16.110 | 7.750 | 85.442 | 0 | 2/3/9 |
+| 修正後 worker/raf 2 | 34.598 | 13.670 | 5.192 | 64.232 | 0 | 1/2/11 |
+| (参考)既定 raf | 8.085 | 3.925 | 4.070 | 59.923 | 0 | 1/1/1 |
+
+**目標A(注入中央値 2→1)は未達成。** 3と2で、むしろ1本は悪化した。**目標B(裾を消す)も未達成。** 9と11で、修正前の13/10と区別できない。
+
+**「見立ては静的解析で支持された」という上記の結論は、実機での介入によって否定された。** 静的解析とNode上のシミュレーションによる「支持」は補強証拠にはなるが、実際にコアが動くブラウザでの介入結果には及ばない。この否定された経緯を消さずに残す(過去に否定された「位相同期仮説」を消さないのと同じ理由)。
+
+**なぜ効かなかったか(親セッションがコードを読んで特定):** `dt≈16ms`(`TICK_MS`)/`frameInterval≈18.018ms`(fps=55.5)のとき、`computeFrameBudget()`が返すbudgetは3になるが、`runTick()`のwhileループは`while (accumulator >= frameInterval && ...)`で駆動される。**1tickでaccumulatorに積まれるのは16msで、1フレームに必要なのは18.018ms。** つまり**定常状態ではそもそも1tickあたり1フレームしか回らず、バッチは発生しない**。budgetも`WORKER_MAX_FRAMES_PER_TICK`による追加上限も、定常時には一度も binding していなかった。バッチが起きるのは停止(タブ非表示・GC・長いブロッキング処理等)からの復帰時だけであり、そこはまさに取り戻しが必要な場面である。
+
+上記「実装した対策」節の「`computeFrameBudget()`の枯渇ブースト補正が常時誤発火しバーストを不要に膨らませていた」という指摘自体(補正の常時発火という事実)は記録として残すが、**「定常時に一度もbindingしない」以上、それが「バーストを膨らませていた」という結論は成り立たない。訂正する。** budgetが実際より大きい値を返していても、accumulatorがそもそも1フレーム分しか溜まっていなければ、whileループの条件`accumulator >= frameInterval`で1回しか回らないため無関係だった。
+
+**`WORKER_MAX_FRAMES_PER_TICK`による上限は効果が無く、かつ唯一効く場面(タブ復帰等の取り戻し)だけを不必要に制限していたため、`src/worker-drive-loop.ts`・`src/core-worker.ts`・関連テストをコミット`db201b9`の状態(この対策を実装する前)へ戻した。** `runTick()`のシグネチャ・`WORKER_MAX_FRAMES_PER_TICK`定数・関連の単体テスト4件と静的配線検査1件は全て削除済み。`git diff db201b9 -- src/worker-drive-loop.ts test/worker-drive-loop.test.ts test/core-worker-build-format.test.ts`が空であることを確認済み。
+
+### 真の問題: 帰属の定義が両経路で同じ量を測っていなかった
+
+親セッションが`src/main.ts`(当時756行)の`workerLastInputSendFrameNo = workerLastFrameNo;`を指摘した。`workerLastFrameNo`は**mainが最後に受け取ったframe eventのフレーム番号**であり、Workerはその時点で既に先へ進んでいるため、この値は**構造的に古い**。一方、既定経路の`keybufAttributionProbe.frameNo`は同一スレッド上の生きたカウンタで陳腐化しない(既存コメントにも「postMessage往復による遅延は原理的に発生しない」と明記されていた)。
+
+つまり、**旧定義(`writeFrameNo - inputSendFrameNo`)のWorker経路側「注入フレーム数」には、mainがWorkerの時計をどれだけ古く見ているか(伝送＋陳腐化)が混入していた。** 既定 1/1/1 とWorker 1/2/13 の差の一部(あるいは大部分)は、実在するコア側の遅延ではなくこの陳腐化だった可能性がある。同じ量を測っていない物差しで両経路を比べていたことになる。
+
+### 帰属の定義の誤りと訂正
+
+**旧定義(誤り):**
+- 注入フレーム数 = `writeFrameNo - inputSendFrameNo`
+- Worker経路の`inputSendFrameNo`は、main側の`sendWorkerInputUpdate()`が送信時点で持っていた`workerLastFrameNo`(直近に受け取ったframe eventのframeNo)から作られる。**これは「送信した瞬間にWorkerが実際にどこまで進んでいたか」ではなく「mainが最後に聞いた時点でのWorkerの位置」であり、両者の間には伝送遅延と待機による陳腐化が挟まる。**
+
+**新定義(訂正後):** `applyFrameNo`(実際に`InputUpdate`が適用された瞬間の、単一クロック上のframeNo)を新たに導入し、2つの量に分解する。
+
+- **真の注入 = `writeFrameNo - applyFrameNo`**(両方ともWorker側の値=単一クロック。既定経路の1/1/1と**直接比較できる唯一の量**)
+- **伝送＋陳腐化 = `applyFrameNo - inputSendFrameNo`**(mainの古い視点が入るため、真の注入とは**別の量として分けて記録する**。フレーム数として実時間の遅延そのものと解釈しすぎないこと)
+
+既定経路では、`applyKey()`/`applyKeyMake()`が送信(`inputSendFrameNo`の記録)と適用(直後の`host?.setKey()`/`host?.sendKeyMake()`)を同一スレッド上の同じ呼び出しの中で行うため、`applyFrameNo`は`inputSendFrameNo`と常に同値になり、伝送＋陳腐化は常に0になる。既定経路も同じ`computeAttributionBreakdown()`を通すことで、両経路が同一の式で結果を出せるようにした。
+
+実装した変更:
+- `src/core-worker.ts`: `applyInputUpdate()`実行時に`lastInputApplyFrameNo = frameNo`を記録(DEV・プローブ有効時のみ)。`sendFrame()`でframe eventに`inputApplyFrameNo`として相乗りさせる(`keyBufWriteFrameNo`と同じくsticky)。
+- `src/core-protocol.ts`: `FrameSnapshot`に`inputApplyFrameNo?: FrameNo`を追加。
+- `src/main.ts`: `workerLastInputApplyFrameNo`を新設し、frame event受信時に取り込む。`applyKey()`/`applyKeyMake()`で`keybufAttributionProbe.applyFrameNo`を`inputSendFrameNo`と同じ値・同じ場所で記録。`__webx68kDebug.keybufAttribution()`が両経路とも`{inputSendFrameNo, applyFrameNo, writeFrameNo, currentFrameNo, trueInjectionFrames, transmissionStalenessFrames}`を返すようにした。
+- `src/storage-probe.ts`: `KeybufAttributionProbe`に`applyFrameNo`フィールドを追加。
+- `src/keybuf-attribution.ts`: 純粋関数`computeAttributionBreakdown(inputSendFrameNo, applyFrameNo, writeFrameNo)`を新設し、`trueInjectionFrames`/`transmissionStalenessFrames`を計算する(両経路共通)。
+- `scripts/measure-key.mjs`: `readAttribution()`が返す`applyFrameNo`を、make検出時(`makeApplyFrameNo`)・break検出時(`breakApplyFrameNo`)に追加で控え、`makeTrueInjectionFrames`/`makeTransmissionStalenessFrames`(break版含む)を旧来の`makeInjectionFrames`/`makeObservationFrames`と並記するようにした。**測定の刺激生成・待機ロジック・タイムアウト・ポーリング間隔は一切変えていない**(既存の帰属フィールドの読み取りに新しいフィールドを追加しただけ)。このセッションでは本計測を実行していないため、この変更自体の動作確認は静的チェック(`node --check scripts/measure-key.mjs`)のみ。
+
+### 単体テストと故障注入の結果(帰属の定義の訂正)
+
+`test/keybuf-attribution.test.ts`に4件追加: 既定経路相当(`inputSendFrameNo===applyFrameNo`)では`transmissionStalenessFrames`が常に0になること、Worker経路相当(`inputSendFrameNo < applyFrameNo`)で真の注入と伝送＋陳腐化を正しく2分割すること(旧定義の合算値と分解後の和が一致することも確認)、いずれかの入力がnull/undefinedなら対応する結果もnullを返すこと、`trueInjectionFrames`の計算に`applyFrameNo`でなく`inputSendFrameNo`を誤用する(旧定義への先祖返り)実装ロジックを合成して比較する陽性対照。
+
+故障注入: `src/keybuf-attribution.ts`の`computeAttributionBreakdown()`内の`trueInjectionFrames: frameDelta(writeFrameNo, applyFrameNo)`を一時的に`frameDelta(writeFrameNo, inputSendFrameNo)`(旧定義への先祖返り)に書き換えたところ、`computeAttributionBreakdown > Worker経路相当(...)を正しく2分割する`、`いずれかがnull/undefinedなら対応する結果もnullを返す(0と未検出を混同しない)`、`故障注入: ...`の3件が実際に失敗することを確認した。注入を戻すと`git diff`が空になることを確認済み。
+
+`npx tsc --noEmit`: エラーなし。`npm test`(vitest run): **591件全て合格**(`WORKER_MAX_FRAMES_PER_TICK`関連5件の削除+帰属定義訂正4件の追加。既存分の退行なし)。
+
+### 今回はやらなかったこと(明示)
+
+`(3)`の判定(「真の注入」が既定経路と同じ1なのか2以上なのかを見て、次の対策先(駆動ループ vs 伝送経路)を決めること)には**着手していない**。今回は帰属を正しく測れる形にする((1)(2))までであり、実際の数値を読んでの対策実装は行っていない。
+
+### まだ測っていないこと(再訂正)
+
+**本セッションでも`scripts/measure-key.mjs`によるレイテンシの実測を一切行っていない。** `trueInjectionFrames`(真の注入)が既定経路の1と同じになるのか、それとも2以上の実在する遅れが残るのかは未確認。親セッションが同じ静穏条件で計測し、`__webx68kDebug.keybufAttribution()`(または`scripts/measure-key.mjs`側の対応する読み取り)から`trueInjectionFrames`/`transmissionStalenessFrames`を取得することで初めて判定できる。
+
 ## 次にやること
 
 移行前基準は2組そろい、**ワーカー移行に着手できる状態になった**。

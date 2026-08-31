@@ -326,6 +326,25 @@ export interface FrameSnapshot {
    * 直前の値を保持する(sticky)。有効化直後・書き込みがまだ一度も無い間は undefined。
    */
   keyBufWriteFrameNo?: FrameNo;
+  /**
+   * DEV専用・既定off(keyBufProbeと同じ有効化フラグに相乗り、2026-08-31追加)。
+   * `INPUT_UPDATE_KIND` を Worker が実際に適用した(applyInputUpdate()を実行した)瞬間に
+   * Worker自身が読んだ frameNo。「真の注入」(コア側の遅れ)と「伝送＋陳腐化」(mainがWorkerの
+   * 時計をどれだけ古く見ているか)を分離するための帰属計測フィールド
+   * (docs/STORAGE-SCSI.md「帰属の定義の誤りと訂正」参照)。
+   *
+   * 導入の経緯: 旧定義(`keyBufWriteFrameNo - inputSendFrameNo`)は`inputSendFrameNo`を
+   * main側の`workerLastFrameNo`(直近に受け取ったframe eventのframeNo)から作っていたが、
+   * これはWorkerが実際に入力を適用した時点では既に古くなっている値であり、既定経路の
+   * `inputSendFrameNo`(同一スレッド上の生きた値で陳腐化しない)と同じ量を測っていなかった。
+   * この`inputApplyFrameNo`はWorker自身が単一クロック(frameNo)上で記録するため、
+   * `keyBufWriteFrameNo - inputApplyFrameNo`(=真の注入)は既定経路の
+   * `writeFrameNo - inputSendFrameNo` と直接比較できる同じ量になる。
+   *
+   * keyBufWriteFrameNoと同じくsticky(適用が無いフレームでは直前の値を保持)。
+   * 有効化直後・まだ一度も適用が無い間は undefined。
+   */
+  inputApplyFrameNo?: FrameNo;
 }
 
 export interface KeyBufFrameProbe {
