@@ -342,6 +342,9 @@ function runStimulus(page, keySpec, wrongSpec, config, faultKind) {
         return lines.filter((line) => line.startsWith('A>')).at(-1) ?? null;
       };
       const readKeyBuf = (start, count) => window.__webx68kDebug?.keybuf?.(start, count) ?? null;
+      // 帰属計測(コーディネータ指摘の訂正、docs/STORAGE-SCSI.md「帰属の切り分け」参照)。
+      // worker経路でのみ意味を持つ。frameNoベースなので既定経路(host直読み)には無関係。
+      const readAttribution = () => (worker ? (window.__webx68kDebug?.keybufAttribution?.() ?? null) : null);
       // カーソルは点滅により行末へ1文字だけ付いたり消えたりし、U+FFFD として観測される
       // (docs/STORAGE-SCSI.md の予備確認結果)。実際に入力された文字の重複と区別するため、
       // 「target と完全一致」「target + 末尾ちょうど1個のU+FFFD」だけを一致とみなし、
@@ -393,14 +396,25 @@ function runStimulus(page, keySpec, wrongSpec, config, faultKind) {
       const targetLine = `A>${spec.char}`;
 
       const t0 = performance.now();
-      if (fault !== 'drop-make') dispatch('keydown', dispatchCode, dispatchKey);
+      // makeの送信直前(dispatchの直前)に、mainがこの瞬間に知っているWorker側frameNoを
+      // 控える。keydownハンドラ(applyKey→sendWorkerInputUpdate、即時送信化済み)は
+      // dispatchEvent()の中で同期的に呼ばれるため、dispatch直後に読めば「この送信が
+      // 使ったframeNo」が取れる。
+      let makeSendFrameNo = null;
+      if (fault !== 'drop-make') {
+        dispatch('keydown', dispatchCode, dispatchKey);
+        makeSendFrameNo = readAttribution()?.inputSendFrameNo ?? null;
+      }
 
       let makeByte = null;
       let makeAt = null;
+      let makeWriteFrameNo = null;
+      let makeObserveFrameNo = null;
       let firstChangedLine = null;
       let firstChangedLineClass = null;
       let echoAt = null;
       let keyupAt = null;
+      let breakSendFrameNo = null;
       const holdDeadline = t0 + keyHold;
       let lastPollAt = -Infinity;
 
@@ -418,6 +432,13 @@ function runStimulus(page, keySpec, wrongSpec, config, faultKind) {
             if (probe && probe.writePointer !== startWp) {
               makeByte = probe.bytes[0];
               makeAt = now;
+              // 帰属計測: 検出したこの瞬間のwriteFrameNo(書かれたフレーム)と
+              // currentFrameNo(mainが受信済みの最新フレーム。観測の遅れの終点)を控える。
+              const attribution = readAttribution();
+              if (attribution) {
+                makeWriteFrameNo = attribution.writeFrameNo;
+                makeObserveFrameNo = attribution.currentFrameNo;
+              }
             }
           }
           if (echoAt === null) {
@@ -434,7 +455,10 @@ function runStimulus(page, keySpec, wrongSpec, config, faultKind) {
         }
         if (keyupAt === null && now >= holdDeadline) {
           keyupAt = now;
-          if (fault !== 'drop-make' && fault !== 'drop-break') dispatch('keyup', dispatchCode, dispatchKey);
+          if (fault !== 'drop-make' && fault !== 'drop-break') {
+            dispatch('keyup', dispatchCode, dispatchKey);
+            breakSendFrameNo = readAttribution()?.inputSendFrameNo ?? null;
+          }
         }
         // make・echo・keyupが出揃ってから、break到達確認のため最低でも数フレーム分は
         // 観測を続ける(直後に打ち切ると残留押下を取りこぼす)。Worker経路はKeyBufが
@@ -469,6 +493,7 @@ function runStimulus(page, keySpec, wrongSpec, config, faultKind) {
       const breakProbe = readKeyBuf(startWp, 2);
       const breakByte = breakProbe ? breakProbe.bytes[1] : null;
       const finalWp = breakProbe ? breakProbe.writePointer : null;
+      const breakAttribution = readAttribution();
 
       return {
         harnessError: null,
@@ -483,6 +508,17 @@ function runStimulus(page, keySpec, wrongSpec, config, faultKind) {
         makeByte,
         makeAtMs: makeAt === null ? null : makeAt - t0,
         echoAtMs: echoAt === null ? null : echoAt - t0,
+        // 帰属計測(worker経路のみ非null。既定経路は常にnull)。
+        attribution: worker
+          ? {
+              makeSendFrameNo,
+              makeWriteFrameNo,
+              makeObserveFrameNo,
+              breakSendFrameNo,
+              breakWriteFrameNo: breakAttribution?.writeFrameNo ?? null,
+              breakObserveFrameNo: breakAttribution?.currentFrameNo ?? null,
+            }
+          : null,
         breakByte,
         timedOut: makeAt === null || echoAt === null,
       };
@@ -601,6 +637,22 @@ function classifyStimulus(spec, wrongSpec, faultKind, raw) {
   const tvramWrongEcho = !tvramMissingEcho && raw.firstChangedLineClass === 'mismatch';
   const tvramDuplicateEcho = !tvramMissingEcho && raw.firstChangedLineClass === 'extra';
 
+  // 帰属(worker経路のみ、docs/STORAGE-SCSI.md「帰属の切り分け」参照)。
+  //   注入フレーム数 = writeFrameNo - sendFrameNo (keydown/keyup発生→updateInput送信→実際に
+  //     適用されたフレームまでの遅れ)
+  //   観測フレーム数 = observeFrameNo - writeFrameNo (書かれたフレーム→mainが知るフレームまでの遅れ)
+  // いずれかがnullなら計算できない(未検出・既定経路)ためnullのまま残す。
+  const framesDiff = (a, b) => (a === null || a === undefined || b === null || b === undefined ? null : a - b);
+  const attribution = raw.attribution
+    ? {
+        makeInjectionFrames: framesDiff(raw.attribution.makeWriteFrameNo, raw.attribution.makeSendFrameNo),
+        makeObservationFrames: framesDiff(raw.attribution.makeObserveFrameNo, raw.attribution.makeWriteFrameNo),
+        breakInjectionFrames: framesDiff(raw.attribution.breakWriteFrameNo, raw.attribution.breakSendFrameNo),
+        breakObservationFrames: framesDiff(raw.attribution.breakObserveFrameNo, raw.attribution.breakWriteFrameNo),
+        raw: raw.attribution,
+      }
+    : null;
+
   return {
     harnessError: null,
     key: spec.name,
@@ -631,6 +683,7 @@ function classifyStimulus(spec, wrongSpec, faultKind, raw) {
       duplicateEcho: tvramDuplicateEcho,
       ok: !tvramMissingEcho && !tvramWrongEcho && !tvramDuplicateEcho,
     },
+    attribution,
   };
 }
 
@@ -912,6 +965,27 @@ async function run() {
         .map((s) => s.tvram.echoAtMs);
       const keybufFailed = stimuli.filter((s) => !s.keybuf?.ok).length;
       const tvramFailed = stimuli.filter((s) => !s.tvram?.ok).length;
+      // 帰属(worker経路のみ、docs/STORAGE-SCSI.md「帰属の切り分け」参照)。フレーム数は
+      // 整数の小さな系列なので、summarize()のms向けラウンディングは使わずシンプルに集計する。
+      const frameStats = (values) => {
+        const finite = values.filter((v) => Number.isFinite(v));
+        if (finite.length === 0) return { sampleCount: 0, minFrames: null, medianFrames: null, maxFrames: null };
+        const sorted = [...finite].sort((a, b) => a - b);
+        return {
+          sampleCount: finite.length,
+          minFrames: sorted[0],
+          medianFrames: percentile(sorted, 0.5),
+          maxFrames: sorted.at(-1),
+        };
+      };
+      const attribution = config.worker
+        ? {
+            makeInjectionFrames: frameStats(stimuli.map((s) => s.attribution?.makeInjectionFrames)),
+            makeObservationFrames: frameStats(stimuli.map((s) => s.attribution?.makeObservationFrames)),
+            breakInjectionFrames: frameStats(stimuli.map((s) => s.attribution?.breakInjectionFrames)),
+            breakObservationFrames: frameStats(stimuli.map((s) => s.attribution?.breakObservationFrames)),
+          }
+        : null;
       result = {
         schemaVersion: 1,
         measuredAt: new Date().toISOString(),
@@ -936,6 +1010,7 @@ async function run() {
             wrongEcho: stimuli.filter((s) => s.tvram?.wrongEcho).length,
             duplicateEcho: stimuli.filter((s) => s.tvram?.duplicateEcho).length,
           },
+          attribution,
         },
         limitations: [
           '自動計測は合成KeyboardEvent経由のDOMイベント経路であり、物理キーボードの保証にはならない',
@@ -965,13 +1040,17 @@ async function run() {
       if (!faultCheck.passed) process.exitCode = 1;
     } else {
       const s = result.summary;
+      // 移行前基準の表は「機能失敗(欠落/誤字/重複)は0件、1件でも出たら不合格」と定めている。
+      // 中央値等のtimingを先に読ませると位置づけを誤りやすいため、合否を必ず先頭に出す。
       console.log(
-        `キー入力計測(経路: ${config.worker ? 'worker' : '既定'}): 成功 ${s.success ? 'はい' : 'いいえ'}, ` +
+        `キー入力計測(経路: ${config.worker ? 'worker' : '既定'}): ${s.success ? '合格' : '不合格'}` +
+          `(機能失敗 keybuf ${s.keybuf.missingMake + s.keybuf.wrongMake + s.keybuf.missingBreak + s.keybuf.duplicate}件 / ` +
+          `tvram ${s.tvram.missingEcho + s.tvram.wrongEcho + s.tvram.duplicateEcho}件), ` +
           `刺激数 ${s.totalStimuli}, 出力 ${config.outputPath}`,
       );
       console.log(
-        `KeyBuf経路: ok ${s.keybuf.sampleCount}/${s.totalStimuli}, 中央値 ${s.keybuf.medianMs ?? '-'} ms, ` +
-          `p95 ${s.keybuf.p95Ms ?? '-'} ms, p99 ${s.keybuf.p99Ms ?? '-'} ms, ` +
+        `KeyBuf経路(timing参考値。不合格でも中央値自体は出る): ok ${s.keybuf.sampleCount}/${s.totalStimuli}, ` +
+          `中央値 ${s.keybuf.medianMs ?? '-'} ms, p95 ${s.keybuf.p95Ms ?? '-'} ms, p99 ${s.keybuf.p99Ms ?? '-'} ms, ` +
           `欠落make ${s.keybuf.missingMake}, 誤字make ${s.keybuf.wrongMake}, ` +
           `欠落break ${s.keybuf.missingBreak}, 重複 ${s.keybuf.duplicate}`,
       );
@@ -980,6 +1059,16 @@ async function run() {
           `p95 ${s.tvram.p95Ms ?? '-'} ms, p99 ${s.tvram.p99Ms ?? '-'} ms, ` +
           `欠落 ${s.tvram.missingEcho}, 誤字 ${s.tvram.wrongEcho}, 重複 ${s.tvram.duplicateEcho}`,
       );
+      if (s.attribution) {
+        const a = s.attribution;
+        console.log(
+          `帰属(フレーム数、worker経路のみ): make注入 中央値${a.makeInjectionFrames.medianFrames ?? '-'} ` +
+            `(${a.makeInjectionFrames.sampleCount}件), make観測 中央値${a.makeObservationFrames.medianFrames ?? '-'} ` +
+            `(${a.makeObservationFrames.sampleCount}件), break注入 中央値${a.breakInjectionFrames.medianFrames ?? '-'} ` +
+            `(${a.breakInjectionFrames.sampleCount}件), break観測 中央値${a.breakObservationFrames.medianFrames ?? '-'} ` +
+            `(${a.breakObservationFrames.sampleCount}件)`,
+        );
+      }
       if (!s.success) process.exitCode = 1;
     }
   } finally {
