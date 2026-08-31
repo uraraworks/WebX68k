@@ -1,5 +1,6 @@
 import './style.css';
 import { AudioEngine } from './audio';
+import { buildCoreOptions } from './core-options';
 import { computeFrameBudget } from './frameBudget';
 import {
   createFormattedFd,
@@ -2864,17 +2865,20 @@ async function bootWorkerCore(): Promise<void> {
   // HDD永続化/マウス有効化、そして速度倍率が実際に効くために必須のpx68k_no_wait_mode
   // (下のbtnSpeed/cfgSpeedハンドラ、および既定経路のbootCore()コメント参照)が
   // 一度も設定されていなかった(コーディネータ指摘、docs/STORAGE-SCSI.md「ワーカー移行
-  // 手順9」参照)。既定経路のオプション一覧(bootCore()内のhost.setCoreOption()群)と
-  // 揃える。
-  const workerCoreOptions: Record<string, string> = {
-    px68k_cpuspeed: cpuSpeed,
-    px68k_ramsize: ramSize,
-    px68k_save_hdd_path: 'enabled',
-    px68k_joy_mouse: 'Mouse',
-    px68k_no_wait_mode: 'enabled',
-    px68k_joytype1: PAD_TYPE_CORE_OPTION_VALUE[gamepadStore.joyType[0]],
-    px68k_joytype2: PAD_TYPE_CORE_OPTION_VALUE[gamepadStore.joyType[1]],
-  };
+  // 手順9」参照)。
+  //
+  // 2026-08-31追記(コーディネータの2回目の指摘への対応): 「既定経路のオプション一覧と揃える」
+  // だけでは、bootCore()側の個別呼び出しとここのオブジェクトリテラルを別々に書き写す形になり、
+  // 将来どちらかだけ直し忘れると再び食い違う(実際にpx68k_cpuspeedはコア既定"10Mhz"と
+  // WebX68k既定"16Mhz"が食い違っており、Worker経路は今まで10Mhzで走っていた実績がある)。
+  // src/core-options.ts の buildCoreOptions() 1箇所から両経路が値を取るようにして、
+  // 一致を構造的に保証する(test/core-options.test.ts が退行検知)。
+  const workerCoreOptions = buildCoreOptions({
+    cpuSpeed,
+    ramSize,
+    joyType1CoreValue: PAD_TYPE_CORE_OPTION_VALUE[gamepadStore.joyType[0]],
+    joyType2CoreValue: PAD_TYPE_CORE_OPTION_VALUE[gamepadStore.joyType[1]],
+  });
   virtualPad.setPadType(gamepadStore.joyType[0]);
 
   await proxy.init(biosIplBytes, biosCgBytes, savedSram ?? undefined, initialDisks, workerCoreOptions);
@@ -2938,14 +2942,27 @@ async function bootCore(): Promise<void> {
   // X68000 は画面モード変更で実行中に canvas の実解像度(width/height)が変わる。
   // ウィンドウ表示のリスケールは実解像度基準で倍率を決めるため、変わった直後に再計算させる。
   host.onResolutionChanged = () => rescale();
-  host.setCoreOption('px68k_cpuspeed', cpuSpeed);
-  host.setCoreOption('px68k_ramsize', ramSize);
+  // 2026-08-31追記(コーディネータ指摘への対応、手順9): 以前はここで文字列リテラルを
+  // 直接setCoreOption()へ渡していたが、Worker経路(bootWorkerCore())側は同じ値の
+  // つもりで別々に組み立てたオブジェクトを渡しており、実際に px68k_cpuspeed が
+  // 食い違っていた(コア既定"10Mhz"のままWorker経路が起動していた実績がある)。
+  // src/core-options.ts の buildCoreOptions() から両経路が値を取ることで、
+  // 一致を構造的に保証する(test/core-options.test.ts が退行検知)。setCoreOption()を
+  // 個別に呼ぶ順序・回数はそれぞれのコメントごと変えていない(既定経路の挙動は不変)。
+  const defaultCoreOptions = buildCoreOptions({
+    cpuSpeed,
+    ramSize,
+    joyType1CoreValue: PAD_TYPE_CORE_OPTION_VALUE[gamepadStore.joyType[0]],
+    joyType2CoreValue: PAD_TYPE_CORE_OPTION_VALUE[gamepadStore.joyType[1]],
+  });
+  host.setCoreOption('px68k_cpuspeed', defaultCoreOptions.px68k_cpuspeed);
+  host.setCoreOption('px68k_ramsize', defaultCoreOptions.px68k_ramsize);
   // HDD0 の永続化(config読込)を有効化。これでLoadConfig()が /system/keropi/config の
   // HDD0= を読み、cmdファイル(FDD0/FDD1指定)と共存できる。
-  host.setCoreOption('px68k_save_hdd_path', 'enabled');
+  host.setCoreOption('px68k_save_hdd_path', defaultCoreOptions.px68k_save_hdd_path);
   // マウスを有効化する。px68k は MouseSW が立っていないと Mouse_Event() を丸ごと無視するため、
   // このオプション("Mouse")が Mouse_StartCapture(1) を呼ぶまでマウス入力は一切通らない。
-  host.setCoreOption('px68k_joy_mouse', 'Mouse');
+  host.setCoreOption('px68k_joy_mouse', defaultCoreOptions.px68k_joy_mouse);
   // 速度倍率ボタンを機能させるために必須。px68k-libretro は libretro.c の retro_run() 内で
   // `Config.NoWaitMode || Timer_GetCount()` を満たさない限り WinX68k_Exec()(実際にゲストを
   // 1フレーム進める処理)を呼ばない。Timer_GetCount() は実時間の経過を積算し、1フレームぶん
@@ -2961,14 +2978,14 @@ async function bootCore(): Promise<void> {
   // また、この設定はコアの update_variables() が起動直後の1回目の retro_run() でしか読まない
   // (ホスト側がRETRO_ENVIRONMENT_SET_VARIABLE_UPDATEに対応していないため)。速度ボタンの
   // ON/OFFに連動させる余地は無く、起動時に固定で 'enabled' にしておく。
-  host.setCoreOption('px68k_no_wait_mode', 'enabled');
+  host.setCoreOption('px68k_no_wait_mode', defaultCoreOptions.px68k_no_wait_mode);
   // ジョイスティックのパッド種別(2ボタン/CPSF-MD/CPSF-SFC)。gamepadStore.joyType(設定ダイアログの
   // パッド種別セレクタ、localStorage永続化)がそのまま唯一の情報源。この設定は update_variables()
   // が firstcall(起動直後の1回目のretro_run)でしか読まないため、変更を反映するには
   // このbootCore()をやり直す(=コアを再起動する)必要がある。実行中にgamepadStore.joyTypeだけ
   // 書き換えても次に読み込まれるのは次回起動時。
-  host.setCoreOption('px68k_joytype1', PAD_TYPE_CORE_OPTION_VALUE[gamepadStore.joyType[0]]);
-  host.setCoreOption('px68k_joytype2', PAD_TYPE_CORE_OPTION_VALUE[gamepadStore.joyType[1]]);
+  host.setCoreOption('px68k_joytype1', defaultCoreOptions.px68k_joytype1);
+  host.setCoreOption('px68k_joytype2', defaultCoreOptions.px68k_joytype2);
   // バーチャルパッドの送り先は常にポート0(表示上のポート1)。TRG3..TRG8のビット位置は
   // そのポートのpadTypeに依存するため、コア起動時点の値を渡しておく(設定ダイアログで
   // 変更されたときは setPadType コールバック側で追従させる)。
