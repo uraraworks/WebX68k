@@ -77,6 +77,10 @@ function parseArgs(argv) {
       values.help = true;
       continue;
     }
+    if (arg === '--worker') {
+      values.worker = true;
+      continue;
+    }
     const match = /^--(port|beep-duration|idle-duration|beep-interval|boot-timeout|output|fault|loopbeep-duration|scenario)=(.+)$/.exec(arg);
     if (!match) throw new Error(`不明な引数です: ${arg}`);
     values[match[1]] = match[2];
@@ -96,6 +100,8 @@ function printHelp() {
   --fault=<delay-200ms|drop-chunk|stall-main>  測定系の検証用故障注入。先に陽性対照を行う
   --loopbeep-duration=<ms> 条件D(打鍵なしBEEPループ)の採取時間 (既定: 60000)
   --scenario=d             条件D単体のみ実行する(既定の動作=beep/idleは変更しない)
+  --worker                 計測対象URLに ?worker=1 を付ける(Worker経路の計測)。
+                           未指定時の挙動には一切影響しない
 
 生ログ: 各試行のAudioWorklet tick時系列(rawLog)は、結果JSONとは別に
         "<結果ファイル名>-rawlog-<kind>.json" として同じディレクトリへ保存される
@@ -148,7 +154,20 @@ function buildConfig(args) {
     executablePath: process.env.CHROME_PATH ?? DEFAULT_CHROME,
     fault,
     scenario,
+    // Worker経路(?worker=1)の計測かどうか。既定はfalseで、既定計測(measurementUrl組み立て・
+    // その他すべての挙動)には一切影響しない。
+    worker: args.worker === true,
   };
+}
+
+// 既定(worker未指定)ではmeasurementUrlはconfig.baseUrlのまま変わらない。runMainScenario/
+// runFaultTrialの両方から呼ばれるため、既存クエリを保ったままworker=1を付けるロジックを
+// ここに1箇所だけ持つ(measure-boot.mjsの同名ロジックの複製ではなく共通化)。
+function buildMeasurementUrl(config) {
+  if (!config.worker) return config.baseUrl;
+  const url = new URL(config.baseUrl);
+  url.searchParams.set('worker', '1');
+  return url.href;
 }
 
 async function startServer(port) {
@@ -525,7 +544,7 @@ async function runMainScenario(browser, config, kind, envCapture) {
     page = await context.newPage();
     await page.setViewport({ width: 900, height: 700, deviceScaleFactor: 2 });
     await page.bringToFront();
-    await page.goto(config.baseUrl, { waitUntil: 'networkidle2' });
+    await page.goto(buildMeasurementUrl(config), { waitUntil: 'networkidle2' });
     await page.bringToFront();
 
     const boot = await bootAndEnterBasic(page, config);
@@ -564,7 +583,7 @@ async function runFaultTrial(browser, config, kind, faultSetup, durationMs, envC
     page = await context.newPage();
     await page.setViewport({ width: 900, height: 700, deviceScaleFactor: 2 });
     await page.bringToFront();
-    await page.goto(config.baseUrl, { waitUntil: 'networkidle2' });
+    await page.goto(buildMeasurementUrl(config), { waitUntil: 'networkidle2' });
     await page.bringToFront();
 
     const boot = await bootAndEnterBasic(page, config);

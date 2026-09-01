@@ -81,6 +81,10 @@ function parseArgs(argv) {
       values.help = true;
       continue;
     }
+    if (arg === '--worker') {
+      values.worker = true;
+      continue;
+    }
     const match =
       /^--(port|runs|timeout|command-timeout|poll-interval|key-hold|key-gap|input-retries|output|fault)=(.+)$/.exec(
         arg,
@@ -106,6 +110,8 @@ function printHelp() {
   --fault=<no-fdd1|no-hdd|drop-enter>  故障注入。先に故障なしの陽性対照を1回行う
                                  (drop-enter: ${DROP_ENTER_TARGET_DRIVE}: のコマンドでEnterの
                                  合成キーイベントを1回だけ送らない)
+  --worker                      計測対象URLに ?worker=1 を付ける(Worker経路の計測)。
+                                 未指定時の挙動には一切影響しない
 
 環境変数: WEBX68K_PORT, WEBX68K_DRIVE_RUNS, WEBX68K_DRIVE_TIMEOUT_MS,
           WEBX68K_DRIVE_COMMAND_TIMEOUT_MS, WEBX68K_DRIVE_POLL_INTERVAL_MS,
@@ -164,6 +170,9 @@ function buildConfig(args) {
     outputPath: isAbsolute(outputValue) ? outputValue : resolve(REPO_ROOT, outputValue),
     executablePath: process.env.CHROME_PATH ?? DEFAULT_CHROME,
     fault,
+    // Worker経路(?worker=1)の計測かどうか。既定はfalseで、既定計測(measurementUrl組み立て・
+    // その他すべての挙動)には一切影響しない。
+    worker: args.worker === true,
   };
 }
 
@@ -722,7 +731,14 @@ async function measureOnce(browser, config, trial, fault, envCapture) {
     page = await context.newPage();
     await page.setViewport({ width: 900, height: 700, deviceScaleFactor: 2 });
     await page.bringToFront();
-    await page.goto(config.baseUrl, { waitUntil: 'networkidle2' });
+    let measurementUrl = config.baseUrl;
+    if (config.worker) {
+      // 既定(worker未指定)ではこの分岐に入らず、measurementUrl は従来どおり。
+      const url = new URL(measurementUrl);
+      url.searchParams.set('worker', '1');
+      measurementUrl = url.href;
+    }
+    await page.goto(measurementUrl, { waitUntil: 'networkidle2' });
     await page.bringToFront();
 
     // 前試行が例外・タイムアウトで中断されていても、入力開始前に全キーを解放する。
@@ -1047,6 +1063,7 @@ async function run() {
         keyGapMs: config.keyGapMs,
         inputRetries: config.inputRetries,
         requiredStablePolls: REQUIRED_STABLE_POLLS,
+        worker: config.worker,
         recovery: {
           methods: ['Enter', 'Ctrl+C'],
           maxAttempts: RECOVERY_MAX_ATTEMPTS,
