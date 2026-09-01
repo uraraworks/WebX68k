@@ -4319,6 +4319,93 @@ Worker(`wm-20260901-audio-worker.json`): beepシナリオは`"X-BASICの\"Ok\"�
 - 実ブラウザでの末端確認: `npm run build`後、`http://localhost:5299/?worker=1&system=1&run=1`をBrowserペインで開き、`window.__webx68kDebug`経由で起動待ち→`dir a:`相当のKeyboardEvent(d/i/r/space/a/:、keyHold=keyGap=70ms、`scripts/measure-drives.mjs`と同じ値)を合成送信→`screenText()`でコマンド行を照合、という一連を**フルリロードからの起動を8回繰り返して**実施した。**8回中8回とも`A>dir a:`と完全一致し、打鍵落ちは0件だった。**修正前の再現データ(修正前9件/5trial、修正後5件/5trial)と比べ、8trial連続で0件は改善を裏付ける。
 
 
+## ワーカー移行 手順5：音声出力の実装(2026-09-01)
+
+### 経緯
+
+「起動・3ドライブ・音声の基準比較(実測、2026-09-01)」節で、Worker経路の音声出力が
+`src/core-worker.ts`の frame snapshot 組み立てで`audio: { chunks: [], sampleFrames: 0 }`と
+固定で送られており、コアが生成した音声サンプルが一度もmainへ渡らず捨てられていることを
+親セッションが実測した(`underflowFrames`が60秒ぶんちょうど=100%、`queuedSec`中央値0ms、
+`_local/measure/wm-20260901-audio-worker.json`参照)。「宿題17: Worker側の音声移行」への
+対応として、この作業でWorker経路の音声出力を実装した。
+
+### 設計
+
+- `src/core-protocol.ts`の`FrameSnapshot.audio`(`{ chunks: ArrayBuffer[]; sampleFrames: number }`、
+  Float32・stereo interleaved)と`collectTransferables()`のchunks収集は、この作業に着手する前から
+  既に実装済みだった(手順1で先行して型だけ固定されていたもの)。この作業ではプロトコル自体の
+  変更は行っていない。
+- **速度倍率のリサンプル(`resampleSpeed`)と`AudioEngine.push()`はmain側に残した。** Worker側は
+  `LibretroHost`の`audioPush`コールバック(`src/core-worker.ts`の`pushAudioSamples()`)で受け取った
+  生サンプルの`Float32Array.buffer`を`pendingAudioChunks`へそのまま蓄積し(単発cb・batch cbのどちらも
+  呼び出しのたびに新規Float32Arrayを生成するため、コピーせず直接pushできる。`src/libretro-host.ts`の
+  `audioSampleCb`/`handleAudioBatch`参照)、`sendFrame()`で溜まった分をまとめてframe eventに
+  相乗りさせてtransferする(所有権を移した直後に`resetPendingAudio()`で次tickぶんの蓄積へ切り替える)。
+  main側(`bootWorkerCore()`のframe eventハンドラ)は、受け取った`chunks`を1つずつ
+  `new Float32Array(chunkBuf)`へ戻し、既定経路(`bootCore()`内のコールバック)と全く同じ
+  「`speedMultiplier === 1`ならそのまま・それ以外は`resampleSpeed(samples, speedMultiplier,
+  audioResampleState)`」を適用してから`audio?.push(out)`する。既定経路とWorker経路で音の加工経路を
+  1本に保つのが目的で、Worker側でリサンプルすると経路が2本に分かれ速度ボタンの挙動が経路ごとに
+  ずれうる(過去の教訓「入力源は末端の唯一の窓口へ集約する」と同種の失敗を避けるため)。
+- `audio`(main側の`AudioEngine`インスタンス)が`null`になりうる(AudioWorkletが使えない環境)点は
+  既定経路と同じ扱いにした。音の行き先が無いときはサンプルを捨てるだけでよい
+  (既定経路のコメントと同じ理由。ここを`audio!`にすると無音環境で起動ごと壊れる)。
+- バッファの所有権はtransferで移し、映像バッファのような返却プール(`FrameBufferPool`)は
+  新設していない。過去の実測(「Aの追測」節)で映像バッファ返却が期待したGCスパイク低減効果を
+  示せなかった記録があり、判断に迷う場合は新設せず素直に確保する方針を選んだ。
+- Worker側は`resampleSpeed`を一切呼ばない(速度倍率に関与しない)。`computeFrameBudget()`の
+  音声キュー深さ補正(±2%のフレーム間隔補正)は今回も入れていない: `AudioEngine`のキュー深さは
+  main側にしか無く、Worker側から同期に読み戻す経路が無いため(この制約は手順5のスコープ外として
+  残す)。
+- `?worker=1`起動完了時に一律で出していた「音声は未対応」トースト(`console.warn`/`showToast`)は
+  廃止した。残るSRAM・ステート保存/復元の未対応は、実際に操作したタイミングで
+  `warnWorkerModeUnsupported()`から個別に警告する既存の仕組みのままとした。
+
+### 検証
+
+- 単体テスト(`test/worker-audio-migration.test.ts`、静的検査): 他ファイル(
+  `test/core-worker-option-order.test.ts`等)と同じ手法で、`core-worker.ts`が
+  Workerグローバルに依存しnode環境のvitestへ直接importできない・`main.ts`はDOM初期化を伴う
+  巨大な副作用を持ちやはりimportできないため、実ファイルを読んで構造を検査する形にした。
+  - `sendFrame()`が`audio: { chunks: pendingAudioChunks, sampleFrames: pendingAudioSampleFrames }`を
+    送ること(退行の再現形である`audio: { chunks: [], sampleFrames: 0 }`固定が存在しないこと)。
+  - `handleInitialize()`が`LibretroHost`へ`pushAudioSamples`を渡すこと(捨てるだけのコールバックに
+    戻っていないこと)。
+  - main.tsの`proxy.setEventHandler()`が`snapshot.audio.chunks`をchunkごとにループし、既定経路と
+    同じ`speedMultiplier === 1 ? samples : resampleSpeed(...)`の形で`audio?.push(out)`すること。
+  - `core-worker.ts`が`resampleSpeed`を一切呼ばないこと(経路を1本に保つ制約)。
+  - **陽性対照(故障注入、実装時に手動で確認済み)**: (1)`sendFrame()`のaudioフィールドを
+    `{ chunks: [], sampleFrames: 0 }`へ戻す、(2)main.tsのframe eventハンドラから
+    `for (const chunkBuf of snapshot.audio.chunks)`ブロックを削除する、の2通りをそれぞれ試し、
+    対応するテストが実際に**症状で**redになることを確認した。確認後ファイルを復元し、
+    `git diff --stat`が復元前と同じ差分であることを確認した。
+- `npx tsc --noEmit`: エラー0件。`npm test`: 654件全通過(修正前651件+テスト追加3件)。
+- 実ブラウザでの末端確認(`npm run dev`、Browserペインで同期操作・タイムアウト付き):
+  `http://127.0.0.1:5299/?worker=1&system=1&run=1`を開き、`window.__webx68kDebug.stat()`と
+  `startQueueProbe()`/`stopQueueProbe()`(AudioWorklet自身が報告する`qSec`/`underflow`の時系列)を
+  使って以下を確認した。
+  - **Worker経路(修正後)**: 起動後`stat().queuedSec`を300ms間隔で10回サンプリングし、全10回とも
+    非ゼロ(0.007〜0.048秒)。`startQueueProbe()`で3秒間ログを採ったところ344〜345サンプル、
+    `underflow`は区間の最初から最後まで変化なし(delta=0、0%)。
+  - **既定経路(`?worker=1`なし、対照)**: 同じ手順で3秒間のログを312サンプル取得、`qSec`は
+    0.079〜0.091秒で推移、`underflow`のdeltaは同じく0。Worker経路(修正後)と既定経路は
+    「`queuedSec`が非ゼロで推移し、アンダーフローが継続しない」という同じ性質を示した
+    (絶対値のキュー深さはWorker経路のほうが浅いが、時間の統計的な比較は行っていない。
+    正式な基準比較は親セッションが別途行う)。
+  - **陰性対照(未修正の状態を再現)**: `sendFrame()`のaudioフィールドを一時的に
+    `{ chunks: [], sampleFrames: 0 }`へ戻し、同じ手順でWorker経路を再起動して同じ検査を通したところ、
+    `stat().queuedSec`は5回連続で0、`startQueueProbe()`の3秒間ログ(345サンプル)で`underflow`は
+    256から176384まで、delta=176128件(ほぼ全サンプルで増加=継続的な100%アンダーフロー)。
+    親セッションの実測(`underflowFrames`60秒ぶん=100%)と整合する症状を、この検査手順自身が
+    確かに検出できることを確認したうえで、修正を復元して再確認(上記「Worker経路(修正後)」の
+    結果)した。
+  - **未実施**: 音声遅延の正式な比較(`queuedSec`中央値・p99の基準幅との照合、時間の統計値)は
+    「時間の実測は親セッションが担当する」という今回の制約により行っていない。上記はいずれも
+    「0か非0か」「アンダーフローが継続するかしないか」の機能的な二値判定にとどまる。ゲームパッド・
+    FDDホットマウント・SRAM・ステート保存/復元の実ブラウザ確認は今回のスコープ外で、引き続き
+    未実施のまま。
+
 ## 次にやること
 
 移行前基準は2組そろい、**ワーカー移行に着手できる状態になった**。
@@ -4342,4 +4429,4 @@ Worker(`wm-20260901-audio-worker.json`): beepシナリオは`"X-BASICの\"Ok\"�
 14. **Worker経路の起動区間計測の穴への対処。**同上の節で、Worker経路では`clickToWasmFetchComplete`/`wasmFetchCompleteToCoreReady`が取得できず(`sampleCount: 0`)、移行前基準が判定に用いる「クリック→wasm取得完了」+「wasm取得完了→ゲスト初出力」の区間合算での比較ができないままになっている。合計値(起動所要時間)でしか比較できていない現状の対処を検討する。
 15. **ドライブ応答時間の指標が観測側を測っている疑いの切り分け。**同上の節で、Worker(修正後)/既定の応答時間比がA:2.31倍・B:1.81倍と遅い一方、C:は既定/Worker=3.69倍で速く、D:はほぼ同値(0.95倍)と向きが割れた。同一経路のオーバーヘッドなら向きが揃うはずで、`readTextScreen`のスレッド境界越しのポーリング位相を測っている疑いが濃いが未確認。
 16. **移行前基準がBattery Power下で取得されている件。**移行前基準(`newset2-20260825-audio.json`)は`powerSource: "Battery Power"`だが、2026-09-01の計測は全てAC Power。3指標とも基準をわずかに下回る方向へ系統的にずれており(起動 約-4%、beep/idle 各-0.3〜0.8ms程度)、電源条件の食い違いで説明が付くと判断した。電源条件を揃えて再計測するか、基準をAC電源側で取り直すかを決める。
-17. **Worker側の音声移行(手順5・7の未完了部分)。**`src/core-worker.ts:490`のとおり音声は現状未移行で、生成されたサンプルを送信せず捨てている(idleシナリオはunderflow 100%)。音声移行が完了してから正式な基準比較を行う。
+17. ~~Worker側の音声移行(手順5・7の未完了部分)。~~ → **2026-09-01、実装・単体テスト・故障注入・実ブラウザでの機能確認(既定経路との対照・陰性対照込み)まで実施済み**（「ワーカー移行 手順5：音声出力の実装(2026-09-01)」参照)。音声サンプルはWorkerからmainへ運ばれ`queuedSec`が非ゼロで推移しアンダーフローが継続しないことを確認したが、**`queuedSec`中央値・p99の基準幅との正式な照合(時間の統計値)は今回のスコープ外で親セッションが別途行う。**

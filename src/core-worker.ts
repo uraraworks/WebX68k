@@ -5,7 +5,8 @@
 // initialize→ready / loadGame / fetchAvInfo / setRunning / readTextScreen / dispose /
 // hotSwapFdd / captureDirtyMedia / markDirty の command/response、映像を運ぶ frame event、
 // バッファ返却、入力更新(INPUT_UPDATE_KIND、手順6)の系統。
-// 音声・SRAM・ステート保存/復元は今回のスコープ外で、
+// 音声出力(手順5、2026-09-01実装)は frame event に生サンプルを相乗りさせる形で移行済み
+// (下の「音声」節参照)。SRAM・ステート保存/復元は今回のスコープ外で、
 // 该当opは引き続き UNSUPPORTED を返す(src/main.ts 側で「未対応」を利用者に見える形にする)。
 // マウスの閉ループ追従(手順6後半、2026-08-31実装)はこのファイル内で完結する(mouseTracker、
 // MOUSE_TRACK_UPDATE_KIND/MOUSE_TRACK_RESYNC_KIND ハンドラ参照。docs/STORAGE-SCSI.md
@@ -33,8 +34,11 @@
 // 系統的にドリフトし、素のsetIntervalは遅れた回を取り戻さないため、素の setInterval だけでは
 // 不十分)。既存メインループ(src/main.ts の loop())が使っている computeFrameBudget()
 // (src/frameBudget.ts)をそのまま呼ぶ。ただしメインループにある「音声キュー深さによる
-// ±2%のフレーム間隔補正」は今回入れない(音声が未移行のため補正すべきキューが無い)。
-// computeFrameBudget() には queued=0 を渡す(音声キュー由来の補正なし)。
+// ±2%のフレーム間隔補正」は今回も入れない: AudioEngine のキュー深さは main 側にしか
+// 無く(音声サンプル自体は手順5でWorkerからmainへ運ぶようになったが、キューへ積むのは
+// main側のAudioEngine.push()、下の「音声」節参照)、Worker側から同期に読み戻す経路が
+// 無いため。computeFrameBudget() には引き続き queued=0 を渡す(音声キュー由来の補正なし。
+// この制約は手順5のスコープ外として残す)。
 //
 // 速度倍率(手順9で対応。SPEED_UPDATE_KIND): 以前はspeedMultiplier=1固定だった
 // (「速度ボタンは未移行」)。ところがUI側(src/main.tsのbtnSpeed/cfgSpeed)はWorker経路でも
@@ -43,8 +47,9 @@
 // 参照)。ここでは実装コストが小さいと判断し、実体を追加した: main側から低頻度の
 // fire-and-forgetでmultiplierを受け取り、tick()のframeInterval計算とcomputeFrameBudget()
 // の両方に渡す。既定経路のloop()と同じ「frameInterval = 1/(fps*speedMultiplier)」。
-// 音声は引き続き未移行のため、速度を上げても音は出ない(既定経路のresampleSpeedに相当する
-// 仕組みがWorker側に無い)。この制約はdocsに明記した。
+// 音声出力は手順5で移行した(下の「音声」節参照)。速度を上げたときのピッチ変換
+// (resampleSpeed)はmain側で行う(Worker側はコアの生サンプルをそのまま送るだけで
+// speedMultiplierに関与しない)。
 // また、px68k-libretro側で速度倍率が実際に効くには px68k_no_wait_mode='enabled' が
 // 必須(既定経路のbootCore()コメント参照)。この設定自体もWorker経路では一度も
 // 送られていなかった(InitPayload.options未使用)ため、手順9で InitPayload.options の
@@ -283,6 +288,37 @@ function releaseBuffer(buffer: ArrayBuffer): void {
   framePool.release(buffer);
 }
 
+// --- 音声 (手順5: 音声出力のWorker移行、2026-09-01) ---------------------------------
+//
+// LibretroHost の audioPush コールバックは1tick(=runFrame() 複数回)の間に複数回呼ばれうる。
+// 単発cb(audioSampleCb)・batch cb(handleAudioBatch)のどちらも呼び出しのたびに新規の
+// Float32Array を生成して渡してくる(src/libretro-host.ts参照。同一bufferの使い回しは無い)ので、
+// 受け取った Float32Array.buffer をコピーせずそのまま pendingAudioChunks へ積み、次の
+// sendFrame() でまとめて transferable として送る(FrameSnapshot.audio.chunks、
+// core-protocol.ts の collectTransferables が既にこの配列を拾う実装になっている)。
+//
+// 速度倍率のリサンプル(resampleSpeed)と AudioEngine.push() は main 側に残す(既定経路
+// bootCore() と音の加工経路を1本に保つ。過去の教訓「入力源は末端の唯一の窓口へ集約する」と
+// 同種の失敗を避けるため)。ここではコアが出した生サンプルをそのまま運ぶだけで、速度倍率
+// (speedMultiplier)には一切関与しない。
+let pendingAudioChunks: ArrayBuffer[] = [];
+let pendingAudioSampleFrames = 0;
+
+function resetPendingAudio(): void {
+  pendingAudioChunks = [];
+  pendingAudioSampleFrames = 0;
+}
+
+function pushAudioSamples(samples: Float32Array): void {
+  if (samples.length === 0) return;
+  // stereo interleaved (L,R) なので1サンプルフレーム = 2要素。
+  pendingAudioSampleFrames += samples.length / 2;
+  // AudioPushFn の実引数は常に `new Float32Array(...)` で生成された素の ArrayBuffer
+  // (src/libretro-host.ts の audioSampleCb/handleAudioBatch 参照。SharedArrayBufferには
+  // ならない)なのでキャストする。
+  pendingAudioChunks.push(samples.buffer as ArrayBuffer);
+}
+
 // --- 入力 (手順6) ------------------------------------------------------------
 //
 // main 側が frame event を契機に正規化・合成した InputUpdate を、片道メッセージ
@@ -497,8 +533,9 @@ function sendFrame(
       height,
     },
     video: { kind: 'rgba', bytes: buffer, width, height },
-    // 音声は今回のスコープ外(未移行)。空で送る。
-    audio: { chunks: [], sampleFrames: 0 },
+    // 前回のsendFrame()以降に貯まった生サンプルをそのまま運ぶ(リサンプルはmain側)。
+    // 所有権はここでtransferするため、直後にpendingをリセットする。
+    audio: { chunks: pendingAudioChunks, sampleFrames: pendingAudioSampleFrames },
     disk: {
       access,
       // 手順8: コア本体のダーティフラグ(host.readDirtyState())とJS側の影のフラグ
@@ -509,6 +546,10 @@ function sendFrame(
     },
     poolMisses: framePool.misses,
   };
+  // 所有権はsnapshotへ移した(transferableとしてpost()で送る)。次tickぶんの蓄積を
+  // 新しい配列で始める(snapshot.audio.chunksが指す配列そのものは元のままなので
+  // ここでresetしてもsnapshotの内容には影響しない)。
+  resetPendingAudio();
   // DEV専用・既定off(ファイル冒頭コメント参照)。有効化時のみ host.readKeyBufWindow(0, 128)
   // を毎フレーム呼ぶ(受動読み取りのみで、コアの駆動そのものには関与しない)。
   if (import.meta.env.DEV && keyBufProbeEnabled) {
@@ -550,9 +591,8 @@ async function handleInitialize(
     // scratch canvas: ファイル冒頭のコメント参照。
     scratchCanvas = new OffscreenCanvas(1, 1);
     scratchCtx = scratchCanvas.getContext('2d');
-    const newHost = new LibretroHost(scratchCanvas as unknown as HTMLCanvasElement, () => {
-      // 音声経路は今回のスコープ外。生成されたサンプルは捨てるだけ。
-    });
+    resetPendingAudio();
+    const newHost = new LibretroHost(scratchCanvas as unknown as HTMLCanvasElement, pushAudioSamples);
     // コアオプションは newHost.init() (内部で mod._retro_init() を同期呼び出しする) より
     // 前に設定する。px68k-libretro の retro_init() は末尾で update_variables(0) を呼び、
     // その場で environ_cb(GET_VARIABLE) 経由の現在値を Config へ読み込む(px68k-libretro/
@@ -795,6 +835,7 @@ async function handleDispose(cmd: Extract<CoreCommand, { op: 'dispose' }>): Prom
       await proxy.dispose();
       proxy = null;
       host = null;
+      resetPendingAudio();
     }
     post({ kind: 'response', generation, requestId, ok: true, completedFrameNo: frameNo, result: undefined });
   } catch (err) {
@@ -909,7 +950,9 @@ ctx.onmessage = (ev) => {
       handleMarkDirty(cmd);
       recordCommandTiming(cmd.op, commandStartAtMs, undefined);
       return;
-    // 以下は今回もスコープ外(音声・SRAM・ステート保存/復元)。UNSUPPORTED を返す。
+    // 以下は今回もスコープ外(SRAM・ステート保存/復元)。UNSUPPORTED を返す
+    // (音声出力は手順5でframe eventへの相乗りとして移行済み。command/responseの形を
+    // 持たないため、このswitchには元々含まれない)。
     // main.ts 側で「?worker=1 では未対応」と利用者に見える形にする(無言のno-opにしない。
     // docs/STORAGE-SCSI.md参照)。入力(手順6)は INPUT_UPDATE_KIND の専用メッセージへ
     // 移したため、この switch には含まれない(ctx.onmessage 冒頭の isInputUpdateMessage

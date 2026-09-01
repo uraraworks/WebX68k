@@ -2720,12 +2720,12 @@ let workerAvInfo: AvInfo | null = null;
 /** `?worker=1` でだけ利用者へ見せる、未移行機能のトースト。
  * 手順6(2026-08-31)でキー・パッド・マウスボタン・加算マウスdelta、手順6後半(2026-08-31)で
  * マウスの閉ループ追従、手順8(2026-08-31)でFDDホットマウント/dirty capture/オートセーブ/
- * 終了flushは対応した(このトーストの対象から外れた)。音声・SRAM・ステート保存/復元は
- * 今回もスコープ外のまま(docs/STORAGE-SCSI.md「段階移行の順序」参照)。HDDの起動中差し替えは
- * 元々既定経路でもisSlotLocked()で禁止されている機能で、Worker経路固有の制約ではない。
- * 無言のno-opにせず、必ずここを通してから抜けること。 */
+ * 終了flush、手順5(2026-09-01)で音声出力は対応した(このトーストの対象から外れた)。
+ * SRAM・ステート保存/復元は今回もスコープ外のまま(docs/STORAGE-SCSI.md「段階移行の順序」
+ * 参照)。HDDの起動中差し替えは元々既定経路でもisSlotLocked()で禁止されている機能で、
+ * Worker経路固有の制約ではない。無言のno-opにせず、必ずここを通してから抜けること。 */
 function warnWorkerModeUnsupported(): void {
-  console.warn('[worker] ?worker=1 ではこの機能はまだ未対応です(音声・SRAM・ステート保存/復元)。');
+  console.warn('[worker] ?worker=1 ではこの機能はまだ未対応です(SRAM・ステート保存/復元)。');
   showToast(t('workerModeUnsupported'));
 }
 
@@ -2835,6 +2835,21 @@ async function bootWorkerCore(): Promise<void> {
         // 読み終えるので、この直後に同じ ArrayBuffer を Worker のプールへ返してよい。
         workerCoreProxy?.returnFrameBuffer(bytes);
       }
+      // 音声出力(手順5、2026-09-01): Workerはリサンプルせず生サンプル(Float32、stereo
+      // interleaved)をchunk単位でそのまま送ってくる(1chunk = Worker側の1回のaudioPush
+      // 呼び出しに対応。src/core-worker.tsのpushAudioSamples参照)。速度倍率の可変レート
+      // リサンプル(resampleSpeed)とAudioEngine.push()は既定経路(bootCore()内のcallback)と
+      // 全く同じ処理をここで行う。経路を1本に保つため、Worker側では絶対にリサンプルしない
+      // (過去の教訓「入力源は末端の唯一の窓口へ集約する」と同種の失敗を避ける)。
+      // audioがnullになりうる(AudioWorkletが使えない環境)のは既定経路と同じ: 行き先が
+      // 無いときはサンプルを捨てるだけでよい(bootCore()のコメント参照。ここを`audio!`に
+      // すると無音環境で起動ごと壊れる)。
+      for (const chunkBuf of snapshot.audio.chunks) {
+        const samples = new Float32Array(chunkBuf);
+        const out =
+          speedMultiplier === 1 ? samples : resampleSpeed(samples, speedMultiplier, audioResampleState);
+        audio?.push(out);
+      }
       applyDiskAccess(performance.now(), snapshot.disk.access);
       // 手順8: 既定経路のhost.readDirtyState()ポーリングに相当する値をframe eventから
       // 更新し、同じframe eventを契機にオートセーブ判定を行う(pollDiskAccessと同じ考え方)。
@@ -2919,18 +2934,13 @@ async function bootWorkerCore(): Promise<void> {
   running = true;
   updateSlotControls();
   resetAccessLamps();
-  // 音声は毎フレーム発生するため、押すたびにトーストを出すと使い物にならない。
-  // 代わりに起動が完了したこの時点で1回だけ知らせる(無言のno-opにはしない。docs参照。
-  // ステート保存復元は実際に操作したタイミングで個別に警告する
-  // (warnWorkerModeUnsupportedの他の呼び出し箇所参照)。手順6(2026-08-31)でキー・パッド・
-  // マウスボタン・加算マウスdelta、手順6後半(2026-08-31)でマウスの閉ループ追従、
-  // 手順8(2026-08-31)でFDDホットマウント/dirty capture/オートセーブ/終了flushは対応した
-  // ため、このトーストの対象からは外した。手順9(2026-08-31、コーディネータ指摘への対応)で
-  // 速度ボタン・CPU速度/RAM構成/パッド種別のコアオプション配線も対応したため同様に外した
-  // (残るのは音声・SRAM・ステート保存/復元。速度は上のsetSpeedMultiplier()で反映するが
-  // 音声自体が未移行のため「速度を上げても音は出ない」制約が残る。docs参照)。
-  console.warn('[worker] ?worker=1 で起動しました。音声は未対応です(段階移行の対象外)。');
-  showToast(t('workerModeUnsupported'), 6000);
+  // 手順6(2026-08-31)でキー・パッド・マウスボタン・加算マウスdelta、手順6後半(2026-08-31)で
+  // マウスの閉ループ追従、手順8(2026-08-31)でFDDホットマウント/dirty capture/オートセーブ/
+  // 終了flushは対応した。手順9(2026-08-31、コーディネータ指摘への対応)で速度ボタン・
+  // CPU速度/RAM構成/パッド種別のコアオプション配線も対応した。手順5(2026-09-01)で音声出力
+  // (生サンプルの転送・main側でのリサンプル・AudioEngineへのpush)も対応したため、
+  // 起動完了時の一律トーストは廃止した(残るSRAM・ステート保存/復元は実際に操作した
+  // タイミングで個別に警告する。warnWorkerModeUnsupportedの他の呼び出し箇所参照)。
 }
 
 /**
