@@ -429,6 +429,16 @@ function tick(): void {
     }
   }
 
+  // make/breakの潰れ対策(2026-09-01、「フレーム基準の隙間はポーリング2回ぶん」参照。
+  // src/worker-input.ts の WorkerInputState 冒頭コメントに詳細)。このtickで実際に
+  // retro_run()が1回以上走った(=コアが入力状態をポーリングした)直後にだけ、保留中の
+  // release(まだ一度もポーリングされていないmakeに対するreleaseだったため遅延していたもの)
+  // を確定させる。ranFrames === 0 のtickでは呼ばない(ポーリング自体が起きていないため)。
+  if (result.ranFrames > 0) {
+    const breakChanged = workerInputState.confirmObservedFrame(host);
+    if (import.meta.env.DEV && keyBufProbeEnabled && breakChanged) lastInputApplyFrameNo = frameNo;
+  }
+
   let convertMs: number | null = null;
   let postMs: number | null = null;
   if (result.ranFrames > 0) {

@@ -4281,6 +4281,44 @@ Worker(`wm-20260901-audio-worker.json`): beepシナリオは`"X-BASICの\"Ok\"�
 8/31のキー入力計測では「既定経路自体が移行前基準を再現できず比較が成立しない」と判定していたが、**今回は既定経路の再現性が(基準幅から系統的にずれてはいるものの)ノイズに埋もれず確認できたと判断する**。ただし基準幅そのものには収まっていない(起動22.6秒 vs 基準幅23.5〜24.3秒)ため、**基準幅はBattery Power前提の値であり、今後は電源条件を揃えて再計測するか、基準をAC電源側で取り直すかの判断が必要**という宿題を残す。
 
 
+## make/breakの潰れの原因調査と修正(実測、2026-09-01)
+
+宿題13(Worker経路の打鍵落ち)への対応。作業ディレクトリ・コミットは冒頭参照。
+
+### 症状の分布(一次データを自分で数え直した)
+
+`_local/measure/wm-20260901-drives-worker.json`(修正前`e16c6fd`)・`wm-20260901-drives-worker-2.json`(修正後)の`j.attempts[N].drives.<letter>.input.attempts`を全件走査した。
+
+- 修正前(worker.json、5trial): 不一致9件。trial1(A×2)・trial2(B×1)・trial3(B×3)・trial4(B×1)・trial5(B×1, C×1)。**全5trialにわたって発生**しており、ウォームアップに限らない。
+- 修正後(worker-2.json、5trial): 不一致5件。**trial1(A×2, B×1)・trial2(A×1, B×1)のみで、trial3〜5は0件。**
+- 落ちた文字は`i`・`r`・`a`・`b`・`d`・(空白含む` b`)など**位置・文字が不定**で、常に1文字(まれに1文字+空白)欠落。既定経路(`wm-20260901-drives-default.json`)は0件。
+- 親セッションの要約(「9件」「5件」)は一次データと一致した。ウォームアップ性の指摘(修正後がtrial1・2に集中)も一致した。ただし修正前も全trialで起きている点は要約に無かったので追記する。
+
+### 原因(確定)
+
+`src/worker-input.ts`の`WorkerInputState`はキー押下状態を単なるbool(`appliedKeys`)として保持し、`host.setKey(retrok, bool)`で毎回そのままコアへ伝える。X68000コア(px68k、`libretro/keyboard.c`、本リポジトリには同梱されていない)はRETRO_DEVICE_KEYBOARDのレベル状態を`retro_run()`冒頭のポーリングでしか読まず、前回ポーリング時との差分からmake/breakのスキャンコードを内部生成する。
+
+決定9(2026-08-31)により、main側は物理keydown/keyupの発生時点でそれぞれ即座に別々の`InputUpdate`メッセージを送るようになった(`src/main.ts`の`applyKey()`)。main→Worker間は`postMessage`(非同期)で、Worker側の駆動ループ(`src/core-worker.ts`の`tick()`、`setInterval(TICK_MS=16ms)`)はこれと独立に走る。そのため、あるキーのkeydown・keyupの両メッセージが、**そのキーについて一度も`retro_run()`のポーリングが走らないうちに**両方ともWorkerで適用されてしまうことがある。すると`appliedKeys`はtrue→falseと変化するが、コアはそのキーが押されたことを一度も観測できず、押下そのものが消える(=1文字が丸ごと欠落する)。
+
+これは過去の教訓「フレーム基準の隙間はポーリング2回ぶん」と同型の欠陥である。旧keyMakes専用の対策(決定8、`sendKeyMake()`によるイベント直接注入)はKeyRepeaterのmake専用に導入されたもので、物理keydown由来の通常のkey press/releaseはカバーしていなかった。
+
+**否定した仮説**: (1)`WORKER_MAX_FRAMES_PER_TICK`等の取り戻しバッチ絡みの欠陥 — 該当機構は既に8/31時点で「常時1フレーム/tickで定常状態ではbindingしない」と判定・撤回済みであり、本欠陥の再現条件(修正前が全trialで発生)とも整合しない。(2)ハーネス(`scripts/measure-drives.mjs`)のkey-hold/key-gap(既定70ms、2フレーム相当の34ms以上という制約あり)が短すぎる説 — 修正後は同じハーネス・同じ値のままtrial3〜5で0件になっており、ハーネス側の時間設定が原因なら経路や試行によらず一定確率で起き続けるはずで、**原因ではない**と判定した。
+
+### 修正
+
+`src/worker-input.ts`の`WorkerInputState`に、「まだ一度も`retro_run()`に観測されていないmake」を`unobservedDownKeys`として記録し、そのキーに対するreleaseが来てもすぐには`host.setKey(false)`せず`pendingBreakKeys`へ退避してhostには押されたままを維持する仕組みを追加した。新設の`confirmObservedFrame()`を`src/core-worker.ts`の`tick()`から「そのtickで実際に`retro_run()`が1回以上走った直後(`result.ranFrames > 0`)」にだけ呼び、その時点で(1)`unobservedDownKeys`をクリアし(2)保留中のreleaseを実際に適用する。世代付きclear(`clear()`)は既存どおり無条件に全release済み。
+
+既定経路(`src/main.ts`の`host?.setKey()`直呼び)は`WorkerInputState`自体を使わないため、この変更で1バイトも変わらない。
+
+### 検証
+
+- 単体テスト: `test/worker-input.test.ts`に5件追加(makeがhold中はreleaseが保留される・`confirmObservedFrame()`で確定する・保留中の再pressで二重pressしない・観測済みキーは従来どおり即releaseされる・世代クリアは保留中releaseも確実に流す)。既存の3件(差分適用・changed戻り値2件)は、実運用では毎tickごとに`confirmObservedFrame()`相当のポーリングが挟まることを反映して`state.confirmObservedFrame(host)`を呼ぶよう更新した。
+- 陽性対照(故障注入): `apply()`内の`unobservedDownKeys`判定ブロックを一時的に削除し(常に即`host.setKey(false)`する旧実装に戻す)、追加した5件のうち4件が実際に**症状で** redになることを確認した(1件目は`expect(host.keyState).toEqual(new Set([1]))`が実際は空集合になり検出、他3件も同様に不一致で検出)。確認後、`cp`で退避しておいたファイルを復元し、`git diff --stat src/worker-input.ts`が復元前と同じ差分(71行、追加のみ)であることを確認した。
+- 陰性対照: 既定経路は`WorkerInputState`を経由しないコードパスであり、変更は`src/worker-input.ts`(Worker専用クラス)と`src/core-worker.ts`の`tick()`内(Worker専用関数)にのみ限定されている。
+- `npx tsc --noEmit`: エラー0件。`npm test`: 651件全通過(修正前646件+テスト追加5件)。
+- 実ブラウザでの末端確認: `npm run build`後、`http://localhost:5299/?worker=1&system=1&run=1`をBrowserペインで開き、`window.__webx68kDebug`経由で起動待ち→`dir a:`相当のKeyboardEvent(d/i/r/space/a/:、keyHold=keyGap=70ms、`scripts/measure-drives.mjs`と同じ値)を合成送信→`screenText()`でコマンド行を照合、という一連を**フルリロードからの起動を8回繰り返して**実施した。**8回中8回とも`A>dir a:`と完全一致し、打鍵落ちは0件だった。**修正前の再現データ(修正前9件/5trial、修正後5件/5trial)と比べ、8trial連続で0件は改善を裏付ける。
+
+
 ## 次にやること
 
 移行前基準は2組そろい、**ワーカー移行に着手できる状態になった**。
@@ -4300,7 +4338,7 @@ Worker(`wm-20260901-audio-worker.json`): beepシナリオは`"X-BASICの\"Ok\"�
 10. **長時間バックグラウンド化の確認。**今回は14.9秒しか試していない。数分〜数十分の凍結やメモリ逼迫下でのハンドル生存・ワーカー生存を確認する。
 11. **2タブでの排他の実地確認。**単一タブ内の多重取得では排他が効くことを確認済みだが、実際に2枚のタブを開いての相互確認（`manualCrossTab`）は未実施のまま。案内UIの出し方も含めて確認する。
 12. ~~手順5・7着手前の未決事項3点(映像経路・frame event・スケジューラ)の実測。~~ → **2026-08-28 実施済み**（「ワーカー描画方式の実測（2026-08-28）」参照）。Cは決着（`setInterval`採用が妥当、固定delayの`setTimeout`単独は不可）。AとBは部分決着にとどまり、**OffscreenCanvas方式を選ぶ場合はscreenHash相当の実装変更コストを見積る宿題が残る**。iOS/Android実機とより高負荷条件は未実施のまま。→ **2026-08-28 追測**（「Aの追測：`setInterval`下での速度再測定、バッファ返却の検証（2026-08-28）」参照）。`setInterval`下でも3条件(転送・返却なし/返却あり/OffscreenCanvas)とも55.5Hz達成率99%以上を3試行そろって満たせず、**Aは引き続き未決**。バッファ返却の仕組み自体は`poolMisses`で正しく機能していることを確認したが、期待していたGCスパイク減少は裏付けられなかった。転送方式(返却あり)を本命とする合意は可否面の理由によるもので維持する。**55.5Hz未達の原因切り分けが新たな宿題として残る。**
-13. **Worker経路の打鍵落ちの原因調査。**「起動・3ドライブ・音声の基準比較(実測、2026-09-01)」で、既定経路0件に対しWorker(修正前)9件・Worker(修正後)5件の打鍵落ちを確認した。修正後は5件がtrial1・2に集中しtrial3〜5は0件というウォームアップ性のある挙動に見えるが、原因は未特定。
+13. **Worker経路の打鍵落ちの原因調査。**「起動・3ドライブ・音声の基準比較(実測、2026-09-01)」で、既定経路0件に対しWorker(修正前)9件・Worker(修正後)5件の打鍵落ちを確認した。修正後は5件がtrial1・2に集中しtrial3〜5は0件というウォームアップ性のある挙動に見えるが、原因は未特定。→ **2026-09-01、原因を特定し修正済み**（「make/breakの潰れの原因調査と修正(実測、2026-09-01)」参照）。
 14. **Worker経路の起動区間計測の穴への対処。**同上の節で、Worker経路では`clickToWasmFetchComplete`/`wasmFetchCompleteToCoreReady`が取得できず(`sampleCount: 0`)、移行前基準が判定に用いる「クリック→wasm取得完了」+「wasm取得完了→ゲスト初出力」の区間合算での比較ができないままになっている。合計値(起動所要時間)でしか比較できていない現状の対処を検討する。
 15. **ドライブ応答時間の指標が観測側を測っている疑いの切り分け。**同上の節で、Worker(修正後)/既定の応答時間比がA:2.31倍・B:1.81倍と遅い一方、C:は既定/Worker=3.69倍で速く、D:はほぼ同値(0.95倍)と向きが割れた。同一経路のオーバーヘッドなら向きが揃うはずで、`readTextScreen`のスレッド境界越しのポーリング位相を測っている疑いが濃いが未確認。
 16. **移行前基準がBattery Power下で取得されている件。**移行前基準(`newset2-20260825-audio.json`)は`powerSource: "Battery Power"`だが、2026-09-01の計測は全てAC Power。3指標とも基準をわずかに下回る方向へ系統的にずれており(起動 約-4%、beep/idle 各-0.3〜0.8ms程度)、電源条件の食い違いで説明が付くと判断した。電源条件を揃えて再計測するか、基準をAC電源側で取り直すかを決める。

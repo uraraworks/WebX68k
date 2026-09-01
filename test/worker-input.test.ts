@@ -83,11 +83,14 @@ describe('WorkerInputState.apply', () => {
     expect(state.currentAppliedKeys).toEqual(new Set([1, 2]));
   });
 
-  it('2回目の適用でkeysの差分だけが反映される(離されたキーはreleaseされる)', () => {
+  it('2回目の適用でkeysの差分だけが反映される(観測後に離されたキーはreleaseされる)', () => {
     const state = new WorkerInputState();
     const host = new FakeInputHost();
 
     state.apply(makeUpdate({ keys: [1, 2] }), host);
+    // 実運用ではこの間にtick()が少なくとも1回retro_run()を回してから次のInputUpdateが
+    // 届く(confirmObservedFrame()参照)。ここでも同じ順序を再現する。
+    state.confirmObservedFrame(host);
     host.calls = [];
     state.apply(makeUpdate({ keys: [2, 3] }), host);
 
@@ -197,6 +200,9 @@ describe('WorkerInputState.apply の戻り値(changed)', () => {
     const state = new WorkerInputState();
     const host = new FakeInputHost();
     expect(state.apply(makeUpdate({ keys: [1] }), host)).toBe(true);
+    // makeがretro_run()に観測されるまでreleaseは遅延される(「make/breakの潰れ」対策)ので、
+    // 実運用と同じくconfirmObservedFrame()を挟んでから release する。
+    state.confirmObservedFrame(host);
     expect(state.apply(makeUpdate({ keys: [] }), host)).toBe(true); // 1のrelease
   });
 
@@ -265,6 +271,8 @@ describe('WorkerInputState.apply の戻り値(changed)', () => {
     for (let i = 0; i < 5; i++) {
       expect(state.apply(makeUpdate({ keys: [1] }), host)).toBe(false);
     }
+    // 保持している間にretro_run()が実際に走っている(実運用ではtick()のたびに起きる)。
+    state.confirmObservedFrame(host);
 
     // break: keyup相当
     expect(state.apply(makeUpdate({ keys: [] }), host)).toBe(true);
@@ -274,6 +282,111 @@ describe('WorkerInputState.apply の戻り値(changed)', () => {
       expect(state.apply(makeUpdate({ keys: [] }), host)).toBe(false);
     }
   });
+});
+
+// make/breakの潰れ対策(2026-09-01実測、_local/measure/wm-20260901-drives-worker*.json)。
+// 決定9(離散イベントの即時送信)により、main→Workerはkeydown/keyup発生時点でそれぞれ
+// 別々のInputUpdateメッセージとして即座に送られる。Worker側の駆動ループ(setInterval)は
+// これと非同期に走るため、make・breakの両方が「実際にretro_run()がコアの入力状態を
+// ポーリングする前」に届いて適用されてしまうと、コアは一度もそのキーの押下を観測できず、
+// 打鍵1文字が丸ごと消える(実機で`dir a:`が`dr a:`等になる不具合の再現)。
+// 対策: confirmObservedFrame()(実際にretro_run()が走った直後にだけ呼ばれる)より前に
+// 来たreleaseは、host.setKey(false)を遅延し、押されたままの状態をhostに維持する。
+describe('WorkerInputState: make/breakの潰れ対策(confirmObservedFrame)', () => {
+  it('makeの直後にconfirmObservedFrame前でbreakが来ても、hostはtrueのまま維持される(押下が消えない)', () => {
+    const state = new WorkerInputState();
+    const host = new FakeInputHost();
+
+    // keydown
+    state.apply(makeUpdate({ keys: [1] }), host);
+    expect(host.keyState).toEqual(new Set([1]));
+
+    // retro_run()が1回も走らないうちにkeyup(実機で観測された競合の再現)。
+    const changed = state.apply(makeUpdate({ keys: [] }), host);
+    // hostへのrelease適用そのものは保留されるので、この時点ではまだtrueのまま。
+    expect(host.keyState).toEqual(new Set([1]));
+    expect(changed).toBe(false); // host状態は変わっていない(release自体は保留中)。
+
+    // confirmObservedFrame前: readyだったcurrentAppliedKeysはtrueを維持している。
+    expect(state.currentAppliedKeys).toEqual(new Set([1]));
+  });
+
+  it('confirmObservedFrame()の呼び出しで、保留中のreleaseが初めて実際に適用される', () => {
+    const state = new WorkerInputState();
+    const host = new FakeInputHost();
+
+    state.apply(makeUpdate({ keys: [1] }), host);
+    state.apply(makeUpdate({ keys: [] }), host); // 保留
+    expect(host.keyState).toEqual(new Set([1]));
+
+    const changed = state.confirmObservedFrame(host);
+
+    expect(changed).toBe(true);
+    expect(host.keyState).toEqual(new Set());
+    expect(host.calls).toContain('setKey(1,false)');
+    expect(state.currentAppliedKeys).toEqual(new Set());
+  });
+
+  it('confirmObservedFrame前にmake→break→make(再押下)が来ても二重にpressされない', () => {
+    const state = new WorkerInputState();
+    const host = new FakeInputHost();
+
+    state.apply(makeUpdate({ keys: [1] }), host); // make
+    host.calls = [];
+    state.apply(makeUpdate({ keys: [] }), host); // release保留
+    state.apply(makeUpdate({ keys: [1] }), host); // 保留中に再度make
+
+    // setKey(1,true)は最初の1回だけで、この間に追加のsetKey呼び出しは発生しない
+    // (release保留の撤回・再pressともsetKeyを一切叩かない。setJoyState/setMouseButtonは
+    // apply()が値の変化に関わらず毎回呼ぶ既存仕様なので対象外)。
+    expect(host.calls.filter((c) => c.startsWith('setKey'))).toEqual([]);
+    expect(host.keyState).toEqual(new Set([1]));
+
+    // confirmObservedFrame()が来ても、release要求は撤回済みなので何も起きない。
+    const changed = state.confirmObservedFrame(host);
+    expect(changed).toBe(false);
+    expect(host.keyState).toEqual(new Set([1]));
+  });
+
+  it('観測済み(confirmObservedFrame後)のキーは、従来どおり即座にreleaseされる(退行検知)', () => {
+    const state = new WorkerInputState();
+    const host = new FakeInputHost();
+
+    state.apply(makeUpdate({ keys: [1] }), host);
+    state.confirmObservedFrame(host); // 観測済みにする
+    host.calls = [];
+
+    const changed = state.apply(makeUpdate({ keys: [] }), host);
+
+    expect(changed).toBe(true);
+    expect(host.calls.filter((c) => c.startsWith('setKey'))).toEqual(['setKey(1,false)']);
+    expect(host.keyState).toEqual(new Set());
+  });
+
+  it('世代が上がるクリアは、保留中のreleaseがあっても確実にreleaseする', () => {
+    const state = new WorkerInputState();
+    const host = new FakeInputHost();
+
+    state.apply(makeUpdate({ keys: [1] }), host);
+    state.apply(makeUpdate({ keys: [] }), host); // release保留のまま
+    host.calls = [];
+
+    state.apply(makeUpdate({ keys: [], inputGeneration: 1 }), host); // blur等の世代クリア
+
+    expect(host.calls).toContain('setKey(1,false)');
+    expect(host.keyState).toEqual(new Set());
+    // クリア後にconfirmObservedFrame()を呼んでも何も起きない(保留は残っていない)。
+    expect(state.confirmObservedFrame(host)).toBe(false);
+  });
+
+  // 陽性対照(故障注入): apply()の release 遅延(unobservedDownKeys判定)を外すと、
+  // 1番目のテストが red になることを実装時に確認した(2026-09-01)。
+  // 具体的には、apply()内の `if (this.unobservedDownKeys.has(retrok)) { ... continue; }`
+  // ブロックを削除し常に host.setKey(retrok, false) を呼ぶように戻すと、
+  // 「makeの直後にconfirmObservedFrame前でbreakが来ても、hostはtrueのまま維持される」が
+  // `expect(host.keyState).toEqual(new Set([1]))` で失敗し(実際は空集合になる)、
+  // 症状(make/breakの潰れ)そのものを検出できることを確認済み。確認後は元に戻し、
+  // git diff が空であることも確認した。
 });
 
 describe('MainInputSnapshot', () => {

@@ -42,6 +42,30 @@ export interface InputHost {
 export class WorkerInputState {
   private generation = 0;
   private appliedKeys = new Set<number>();
+  // 2026-09-01: 「make/breakの潰れ」対策(「フレーム基準の隙間はポーリング2回ぶん」の教訓)。
+  // Worker経路は決定9により、keydown/keyupの発生時点でそれぞれ即座に個別のInputUpdate
+  // メッセージを送る。main→Worker間はpostMessage(非同期)であり、Worker側の駆動ループ
+  // (src/core-worker.tsのtick())はsetIntervalで独立に走るため、makeのメッセージとbreakの
+  // メッセージが「実際にretro_run()がコアの入力状態をポーリングする前」に両方とも
+  // 届いて適用されてしまうことがある。appliedKeysは単なる状態(bool)であり、
+  // trueにしてすぐfalseに戻すと、コアは一度もそのキーが押されたことを観測できない
+  // (「フレーム基準の隙間はポーリング2回ぶん」と同型の欠陥。過去のmakeでも同じ欠陥を
+  // 抱えていたが、旧keyMakes専用の対策(決定8)はKeyRepeaterのmake専用でこの経路を
+  // カバーしていなかった)。
+  //
+  // 対策: 新しくtrueにしたキー(まだ一度もretro_run()に見せていないキー)は
+  // unobservedDownKeysに記録する。そのキーに対するreleaseがunobservedDownKeysが
+  // 消える前に来たら、即座にhost.setKey(false)せず、pendingBreakKeysへ退避して
+  // hostへは「押されたまま」を維持する。confirmObservedFrame()
+  // (src/core-worker.tsのtick()から、そのtickで実際にretro_run()が1回以上走った
+  // 直後にだけ呼ばれる)が呼ばれた時点で初めて、(1)unobservedDownKeysをクリアし
+  // (直前のretro_run()呼び出し群で確実にポーリングされたとみなせるため)、
+  // (2)保留中のreleaseを実際にhost.setKey(false)する。
+  //
+  // 既定経路(host = メインスレッドのLibretroHost)はこのクラス自体を使わないため、
+  // この変更で既定経路の挙動は一切変わらない。
+  private unobservedDownKeys = new Set<number>();
+  private pendingBreakKeys = new Set<number>();
   // 2026-08-31三訂正(「break側の帰属が壊れている」の修正、docs/STORAGE-SCSI.md参照):
   // 帰属計測(inputApplyFrameNo)は「実際に何か状態が変わったapply()呼び出し」だけを
   // 記録したい。sendWorkerInputUpdate()はframe event契機で(ゲームパッド未接続・
@@ -86,18 +110,35 @@ export class WorkerInputState {
 
     const nextKeys = new Set(update.keys);
     for (const retrok of this.appliedKeys) {
-      if (!nextKeys.has(retrok)) {
-        host.setKey(retrok, false);
-        changed = true;
+      if (nextKeys.has(retrok)) {
+        // 引き続き押されている(または再度押された)。以前のreleaseが保留中だったら
+        // 撤回する(release前に再度make/holdが来たので、releaseはまだ起きていない)。
+        this.pendingBreakKeys.delete(retrok);
+        continue;
       }
+      if (this.unobservedDownKeys.has(retrok)) {
+        // まだ一度もretro_run()に見せていないmake。ここでreleaseすると「押されたことが
+        // 一度もコアに見えないまま消える」ため、confirmObservedFrame()まで遅延する。
+        // hostへは「押されたまま」を維持する(=appliedKeysには残す。下のstillApplied参照)。
+        this.pendingBreakKeys.add(retrok);
+        continue;
+      }
+      host.setKey(retrok, false);
+      changed = true;
+    }
+    const stillApplied = new Set<number>();
+    for (const retrok of this.appliedKeys) {
+      if (nextKeys.has(retrok) || this.pendingBreakKeys.has(retrok)) stillApplied.add(retrok);
     }
     for (const retrok of nextKeys) {
-      if (!this.appliedKeys.has(retrok)) {
+      if (!stillApplied.has(retrok)) {
         host.setKey(retrok, true);
+        stillApplied.add(retrok);
+        this.unobservedDownKeys.add(retrok);
         changed = true;
       }
     }
-    this.appliedKeys = nextKeys;
+    this.appliedKeys = stillApplied;
 
     if (this.appliedPads[0] !== update.pads[0] || this.appliedPads[1] !== update.pads[1]) changed = true;
     this.appliedPads = [update.pads[0], update.pads[1]];
@@ -127,9 +168,29 @@ export class WorkerInputState {
     return changed;
   }
 
+  /**
+   * src/core-worker.ts の tick() から、そのtickで実際にretro_run()が1回以上走った直後
+   * (result.ranFrames > 0)にだけ呼ぶ。ranFrames === 0 のtick(このtickでは1フレームも
+   * 進まなかった=ポーリングも発生していない)では呼んではいけない。
+   *
+   * @returns 保留中のreleaseを実際に適用してhost状態が変わったか。
+   */
+  confirmObservedFrame(host: InputHost): boolean {
+    this.unobservedDownKeys.clear();
+    if (this.pendingBreakKeys.size === 0) return false;
+    for (const retrok of this.pendingBreakKeys) {
+      host.setKey(retrok, false);
+      this.appliedKeys.delete(retrok);
+    }
+    this.pendingBreakKeys.clear();
+    return true;
+  }
+
   private clear(host: InputHost): void {
     for (const retrok of this.appliedKeys) host.setKey(retrok, false);
     this.appliedKeys = new Set();
+    this.unobservedDownKeys = new Set();
+    this.pendingBreakKeys = new Set();
     this.appliedPads = [0, 0];
     this.appliedMouseLeft = false;
     this.appliedMouseRight = false;
