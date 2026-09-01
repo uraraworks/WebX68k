@@ -29,8 +29,13 @@ const RUNTIME_DIR = resolve(ROOT, 'public/sprout-runtime/v1');
  * 全部つじつまが合ってしまうので、外側の入口をここに焼き込む。
  * 更新するときは tools/fetch-sprout-runtime.mjs を走らせ、この値も一緒に直す
  * （直し忘れればこのテストが落ちる）。
+ *
+ * 2026-09-01: v1 を差し替えた（描画ライブラリの高速化。ABI・レイアウト・.xdf の
+ * セクタ数はどれも不変で、過去の共有リンクはそのまま動き、そのうえで速くなる）。
+ * 「版ごとに凍結」は **ABI について** であって、実装の修正まで禁じるものではない、と
+ * 整理し直した。前の値は 7792ba54...。
  */
-const EXPECTED_MANIFEST_SHA256 = '7792ba5484996e5a9c0311c30b7c17582dbff86e678f3c28da5cbe86a7f615b3';
+const EXPECTED_MANIFEST_SHA256 = 'f42e96223107b1d2f8b14d10522c03301b929156b1a3d7bc9ddef2954833c5e7';
 const RUNTIME_RELEASE = 'https://github.com/uraraworks/Sprout68k/releases/download/runtime-v1/';
 const manifest = JSON.parse(readFileSync(resolve(RUNTIME_DIR, 'manifest.json'), 'utf8'));
 const layout = { ...manifest.layout, ...DEFAULT_DISK };

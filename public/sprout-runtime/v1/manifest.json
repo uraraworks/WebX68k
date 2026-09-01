@@ -2,8 +2,8 @@
   "abiVersion": 1,
   "note": "共有リンクの受け取り側が持つランタイム。過去の版は消さないこと（古い共有リンクが動かなくなる）。",
   "runtime": {
-    "size": 4808,
-    "sha256": "fc817d949e263d0479bfc1fbf7d9f40bb9b85cc972d41828799545549799a651"
+    "size": 6984,
+    "sha256": "804cb06b77944e310ab6d0007011a76ab84afa73db4ae917f47ac54f15d1ddbc"
   },
   "boot": {
     "size": 248,
