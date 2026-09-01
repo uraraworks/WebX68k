@@ -543,16 +543,30 @@ async function handleInitialize(
     const newHost = new LibretroHost(scratchCanvas as unknown as HTMLCanvasElement, () => {
       // 音声経路は今回のスコープ外。生成されたサンプルは捨てるだけ。
     });
-    await newHost.init(
-      new Uint8Array(payload.biosIpl),
-      new Uint8Array(payload.biosCg),
-      payload.sram ? new Uint8Array(payload.sram) : undefined,
-    );
+    // コアオプションは newHost.init() (内部で mod._retro_init() を同期呼び出しする) より
+    // 前に設定する。px68k-libretro の retro_init() は末尾で update_variables(0) を呼び、
+    // その場で environ_cb(GET_VARIABLE) 経由の現在値を Config へ読み込む(px68k-libretro/
+    // libretro.c)。setCoreOption() はコア側の状態を持たないJS側キャッシュへ積むだけ
+    // (init()前後どちらでも呼べる、上のコメント参照)なので、init()の後に呼ぶと
+    // retro_init() 側の update_variables(0) には間に合わず、次に環境変数が読まれるのは
+    // 実行開始後(retro_run()のfirstcall)になる。px68k_save_hdd_path はこの1回目の
+    // update_variables(0)の結果がConfig.save_hdd_pathへ焼き込まれ、その後 pmain()
+    // (retro_load_game() 内)が呼ぶ LoadConfig() が「Config.save_hdd_path が真のときだけ
+    // /system/keropi/config の HDD0 を読む」実装になっているため、設定が1回でも
+    // 間に合わないとHDDが最後まで無効(=disabled)のまま起動してしまう
+    // (Human68kからはドライブ自体が見えず「ドライブ名が無効です」になる。実測で確認済み)。
+    // 既定経路(src/main.ts bootCore())は host.setCoreOption() を host.init() より前に
+    // 呼んでおり、ここも同じ順序に揃える。
     if (payload.options) {
       for (const [key, value] of Object.entries(payload.options)) {
         newHost.setCoreOption(key, value);
       }
     }
+    await newHost.init(
+      new Uint8Array(payload.biosIpl),
+      new Uint8Array(payload.biosCg),
+      payload.sram ? new Uint8Array(payload.sram) : undefined,
+    );
     // 初期ディスクのマウント(src/main.ts の bootCore() 末尾と同じ手順を Worker 内へ移した版)。
     // FDDホットマウント(実行中の差し替え。手順8でhandleHotSwapFddとして実装)とは違い、
     // こちらは起動前の1回きりの書き込みなのでここで完結させる(InitPayload.initialDisks の
