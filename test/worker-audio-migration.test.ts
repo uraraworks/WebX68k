@@ -87,4 +87,21 @@ describe('Worker経路の音声出力移行(静的検査)', () => {
     const code = stripComments(readSrc('src/core-worker.ts'));
     expect(code).not.toMatch(/resampleSpeed\s*\(/);
   });
+
+  // 2026-09-01追記: 既定経路bootCore()は起動末尾でresetResampleState(audioResampleState)を
+  // 呼ぶが、bootWorkerCore()は呼んでいなかった(経路差。起動直後はspeedMultiplier===1で
+  // リサンプル経路を通らず、次に速度ボタンを押せばresetSpeedState()がどのみちリセットする
+  // ため実害はない。あくまで経路の対称性を保つための対応)。故障注入で確認済み: 下の
+  // resetResampleState呼び出しを一時的に削除するとこのテストがredになり、削除を戻すと
+  // git diffが空に戻ることを確認した。
+  it('main.ts: bootWorkerCore()も既定経路と同じくresetResampleState(audioResampleState)を呼ぶ', () => {
+    const code = stripComments(readSrc('src/main.ts'));
+
+    const bootWorkerMatch = code.match(/async function bootWorkerCore\(\)[\s\S]*?\n\}\n/);
+    expect(bootWorkerMatch, 'bootWorkerCore() が見つからない(main.ts の構造が変わった?)').toBeTruthy();
+    const bootWorkerBody = bootWorkerMatch![0];
+
+    expect(bootWorkerBody).toMatch(/running = true;/);
+    expect(bootWorkerBody).toMatch(/resetResampleState\(audioResampleState\);/);
+  });
 });

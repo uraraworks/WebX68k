@@ -4361,6 +4361,9 @@ Worker(`wm-20260901-audio-worker.json`): beepシナリオは`"X-BASICの\"Ok\"�
 - `?worker=1`起動完了時に一律で出していた「音声は未対応」トースト(`console.warn`/`showToast`)は
   廃止した。残るSRAM・ステート保存/復元の未対応は、実際に操作したタイミングで
   `warnWorkerModeUnsupported()`から個別に警告する既存の仕組みのままとした。
+- 追記(2026-09-01): `bootCore()`は起動末尾で`resetResampleState(audioResampleState)`を呼ぶが
+  `bootWorkerCore()`は呼んでいなかった非対称を後から解消した。起動直後は速度倍率が等倍で
+  リサンプル経路自体を通らないため実害はなく、経路の対称性を保つための対応。
 
 ### 検証
 

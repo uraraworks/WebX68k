@@ -2932,6 +2932,12 @@ async function bootWorkerCore(): Promise<void> {
   proxy.setSpeedMultiplier(speedMultiplier);
 
   running = true;
+  // 既定経路のbootCore()末尾(accumulator=0と並ぶ箇所)と同じ位置づけでリサンプラ状態を
+  // リセットする。起動直後はspeedEnabled=false(speedMultiplier===1)でリサンプル経路自体を
+  // 通らず、次に速度ボタンを押せばresetSpeedState()がどのみちリセットするため、これを
+  // 呼ばなくても音が壊れるわけではない。前世代のリサンプラの持ち越し状態を残さないよう、
+  // 経路間の対称性を保つための対応。
+  resetResampleState(audioResampleState);
   updateSlotControls();
   resetAccessLamps();
   // 手順6(2026-08-31)でキー・パッド・マウスボタン・加算マウスdelta、手順6後半(2026-08-31)で
