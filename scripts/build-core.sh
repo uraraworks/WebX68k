@@ -4,7 +4,10 @@ set -e
 
 EMSDK_DIR="/Users/haruurara/MyProject/_emulator/PC98/emsdk"
 CORE_SRC_DIR="/Users/haruurara/MyProject/_emulator/X68K/px68k-libretro"
-OUT_DIR="/Users/haruurara/MyProject/_emulator/X68K/WebX68k/public/core"
+# 出力先はこのスクリプトが属する作業ツリーの public/core を既定とする。
+# (worktree が複数あるため、絶対パス固定だと別ツリーへ書いてしまう)
+REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+OUT_DIR="${OUT_DIR:-$REPO_DIR/public/core}"
 WORK_A="/tmp/px68k_core.a"
 
 echo "== emsdk 環境読み込み =="
@@ -26,7 +29,7 @@ cp "$CORE_BC" "$WORK_A"
 
 echo "== emcc でリンクし wasm/js を生成 =="
 mkdir -p "$OUT_DIR"
-SHIM_C="/Users/haruurara/MyProject/_emulator/X68K/WebX68k/src/core-shim.c"
+SHIM_C="$REPO_DIR/src/core-shim.c"
 emcc "$WORK_A" "$SHIM_C" -O2 -o "$OUT_DIR/px68k_libretro.js" \
   -sMODULARIZE=1 \
   -sEXPORT_NAME=PX68K \
