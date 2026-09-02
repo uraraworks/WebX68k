@@ -78,6 +78,33 @@ const FD1 = args.fd1 ?? null;
 // へ数値配列として置く。逆アセンブルはせず、本物を走らせて実測するためのオラクルとして使う。
 // 未指定なら従来と1文字も挙動が変わらない。
 const ROM = args.rom ?? null;
+// ゲストRAM書き込みの実測用フック(x68k/mem_wrap.c の webx68k_ram_watch_check)。
+// --ram-watch=<開始>:<終了> で範囲(両端含む)を指定する。10進・16進(0x接頭辞)どちらも可。
+// 未指定なら window.__webx68kRamWatchLo/Hi は設定せず、コア側の既定(-1=無効)のまま。
+function parseRamWatchAddr(s) {
+  const t = s.trim();
+  const n = /^0x/i.test(t) ? parseInt(t, 16) : parseInt(t, 10);
+  if (!Number.isFinite(n)) throw new Error(`--ram-watch の番地が不正です: ${s}`);
+  return n;
+}
+let RAM_WATCH_LO = null;
+let RAM_WATCH_HI = null;
+if (args['ram-watch'] !== undefined) {
+  const m = /^(.+):(.+)$/.exec(String(args['ram-watch']));
+  if (!m) throw new Error('--ram-watch は <開始>:<終了> の形で指定してください(例: --ram-watch=0x67de:0x6800)');
+  RAM_WATCH_LO = parseRamWatchAddr(m[1]);
+  RAM_WATCH_HI = parseRamWatchAddr(m[2]);
+}
+// 書いた側のPCで絞る条件。--ram-watch-pc=<開始>:<終了> で指定する(両端含む、10進・16進どちらも可)。
+// 未指定なら window.__webx68kRamWatchPcLo/Hi は設定せず、コア側の既定(-1=PCでは絞らない)のまま。
+let RAM_WATCH_PC_LO = null;
+let RAM_WATCH_PC_HI = null;
+if (args['ram-watch-pc'] !== undefined) {
+  const m = /^(.+):(.+)$/.exec(String(args['ram-watch-pc']));
+  if (!m) throw new Error('--ram-watch-pc は <開始>:<終了> の形で指定してください(例: --ram-watch-pc=0xea0000:0xea1fff)');
+  RAM_WATCH_PC_LO = parseRamWatchAddr(m[1]);
+  RAM_WATCH_PC_HI = parseRamWatchAddr(m[2]);
+}
 
 /**
  * 基準器イメージを Range 対応で配信する小さなサーバ。
@@ -287,6 +314,18 @@ try {
     await page.evaluateOnNewDocument((v) => {
       window.__webx68kSpcClearOnPctl = v;
     }, SPC_CLEAR_ON_PCTL);
+  }
+  if (RAM_WATCH_LO !== null) {
+    await page.evaluateOnNewDocument((lo, hi) => {
+      window.__webx68kRamWatchLo = lo;
+      window.__webx68kRamWatchHi = hi;
+    }, RAM_WATCH_LO, RAM_WATCH_HI);
+  }
+  if (RAM_WATCH_PC_LO !== null) {
+    await page.evaluateOnNewDocument((lo, hi) => {
+      window.__webx68kRamWatchPcLo = lo;
+      window.__webx68kRamWatchPcHi = hi;
+    }, RAM_WATCH_PC_LO, RAM_WATCH_PC_HI);
   }
   if (ROM !== null) {
     const romBytes = Array.from(await readFile(ROM));

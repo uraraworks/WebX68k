@@ -677,3 +677,64 @@ int webx68k_scsi_spc_clear_on_pctl(void)
   return js_scsi_spc_clear_on_pctl();
 }
 
+/*
+ * ゲストRAM書き込みの実測用フック。
+ * 実体(ホットパス・ログ出力・陽性対照)は px68k-libretro 側
+ * x68k/mem_wrap.c の webx68k_ram_watch_check() / webx68k_ram_watch_selftest()。
+ * ここでは既存の webx68k_scsi_* と同じ流儀で JS 側グローバル
+ * (globalThis.__webx68kRamWatchLo / __webx68kRamWatchHi、既定は無効=-1)を読み、
+ * mem_wrap.c 側の static 変数へ反映する。
+ *
+ * 毎バイト書き込みのたびに EM_JS(JS呼び出し)を挟むと通常利用の速度を
+ * 落としてしまうため、ここは libretro.c の retro_run() から「毎フレーム
+ * 先頭で1回だけ」呼ぶ設計にしてある。ホットパス(wm_cnt)側は
+ * static 変数の比較のみで済む。
+ */
+EM_JS(int, js_ram_watch_lo, (), {
+  var v = globalThis.__webx68kRamWatchLo;
+  return (typeof v === 'number') ? (v | 0) : -1;
+});
+
+EM_JS(int, js_ram_watch_hi, (), {
+  var v = globalThis.__webx68kRamWatchHi;
+  return (typeof v === 'number') ? (v | 0) : -1;
+});
+
+/*
+ * 書いた側のPCで絞る条件(globalThis.__webx68kRamWatchPcLo/Hi、既定は無効=-1)。
+ * アドレス範囲のwebx68k_ram_watch_lo/hiと同じ流儀。
+ */
+EM_JS(int, js_ram_watch_pc_lo, (), {
+  var v = globalThis.__webx68kRamWatchPcLo;
+  return (typeof v === 'number') ? (v | 0) : -1;
+});
+
+EM_JS(int, js_ram_watch_pc_hi, (), {
+  var v = globalThis.__webx68kRamWatchPcHi;
+  return (typeof v === 'number') ? (v | 0) : -1;
+});
+
+extern int32_t webx68k_ram_watch_lo;
+extern int32_t webx68k_ram_watch_hi;
+extern int32_t webx68k_ram_watch_pc_lo;
+extern int32_t webx68k_ram_watch_pc_hi;
+extern int      webx68k_ram_watch_count;
+
+__attribute__((used))
+void webx68k_ram_watch_refresh(void)
+{
+  int lo = js_ram_watch_lo();
+  int hi = js_ram_watch_hi();
+  int pc_lo = js_ram_watch_pc_lo();
+  int pc_hi = js_ram_watch_pc_hi();
+
+  if (lo != webx68k_ram_watch_lo || hi != webx68k_ram_watch_hi ||
+      pc_lo != webx68k_ram_watch_pc_lo || pc_hi != webx68k_ram_watch_pc_hi)
+    webx68k_ram_watch_count = 0; /* 範囲が変わったら件数を数え直す */
+
+  webx68k_ram_watch_lo = lo;
+  webx68k_ram_watch_hi = hi;
+  webx68k_ram_watch_pc_lo = pc_lo;
+  webx68k_ram_watch_pc_hi = pc_hi;
+}
+
