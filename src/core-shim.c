@@ -600,3 +600,80 @@ int webx68k_scsi_rom_byte(int i)
   return js_scsi_rom_byte(i);
 }
 
+/*
+ * SPC(MB89352)のセレクト応答を再ビルドせずに振るための欄。
+ * $ea0000〜$ea001f をどのレジスタに当てはめるか(SEL=$ea0005/INTS=$ea0009/
+ * TEMP=$ea0017/SSTS=$ea000d/PSNS=$ea000b、という「$ea0001+2n」の対応)は
+ * 実測ではなく知識からの当てはめであり未実測。 x68k/scsi.c 側コメントも参照。
+ * 既定値は本物ROM未使用時と同じ挙動(=何もしない)になるよう選んである。
+ */
+
+/* セレクト成功時に INTS へ立てるビット。既定 $08(SEL効果を表すとされる値の一例)。 */
+EM_JS(int, js_scsi_spc_ints_sel, (), {
+  var v = globalThis.__webx68kSpcIntsSel;
+  return (typeof v === 'number') ? (v | 0) : 0x08;
+});
+
+__attribute__((used))
+int webx68k_scsi_spc_ints_sel(void)
+{
+  return js_scsi_spc_ints_sel();
+}
+
+/* セレクト失敗(タイムアウト)時に INTS へ立てるビット。既定 $20。 */
+EM_JS(int, js_scsi_spc_ints_timeout, (), {
+  var v = globalThis.__webx68kSpcIntsTimeout;
+  return (typeof v === 'number') ? (v | 0) : 0x20;
+});
+
+__attribute__((used))
+int webx68k_scsi_spc_ints_timeout(void)
+{
+  return js_scsi_spc_ints_timeout();
+}
+
+/* SSTS($ea000d) の値をどう決めるか。既定 -1: 状態機械に任せる
+ * (セレクト成立でbit7を立て、バス開放/リセットで落とす。実測に基づく
+ * 挙動、詳細は x68k/scsi.c の SCSI_SpcSstsSetBit7 コメント参照)。
+ * -2 のときは従来どおり「掃引」モード: 実際の読み出し(SCSI_Read)の
+ * たびに 0x00〜0xff を1ずつ増やして返す(x68k/scsi.c の
+ * SCSI_SpcSweepRead 参照)。0以上のときは従来どおりその固定値。 */
+EM_JS(int, js_scsi_spc_ssts, (), {
+  var v = globalThis.__webx68kSpcSsts;
+  return (typeof v === 'number') ? (v | 0) : -1;
+});
+
+__attribute__((used))
+int webx68k_scsi_spc_ssts(void)
+{
+  return js_scsi_spc_ssts();
+}
+
+/* セレクト成功時に PSNS($ea000b) へ入れる値。既定 -1(触らない)。
+ * -2 のときは「掃引」モード(SSTSと同様、x68k/scsi.c の SCSI_SpcSweepRead 参照)。 */
+EM_JS(int, js_scsi_spc_psns, (), {
+  var v = globalThis.__webx68kSpcPsns;
+  return (typeof v === 'number') ? (v | 0) : -1;
+});
+
+__attribute__((used))
+int webx68k_scsi_spc_psns(void)
+{
+  return js_scsi_spc_psns();
+}
+
+/* PCTL($ea0011)への書き込みでSSTSのbit7を落とすかどうか。既定 1(落とす)。
+ * これは実機で確認した仕様ではなく、再試行のたびに観測を1つ進めるための
+ * 実験的な規則(詳細は x68k/scsi.c の SCSI_SpcWrite コメント参照)。
+ * 0 を渡すと従来どおり(SCMDのバス開放/SCTLのリセットのみで落とす)。 */
+EM_JS(int, js_scsi_spc_clear_on_pctl, (), {
+  var v = globalThis.__webx68kSpcClearOnPctl;
+  return (typeof v === 'number') ? (v | 0) : 1;
+});
+
+__attribute__((used))
+int webx68k_scsi_spc_clear_on_pctl(void)
+{
+  return js_scsi_spc_clear_on_pctl();
+}
+

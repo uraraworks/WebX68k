@@ -55,6 +55,21 @@ const REPLY_STATUS = args['reply-status'] === undefined ? null : Number(args['re
 const REPLY_D0 = args['reply-d0'] === undefined ? null : Number(args['reply-d0']);
 // デバイスドライバヘッダ +$00(次のヘッダ)。既定(未指定)はコア側の既定 $ffffffff に任せる。
 const DRV_NEXT = args['drv-next'] === undefined ? null : Number(args['drv-next']);
+// SPC(MB89352)セレクト応答関連。意味は core-shim.c の js_scsi_spc_* / x68k/scsi.c
+// の SCSI_SpcSelectCheck を参照。未指定はコア側の既定(ints-sel=$08 / ints-timeout=$20 /
+// ssts・psns=-1=触らない)に任せる。本物ROM使用時(--rom=)のみ効く。
+// ssts・psns は -2 を渡すと「掃引」モードになり、実際の読み出しのたびに
+// 0x00〜0xffを1ずつ増やして返す(x68k/scsi.c の SCSI_SpcSweepRead 参照)。
+// spc-clear-on-pctl は PCTL($ea0011)書き込みでSSTSのbit7を落とすかどうか
+// (既定1=落とす)。実験的な規則で実機の仕様として測ったものではない。
+const SPC_INTS_SEL = args['spc-ints-sel'] === undefined ? null : Number(args['spc-ints-sel']);
+const SPC_INTS_TIMEOUT = args['spc-ints-timeout'] === undefined ? null : Number(args['spc-ints-timeout']);
+const SPC_SSTS = args['spc-ssts'] === undefined ? null : Number(args['spc-ssts']);
+const SPC_PSNS = args['spc-psns'] === undefined ? null : Number(args['spc-psns']);
+// PCTL($ea0011)書き込みでSSTSのbit7を落とすかどうか(既定1=落とす)。実機の仕様として
+// 測ったものではなく、再試行のたびに測定を1つ進めるための実験的な規則
+// (x68k/scsi.c の SCSI_SpcWrite コメント参照)。0で無効化できる。
+const SPC_CLEAR_ON_PCTL = args['spc-clear-on-pctl'] === undefined ? null : Number(args['spc-clear-on-pctl']);
 // FD1(2台目フロッピー)に挿すイメージのURL。CONFIG.SYSを差し替えた変種イメージ等を
 // dev サーバ経由(例: public/test/ 配下、.gitignore で除外)で読ませたいときに使う。
 // 未指定時はURLに一切手を加えない(挙動を変えないため)。
@@ -247,6 +262,31 @@ try {
     await page.evaluateOnNewDocument((v) => {
       window.__webx68kScsiDrvNext = v;
     }, DRV_NEXT);
+  }
+  if (SPC_INTS_SEL !== null) {
+    await page.evaluateOnNewDocument((v) => {
+      window.__webx68kSpcIntsSel = v;
+    }, SPC_INTS_SEL);
+  }
+  if (SPC_INTS_TIMEOUT !== null) {
+    await page.evaluateOnNewDocument((v) => {
+      window.__webx68kSpcIntsTimeout = v;
+    }, SPC_INTS_TIMEOUT);
+  }
+  if (SPC_SSTS !== null) {
+    await page.evaluateOnNewDocument((v) => {
+      window.__webx68kSpcSsts = v;
+    }, SPC_SSTS);
+  }
+  if (SPC_PSNS !== null) {
+    await page.evaluateOnNewDocument((v) => {
+      window.__webx68kSpcPsns = v;
+    }, SPC_PSNS);
+  }
+  if (SPC_CLEAR_ON_PCTL !== null) {
+    await page.evaluateOnNewDocument((v) => {
+      window.__webx68kSpcClearOnPctl = v;
+    }, SPC_CLEAR_ON_PCTL);
   }
   if (ROM !== null) {
     const romBytes = Array.from(await readFile(ROM));
