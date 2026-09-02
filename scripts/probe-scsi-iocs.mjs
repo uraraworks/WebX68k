@@ -41,6 +41,8 @@ const IMAGE = args.image ?? process.env.WEBX68K_SCSI_FIXTURE ?? null;
 // 既定(未指定)はコア側の既定 -1 に任せる。
 const INIT_D2 = args['init-d2'] === undefined ? null : Number(args['init-d2']);
 const INIT_A4 = args['init-a4'] === undefined ? null : Number(args['init-a4']);
+// デバイスドライバヘッダの属性ワード(+4)。意味が未確定のため振れるようにしてある。
+const DRV_ATTR = args['drv-attr'] === undefined ? null : Number(args['drv-attr']);
 const SRAM_INIT = args['scsi-sram'] !== undefined;
 // FD1(2台目フロッピー)に挿すイメージのURL。CONFIG.SYSを差し替えた変種イメージ等を
 // dev サーバ経由(例: public/test/ 配下、.gitignore で除外)で読ませたいときに使う。
@@ -190,6 +192,11 @@ try {
     await page.evaluateOnNewDocument((v) => {
       window.__webx68kScsiInitA4 = v;
     }, INIT_A4);
+  }
+  if (DRV_ATTR !== null) {
+    await page.evaluateOnNewDocument((v) => {
+      window.__webx68kScsiDrvAttr = v;
+    }, DRV_ATTR);
   }
   const raw = [];
   page.on('console', (msg) => {

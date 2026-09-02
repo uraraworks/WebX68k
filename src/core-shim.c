@@ -453,6 +453,20 @@ int webx68k_scsi_init_a4(void)
   return js_scsi_init_a4();
 }
 
+/* デバイスドライバヘッダ(+$04)の属性ワード。既定 0。
+ * ヘッダの形自体は Human68k デバイスドライバの一般形(未実測の知識)から
+ * 組んでいるため、値の意味が分かるまで再ビルドせずに振れるようにする。 */
+EM_JS(int, js_scsi_drv_attr, (), {
+  var v = globalThis.__webx68kScsiDrvAttr;
+  return (typeof v === 'number') ? (v | 0) : 0;
+});
+
+__attribute__((used))
+int webx68k_scsi_drv_attr(void)
+{
+  return js_scsi_drv_attr();
+}
+
 /* SCSI ローダが書くはずの SRAM 既定値を、こちらで書いてしまうかどうか。
  * 既定 0(書かない)。資料の記述が成り立つかを実測するための実験用スイッチ。 */
 EM_JS(int, js_scsi_sram_init, (), {
