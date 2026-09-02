@@ -42,6 +42,10 @@ const IMAGE = args.image ?? process.env.WEBX68K_SCSI_FIXTURE ?? null;
 const INIT_D2 = args['init-d2'] === undefined ? null : Number(args['init-d2']);
 const INIT_A4 = args['init-a4'] === undefined ? null : Number(args['init-a4']);
 const SRAM_INIT = args['scsi-sram'] !== undefined;
+// FD1(2台目フロッピー)に挿すイメージのURL。CONFIG.SYSを差し替えた変種イメージ等を
+// dev サーバ経由(例: public/test/ 配下、.gitignore で除外)で読ませたいときに使う。
+// 未指定時はURLに一切手を加えない(挙動を変えないため)。
+const FD1 = args.fd1 ?? null;
 
 /**
  * 基準器イメージを Range 対応で配信する小さなサーバ。
@@ -190,9 +194,13 @@ try {
   const raw = [];
   page.on('console', (msg) => {
     const text = msg.text();
-    if (text.includes('[SCSI-IOCS]') || text.includes('[SCSI]') || text.includes('[SCSI-ROM]')) raw.push(text);
+    // タグを列挙して照合すると、コア側でタグが増えたときに無言で取りこぼす
+    // (実測: [SCSI-WINREAD]/[SCSI-WRITE] が '[SCSI]' に含まれず全て捨てられていた)。
+    // 前方一致にして、SCSI 系のログは全て拾う。
+    if (text.includes('[SCSI')) raw.push(text);
   });
-  await page.goto(`http://localhost:${PORT}/?${args['no-system'] ? '' : 'system=1&'}run=1`, { waitUntil: 'domcontentloaded' });
+  const fd1Query = FD1 !== null ? `&fd1=${encodeURIComponent(FD1)}` : '';
+  await page.goto(`http://localhost:${PORT}/?${args['no-system'] ? '' : 'system=1&'}run=1${fd1Query}`, { waitUntil: 'domcontentloaded' });
 
   // 起動待ち。到達しなくても観測は続行し、到達可否を結果に残す。
   const started = Date.now();
