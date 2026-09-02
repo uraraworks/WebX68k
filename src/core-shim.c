@@ -479,3 +479,89 @@ int webx68k_scsi_sram_init(void)
   return js_scsi_sram_init();
 }
 
+/*
+ * 初期化コマンド($00)への返答値。再ビルドせずに振れるよう JS 側から読む。
+ * どの欄が Human68k の判断に効くかを切り分けるための実験用スイッチ。
+ * 既定値のままなら、いままでのハードコード値と同じ動作になる。
+ */
+EM_JS(int, js_scsi_reply_err, (), {
+  var v = globalThis.__webx68kScsiReplyErr;
+  return (typeof v === 'number') ? (v | 0) : 0;
+});
+
+__attribute__((used))
+int webx68k_scsi_reply_err(void)
+{
+  return js_scsi_reply_err();
+}
+
+EM_JS(int, js_scsi_reply_units, (), {
+  var v = globalThis.__webx68kScsiReplyUnits;
+  return (typeof v === 'number') ? (v | 0) : 1;
+});
+
+__attribute__((used))
+int webx68k_scsi_reply_units(void)
+{
+  return js_scsi_reply_units();
+}
+
+EM_JS(int, js_scsi_reply_end, (), {
+  var v = globalThis.__webx68kScsiReplyEnd;
+  return (typeof v === 'number') ? (v | 0) : 0x00ea0500;
+});
+
+__attribute__((used))
+int webx68k_scsi_reply_end(void)
+{
+  return js_scsi_reply_end();
+}
+
+EM_JS(int, js_scsi_reply_bpb, (), {
+  var v = globalThis.__webx68kScsiReplyBpb;
+  return (typeof v === 'number') ? (v | 0) : 0x00ea0600;
+});
+
+__attribute__((used))
+int webx68k_scsi_reply_bpb(void)
+{
+  return js_scsi_reply_bpb();
+}
+
+/* +4 のステータスワード。既定 -1(何もしない)。0以上のときだけ呼び出し側が +4 に書く。 */
+EM_JS(int, js_scsi_reply_status, (), {
+  var v = globalThis.__webx68kScsiReplyStatus;
+  return (typeof v === 'number') ? (v | 0) : -1;
+});
+
+__attribute__((used))
+int webx68k_scsi_reply_status(void)
+{
+  return js_scsi_reply_status();
+}
+
+/* ストラテジ($40)/インタラプト($41)から戻る d0。既定 -1(何もしない)。
+ * 返答の中身をどう振っても起動が止まる件の残る候補のひとつ。 */
+EM_JS(int, js_scsi_reply_d0, (), {
+  var v = globalThis.__webx68kScsiReplyD0;
+  return (typeof v === 'number') ? (v | 0) : -1;
+});
+
+__attribute__((used))
+int webx68k_scsi_reply_d0(void)
+{
+  return js_scsi_reply_d0();
+}
+
+/* デバイスドライバヘッダ +$00(次のヘッダ)。既定 $ffffffff(従来と同じ)。 */
+EM_JS(int, js_scsi_drv_next, (), {
+  var v = globalThis.__webx68kScsiDrvNext;
+  return (typeof v === 'number') ? (v | 0) : -1;
+});
+
+__attribute__((used))
+unsigned int webx68k_scsi_drv_next(void)
+{
+  return (unsigned int)js_scsi_drv_next();
+}
+

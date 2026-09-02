@@ -44,6 +44,17 @@ const INIT_A4 = args['init-a4'] === undefined ? null : Number(args['init-a4']);
 // デバイスドライバヘッダの属性ワード(+4)。意味が未確定のため振れるようにしてある。
 const DRV_ATTR = args['drv-attr'] === undefined ? null : Number(args['drv-attr']);
 const SRAM_INIT = args['scsi-sram'] !== undefined;
+// 初期化コマンド($00)への返答値。どの欄が Human68k の判断に効くかを切り分けるための
+// 実験用スイッチ。意味は core-shim.c の js_scsi_reply_* を参照。未指定はコア側の既定に任せる。
+const REPLY_ERR = args['reply-err'] === undefined ? null : Number(args['reply-err']);
+const REPLY_UNITS = args['reply-units'] === undefined ? null : Number(args['reply-units']);
+const REPLY_END = args['reply-end'] === undefined ? null : Number(args['reply-end']);
+const REPLY_BPB = args['reply-bpb'] === undefined ? null : Number(args['reply-bpb']);
+const REPLY_STATUS = args['reply-status'] === undefined ? null : Number(args['reply-status']);
+// ストラテジ/インタラプトから戻る d0。既定(未指定)はコア側の既定 -1(何もしない)に任せる。
+const REPLY_D0 = args['reply-d0'] === undefined ? null : Number(args['reply-d0']);
+// デバイスドライバヘッダ +$00(次のヘッダ)。既定(未指定)はコア側の既定 $ffffffff に任せる。
+const DRV_NEXT = args['drv-next'] === undefined ? null : Number(args['drv-next']);
 // FD1(2台目フロッピー)に挿すイメージのURL。CONFIG.SYSを差し替えた変種イメージ等を
 // dev サーバ経由(例: public/test/ 配下、.gitignore で除外)で読ませたいときに使う。
 // 未指定時はURLに一切手を加えない(挙動を変えないため)。
@@ -198,6 +209,41 @@ try {
       window.__webx68kScsiDrvAttr = v;
     }, DRV_ATTR);
   }
+  if (REPLY_ERR !== null) {
+    await page.evaluateOnNewDocument((v) => {
+      window.__webx68kScsiReplyErr = v;
+    }, REPLY_ERR);
+  }
+  if (REPLY_UNITS !== null) {
+    await page.evaluateOnNewDocument((v) => {
+      window.__webx68kScsiReplyUnits = v;
+    }, REPLY_UNITS);
+  }
+  if (REPLY_END !== null) {
+    await page.evaluateOnNewDocument((v) => {
+      window.__webx68kScsiReplyEnd = v;
+    }, REPLY_END);
+  }
+  if (REPLY_BPB !== null) {
+    await page.evaluateOnNewDocument((v) => {
+      window.__webx68kScsiReplyBpb = v;
+    }, REPLY_BPB);
+  }
+  if (REPLY_STATUS !== null) {
+    await page.evaluateOnNewDocument((v) => {
+      window.__webx68kScsiReplyStatus = v;
+    }, REPLY_STATUS);
+  }
+  if (REPLY_D0 !== null) {
+    await page.evaluateOnNewDocument((v) => {
+      window.__webx68kScsiReplyD0 = v;
+    }, REPLY_D0);
+  }
+  if (DRV_NEXT !== null) {
+    await page.evaluateOnNewDocument((v) => {
+      window.__webx68kScsiDrvNext = v;
+    }, DRV_NEXT);
+  }
   const raw = [];
   page.on('console', (msg) => {
     const text = msg.text();
@@ -263,6 +309,35 @@ try {
     })
     .catch((err) => ({ error: String(err) }));
 
+  // --dump=<開始番地>:<バイト数> で、停止後のゲストRAMを覗く。
+  // 「登録されたのか、拒否されたのか」はドライバ連鎖を見ないと分からないため、
+  // 失敗した瞬間のメモリを比較できるようにしてある(複数指定は , 区切り)。
+  let dumps = null;
+  if (args.dump) {
+    dumps = await page
+      .evaluate((spec) => {
+        const dbg = window.__webx68kDebug;
+        if (!dbg?.peek) return { error: 'peek がない' };
+        const out = {};
+        for (const part of spec.split(',')) {
+          const [a, n] = part.split(':');
+          const base = Number(a);
+          const len = Number(n);
+          const bytes = [];
+          for (let i = 0; i < len; i += 2) {
+            const w = dbg.peek(base + i);
+            if (w === null) return { error: `peek(${base + i}) が null` };
+            bytes.push((w >> 8) & 0xff, w & 0xff);
+          }
+          out[`$${base.toString(16)}`] = bytes
+            .map((b) => b.toString(16).padStart(2, '0'))
+            .join(' ');
+        }
+        return out;
+      }, String(args.dump))
+      .catch((err) => ({ error: String(err) }));
+  }
+
   // 画面の実物を残す。screenText は文字集合の都合で化けることがあり、
   // 「何が表示されたか」の判断をテキストだけに頼れない。
   let shot = null;
@@ -280,6 +355,7 @@ try {
     JSON.stringify(
       {
         booted,
+        dumps,
         screenshot: shot,
         iocsVectors: vectors,
         scsiIocsVector: Array.isArray(vectors)
