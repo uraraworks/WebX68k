@@ -441,3 +441,27 @@ int webx68k_scsi_init_d2(void)
   return js_scsi_init_d2();
 }
 
+/* ベクタ設定エントリが返す a4。既定 0(元の状態と同じ)。d2 と同じ理由で振れるようにする。 */
+EM_JS(int, js_scsi_init_a4, (), {
+  var v = globalThis.__webx68kScsiInitA4;
+  return (typeof v === 'number') ? (v | 0) : 0;
+});
+
+__attribute__((used))
+int webx68k_scsi_init_a4(void)
+{
+  return js_scsi_init_a4();
+}
+
+/* SCSI ローダが書くはずの SRAM 既定値を、こちらで書いてしまうかどうか。
+ * 既定 0(書かない)。資料の記述が成り立つかを実測するための実験用スイッチ。 */
+EM_JS(int, js_scsi_sram_init, (), {
+  return globalThis.__webx68kScsiSramInit ? 1 : 0;
+});
+
+__attribute__((used))
+int webx68k_scsi_sram_init(void)
+{
+  return js_scsi_sram_init();
+}
+

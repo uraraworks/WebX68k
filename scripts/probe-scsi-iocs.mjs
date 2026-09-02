@@ -40,6 +40,8 @@ const IMAGE = args.image ?? process.env.WEBX68K_SCSI_FIXTURE ?? null;
 // ベクタ設定エントリが返す d2 の値。意味が未確定のため振れるようにしてある。
 // 既定(未指定)はコア側の既定 -1 に任せる。
 const INIT_D2 = args['init-d2'] === undefined ? null : Number(args['init-d2']);
+const INIT_A4 = args['init-a4'] === undefined ? null : Number(args['init-a4']);
+const SRAM_INIT = args['scsi-sram'] !== undefined;
 
 /**
  * 基準器イメージを Range 対応で配信する小さなサーバ。
@@ -174,6 +176,16 @@ try {
     await page.evaluateOnNewDocument((v) => {
       window.__webx68kScsiInitD2 = v;
     }, INIT_D2);
+  }
+  if (SRAM_INIT) {
+    await page.evaluateOnNewDocument(() => {
+      window.__webx68kScsiSramInit = true;
+    });
+  }
+  if (INIT_A4 !== null) {
+    await page.evaluateOnNewDocument((v) => {
+      window.__webx68kScsiInitA4 = v;
+    }, INIT_A4);
   }
   const raw = [];
   page.on('console', (msg) => {
