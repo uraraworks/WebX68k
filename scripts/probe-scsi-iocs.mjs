@@ -172,7 +172,7 @@ try {
     const text = msg.text();
     if (text.includes('[SCSI-IOCS]') || text.includes('[SCSI]')) raw.push(text);
   });
-  await page.goto(`http://localhost:${PORT}/?system=1&run=1`, { waitUntil: 'domcontentloaded' });
+  await page.goto(`http://localhost:${PORT}/?${args['no-system'] ? '' : 'system=1&'}run=1`, { waitUntil: 'domcontentloaded' });
 
   // 起動待ち。到達しなくても観測は続行し、到達可否を結果に残す。
   const started = Date.now();
