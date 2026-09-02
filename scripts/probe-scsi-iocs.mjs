@@ -66,10 +66,31 @@ const SPC_INTS_SEL = args['spc-ints-sel'] === undefined ? null : Number(args['sp
 const SPC_INTS_TIMEOUT = args['spc-ints-timeout'] === undefined ? null : Number(args['spc-ints-timeout']);
 const SPC_SSTS = args['spc-ssts'] === undefined ? null : Number(args['spc-ssts']);
 const SPC_PSNS = args['spc-psns'] === undefined ? null : Number(args['spc-psns']);
+// PSNS/SSTS掃引(-2)の開始値。本物ROMは1回の起動でPSNS/SSTSを16回程度しか読まないため、
+// 開始値をずらして複数回実行すれば0〜255の全値を試せる(x68k/scsi.c の SCSI_SpcSweepRead
+// 参照)。未指定ならコア側の既定(0)のまま、従来と挙動は変わらない。
+const SPC_PSNS_BASE = args['spc-psns-base'] === undefined ? null : Number(args['spc-psns-base']);
+const SPC_SSTS_BASE = args['spc-ssts-base'] === undefined ? null : Number(args['spc-ssts-base']);
+// PSNSの「交互」モード(--spc-psns=-3 と併用)。読み出しのたびにA/Bを入れ替えて
+// 返す。掃引(-2)は「読むたびに+1」で連続2回が必ず(v, v+1)の組にしかならず、
+// 「ある値の次に別の特定の値」という決まったハンドシェイクは掃引では試せない
+// ため用意した(x68k/scsi.c の SCSI_SpcSweepRead 参照)。未指定ならコア側の
+// 既定($8a/$0a)のまま。
+const SPC_PSNS_A = args['spc-psns-a'] === undefined ? null : Number(args['spc-psns-a']);
+const SPC_PSNS_B = args['spc-psns-b'] === undefined ? null : Number(args['spc-psns-b']);
 // PCTL($ea0011)書き込みでSSTSのbit7を落とすかどうか(既定1=落とす)。実機の仕様として
 // 測ったものではなく、再試行のたびに測定を1つ進めるための実験的な規則
 // (x68k/scsi.c の SCSI_SpcWrite コメント参照)。0で無効化できる。
 const SPC_CLEAR_ON_PCTL = args['spc-clear-on-pctl'] === undefined ? null : Number(args['spc-clear-on-pctl']);
+// [SCSI-BUS] の「同一PCからの通算アクセスが閾値を超えたら以後そのPCのログを
+// 止める」圧縮の閾値(既定32、コア側 x68k/scsi.c の SCSI_BusPcAllow 参照)。
+// この圧縮は過去に無限ループを「バスアクセスが止まった」ように見せて誤った
+// 結論を作ったことがあるため、--bus-pc-limit=0 で丸ごと無効化(全件出力)できる。
+// 未指定ならコア側の既定(32)のまま。
+const BUS_PC_LIMIT = args['bus-pc-limit'] === undefined ? null : Number(args['bus-pc-limit']);
+// [SCSI-BUS] の総件数上限(既定4000、x68k/scsi.c の SCSI_BusLogGate 参照)。
+// 未指定ならコア側の既定(4000)のまま。
+const BUS_LOG_MAX = args['bus-log-max'] === undefined ? null : Number(args['bus-log-max']);
 // FD1(2台目フロッピー)に挿すイメージのURL。CONFIG.SYSを差し替えた変種イメージ等を
 // dev サーバ経由(例: public/test/ 配下、.gitignore で除外)で読ませたいときに使う。
 // 未指定時はURLに一切手を加えない(挙動を変えないため)。
@@ -104,6 +125,27 @@ if (args['ram-watch-pc'] !== undefined) {
   if (!m) throw new Error('--ram-watch-pc は <開始>:<終了> の形で指定してください(例: --ram-watch-pc=0xea0000:0xea1fff)');
   RAM_WATCH_PC_LO = parseRamWatchAddr(m[1]);
   RAM_WATCH_PC_HI = parseRamWatchAddr(m[2]);
+}
+// ゲストメモリ「読み出し」の実測用フック(x68k/mem_wrap.c の webx68k_mem_read_watch_check)。
+// --mem-read-watch=<開始>:<終了> で範囲(両端含む)を指定する。10進・16進(0x接頭辞)どちらも可。
+// 未指定なら window.__webx68kMemReadWatchLo/Hi は設定せず、コア側の既定(-1=無効)のまま。
+let MEM_READ_WATCH_LO = null;
+let MEM_READ_WATCH_HI = null;
+if (args['mem-read-watch'] !== undefined) {
+  const m = /^(.+):(.+)$/.exec(String(args['mem-read-watch']));
+  if (!m) throw new Error('--mem-read-watch は <開始>:<終了> の形で指定してください(例: --mem-read-watch=0xea0000:0xea1fff)');
+  MEM_READ_WATCH_LO = parseRamWatchAddr(m[1]);
+  MEM_READ_WATCH_HI = parseRamWatchAddr(m[2]);
+}
+// 読んだ側のPCで絞る条件。--mem-read-watch-pc=<開始>:<終了> で指定する(両端含む、10進・16進どちらも可)。
+// 未指定なら window.__webx68kMemReadWatchPcLo/Hi は設定せず、コア側の既定(-1=PCでは絞らない)のまま。
+let MEM_READ_WATCH_PC_LO = null;
+let MEM_READ_WATCH_PC_HI = null;
+if (args['mem-read-watch-pc'] !== undefined) {
+  const m = /^(.+):(.+)$/.exec(String(args['mem-read-watch-pc']));
+  if (!m) throw new Error('--mem-read-watch-pc は <開始>:<終了> の形で指定してください(例: --mem-read-watch-pc=0xea144a:0xea144e)');
+  MEM_READ_WATCH_PC_LO = parseRamWatchAddr(m[1]);
+  MEM_READ_WATCH_PC_HI = parseRamWatchAddr(m[2]);
 }
 
 /**
@@ -310,10 +352,40 @@ try {
       window.__webx68kSpcPsns = v;
     }, SPC_PSNS);
   }
+  if (SPC_PSNS_BASE !== null) {
+    await page.evaluateOnNewDocument((v) => {
+      window.__webx68kSpcPsnsBase = v;
+    }, SPC_PSNS_BASE);
+  }
+  if (SPC_SSTS_BASE !== null) {
+    await page.evaluateOnNewDocument((v) => {
+      window.__webx68kSpcSstsBase = v;
+    }, SPC_SSTS_BASE);
+  }
+  if (SPC_PSNS_A !== null) {
+    await page.evaluateOnNewDocument((v) => {
+      window.__webx68kSpcPsnsA = v;
+    }, SPC_PSNS_A);
+  }
+  if (SPC_PSNS_B !== null) {
+    await page.evaluateOnNewDocument((v) => {
+      window.__webx68kSpcPsnsB = v;
+    }, SPC_PSNS_B);
+  }
   if (SPC_CLEAR_ON_PCTL !== null) {
     await page.evaluateOnNewDocument((v) => {
       window.__webx68kSpcClearOnPctl = v;
     }, SPC_CLEAR_ON_PCTL);
+  }
+  if (BUS_PC_LIMIT !== null) {
+    await page.evaluateOnNewDocument((v) => {
+      window.__webx68kBusPcLimit = v;
+    }, BUS_PC_LIMIT);
+  }
+  if (BUS_LOG_MAX !== null) {
+    await page.evaluateOnNewDocument((v) => {
+      window.__webx68kBusLogMax = v;
+    }, BUS_LOG_MAX);
   }
   if (RAM_WATCH_LO !== null) {
     await page.evaluateOnNewDocument((lo, hi) => {
@@ -326,6 +398,18 @@ try {
       window.__webx68kRamWatchPcLo = lo;
       window.__webx68kRamWatchPcHi = hi;
     }, RAM_WATCH_PC_LO, RAM_WATCH_PC_HI);
+  }
+  if (MEM_READ_WATCH_LO !== null) {
+    await page.evaluateOnNewDocument((lo, hi) => {
+      window.__webx68kMemReadWatchLo = lo;
+      window.__webx68kMemReadWatchHi = hi;
+    }, MEM_READ_WATCH_LO, MEM_READ_WATCH_HI);
+  }
+  if (MEM_READ_WATCH_PC_LO !== null) {
+    await page.evaluateOnNewDocument((lo, hi) => {
+      window.__webx68kMemReadWatchPcLo = lo;
+      window.__webx68kMemReadWatchPcHi = hi;
+    }, MEM_READ_WATCH_PC_LO, MEM_READ_WATCH_PC_HI);
   }
   if (ROM !== null) {
     const romBytes = Array.from(await readFile(ROM));

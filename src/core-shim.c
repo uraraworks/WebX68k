@@ -650,7 +650,13 @@ int webx68k_scsi_spc_ssts(void)
 }
 
 /* セレクト成功時に PSNS($ea000b) へ入れる値。既定 -1(触らない)。
- * -2 のときは「掃引」モード(SSTSと同様、x68k/scsi.c の SCSI_SpcSweepRead 参照)。 */
+ * -2 のときは「掃引」モード(SSTSと同様、x68k/scsi.c の SCSI_SpcSweepRead 参照)。
+ * -3 のときは「交互」モード: 実際の読み出し(SCSI_Read)のたびに
+ * __webx68kSpcPsnsA / __webx68kSpcPsnsB(既定 $8a / $0a)を交互に返す。
+ * 掃引(-2)は「読むたびに+1」なので連続する2回の読み出しは必ず(v, v+1)の
+ * 組にしかならず、「ある値の次に別の特定の値」という決まったハンドシェイクを
+ * 待っているケースは原理的に満たせない。それを試すためのモード
+ * (x68k/scsi.c の SCSI_SpcSweepRead 参照)。 */
 EM_JS(int, js_scsi_spc_psns, (), {
   var v = globalThis.__webx68kSpcPsns;
   return (typeof v === 'number') ? (v | 0) : -1;
@@ -660,6 +666,57 @@ __attribute__((used))
 int webx68k_scsi_spc_psns(void)
 {
   return js_scsi_spc_psns();
+}
+
+/* 交互モード(-3)でのA値。既定 $8a。 */
+EM_JS(int, js_scsi_spc_psns_a, (), {
+  var v = globalThis.__webx68kSpcPsnsA;
+  return (typeof v === 'number') ? (v | 0) : 0x8a;
+});
+
+__attribute__((used))
+int webx68k_scsi_spc_psns_a(void)
+{
+  return js_scsi_spc_psns_a();
+}
+
+/* 交互モード(-3)でのB値。既定 $0a。 */
+EM_JS(int, js_scsi_spc_psns_b, (), {
+  var v = globalThis.__webx68kSpcPsnsB;
+  return (typeof v === 'number') ? (v | 0) : 0x0a;
+});
+
+__attribute__((used))
+int webx68k_scsi_spc_psns_b(void)
+{
+  return js_scsi_spc_psns_b();
+}
+
+/* 掃引モード(-2)での開始値。既定0(従来どおり0から)。
+ * 本物ROMは1回の起動でPSNS/SSTSを16回程度しか読まないため、開始値を
+ * ずらして複数回実行すれば0〜255の全値を試せる
+ * (x68k/scsi.c の SCSI_SpcSweepRead 参照)。 */
+EM_JS(int, js_scsi_spc_psns_base, (), {
+  var v = globalThis.__webx68kSpcPsnsBase;
+  return (typeof v === 'number') ? (v | 0) : 0;
+});
+
+__attribute__((used))
+int webx68k_scsi_spc_psns_base(void)
+{
+  return js_scsi_spc_psns_base();
+}
+
+/* SSTS掃引の開始値。既定0。上のPSNS版と同じ趣旨。 */
+EM_JS(int, js_scsi_spc_ssts_base, (), {
+  var v = globalThis.__webx68kSpcSstsBase;
+  return (typeof v === 'number') ? (v | 0) : 0;
+});
+
+__attribute__((used))
+int webx68k_scsi_spc_ssts_base(void)
+{
+  return js_scsi_spc_ssts_base();
 }
 
 /* PCTL($ea0011)への書き込みでSSTSのbit7を落とすかどうか。既定 1(落とす)。
@@ -675,6 +732,36 @@ __attribute__((used))
 int webx68k_scsi_spc_clear_on_pctl(void)
 {
   return js_scsi_spc_clear_on_pctl();
+}
+
+/* [SCSI-BUS] の「同一PCからの通算アクセスが閾値を超えたら以後そのPCの
+ * ログを止める」圧縮の閾値。既定32(従来と同じ)。0 を渡すと抑制しない
+ * (=全件出す)。過去にこの圧縮が無限ループを「バスアクセスが止まった」
+ * ように見せて誤った結論を作ったことがあり、セレクト成功後にROMが
+ * 何をしているかを正確に追いたいときにここを0にして丸ごと確認する。
+ * 詳細は x68k/scsi.c の SCSI_BusPcAllow コメント参照。 */
+EM_JS(int, js_scsi_bus_pc_limit, (), {
+  var v = globalThis.__webx68kBusPcLimit;
+  return (typeof v === 'number') ? (v | 0) : 32;
+});
+
+__attribute__((used))
+int webx68k_scsi_bus_pc_limit(void)
+{
+  return js_scsi_bus_pc_limit();
+}
+
+/* [SCSI-BUS] の総件数上限。既定4000(従来と同じ)。上限に達すると
+ * 以降は出力を止める(x68k/scsi.c の SCSI_BusLogGate 参照)。 */
+EM_JS(int, js_scsi_bus_log_max, (), {
+  var v = globalThis.__webx68kBusLogMax;
+  return (typeof v === 'number') ? (v | 0) : 4000;
+});
+
+__attribute__((used))
+int webx68k_scsi_bus_log_max(void)
+{
+  return js_scsi_bus_log_max();
 }
 
 /*
@@ -736,5 +823,57 @@ void webx68k_ram_watch_refresh(void)
   webx68k_ram_watch_hi = hi;
   webx68k_ram_watch_pc_lo = pc_lo;
   webx68k_ram_watch_pc_hi = pc_hi;
+}
+
+/*
+ * ゲストメモリ「読み出し」監視用フック。
+ * 実体(ホットパス・ログ出力・圧縮・陽性対照)は px68k-libretro 側
+ * x68k/mem_wrap.c の webx68k_mem_read_watch_check() / _selftest()。
+ * webx68k_ram_watch_refresh() と同じ流儀で JS 側グローバル
+ * (globalThis.__webx68kMemReadWatchLo/Hi、__webx68kMemReadWatchPcLo/Hi、
+ * 既定は無効=-1)を読み、mem_wrap.c 側の static 変数へ反映する。
+ */
+EM_JS(int, js_mem_read_watch_lo, (), {
+  var v = globalThis.__webx68kMemReadWatchLo;
+  return (typeof v === 'number') ? (v | 0) : -1;
+});
+
+EM_JS(int, js_mem_read_watch_hi, (), {
+  var v = globalThis.__webx68kMemReadWatchHi;
+  return (typeof v === 'number') ? (v | 0) : -1;
+});
+
+EM_JS(int, js_mem_read_watch_pc_lo, (), {
+  var v = globalThis.__webx68kMemReadWatchPcLo;
+  return (typeof v === 'number') ? (v | 0) : -1;
+});
+
+EM_JS(int, js_mem_read_watch_pc_hi, (), {
+  var v = globalThis.__webx68kMemReadWatchPcHi;
+  return (typeof v === 'number') ? (v | 0) : -1;
+});
+
+extern int32_t webx68k_mem_read_watch_lo;
+extern int32_t webx68k_mem_read_watch_hi;
+extern int32_t webx68k_mem_read_watch_pc_lo;
+extern int32_t webx68k_mem_read_watch_pc_hi;
+extern int      webx68k_mem_read_watch_count;
+
+__attribute__((used))
+void webx68k_mem_read_watch_refresh(void)
+{
+  int lo = js_mem_read_watch_lo();
+  int hi = js_mem_read_watch_hi();
+  int pc_lo = js_mem_read_watch_pc_lo();
+  int pc_hi = js_mem_read_watch_pc_hi();
+
+  if (lo != webx68k_mem_read_watch_lo || hi != webx68k_mem_read_watch_hi ||
+      pc_lo != webx68k_mem_read_watch_pc_lo || pc_hi != webx68k_mem_read_watch_pc_hi)
+    webx68k_mem_read_watch_count = 0; /* 範囲が変わったら件数を数え直す */
+
+  webx68k_mem_read_watch_lo = lo;
+  webx68k_mem_read_watch_hi = hi;
+  webx68k_mem_read_watch_pc_lo = pc_lo;
+  webx68k_mem_read_watch_pc_hi = pc_hi;
 }
 
