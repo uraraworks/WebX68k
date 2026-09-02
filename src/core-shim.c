@@ -424,3 +424,20 @@ int webx68k_scsi_read_sector(unsigned int lba, unsigned char *buf)
 {
   return js_scsi_read_sector(lba, buf);
 }
+
+/*
+ * ベクタ設定エントリが返す d2 の値。既定は -1(px68k 元来の値)。
+ * この値の意味はまだ確定しておらず、値を振って挙動を見る必要がある。
+ * 再ビルドせずに振れるよう、JS 側のグローバルから読む。
+ */
+EM_JS(int, js_scsi_init_d2, (), {
+  var v = globalThis.__webx68kScsiInitD2;
+  return (typeof v === 'number') ? (v | 0) : -1;
+});
+
+__attribute__((used))
+int webx68k_scsi_init_d2(void)
+{
+  return js_scsi_init_d2();
+}
+

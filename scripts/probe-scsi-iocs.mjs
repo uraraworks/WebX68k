@@ -27,7 +27,7 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 const args = Object.fromEntries(
   process.argv.slice(2).map((a) => {
-    const m = /^--([a-z-]+)(?:=(.+))?$/.exec(a);
+    const m = /^--([a-z0-9-]+)(?:=(.+))?$/.exec(a);
     if (!m) throw new Error(`不明な引数です: ${a}`);
     return [m[1], m[2] ?? 'true'];
   }),
@@ -37,6 +37,9 @@ const TIMEOUT = Number(args.timeout ?? 60000);
 // SCSI 基準器イメージ。個人のパスをリポジトリへ焼き込まないため環境変数で受ける
 // (docs/STORAGE-SCSI.md「基準器の扱い」参照)。--image= でも指定できる。
 const IMAGE = args.image ?? process.env.WEBX68K_SCSI_FIXTURE ?? null;
+// ベクタ設定エントリが返す d2 の値。意味が未確定のため振れるようにしてある。
+// 既定(未指定)はコア側の既定 -1 に任せる。
+const INIT_D2 = args['init-d2'] === undefined ? null : Number(args['init-d2']);
 
 /**
  * 基準器イメージを Range 対応で配信する小さなサーバ。
@@ -167,10 +170,15 @@ try {
       window.__webx68kScsiUrl = u;
     }, imageServer.url);
   }
+  if (INIT_D2 !== null) {
+    await page.evaluateOnNewDocument((v) => {
+      window.__webx68kScsiInitD2 = v;
+    }, INIT_D2);
+  }
   const raw = [];
   page.on('console', (msg) => {
     const text = msg.text();
-    if (text.includes('[SCSI-IOCS]') || text.includes('[SCSI]')) raw.push(text);
+    if (text.includes('[SCSI-IOCS]') || text.includes('[SCSI]') || text.includes('[SCSI-ROM]')) raw.push(text);
   });
   await page.goto(`http://localhost:${PORT}/?${args['no-system'] ? '' : 'system=1&'}run=1`, { waitUntil: 'domcontentloaded' });
 
@@ -228,6 +236,16 @@ try {
     })
     .catch((err) => ({ error: String(err) }));
 
+  // 画面の実物を残す。screenText は文字集合の都合で化けることがあり、
+  // 「何が表示されたか」の判断をテキストだけに頼れない。
+  let shot = null;
+  if (args.shot) {
+    shot = args.shot;
+    await page.screenshot({ path: shot }).catch(() => {
+      shot = null;
+    });
+  }
+
   const entries = raw.map(parseLine).filter(Boolean);
   const byCmd = {};
   for (const e of entries) byCmd[e.cmd] = (byCmd[e.cmd] ?? 0) + 1;
@@ -235,6 +253,7 @@ try {
     JSON.stringify(
       {
         booted,
+        screenshot: shot,
         iocsVectors: vectors,
         scsiIocsVector: Array.isArray(vectors)
           ? (vectors.find((v) => v.addr === '$07d4')?.value ?? null)
