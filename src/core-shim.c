@@ -348,3 +348,79 @@ void webx68k_send_key_make(int scancode)
     return;
   send_keycode((uint8_t)scancode, 2);
 }
+
+/*
+ * SCSI HLE のセクタI/O(ホスト側)。
+ * 決定2(docs/STORAGE-SCSI.md)により、SCSI の I/O は emscripten の
+ * ファイルシステムを経由せず、コアからこのフック経由でホストへ出す。
+ *
+ * この段階の実体は同期 XHR + Range リクエストである。目的は2つ:
+ *   - wasm ヒープに載るのは1セクタ(512バイト)だけ、という形を最初から取る
+ *   - 最終形(OPFS の同期ハンドル)と同じ「同期・セクタ単位」の呼び出し形にする
+ * 実体の差し替えは実施順序の手順3で行う。
+ *
+ * イメージの所在は JS 側のグローバル __webx68kScsiUrl で渡す。
+ * 未設定ならデバイス無しとして -1 を返す。
+ */
+EM_JS(int, js_scsi_get_size, (), {
+  var g = globalThis;
+  var url = g.__webx68kScsiUrl;
+  if (!url) {
+    console.log('[SCSI] __webx68kScsiUrl が未設定');
+    return -1;
+  }
+  try {
+    var xhr = new XMLHttpRequest();
+    xhr.open('GET', url, false);
+    xhr.setRequestHeader('Range', 'bytes=0-0');
+    xhr.send(null);
+    var cr = xhr.getResponseHeader('Content-Range');   /* 例: "bytes 0-0/104857600" */
+    if (!cr) return -1;
+    /* 正規表現は使わない。EM_JS の本体は C の文字列化を通るため
+     * バックスラッシュが失われ、"/\/" が "//" (行コメント)に化ける。 */
+    var slash = cr.lastIndexOf('/');
+    if (slash < 0) return -1;
+    var n = parseInt(cr.substring(slash + 1), 10);
+    if (!(n > 0)) return -1;
+    return (n > 0x7fffffff) ? 0x7fffffff : n;
+  } catch (e) {
+    console.warn('[SCSI] サイズ取得に失敗:', String(e));
+    return -1;
+  }
+});
+
+EM_JS(int, js_scsi_read_sector, (unsigned int lba, unsigned char *buf), {
+  var g = globalThis;
+  var url = g.__webx68kScsiUrl;
+  if (!url) return -1;
+  try {
+    var start = lba * 512;
+    var xhr = new XMLHttpRequest();
+    xhr.open('GET', url, false);
+    xhr.setRequestHeader('Range', 'bytes=' + start + '-' + (start + 511));
+    /* 同期XHR(メインスレッド)では responseType を指定できないため、
+     * バイナリを1バイト1文字で受ける古典的な手を使う。 */
+    xhr.overrideMimeType('text/plain; charset=x-user-defined');
+    xhr.send(null);
+    if (xhr.status !== 206 && xhr.status !== 200) return -1;
+    var t = xhr.responseText;
+    if (t.length < 512) return -1;
+    for (var i = 0; i < 512; i++) HEAPU8[buf + i] = t.charCodeAt(i) & 0xff;
+    return 0;
+  } catch (e) {
+    console.warn('[SCSI] セクタ読み出しに失敗:', String(e));
+    return -1;
+  }
+});
+
+__attribute__((used))
+int webx68k_scsi_get_size(void)
+{
+  return js_scsi_get_size();
+}
+
+__attribute__((used))
+int webx68k_scsi_read_sector(unsigned int lba, unsigned char *buf)
+{
+  return js_scsi_read_sector(lba, buf);
+}

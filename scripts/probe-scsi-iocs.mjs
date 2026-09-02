@@ -11,6 +11,9 @@
 // 出力は JSON (stdout)。コンソールの生行も含める。
 
 import { spawn } from 'node:child_process';
+import { createReadStream } from 'node:fs';
+import { stat } from 'node:fs/promises';
+import { createServer } from 'node:http';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -31,6 +34,59 @@ const args = Object.fromEntries(
 );
 const PORT = Number(args.port ?? 5311);
 const TIMEOUT = Number(args.timeout ?? 60000);
+// SCSI 基準器イメージ。個人のパスをリポジトリへ焼き込まないため環境変数で受ける
+// (docs/STORAGE-SCSI.md「基準器の扱い」参照)。--image= でも指定できる。
+const IMAGE = args.image ?? process.env.WEBX68K_SCSI_FIXTURE ?? null;
+
+/**
+ * 基準器イメージを Range 対応で配信する小さなサーバ。
+ * vite の配信下に置くと fs.allow の設定や配布物への混入が要るため、別ポートで出す。
+ * ページは COEP: require-corp で分離されているので CORP ヘッダが要る。
+ */
+async function startImageServer(path) {
+  const { size } = await stat(path);
+  const server = createServer((req, res) => {
+    const range = /^bytes=(\d+)-(\d*)$/.exec(req.headers.range ?? '');
+    const head = {
+      'Cross-Origin-Resource-Policy': 'cross-origin',
+      'Access-Control-Allow-Origin': '*',
+      // Range は CORS の safelisted request header ではないため、
+      // 別オリジンから付けるとプリフライトが飛ぶ。許可と、
+      // Content-Range を JS から読めるようにする露出指定が要る。
+      'Access-Control-Allow-Methods': 'GET, HEAD, OPTIONS',
+      'Access-Control-Allow-Headers': 'Range',
+      'Access-Control-Expose-Headers': 'Content-Range, Content-Length, Accept-Ranges',
+      'Access-Control-Max-Age': '86400',
+      'Accept-Ranges': 'bytes',
+      'Content-Type': 'application/octet-stream',
+    };
+    if (req.method === 'OPTIONS') {
+      res.writeHead(204, head);
+      res.end();
+      return;
+    }
+    if (!range) {
+      res.writeHead(200, { ...head, 'Content-Length': String(size) });
+      createReadStream(path).pipe(res);
+      return;
+    }
+    const start = Number(range[1]);
+    const end = range[2] === '' ? size - 1 : Math.min(Number(range[2]), size - 1);
+    if (!Number.isSafeInteger(start) || start > end) {
+      res.writeHead(416, { ...head, 'Content-Range': `bytes */${size}` });
+      res.end();
+      return;
+    }
+    res.writeHead(206, {
+      ...head,
+      'Content-Range': `bytes ${start}-${end}/${size}`,
+      'Content-Length': String(end - start + 1),
+    });
+    createReadStream(path, { start, end }).pipe(res);
+  });
+  await new Promise((r) => server.listen(0, '127.0.0.1', r));
+  return { server, url: `http://127.0.0.1:${server.address().port}/image` , size };
+}
 
 async function startServer(port) {
   const child = spawn('npm', ['run', 'dev', '--', '--port', String(port), '--strictPort'], {
@@ -78,6 +134,7 @@ function parseLine(line) {
 let server;
 let browser;
 let profile;
+let imageServer = null;
 try {
   server = await startServer(PORT);
   profile = await mkdtemp(join(tmpdir(), 'webx68k-probe-scsi-'));
@@ -99,11 +156,21 @@ try {
     await sleep(2000);
     browser = await launchOnce();
   }
+  if (IMAGE) {
+    imageServer = await startImageServer(IMAGE);
+    console.error(`[probe] 基準器を配信: ${IMAGE} (${imageServer.size} バイト) -> ${imageServer.url}`);
+  }
   const page = await browser.newPage();
+  if (imageServer) {
+    // コア初期化より前に置く必要があるため evaluateOnNewDocument で入れる。
+    await page.evaluateOnNewDocument((u) => {
+      window.__webx68kScsiUrl = u;
+    }, imageServer.url);
+  }
   const raw = [];
   page.on('console', (msg) => {
     const text = msg.text();
-    if (text.includes('[SCSI-IOCS]')) raw.push(text);
+    if (text.includes('[SCSI-IOCS]') || text.includes('[SCSI]')) raw.push(text);
   });
   await page.goto(`http://localhost:${PORT}/?system=1&run=1`, { waitUntil: 'domcontentloaded' });
 
@@ -187,6 +254,7 @@ try {
 } finally {
   if (browser) await browser.close().catch(() => {});
   if (profile) await rm(profile, { recursive: true, force: true }).catch(() => {});
+  if (imageServer) imageServer.server.close();
   if (server && server.exitCode === null) {
     server.kill('SIGTERM');
     await sleep(500);
