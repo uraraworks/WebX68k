@@ -681,15 +681,19 @@ int webx68k_scsi_spc_ints_timeout(void)
   return js_scsi_spc_ints_timeout();
 }
 
-/* セレクトに応答するSCSI IDに相当するTEMP($ea0017)値。既定1。
+/* セレクトに応答するSCSI IDに相当するTEMP($ea0017)値。既定-1。
  * 2026-09-02: セレクト成功条件が「TEMPが0以外」のみだったため、どのIDを
- * 選んでも必ず成功しROMからは同じディスクが複数台見えていた欠陥への対応。
- * TEMPの値がこれと一致したときだけ成功、それ以外はタイムアウトにする
- * (x68k/scsi.c の SCSI_SpcSelectCheck 参照)。実測ではTEMPに$01と$07が
- * 観測されており、--spc-target= で振って正解を探す。 */
+ * 選んでも必ず成功しROMからは同じディスクが複数台見えていた欠陥への対応で
+ * TEMPの値が指定値と一致したときだけ成功にしたが、その後の実測で
+ * ROM内蔵ルーチンはTEMP=$07、RAM上へ転送されて動くルーチンはTEMP=$0fを
+ * 使うと判明(TEMPの意味自体は未確定)。片方の値に固定すると
+ * もう片方が通らない(RAM側は約14,800回セレクトを再試行し6分超かかった)ため、
+ * 既定を負値(-1)=「どのTEMP値でも成功」に変更した
+ * (x68k/scsi.c の SCSI_SpcSelectCheck 参照)。--spc-target= で固定値に
+ * 戻して振ることもできる。 */
 EM_JS(int, js_scsi_spc_target, (), {
   var v = globalThis.__webx68kSpcTarget;
-  return (typeof v === 'number') ? (v | 0) : 1;
+  return (typeof v === 'number') ? (v | 0) : -1;
 });
 
 __attribute__((used))
