@@ -565,3 +565,38 @@ unsigned int webx68k_scsi_drv_next(void)
   return (unsigned int)js_scsi_drv_next();
 }
 
+/*
+ * 本物の外部SCSIボードROMイメージ(8192バイト)をホストから流し込む経路。
+ * 逆アセンブルはせず、実機ROMを走らせて「何番地を叩き、何を返すか」を
+ * 実測するためのオラクルとして使う。JS 側のグローバルは
+ * __webx68kScsiRomBytes (数値配列 or Uint8Array)。
+ * 長さが取れない/0のときは 0 を返し、コア側は従来どおり自前スタブを使う。
+ */
+EM_JS(int, js_scsi_rom_len, (), {
+  var v = globalThis.__webx68kScsiRomBytes;
+  if (!v) return 0;
+  var n = v.length;
+  return (typeof n === 'number' && n > 0) ? (n | 0) : 0;
+});
+
+__attribute__((used))
+int webx68k_scsi_rom_len(void)
+{
+  return js_scsi_rom_len();
+}
+
+/* i 番目のバイト(0-255)。範囲外/未設定は -1。 */
+EM_JS(int, js_scsi_rom_byte, (int i), {
+  var v = globalThis.__webx68kScsiRomBytes;
+  if (!v) return -1;
+  if (i < 0 || i >= v.length) return -1;
+  var b = v[i];
+  return (typeof b === 'number') ? (b & 0xff) : -1;
+});
+
+__attribute__((used))
+int webx68k_scsi_rom_byte(int i)
+{
+  return js_scsi_rom_byte(i);
+}
+

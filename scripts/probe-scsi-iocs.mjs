@@ -12,7 +12,7 @@
 
 import { spawn } from 'node:child_process';
 import { createReadStream } from 'node:fs';
-import { stat } from 'node:fs/promises';
+import { stat, readFile } from 'node:fs/promises';
 import { createServer } from 'node:http';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
@@ -59,6 +59,10 @@ const DRV_NEXT = args['drv-next'] === undefined ? null : Number(args['drv-next']
 // dev サーバ経由(例: public/test/ 配下、.gitignore で除外)で読ませたいときに使う。
 // 未指定時はURLに一切手を加えない(挙動を変えないため)。
 const FD1 = args.fd1 ?? null;
+// 本物の外部SCSIボードROMイメージ(8192バイト)。指定時のみ window.__webx68kScsiRomBytes
+// へ数値配列として置く。逆アセンブルはせず、本物を走らせて実測するためのオラクルとして使う。
+// 未指定なら従来と1文字も挙動が変わらない。
+const ROM = args.rom ?? null;
 
 /**
  * 基準器イメージを Range 対応で配信する小さなサーバ。
@@ -243,6 +247,13 @@ try {
     await page.evaluateOnNewDocument((v) => {
       window.__webx68kScsiDrvNext = v;
     }, DRV_NEXT);
+  }
+  if (ROM !== null) {
+    const romBytes = Array.from(await readFile(ROM));
+    console.error(`[probe] 本物のSCSI ROMイメージを読み込む: ${ROM} (${romBytes.length} バイト)`);
+    await page.evaluateOnNewDocument((bytes) => {
+      window.__webx68kScsiRomBytes = bytes;
+    }, romBytes);
   }
   const raw = [];
   page.on('console', (msg) => {
