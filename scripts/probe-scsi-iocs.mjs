@@ -135,6 +135,32 @@ try {
   // プロンプト到達後もしばらく観測する(常駐ドライバが後から叩く可能性)。
   await sleep(3000);
 
+  // SCSI IOCS ベクタ($7d4)が設定されているかを見る。ROMスタブの
+  // 「IOCSベクタ設定エントリ」が呼ばれていれば $00ea004a が入るはずで、
+  // 入っていなければ ROMスタブがそもそも拾われていないことになる。
+  // まわりのベクタも一緒に読むのは、readMemory 自体が定数を返していないかを
+  // 確かめるため(値が全て同一・全てゼロなら観測系を疑う)。
+  // readMemory はブリッジ側の API なので、ページ内からは __webx68kDebug.peek()
+  // (ワード単位)を使う。まわりのベクタも一緒に読むのは、peek 自体が定数を
+  // 返していないかを確かめるため(値が全て同一・全てゼロなら観測系を疑う)。
+  const vectors = await page
+    .evaluate(() => {
+      const dbg = window.__webx68kDebug;
+      if (!dbg?.peek) return { error: 'peek がない' };
+      const words = [];
+      for (let a = 0x07c0; a < 0x0800; a += 4) {
+        const hi = dbg.peek(a);
+        const lo = dbg.peek(a + 2);
+        if (hi === null || lo === null) return { error: `peek(${a}) が null` };
+        words.push({
+          addr: `$${a.toString(16).padStart(4, '0')}`,
+          value: `$${(((hi << 16) >>> 0) + lo).toString(16).padStart(8, '0')}`,
+        });
+      }
+      return words;
+    })
+    .catch((err) => ({ error: String(err) }));
+
   const entries = raw.map(parseLine).filter(Boolean);
   const byCmd = {};
   for (const e of entries) byCmd[e.cmd] = (byCmd[e.cmd] ?? 0) + 1;
@@ -142,6 +168,10 @@ try {
     JSON.stringify(
       {
         booted,
+        iocsVectors: vectors,
+        scsiIocsVector: Array.isArray(vectors)
+          ? (vectors.find((v) => v.addr === '$07d4')?.value ?? null)
+          : null,
         elapsedMs: Date.now() - started,
         totalLogged: entries.length,
         note: entries.length >= 64 ? 'コア側のログ上限(64件)に達している可能性がある' : null,
