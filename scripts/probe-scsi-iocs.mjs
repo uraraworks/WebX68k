@@ -62,6 +62,11 @@ const DRV_NEXT = args['drv-next'] === undefined ? null : Number(args['drv-next']
 // 0x00〜0xffを1ずつ増やして返す(x68k/scsi.c の SCSI_SpcSweepRead 参照)。
 // spc-clear-on-pctl は PCTL($ea0011)書き込みでSSTSのbit7を落とすかどうか
 // (既定1=落とす)。実験的な規則で実機の仕様として測ったものではない。
+// spc-target: セレクトに応答するSCSI IDに相当するTEMP($ea0017)値(既定1)。
+// TEMPの値がこれと一致したときだけセレクト成功にする(応答する相手を1つに絞る)。
+// 実測ではTEMPに$01と$07が観測されており、値を振って正解を探すためのスイッチ
+// (core-shim.c の js_scsi_spc_target / x68k/scsi.c の SCSI_SpcSelectCheck 参照)。
+const SPC_TARGET = args['spc-target'] === undefined ? null : Number(args['spc-target']);
 const SPC_INTS_SEL = args['spc-ints-sel'] === undefined ? null : Number(args['spc-ints-sel']);
 const SPC_INTS_TIMEOUT = args['spc-ints-timeout'] === undefined ? null : Number(args['spc-ints-timeout']);
 const SPC_SSTS = args['spc-ssts'] === undefined ? null : Number(args['spc-ssts']);
@@ -361,6 +366,11 @@ try {
     await page.evaluateOnNewDocument((v) => {
       window.__webx68kScsiDrvNext = v;
     }, DRV_NEXT);
+  }
+  if (SPC_TARGET !== null) {
+    await page.evaluateOnNewDocument((v) => {
+      window.__webx68kSpcTarget = v;
+    }, SPC_TARGET);
   }
   if (SPC_INTS_SEL !== null) {
     await page.evaluateOnNewDocument((v) => {

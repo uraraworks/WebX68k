@@ -632,6 +632,23 @@ int webx68k_scsi_spc_ints_timeout(void)
   return js_scsi_spc_ints_timeout();
 }
 
+/* セレクトに応答するSCSI IDに相当するTEMP($ea0017)値。既定1。
+ * 2026-09-02: セレクト成功条件が「TEMPが0以外」のみだったため、どのIDを
+ * 選んでも必ず成功しROMからは同じディスクが複数台見えていた欠陥への対応。
+ * TEMPの値がこれと一致したときだけ成功、それ以外はタイムアウトにする
+ * (x68k/scsi.c の SCSI_SpcSelectCheck 参照)。実測ではTEMPに$01と$07が
+ * 観測されており、--spc-target= で振って正解を探す。 */
+EM_JS(int, js_scsi_spc_target, (), {
+  var v = globalThis.__webx68kSpcTarget;
+  return (typeof v === 'number') ? (v | 0) : 1;
+});
+
+__attribute__((used))
+int webx68k_scsi_spc_target(void)
+{
+  return js_scsi_spc_target();
+}
+
 /* SSTS($ea000d) の値をどう決めるか。既定 -1: 状態機械に任せる
  * (セレクト成立でbit7を立て、バス開放/リセットで落とす。実測に基づく
  * 挙動、詳細は x68k/scsi.c の SCSI_SpcSstsSetBit7 コメント参照)。
