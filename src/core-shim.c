@@ -389,23 +389,72 @@ EM_JS(int, js_scsi_get_size, (), {
   }
 });
 
+/*
+ * セクタ単位の同期XHRは実測で1回の実行が568秒かかった(本物ROM無し基準38秒)。
+ * 数千〜数万セクタを1個ずつ Range リクエストすると、それだけで支配的コストになる。
+ * ここでは 64KB(128セクタ)単位でまとめて取得し、JS側グローバルにチャンクとして
+ * 保持することで同一チャンク内の再読み出しをXHR無しで返す。
+ *
+ * ただし決定2(イメージ全体をRAMに載せない)に反しないよう、保持するチャンク数には
+ * 必ず上限を設ける。ここでは MAX_CHUNKS=16 (64KB * 16 = 1MB) とし、
+ * それを超えたら最も古く使ったチャンクから捨てる単純なLRU
+ * (Map の挿入順を利用し、ヒット時に末尾へ移動させるだけの実装)とする。
+ */
 EM_JS(int, js_scsi_read_sector, (unsigned int lba, unsigned char *buf), {
   var g = globalThis;
   var url = g.__webx68kScsiUrl;
   if (!url) return -1;
   try {
-    var start = lba * 512;
-    var xhr = new XMLHttpRequest();
-    xhr.open('GET', url, false);
-    xhr.setRequestHeader('Range', 'bytes=' + start + '-' + (start + 511));
-    /* 同期XHR(メインスレッド)では responseType を指定できないため、
-     * バイナリを1バイト1文字で受ける古典的な手を使う。 */
-    xhr.overrideMimeType('text/plain; charset=x-user-defined');
-    xhr.send(null);
-    if (xhr.status !== 206 && xhr.status !== 200) return -1;
-    var t = xhr.responseText;
-    if (t.length < 512) return -1;
-    for (var i = 0; i < 512; i++) HEAPU8[buf + i] = t.charCodeAt(i) & 0xff;
+    var CHUNK_SIZE = 65536;  /* 128セクタ分。XHR発行回数を減らすための単位 */
+    var MAX_CHUNKS = 16;     /* 1MB。決定2(全体をRAMに載せない)を守るための上限 */
+
+    if (!g.__webx68kScsiChunks) g.__webx68kScsiChunks = new Map();
+    if (typeof g.__webx68kScsiReqCount !== 'number') g.__webx68kScsiReqCount = 0;
+    if (typeof g.__webx68kScsiXhrCount !== 'number') g.__webx68kScsiXhrCount = 0;
+    var cache = g.__webx68kScsiChunks;
+
+    g.__webx68kScsiReqCount++;
+
+    var byteStart = lba * 512;
+    var chunkIndex = Math.floor(byteStart / CHUNK_SIZE);
+    var chunkStart = chunkIndex * CHUNK_SIZE;
+    var offsetInChunk = byteStart - chunkStart;
+
+    var chunk = cache.get(chunkIndex);
+    if (chunk === undefined) {
+      var xhr = new XMLHttpRequest();
+      xhr.open('GET', url, false);
+      xhr.setRequestHeader('Range', 'bytes=' + chunkStart + '-' + (chunkStart + CHUNK_SIZE - 1));
+      /* 同期XHR(メインスレッド)では responseType を指定できないため、
+       * バイナリを1バイト1文字で受ける古典的な手を使う。 */
+      xhr.overrideMimeType('text/plain; charset=x-user-defined');
+      xhr.send(null);
+      g.__webx68kScsiXhrCount++;
+
+      if ((g.__webx68kScsiXhrCount % 64) === 0) {
+        console.log('[SCSI] セクタ読み出し: 要求' + g.__webx68kScsiReqCount + '件 / XHR' + g.__webx68kScsiXhrCount + '件 (チャンク64KB, 保持16個)');
+      }
+
+      if (xhr.status !== 206 && xhr.status !== 200) return -1;
+      var t = xhr.responseText;
+      /* イメージ末尾を跨ぐ最後のチャンクは64KBに満たない。実長のまま保持する。 */
+      chunk = new Uint8Array(t.length);
+      for (var i = 0; i < t.length; i++) chunk[i] = t.charCodeAt(i) & 0xff;
+
+      cache.set(chunkIndex, chunk);
+      if (cache.size > MAX_CHUNKS) {
+        /* Map は挿入順を保持する。先頭(=最も古く使った)キーを1つだけ捨てる。 */
+        var oldestKey = cache.keys().next().value;
+        cache.delete(oldestKey);
+      }
+    } else {
+      /* ヒットしたチャンクを末尾へ移動し「最近使った」扱いにする(簡易LRU)。 */
+      cache.delete(chunkIndex);
+      cache.set(chunkIndex, chunk);
+    }
+
+    if (offsetInChunk + 512 > chunk.length) return -1;
+    for (var j = 0; j < 512; j++) HEAPU8[buf + j] = chunk[offsetInChunk + j];
     return 0;
   } catch (e) {
     console.warn('[SCSI] セクタ読み出しに失敗:', String(e));
