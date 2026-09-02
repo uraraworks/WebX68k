@@ -734,6 +734,117 @@ int webx68k_scsi_spc_clear_on_pctl(void)
   return js_scsi_spc_clear_on_pctl();
 }
 
+/*
+ * SPCの転送状態機械(COMMAND/DATAIN/STATUS/MSGIN、詳細は x68k/scsi.c の
+ * SCSI_SpcSetPhase 等コメント参照)用の欄。__webx68kSpcPsns が既定(-1)の
+ * ときだけ働き、それ以外(固定/掃引/交互)のときは従来どおりそちらを
+ * 優先する(状態機械は動かさない)。
+ */
+
+/* COMMANDフェーズのPSNSフェーズビット。既定 -1 のときは組み込みの $02 を使う
+ * (当てはめが外れていた場合に再ビルドせず振れるようにするための欄)。
+ * DATAIN=$01/STATUS=$03/MSGINは=$07固定(いずれも当てはめ)。 */
+EM_JS(int, js_scsi_spc_phase_bits, (), {
+  var v = globalThis.__webx68kSpcPhaseBits;
+  return (typeof v === 'number') ? (v | 0) : -1;
+});
+
+__attribute__((used))
+int webx68k_scsi_spc_phase_bits(void)
+{
+  return js_scsi_spc_phase_bits();
+}
+
+/* 転送完了時にINTSへ立てるビット。既定 $10(当てはめ)。 */
+EM_JS(int, js_scsi_spc_ints_xfer, (), {
+  var v = globalThis.__webx68kSpcIntsXfer;
+  return (typeof v === 'number') ? (v | 0) : 0x10;
+});
+
+__attribute__((used))
+int webx68k_scsi_spc_ints_xfer(void)
+{
+  return js_scsi_spc_ints_xfer();
+}
+
+/* 切断(BUSFREEへの移行)時にINTSへ立てるビット。既定 $04(当てはめ)。 */
+EM_JS(int, js_scsi_spc_ints_disc, (), {
+  var v = globalThis.__webx68kSpcIntsDisc;
+  return (typeof v === 'number') ? (v | 0) : 0x04;
+});
+
+__attribute__((used))
+int webx68k_scsi_spc_ints_disc(void)
+{
+  return js_scsi_spc_ints_disc();
+}
+
+/*
+ * CDBをDREGでなくTEMP($ea0017)経由で受け取る仮説の有効/無効。既定1(有効)。
+ * 2026-09-02の実測: セレクト成立後、ROMはDREG($ea0015)に一切書かず、代わりに
+ * 「PCTL=$02書き込み→PSNS読み出し→TEMPへ1バイト書き込み→SCMD上位3bit=111
+ * (転送コマンド)書き込み→pc=$ea144aでPSNSポーリング」を繰り返していた。
+ * これを「転送コマンドの書き込みそのものが、直前にTEMPへ書かれた1バイトを
+ * CDBとして送った合図」という仮説として実装したもの(未実測、詳細は
+ * x68k/scsi.c の SCSI_SpcXferStart コメント参照)。0を渡すと従来どおり
+ * (DREGへの書き込みのみをCDBとして受け取る)に戻せる。DREG経由の受け取り自体は
+ * この値に関わらず常に有効(両方の口を開けておく)。
+ */
+EM_JS(int, js_scsi_spc_cdb_from_temp, (), {
+  var v = globalThis.__webx68kSpcCdbFromTemp;
+  return (typeof v === 'number') ? (v | 0) : 1;
+});
+
+__attribute__((used))
+int webx68k_scsi_spc_cdb_from_temp(void)
+{
+  return js_scsi_spc_cdb_from_temp();
+}
+
+/*
+ * DATAIN中に渡すべきバイトが用意できている間、SSTS($ea000d)へ立てる当てはめの
+ * ビット。既定 $20(2026-09-02改定、旧既定は$08)。2026-09-02の実測: 固定値
+ * ($08/$10/$20/$30のいずれも単体では)2コマンド目で止まり、掃引(-2)でだけ
+ * 通った(抜けた瞬間の値は$b0=$80|$20|$10)→「値が変わること」自体を見ている
+ * ハンドシェイクだったため、REQと同じくDREG読み出し直後の1回だけ落とす
+ * パルスにした(x68k/scsi.c の SCSI_SpcSstsPulseRead 参照)。$10相当は別ビット
+ * (TCが0になったら立つ、webx68k_scsi_spc_ssts_tc0_bit)として切り出した。
+ * bit7(接続中)とは別にORし、値を振って正解を探せるよう再ビルドせず変更できる。
+ */
+/* -2 を渡すと「掃引」モードになり、DATAINで渡すべきバイトが残っている間の
+ * SSTS読み出しのたびに $80(接続中、常に立てたまま)へ0〜255を1ずつ変えた値を
+ * ORして返す(x68k/scsi.c の SCSI_SpcSstsDataSweepRead 参照)。切り分け用に
+ * 残してある。 */
+EM_JS(int, js_scsi_spc_ssts_data_bit, (), {
+  var v = globalThis.__webx68kSpcSstsDataBit;
+  return (typeof v === 'number') ? (v | 0) : 0x20;
+});
+
+__attribute__((used))
+int webx68k_scsi_spc_ssts_data_bit(void)
+{
+  return js_scsi_spc_ssts_data_bit();
+}
+
+/*
+ * DATAIN中にTC(転送カウンタ)が0になった(=渡すべきバイトを渡し切った)ときに
+ * SSTS($ea000d)へ立てる当てはめのビット。既定 $10。2026-09-02の実測で、
+ * データビット単体のパルス化だけでは通らず、掃引で抜けた瞬間の値$b0が
+ * $80|$20|$10だったことから、データ用意済みビットとは別にTC=0を示すビットが
+ * 要ると判断した。データビットと違いパルスにはせず、TCが残っている間は
+ * 落とし0になったら立てたままにする。bit7・データビットとは独立にORする。
+ */
+EM_JS(int, js_scsi_spc_ssts_tc0_bit, (), {
+  var v = globalThis.__webx68kSpcSstsTc0Bit;
+  return (typeof v === 'number') ? (v | 0) : 0x10;
+});
+
+__attribute__((used))
+int webx68k_scsi_spc_ssts_tc0_bit(void)
+{
+  return js_scsi_spc_ssts_tc0_bit();
+}
+
 /* [SCSI-BUS] の「同一PCからの通算アクセスが閾値を超えたら以後そのPCの
  * ログを止める」圧縮の閾値。既定32(従来と同じ)。0 を渡すと抑制しない
  * (=全件出す)。過去にこの圧縮が無限ループを「バスアクセスが止まった」

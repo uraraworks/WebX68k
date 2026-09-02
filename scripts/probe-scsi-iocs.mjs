@@ -82,6 +82,36 @@ const SPC_PSNS_B = args['spc-psns-b'] === undefined ? null : Number(args['spc-ps
 // 測ったものではなく、再試行のたびに測定を1つ進めるための実験的な規則
 // (x68k/scsi.c の SCSI_SpcWrite コメント参照)。0で無効化できる。
 const SPC_CLEAR_ON_PCTL = args['spc-clear-on-pctl'] === undefined ? null : Number(args['spc-clear-on-pctl']);
+// SPCの転送状態機械(COMMAND/DATAIN/STATUS/MSGIN)関連。__webx68kSpcPsns が既定(-1)
+// のときだけ働く(x68k/scsi.c の SCSI_SpcSetPhase 等参照)。
+// spc-phase-bits: COMMANDフェーズのPSNSフェーズビット。既定-1(組み込みの$02を使う)。
+// spc-ints-xfer: 転送完了時にINTSへ立てるビット(既定$10、当てはめ)。
+// spc-ints-disc: 切断(BUSFREE)時にINTSへ立てるビット(既定$04、当てはめ)。
+const SPC_PHASE_BITS = args['spc-phase-bits'] === undefined ? null : Number(args['spc-phase-bits']);
+const SPC_INTS_XFER = args['spc-ints-xfer'] === undefined ? null : Number(args['spc-ints-xfer']);
+const SPC_INTS_DISC = args['spc-ints-disc'] === undefined ? null : Number(args['spc-ints-disc']);
+// spc-cdb-from-temp: CDBをDREGでなくTEMP($ea0017)経由で受け取る仮説の有効/無効
+// (既定1=有効)。2026-09-02の実測(ROMがDREGに一切書かずTEMP経由に見える並びを
+// 繰り返した)を受けた未実測の仮説。0で従来どおり(DREGのみ)に戻せる。
+// DREG経由自体はこの値に関わらず常に有効(両方の口を開けておく)。
+// 詳細は x68k/scsi.c の SCSI_SpcXferStart コメント参照。
+const SPC_CDB_FROM_TEMP = args['spc-cdb-from-temp'] === undefined ? null : Number(args['spc-cdb-from-temp']);
+// spc-ssts-data-bit: DATAIN中に渡すべきバイトが残っている間、SSTS($ea000d)へ
+// 立てる当てはめのビット(既定$08)。2026-09-02の実測(READ CAPACITY応答直前に
+// TC=8を書きSCMD上位3bit=100を書いたあとSSTSを95回ポーリングし続けた)を受けた
+// 仮説。値を振って正解を探すためホストから変更できる。
+// -2 を渡すと「掃引」モードになり、DATAINで渡すべきバイトが残っている間の
+// SSTS読み出しのたびに $80(接続中、常に立てたまま)へ0〜255を1ずつ変えた値を
+// ORして返す(ポーリング回数が多い箇所での当てずっぽう探索用)。
+// 詳細は x68k/scsi.c の SCSI_SpcXferStartData / SCSI_SpcSstsSetDataBit /
+// SCSI_SpcSstsDataSweepRead 参照。
+const SPC_SSTS_DATA_BIT = args['spc-ssts-data-bit'] === undefined ? null : Number(args['spc-ssts-data-bit']);
+// spc-ssts-tc0: DATAIN中にTC(転送カウンタ)が0になったとき、SSTS($ea000d)へ
+// 立てる当てはめのビット(既定$10)。2026-09-02の実測(データビット単体の
+// パルス化だけでは通らず、掃引で抜けた瞬間の値$b0が$80|$20|$10だった)を
+// 受けた仮説。データビットと違いパルスにはせず、TCが残っている間は落とし
+// 0になったら立てたままにする。詳細は x68k/scsi.c の SCSI_SpcSstsSetTc0Bit 参照。
+const SPC_SSTS_TC0 = args['spc-ssts-tc0'] === undefined ? null : Number(args['spc-ssts-tc0']);
 // [SCSI-BUS] の「同一PCからの通算アクセスが閾値を超えたら以後そのPCのログを
 // 止める」圧縮の閾値(既定32、コア側 x68k/scsi.c の SCSI_BusPcAllow 参照)。
 // この圧縮は過去に無限ループを「バスアクセスが止まった」ように見せて誤った
@@ -376,6 +406,36 @@ try {
     await page.evaluateOnNewDocument((v) => {
       window.__webx68kSpcClearOnPctl = v;
     }, SPC_CLEAR_ON_PCTL);
+  }
+  if (SPC_PHASE_BITS !== null) {
+    await page.evaluateOnNewDocument((v) => {
+      window.__webx68kSpcPhaseBits = v;
+    }, SPC_PHASE_BITS);
+  }
+  if (SPC_INTS_XFER !== null) {
+    await page.evaluateOnNewDocument((v) => {
+      window.__webx68kSpcIntsXfer = v;
+    }, SPC_INTS_XFER);
+  }
+  if (SPC_INTS_DISC !== null) {
+    await page.evaluateOnNewDocument((v) => {
+      window.__webx68kSpcIntsDisc = v;
+    }, SPC_INTS_DISC);
+  }
+  if (SPC_CDB_FROM_TEMP !== null) {
+    await page.evaluateOnNewDocument((v) => {
+      window.__webx68kSpcCdbFromTemp = v;
+    }, SPC_CDB_FROM_TEMP);
+  }
+  if (SPC_SSTS_DATA_BIT !== null) {
+    await page.evaluateOnNewDocument((v) => {
+      window.__webx68kSpcSstsDataBit = v;
+    }, SPC_SSTS_DATA_BIT);
+  }
+  if (SPC_SSTS_TC0 !== null) {
+    await page.evaluateOnNewDocument((v) => {
+      window.__webx68kSpcSstsTc0Bit = v;
+    }, SPC_SSTS_TC0);
   }
   if (BUS_PC_LIMIT !== null) {
     await page.evaluateOnNewDocument((v) => {
