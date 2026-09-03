@@ -1061,9 +1061,17 @@ main {
 }
 
 /* .btn-icon の16px固定と衝突しないよう専用クラスで48px表示にする。 */
+/* 再開ボタンの三角。SVG の既定は fill:black のため、指定が無いと黒背景の実行画面に
+   重なった暗いオーバーレイの上で黒い三角になり、ほとんど見えない。WebNP2 と同じく
+   .btn-icon 相当の「塗りなし + currentColor(白)の輪郭線」で描く。 */
 .pause-overlay-icon {
   width: 48px;
   height: 48px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 2;
+  stroke-linecap: round;
+  stroke-linejoin: round;
 }
 
 .pause-overlay-label {
