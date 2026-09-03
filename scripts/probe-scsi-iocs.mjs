@@ -58,6 +58,16 @@ const SRAM_INIT = args['scsi-sram'] !== undefined;
 // __webx68kScsiRead フック)を有効にする。永続化はしない。本命の書き戻し経路
 // (OPFS)が入るまで、書き込み経路を端から端まで確かめるためだけのもの。
 const SCSI_RAM_WRITES = args['scsi-ram-writes'] !== undefined;
+// 【注意】--scsi-ram-writes はページ側の globalThis へ**関数**を差すので、
+// Worker経路(2026-09-03から既定)では届かない(関数は構造化クローンできず、
+// InitPayload.hostGlobals は number/string/boolean だけを写す)。
+// 使うなら --worker=0 を併用すること。書き込みの検証は --scsi-opfs のほうが本筋。
+if (SCSI_RAM_WRITES && String(args.worker ?? '') !== '0') {
+  console.error(
+    '[probe] 警告: --scsi-ram-writes は Worker 経路(既定)では効きません。' +
+      '--worker=0 を併用するか、--scsi-opfs を使ってください。',
+  );
+}
 // 本命の書き戻し経路(OPFS、src/scsi-opfs.ts)を有効にする。値を取らないフラグ。
 // --scsi-ram-writes とは排他ではないが、両方指定した場合は評価順(下記)により
 // SCSI_RAM_WRITES側のwindow.__webx68kScsiRead/Writeが後勝ちで上書きする点に注意。
@@ -626,9 +636,13 @@ try {
     for (const cmdText of TYPE_TEXT.split(';;')) {
     // ';;' 区切りで複数コマンドを続けて打てる(コピーしてから dir で確かめる等)。
     for (const part of cmdText.split(':')) {
-      // 実測(2026-09-03、Worker既定化後): delay=60 では "dir" が "dri" になる
-      // 打鍵の入れ替わりが出た。検証道具が偽の失敗を作らないよう間隔を広げる。
-      if (part) await page.keyboard.type(part, { delay: 120 });
+      // 【重要】page.keyboard.type() は使わない。実測(2026-09-03、Worker既定化後):
+      // delay=60 で "dir"→"dri"、delay=120 でも "copy c:\\config.sys"→"coyp c:\\coifng.sys"
+      // と**文字が入れ替わる**。ゲストはフレーム単位でキーを拾うため、
+      // make/break が詰まると順序が壊れる。検証道具が偽の失敗を作ると、
+      // 直す必要のないものを直しにいくことになる。
+      // 1文字ずつ「押す→保持→離す→間をあける」で送る(遅いが順序が壊れない)。
+      for (const ch of part) await pressHeld(page, ch, 60);
       if (part !== cmdText.split(':').at(-1)) await pressHeld(page, 'Quote');
     }
     await sleep(300);
