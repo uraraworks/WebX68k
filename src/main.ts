@@ -2848,8 +2848,11 @@ function applyDocumentStrings(): void {
   updateMouseControls();
   updateFullscreenControl();
   syncInputPanelUi();
+  btnPanelKeyboard.title = t('inputPanelSwitchKeyboard');
   btnPanelKeyboard.setAttribute('aria-label', t('inputPanelSwitchKeyboard'));
+  btnPanelPad.title = t('inputPanelSwitchPad');
   btnPanelPad.setAttribute('aria-label', t('inputPanelSwitchPad'));
+  btnPanelTrackpad.title = t('inputPanelSwitchTrackpad');
   btnPanelTrackpad.setAttribute('aria-label', t('inputPanelSwitchTrackpad'));
   updateAspectControl();
   btnSaveState.title = t('toolbarSaveState');

@@ -96,9 +96,15 @@
                  いずれかのパネルが出ている間だけ main.ts が hidden を外す。
                  役割が #btn-virtual-keyboard と隣接するためツールバー内の直後に配置。 -->
             <div id="input-panel-switch" class="input-panel-switch hidden">
-              <button id="btn-panel-keyboard" type="button" class="icon-btn panel-switch-btn" aria-pressed="false">⌨</button>
-              <button id="btn-panel-pad" type="button" class="icon-btn panel-switch-btn" aria-pressed="false">🎮</button>
-              <button id="btn-panel-trackpad" type="button" class="icon-btn panel-switch-btn" aria-pressed="false">🖱</button>
+              <button id="btn-panel-keyboard" type="button" class="icon-btn panel-switch-btn" title="仮想キーボードに切替" aria-label="仮想キーボードに切替" aria-pressed="false">
+                <svg class="btn-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M3 7h18a1 1 0 0 1 1 1v8a1 1 0 0 1-1 1H3a1 1 0 0 1-1-1V8a1 1 0 0 1 1-1z M6 10h.01 M9 10h.01 M12 10h.01 M15 10h.01 M18 10h.01 M6 13h.01 M9 13h.01 M12 13h.01 M15 13h.01 M18 13h.01 M8 16h8"/></svg>
+              </button>
+              <button id="btn-panel-pad" type="button" class="icon-btn panel-switch-btn" title="バーチャルパッドに切替" aria-label="バーチャルパッドに切替" aria-pressed="false">
+                <svg class="btn-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M6 8h12a4 4 0 0 1 4 4.5l-.8 4a2.5 2.5 0 0 1-4.4 1.1L15 15H9l-1.8 2.6a2.5 2.5 0 0 1-4.4-1.1l-.8-4A4 4 0 0 1 6 8z M7 12h3 M8.5 10.5v3 M16 11h.01 M18 13h.01"/></svg>
+              </button>
+              <button id="btn-panel-trackpad" type="button" class="icon-btn panel-switch-btn" title="バーチャルトラックパッドに切替" aria-label="バーチャルトラックパッドに切替" aria-pressed="false">
+                <svg class="btn-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3a6 6 0 0 1 6 6v6a6 6 0 0 1-12 0V9a6 6 0 0 1 6-6z M12 3v7 M12 7v3"/></svg>
+              </button>
             </div>
             <button id="btn-screenshot" type="button" class="icon-btn" title="スクリーンショット" aria-label="スクリーンショット" disabled>
               <svg class="btn-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 8h3l2-3h6l2 3h3a1 1 0 0 1 1 1v10a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1V9a1 1 0 0 1 1-1z M12 17a3.5 3.5 0 1 0 0-7 3.5 3.5 0 0 0 0 7z"/></svg>
