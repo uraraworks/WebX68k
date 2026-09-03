@@ -302,7 +302,7 @@ size always follows the settings dialog rather than SWITCH.X.
 ### Virtual pad (on-screen pad)
 
 For playing games on a phone, the "Show Input Panel" toolbar button (also
-toggled by the ⌨/🎮/🖱 chip once a panel is open) can show a touch virtual pad
+toggled by the keyboard/pad/mouse chip once a panel is open) can show a touch virtual pad
 instead of the virtual keyboard or virtual trackpad — they're mutually
 exclusive. Directional
 input is an analog-stick-style control (a fixed base with a knob, snapping to
@@ -329,11 +329,11 @@ placements:
 - **Overlay** — when neither kind of margin is big enough, the pad is drawn
   semi-transparently on top of the screen.
 
-Pressing 🎮 while the pad is showing opens the profile-select menu.
+Pressing the pad chip while the pad is showing opens the profile-select menu.
 
 #### Editing the pad's assignments
 
-"Edit assignments…" at the end of the 🎮 profile menu opens an editor for
+"Edit assignments…" at the end of the pad chip's profile menu opens an editor for
 the pad's 12 input sources (stick up/down/left/right, A/B/C, X/Y/Z, and
 Aux 1/2). Each row can be bound to either a keyboard key or a joystick
 button.
@@ -369,8 +369,8 @@ absolute-position tracking if the guest cursor and host cursor ever drift
 apart.
 
 On touch devices (where the Pointer Lock API is unavailable — e.g. iOS
-Safari), open the **virtual trackpad** instead, via the 🖱 option on the
-⌨/🎮/🖱 input-panel chip (or the "Show Input Panel" toolbar button). It's
+Safari), open the **virtual trackpad** instead, via the mouse option on the
+keyboard/pad/mouse input-panel chip (or the "Show Input Panel" toolbar button). It's
 the third kind of input panel alongside the virtual keyboard and virtual
 pad, and it sits in the same strip between the screen and the toolbar
 rather than over the screen — so your finger never covers the guest
