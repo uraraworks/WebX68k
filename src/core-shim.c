@@ -555,6 +555,22 @@ int webx68k_scsi_reply_units(void)
   return js_scsi_reply_units();
 }
 
+/*
+ * 1以上のとき、2回目以降の初期化コマンドには「ドライバは無い」返答をする。
+ * Human68k が初期化を繰り返し呼ぶ(2回目の入力 +14 が前回の終了アドレス)
+ * ことへの切り分け用。
+ */
+EM_JS(int, js_scsi_reply_init_once, (), {
+  var v = globalThis.__webx68kScsiReplyInitOnce;
+  return (typeof v === 'number') ? (v | 0) : 0;
+});
+
+__attribute__((used))
+int webx68k_scsi_reply_init_once(void)
+{
+  return js_scsi_reply_init_once();
+}
+
 EM_JS(int, js_scsi_reply_end, (), {
   var v = globalThis.__webx68kScsiReplyEnd;
   return (typeof v === 'number') ? (v | 0) : 0x00ea0500;

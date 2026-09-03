@@ -51,6 +51,8 @@ const REPLY_UNITS = args['reply-units'] === undefined ? null : Number(args['repl
 const REPLY_END = args['reply-end'] === undefined ? null : Number(args['reply-end']);
 const REPLY_BPB = args['reply-bpb'] === undefined ? null : Number(args['reply-bpb']);
 const REPLY_STATUS = args['reply-status'] === undefined ? null : Number(args['reply-status']);
+// 2回目以降の初期化コマンドに「ドライバ無し」で返答するかどうか。値を取らないフラグ。
+const REPLY_INIT_ONCE = args['reply-init-once'] !== undefined;
 // ストラテジ/インタラプトから戻る d0。既定(未指定)はコア側の既定 -1(何もしない)に任せる。
 const REPLY_D0 = args['reply-d0'] === undefined ? null : Number(args['reply-d0']);
 // デバイスドライバヘッダ +$00(次のヘッダ)。既定(未指定)はコア側の既定 $ffffffff に任せる。
@@ -358,6 +360,11 @@ try {
     await page.evaluateOnNewDocument((v) => {
       window.__webx68kScsiReplyStatus = v;
     }, REPLY_STATUS);
+  }
+  if (REPLY_INIT_ONCE) {
+    await page.evaluateOnNewDocument(() => {
+      window.__webx68kScsiReplyInitOnce = 1;
+    });
   }
   if (REPLY_D0 !== null) {
     await page.evaluateOnNewDocument((v) => {
