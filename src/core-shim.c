@@ -615,6 +615,40 @@ unsigned int webx68k_scsi_drv_next(void)
 }
 
 /*
+ * Human68k の初期化コマンド返答に対する2つの門
+ *   門1: 終了アドレス + $10000 < $00200000 (実装RAM上限、$1c00.w の中身)
+ *   門2: 終了アドレス - $22 >= a1 (a1 = デバイスドライバヘッダの番地)
+ * を同時に満たすには、ヘッダとスタブ本体を(SCSIボードROMの窓ではなく)
+ * ゲストRAMへ置く必要がある。この2つはその置き場所を指定する経路。
+ * 既定はどちらも0(=この機能は無効・従来どおりROM窓 $00ea0100 のまま)。
+ */
+
+/* ドライバをゲストRAMへ置く番地を直接指定する。既定0(無効)。 */
+EM_JS(int, js_scsi_drv_ram, (), {
+  var v = globalThis.__webx68kScsiDrvRam;
+  return (typeof v === 'number') ? (v | 0) : 0;
+});
+
+__attribute__((used))
+unsigned int webx68k_scsi_drv_ram(void)
+{
+  return (unsigned int)js_scsi_drv_ram();
+}
+
+/* この番地から32bit値を読み、それをドライバの置き場所として使う。
+ * 既定0(無効)。0以外のときは webx68k_scsi_drv_ram() より優先する。 */
+EM_JS(int, js_scsi_drv_ram_from, (), {
+  var v = globalThis.__webx68kScsiDrvRamFrom;
+  return (typeof v === 'number') ? (v | 0) : 0;
+});
+
+__attribute__((used))
+unsigned int webx68k_scsi_drv_ram_from(void)
+{
+  return (unsigned int)js_scsi_drv_ram_from();
+}
+
+/*
  * 本物の外部SCSIボードROMイメージ(8192バイト)をホストから流し込む経路。
  * 逆アセンブルはせず、実機ROMを走らせて「何番地を叩き、何を返すか」を
  * 実測するためのオラクルとして使う。JS 側のグローバルは

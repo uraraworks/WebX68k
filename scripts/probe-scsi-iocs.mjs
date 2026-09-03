@@ -55,6 +55,8 @@ const REPLY_STATUS = args['reply-status'] === undefined ? null : Number(args['re
 const REPLY_D0 = args['reply-d0'] === undefined ? null : Number(args['reply-d0']);
 // デバイスドライバヘッダ +$00(次のヘッダ)。既定(未指定)はコア側の既定 $ffffffff に任せる。
 const DRV_NEXT = args['drv-next'] === undefined ? null : Number(args['drv-next']);
+const DRV_RAM = args['drv-ram'] === undefined ? null : Number(args['drv-ram']);
+const DRV_RAM_FROM = args['drv-ram-from'] === undefined ? null : Number(args['drv-ram-from']);
 // SPC(MB89352)セレクト応答関連。意味は core-shim.c の js_scsi_spc_* / x68k/scsi.c
 // の SCSI_SpcSelectCheck を参照。未指定はコア側の既定(ints-sel=$08 / ints-timeout=$20 /
 // ssts・psns=-1=触らない)に任せる。本物ROM使用時(--rom=)のみ効く。
@@ -366,6 +368,16 @@ try {
     await page.evaluateOnNewDocument((v) => {
       window.__webx68kScsiDrvNext = v;
     }, DRV_NEXT);
+  }
+  if (DRV_RAM !== null) {
+    await page.evaluateOnNewDocument((v) => {
+      window.__webx68kScsiDrvRam = v;
+    }, DRV_RAM);
+  }
+  if (DRV_RAM_FROM !== null) {
+    await page.evaluateOnNewDocument((v) => {
+      window.__webx68kScsiDrvRamFrom = v;
+    }, DRV_RAM_FROM);
   }
   if (SPC_TARGET !== null) {
     await page.evaluateOnNewDocument((v) => {
