@@ -150,6 +150,8 @@ const BUS_LOG_MAX = args['bus-log-max'] === undefined ? null : Number(args['bus-
 const FD1 = args.fd1 ?? null;
 // --type=<文字列>: 起動後にゲストへ打鍵する(末尾で Enter)。--type-wait=<ms> で待ち時間。
 const TYPE_TEXT = args.type === undefined ? null : String(args.type);
+// --hdd=<パス>: SASIのHDDスロットへ挿す(?hdd=)。SCSIと同居できるかを測る用。
+const HDD = args.hdd ?? null;
 // 本物の外部SCSIボードROMイメージ(8192バイト)。指定時のみ window.__webx68kScsiRomBytes
 // へ数値配列として置く。逆アセンブルはせず、本物を走らせて実測するためのオラクルとして使う。
 // 未指定なら従来と1文字も挙動が変わらない。
@@ -551,7 +553,9 @@ try {
     // 前方一致にして、SCSI 系のログは全て拾う。
     if (text.includes('[SCSI')) raw.push(text);
   });
-  const fd1Query = FD1 !== null ? `&fd1=${encodeURIComponent(FD1)}` : '';
+  const fd1Query =
+    (FD1 !== null ? `&fd1=${encodeURIComponent(FD1)}` : '') +
+    (HDD !== null ? `&hdd=${encodeURIComponent(HDD)}` : '');
   await page.goto(`http://localhost:${PORT}/?${args['no-system'] ? '' : 'system=1&'}run=1${fd1Query}`, { waitUntil: 'domcontentloaded' });
 
   // 起動待ち。到達しなくても観測は続行し、到達可否を結果に残す。
