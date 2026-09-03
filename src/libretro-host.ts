@@ -212,6 +212,15 @@ export class LibretroHost {
   private coreCgrom: Uint8Array | null = null;
 
   /**
+   * true の間、handleVideoRefresh() は変換も描画も行わず即 return する。
+   *
+   * 無制限速度モードでは1tickに何十フレームも retro_run() を回すため、毎フレーム
+   * RGB565→RGBA変換+putImageDataをすると描画コストがボトルネックになり、フレーム数を
+   * 稼げなくなる。中間フレームは変換ごと捨て、tick末尾の1フレームだけ画面に出す。
+   */
+  private videoSkip = false;
+
+  /**
    * X68000 は画面モード変更で実行中に canvas.width/height(実解像度)が変わる。
    * ウィンドウ表示の等倍/整数倍リスケール(main.ts側)は canvas の実解像度を基準に
    * 計算しているため、解像度が変わった瞬間に再計算してもらう必要がある。
@@ -656,7 +665,13 @@ export class LibretroHost {
     }
   }
 
+  /** 無制限速度モード用: 中間フレームの描画をスキップするか切り替える。 */
+  setVideoSkip(skip: boolean): void {
+    this.videoSkip = skip;
+  }
+
   private handleVideoRefresh(data: number, width: number, height: number, pitch: number): void {
+    if (this.videoSkip) return; // 無制限モードの中間フレーム: 変換・描画とも省略する
     if (data === 0 || width === 0 || height === 0) return; // dupe frame
 
     if (width !== this.lastWidth || height !== this.lastHeight) {

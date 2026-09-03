@@ -240,17 +240,27 @@ the resolution currently being displayed, with no letterboxing to crop.
 
 The toolbar's "Speed" button is an ON/OFF toggle. OFF (the default) runs at
 100% (normal) speed; ON runs at whatever multiplier is chosen in the
-settings panel (25% / 50% / 75% / 150% / 200% / 300% / 400%, default 200%).
-While ON, the button shows a badge with the current multiplier. The change
-takes effect immediately from the toggle itself — no reset needed — and
-audio pitch shifts along with it, like a tape running fast or slow (BGM
-speeds up too). The setting is not saved, so playback always starts at OFF
-(100%) on boot and after a reset.
+settings panel (25% / 50% / 75% / 150% / 200% / 300% / 400% / Unlimited,
+default 200%). While ON, the button shows a badge with the current
+multiplier (`∞` for Unlimited). The change takes effect immediately from
+the toggle itself — no reset needed — and audio pitch shifts along with
+it, like a tape running fast or slow (BGM speeds up too). The setting is
+not saved, so playback always starts at OFF (100%) on boot and after a
+reset.
 
 How fast it can actually go depends on your device's processing power. 400%
 is a selectable ceiling, not a guaranteed speed — the settings panel shows
 the measured speed you're actually getting, so you can see where it tops
 out.
+
+"Unlimited" is a separate mode with no target multiplier — it runs as fast
+as your device's processing power allows. It comes with two trade-offs:
+audio is silent, because samples are produced many times faster than real
+time and the existing pitch-shifting resampler can't keep up; and the
+screen updates at roughly 20-30fps instead, since paying the rendering cost
+every tick would leave no time for core execution. The settings panel's
+measured-speed display still works in Unlimited mode, so you can see the
+actual percentage you're getting.
 
 This is separate from the machine configuration's "CPU speed"
 (`px68k_cpuspeed`, 10-100MHz) setting: that one changes the emulated

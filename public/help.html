@@ -1496,24 +1496,28 @@
             en: 'Speed',
             descJa:
               'ON/OFFのトグルボタンです。OFF(既定)は等倍の100%で動作し、ONにすると設定パネルで' +
-              '選んだ倍率で走ります(選択肢は25%/50%/75%/150%/200%/300%/400%、既定200%)。' +
-              'ON中はボタンに現在の倍率がバッジ表示されます。リセット不要でトグル操作の' +
-              'その場から即時に反映され、音声もテープの早送り/スローのようにピッチが変わります' +
-              '(BGMも含めて速度に追従します)。設定は保存されず、起動時・リセット時は必ずOFF' +
-              '(100%)から始まります。実際に出せる速度は端末の処理能力次第で、設定パネルには' +
-              '実測の速度が表示されます。マシン構成の「CPU速度」(実機のクロックを変える設定で' +
-              'リセットが必要)とは別物です。',
+              '選んだ倍率で走ります(選択肢は25%/50%/75%/150%/200%/300%/400%/無制限、既定200%)。' +
+              'ON中はボタンに現在の倍率がバッジ表示されます(無制限を選んだ場合は「∞」)。' +
+              'リセット不要でトグル操作のその場から即時に反映され、音声もテープの早送り/スローの' +
+              'ようにピッチが変わります(BGMも含めて速度に追従します)。設定は保存されず、' +
+              '起動時・リセット時は必ずOFF(100%)から始まります。実際に出せる速度は端末の' +
+              '処理能力次第で、設定パネルには実測の速度が表示されます。マシン構成の「CPU速度」' +
+              '(実機のクロックを変える設定でリセットが必要)とは別物です。「無制限」を選ぶと' +
+              '端末の性能が許すかぎり速く動きます。そのかわり音は出ず、画面の更新も少し粗く' +
+              '(約20〜30fps)なります。',
             descEn:
               'A toggle button. OFF (the default) runs at 100% speed; ON runs at whatever multiplier' +
-              ' is chosen in the settings panel (25% / 50% / 75% / 150% / 200% / 300% / 400%, default' +
-              ' 200%). While ON, the button shows a badge with the current multiplier. The change' +
-              ' takes effect immediately from the toggle itself — no reset needed — and audio pitch' +
-              ' shifts along with it, like a tape running fast or slow (BGM speeds up too). The' +
-              ' setting is not saved, so playback always starts at OFF (100%) on boot and after a' +
-              ' reset. How fast it can actually go depends on your device, and the settings panel' +
-              ' shows the measured speed you\'re actually getting. This is separate from the machine' +
-              ' configuration\'s "CPU speed" setting, which changes the emulated clock and needs a' +
-              ' reset.',
+              ' is chosen in the settings panel (25% / 50% / 75% / 150% / 200% / 300% / 400% /' +
+              ' Unlimited, default 200%). While ON, the button shows a badge with the current' +
+              ' multiplier ("∞" for Unlimited). The change takes effect immediately from the toggle' +
+              ' itself — no reset needed — and audio pitch shifts along with it, like a tape running' +
+              ' fast or slow (BGM speeds up too). The setting is not saved, so playback always starts' +
+              ' at OFF (100%) on boot and after a reset. How fast it can actually go depends on your' +
+              ' device, and the settings panel shows the measured speed you\'re actually getting. This' +
+              ' is separate from the machine configuration\'s "CPU speed" setting, which changes the' +
+              ' emulated clock and needs a reset. Choosing "Unlimited" runs the emulator as fast as' +
+              ' your device allows — but with no audio, and the screen updates a bit more coarsely' +
+              ' (roughly 20-30fps).',
           },
         ];
 

@@ -108,6 +108,7 @@ interface Dict {
   settingsSpeedTitle(): string;
   settingsSpeedNote(): string;
   settingsSpeedLabel(): string;
+  settingsSpeedUnlimited(): string;
   settingsSpeedActualPrefix(): string;
   settingsClose(): string;
   biosStatusUser(): string;
@@ -531,8 +532,10 @@ const STRINGS: Record<Lang, Dict> = {
     settingsCpuSpeedLabel: () => 'CPU速度',
     settingsRamSizeLabel: () => 'RAM',
     settingsSpeedTitle: () => 'エミュレーション速度',
-    settingsSpeedNote: () => 'ツールバーの速度ボタンをONにしたときの倍率です。リセット不要で即時反映し、設定は保存されません。',
+    settingsSpeedNote: () =>
+      'ツールバーの速度ボタンをONにしたときの倍率です。リセット不要で即時反映し、設定は保存されません。無制限モードでは音は出ません。',
     settingsSpeedLabel: () => '速度ボタンON時の倍率',
+    settingsSpeedUnlimited: () => '無制限',
     settingsSpeedActualPrefix: () => '実測',
     settingsClose: () => '閉じる',
     biosStatusUser: () => '設定済み',
@@ -863,8 +866,9 @@ const STRINGS: Record<Lang, Dict> = {
     settingsRamSizeLabel: () => 'RAM',
     settingsSpeedTitle: () => 'Emulation Speed',
     settingsSpeedNote: () =>
-      'The multiplier used when the toolbar speed button is turned on. Applied instantly, no reset needed, and not saved.',
+      'The multiplier used when the toolbar speed button is turned on. Applied instantly, no reset needed, and not saved. Unlimited mode has no audio.',
     settingsSpeedLabel: () => 'Multiplier when the speed button is on',
+    settingsSpeedUnlimited: () => 'Unlimited',
     settingsSpeedActualPrefix: () => 'Actual',
     settingsClose: () => 'Close',
     biosStatusUser: () => 'Configured',

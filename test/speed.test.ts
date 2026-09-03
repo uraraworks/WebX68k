@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import {
   createResampleState,
   DEFAULT_SPEED_STEP,
+  parseSpeedSetting,
   parseSpeedStep,
   resampleSpeed,
   SPEED_STEPS,
@@ -71,6 +72,20 @@ describe('parseSpeedStep', () => {
 
   it('DEFAULT_SPEED_STEPはSPEED_STEPSに含まれる値である', () => {
     expect(SPEED_STEPS).toContain(DEFAULT_SPEED_STEP);
+  });
+});
+
+describe('parseSpeedSetting', () => {
+  it('"unlimited"はそのまま返す', () => {
+    expect(parseSpeedSetting('unlimited')).toBe('unlimited');
+  });
+
+  it('SPEED_STEPS内の値はparseSpeedStepと同じ結果を返す', () => {
+    expect(parseSpeedSetting('2')).toBe(2);
+  });
+
+  it('不正な値はDEFAULT_SPEED_STEPへフォールバックする', () => {
+    expect(parseSpeedSetting('not-a-number')).toBe(DEFAULT_SPEED_STEP);
   });
 });
 

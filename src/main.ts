@@ -1,6 +1,11 @@
 import './style.css';
 import { AudioEngine } from './audio';
-import { computeFrameBudget } from './frameBudget';
+import {
+  computeFrameBudget,
+  UNLIMITED_TICK_BUDGET_MS,
+  UNLIMITED_PRESENT_INTERVAL_MS,
+  UNLIMITED_MAX_DUTY,
+} from './frameBudget';
 import {
   createFormattedFd,
   createFormattedHdd,
@@ -58,9 +63,10 @@ import {
 import {
   createResampleState,
   DEFAULT_SPEED_STEP,
-  parseSpeedStep,
+  parseSpeedSetting,
   resampleSpeed,
   resetResampleState,
+  type SpeedSetting,
   type SpeedStep,
 } from './speed';
 import {
@@ -340,18 +346,30 @@ cfgRamSize.addEventListener('change', () => {
 // 速度ボタンのON/OFF)の2つだけにし、実効倍率(speedMultiplier)は必ずこの2つから導出する。
 // 実効値を書き込む場所を複数に増やすと、片方だけ更新し忘れてボタン表示と実際の速度が
 // 食い違う事故につながる。
-let selectedSpeed: SpeedStep = DEFAULT_SPEED_STEP;
+let selectedSpeed: SpeedSetting = DEFAULT_SPEED_STEP;
 let speedEnabled = false;
 // 実効倍率は「ボタンOFF時の1」を含むため SpeedStep(=SPEED_STEPS の要素型、1を含まない)とは
 // 別の型になる。
 let speedMultiplier: SpeedStep | 1 = 1;
+// selectedSpeed === 'unlimited' かつ speedEnabled のときだけ true。無制限モードは
+// speedMultiplier(数値倍率)では表現できない別経路のため、専用フラグで持つ。
+let unlimitedActive = false;
+// 無制限モードの時間配分に使う実測移動平均(ms)。初期値は実測の中央値から取った目安で、
+// 数tickで実測値へ収束する(EMA: x = x*0.8 + measured*0.2)。速度ボタンのOFF/ON・
+// resetSpeedState() ではリセットしない(ホスト性能の実測値なので持ち越してよい)。
+let unlimitedPresentCostMs = 6.5; // 画面提示1回ぶん(コア1フレーム+RGB565→RGBA変換+putImageData)
+let unlimitedFrameCostMs = 3; // コア1フレームぶん(描画スキップ時)
+let unlimitedLastPresentAt = 0;
+/** 無制限モードで次のtickを走らせてよい最短時刻(performance.now基準)。占有率の上限を守るために使う。 */
+let unlimitedNextAllowedAt = 0;
 // コアの音声出力(1エミュフレームぶんのサンプル)を速度倍率に合わせて可変レートリサンプルする
 // ための状態。チャンクをまたいで位相を持ち越す必要があるためモジュールスコープに置く。
 const audioResampleState = createResampleState();
 
-/** selectedSpeed/speedEnabled から実効倍率(speedMultiplier)を再計算する唯一の場所。 */
+/** selectedSpeed/speedEnabled から実効倍率(speedMultiplier)とunlimitedActiveを再計算する唯一の場所。 */
 function recomputeSpeedMultiplier(): void {
-  speedMultiplier = speedEnabled ? selectedSpeed : 1;
+  unlimitedActive = speedEnabled && selectedSpeed === 'unlimited';
+  speedMultiplier = speedEnabled && !unlimitedActive ? (selectedSpeed as SpeedStep) : 1;
 }
 
 /** 速度・状態の切り替わりでフレーム供給と音声リサンプラの持ち越し状態をリセットする。 */
@@ -359,14 +377,24 @@ function resetSpeedState(): void {
   accumulator = 0;
   resetResampleState(audioResampleState);
   audio?.flush();
+  // unlimitedPresentCostMs/unlimitedFrameCostMsはホスト性能の実測値なので持ち越すが、
+  // 提示タイミングだけは切り替え直後に必ず1回提示させるためリセットする。
+  unlimitedLastPresentAt = 0;
+  unlimitedNextAllowedAt = 0;
 }
 
 /** #btn-speed の見た目(押し込み状態・バッジ・ツールチップ)を現在の状態から一括更新する。 */
 function updateSpeedButtonUi(): void {
   btnSpeed.classList.toggle('active', speedEnabled);
   btnSpeed.setAttribute('aria-pressed', String(speedEnabled));
-  if (speedEnabled) {
-    const pct = `${Math.round(selectedSpeed * 100)}%`;
+  if (speedEnabled && unlimitedActive) {
+    btnSpeedBadge.textContent = '∞';
+    btnSpeedBadge.hidden = false;
+    const label = `${t('toolbarSpeedLabel')} (${t('settingsSpeedUnlimited')})`;
+    btnSpeed.title = label;
+    btnSpeed.setAttribute('aria-label', label);
+  } else if (speedEnabled) {
+    const pct = `${Math.round((selectedSpeed as SpeedStep) * 100)}%`;
     btnSpeedBadge.textContent = pct;
     btnSpeedBadge.hidden = false;
     const label = `${t('toolbarSpeedLabel')} (${pct})`;
@@ -381,7 +409,7 @@ function updateSpeedButtonUi(): void {
 
 cfgSpeed.value = String(selectedSpeed);
 cfgSpeed.addEventListener('change', () => {
-  selectedSpeed = parseSpeedStep(cfgSpeed.value);
+  selectedSpeed = parseSpeedSetting(cfgSpeed.value);
   if (speedEnabled) {
     recomputeSpeedMultiplier();
     resetSpeedState();
@@ -2529,6 +2557,12 @@ async function bootCore(): Promise<void> {
   // 例外になり、フレームループごと巻き込んで画面が真っ黒のまま止まる。
   // 音の行き先が無いときはサンプルを捨てるだけでよい。
   host = new LibretroHost(canvas, (samples) => {
+    // 無制限モードは実時間の何倍もの速さでサンプルを吐くため、そのままpushするとキューが
+    // 即座に溢れ、computeFrameBudget() の「queued > MAX_LATENCY_SEC*0.8 ならbudget=0」という
+    // ブレーキが効いてフレーム供給が止まってしまう(無制限モードはそのゲートを通らない別経路
+    // だが、pushしたサンプル自体はキューに残るため次にゲートを使う通常モードへ戻った時に
+    // 影響する)。無制限中は実時間で消費しきれない音を最初から捨てる(=無音)。
+    if (unlimitedActive) return;
     // k===1 はバイパスして元の配列をそのまま渡す(従来と同一の経路)。
     // それ以外は速度倍率ぶん可変レートでリサンプルし、テープ早送りのようにピッチを変える。
     const out =
@@ -2872,6 +2906,7 @@ function applyDocumentStrings(): void {
   document.getElementById('settings-speed-title')!.textContent = t('settingsSpeedTitle');
   document.getElementById('settings-speed-note')!.textContent = t('settingsSpeedNote');
   document.getElementById('settings-speed-label')!.textContent = t('settingsSpeedLabel');
+  document.getElementById('speed-opt-unlimited')!.textContent = t('settingsSpeedUnlimited');
   settingsCloseBtn.textContent = t('settingsClose');
   setBiosStatus(biosIplStatus, biosIplState);
   setBiosStatus(biosCgStatus, biosCgState);
@@ -3982,6 +4017,18 @@ if (import.meta.env.DEV) {
         axes: managerForPad(pad).describeAxes(pad),
       };
     },
+    // 無制限モードの時間配分を外から観測するためのフック。占有率(duty)が高すぎると
+    // ページが操作不能になるため、実測できる窓口を残しておく(2026-09-03に占有率95.9%で
+    // 操作不能になった回帰の検出用)。
+    unlimitedTiming: () => ({
+      active: unlimitedActive,
+      presentCostMs: unlimitedPresentCostMs,
+      frameCostMs: unlimitedFrameCostMs,
+      budgetMs: UNLIMITED_TICK_BUDGET_MS,
+      presentIntervalMs: UNLIMITED_PRESENT_INTERVAL_MS,
+      maxDuty: UNLIMITED_MAX_DUTY,
+      nextAllowedInMs: unlimitedNextAllowedAt - performance.now(),
+    }),
   };
 }
 
@@ -3991,6 +4038,69 @@ function loop(t: number): void {
   if (lastFrameTime === 0) lastFrameTime = t;
   const dt = (t - lastFrameTime) / 1000;
   lastFrameTime = t;
+
+  // 無制限速度モード: 「目標倍率」が無いため、fps/queued/frameInterval/accumulator/
+  // computeFrameBudget() を一切使わず、時間予算(UNLIMITED_TICK_BUDGET_MS)いっぱいまで
+  // retro_run() を回し切る別経路。中間フレームは描画をスキップ(host.setVideoSkip)し、
+  // tick末尾の1フレームだけ画面に出す。
+  //
+  // UNLIMITED_TICK_BUDGET_MS はコア実行だけでなく画面提示のコストも含む「総予算」
+  // (詳細は frameBudget.ts のコメント参照)。画面提示は固定費が大きい(実測6.56ms)ため
+  // 毎tick行うと予算がそれだけで尽きてしまう。UNLIMITED_PRESENT_INTERVAL_MS(30fps相当)
+  // まで頻度を落として固定費を分散させ、コア実行に予算を残す。
+  if (unlimitedActive) {
+    const tickStart = performance.now();
+    // 呼び出し元(rAF / setTimeout(32) / AudioWorklet の tick)が何であれ、無制限モードは
+    // 1回呼ばれるごとに予算を使い切る。呼ばれた回数がそのまま占有率になるため、実時間で
+    // 次に走ってよい時刻を決めて上限を掛ける。ここが無いと占有率99.8%でページが固まる。
+    if (tickStart < unlimitedNextAllowedAt) {
+      scheduleNext();
+      return;
+    }
+    // このtickで画面を提示するか。提示は固定費(約6.5ms)なので毎tickやると
+    // コア実行に回せる時間がほとんど残らない。30fpsまで落として固定費を分散させる。
+    const present = tickStart - unlimitedLastPresentAt >= UNLIMITED_PRESENT_INTERVAL_MS;
+    // 総予算から、このtickで払う提示コストの見込みを先に引く。
+    const coreBudget = UNLIMITED_TICK_BUDGET_MS - (present ? unlimitedPresentCostMs : 0);
+    // 「入らないフレームは始めない」。deadlineを1フレームぶん手前に置くことで
+    // 予算の踏み越えを防ぐ(旧実装はこれが無く2.4ms超過していた)。
+    const deadline = tickStart + coreBudget - unlimitedFrameCostMs;
+
+    let ran = 0;
+    try {
+      host.setVideoSkip(true);
+      do {
+        const frameStart = performance.now();
+        host.runFrame();
+        unlimitedFrameCostMs = unlimitedFrameCostMs * 0.8 + (performance.now() - frameStart) * 0.2;
+        ran++;
+      } while (performance.now() < deadline);
+    } finally {
+      host.setVideoSkip(false);
+    }
+
+    if (present) {
+      const presentStart = performance.now();
+      host.runFrame(); // このフレームだけ画面に出す
+      ran++;
+      unlimitedPresentCostMs = unlimitedPresentCostMs * 0.8 + (performance.now() - presentStart) * 0.2;
+      unlimitedLastPresentAt = presentStart;
+    }
+
+    pollDiskAccess(t);
+    pollAutoSave(t);
+    stepMouseTracking();
+    stepTouchTrackpad();
+    speedMeasureFrameCount += ran;
+    updateSpeedActualDisplay(t);
+    accumulator = 0;
+    // 実際にかかった時間から、占有率が UNLIMITED_MAX_DUTY を超えないだけの間隔を空ける。
+    // 予算値ではなく実コストを使うので、遅いホストでは自動的に間隔が広がる。
+    const costMs = performance.now() - tickStart;
+    unlimitedNextAllowedAt = tickStart + costMs / UNLIMITED_MAX_DUTY;
+    scheduleNext();
+    return;
+  }
 
   // fps は画面モード(15kHz/31kHz)切り替えでコアから再通知される(SET_SYSTEM_AV_INFO)。
   // 毎回 avInfo から読み直すことで、コアの1フレーム音声サンプル数(44100/fps)と
