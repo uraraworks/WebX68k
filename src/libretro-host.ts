@@ -6,12 +6,20 @@ import {
   keyRepeatIntervalMsFromSramValue,
 } from './key-repeat';
 import { RETROK_TO_SCANCODE } from './keyboard';
+import { buildRgb565Lut } from './rgb565';
 import {
   extractTextScreenFromCore,
   MINIMUM_ANK_CGROM_SIZE,
   type TextScreenDump,
   unavailableTextScreenDump,
 } from './text-screen';
+
+// 実行環境のバイト順。ImageData は [R,G,B,A] のバイト列なので、Uint32Array で
+// まとめ書きするときの詰め方がバイト順で変わる。
+const LITTLE_ENDIAN = new Uint8Array(new Uint32Array([1]).buffer)[0] === 1;
+// RGB565→RGBA の変換表。65536*4=256KBあるため、最初に必要になった時に1回だけ生成する
+// (起動時に無条件で作らない)。
+let rgb565Lut: Uint32Array | null = null;
 
 // ---- RETRO_ENVIRONMENT_* (libretro.h より) ----
 const RETRO_ENVIRONMENT_GET_CAN_DUPE = 3;
@@ -198,6 +206,7 @@ export class LibretroHost {
   private joyState: [number, number] = [0, 0];
 
   private imageData: ImageData | null = null;
+  private imageData32: Uint32Array | null = null;
   private lastWidth = 0;
   private lastHeight = 0;
 
@@ -678,6 +687,10 @@ export class LibretroHost {
       this.canvas.width = width;
       this.canvas.height = height;
       this.imageData = this.ctx2d.createImageData(width, height);
+      // imageData を作り直したら、Uint32Array のビューも必ず同時に作り直す。
+      // 忘れると解像度変化後も古いバッファへ書き続け、putImageDataでも新しいimg.dataは
+      // 更新されないまま画面が固まる。
+      this.imageData32 = new Uint32Array(this.imageData.data.buffer);
       this.lastWidth = width;
       this.lastHeight = height;
       // 実解像度が変わった直後だけ通知する(このコールバックは毎フレーム発生するhandleVideoRefresh
@@ -687,27 +700,21 @@ export class LibretroHost {
 
     const mod = this.mod;
     const img = this.imageData;
-    if (!img) return;
+    const out32 = this.imageData32;
+    if (!img || !out32) return;
+
+    if (!rgb565Lut) rgb565Lut = buildRgb565Lut(LITTLE_ENDIAN);
+    const lut = rgb565Lut;
 
     const src16 = mod.HEAPU16;
     const strideSamples = pitch >> 1; // pitch はバイト単位、RGB565は1pixel=2byte
     const base = data >> 1;
-    const out = img.data;
 
     for (let y = 0; y < height; y++) {
       let srcIdx = base + y * strideSamples;
-      let dstIdx = y * width * 4;
+      let dstIdx = y * width; // 32bit単位のインデックス(y*width*4 ではない)
       for (let x = 0; x < width; x++) {
-        const px = src16[srcIdx];
-        const r5 = (px >> 11) & 0x1f;
-        const g6 = (px >> 5) & 0x3f;
-        const b5 = px & 0x1f;
-        out[dstIdx] = (r5 << 3) | (r5 >> 2);
-        out[dstIdx + 1] = (g6 << 2) | (g6 >> 4);
-        out[dstIdx + 2] = (b5 << 3) | (b5 >> 2);
-        out[dstIdx + 3] = 255;
-        srcIdx++;
-        dstIdx += 4;
+        out32[dstIdx++] = lut[src16[srcIdx++]];
       }
     }
 
