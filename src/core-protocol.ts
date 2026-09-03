@@ -329,6 +329,15 @@ export interface InitPayload {
   options?: Record<string, string>;
   initialDisks?: Array<{ slot: 'fdd0' | 'fdd1' | 'hdd'; name: string; bytes: ArrayBuffer }>;
   offscreenCanvas?: OffscreenCanvas;
+  /**
+   * ページ(main)側の `globalThis.__webx68k*` のうち、値が number/string/boolean のものを
+   * そのまま Worker の globalThis へ写すための橋。SCSI の設定(__webx68kScsiUrl 等)や
+   * 計測用の監視範囲(__webx68kRamWatchLo 等)は wasm から globalThis 経由で読まれるため、
+   * Worker 経路ではこれを渡さないと丸ごと効かない(2026-09-03 実測: SCSI-BPB読み出し失敗
+   * → SCSIドライバとして名乗らない → ゲストで「ドライブ名が無効です」)。
+   * **初期化時に1回だけ写す**。実行中に main 側で値を変えても Worker には反映されない。
+   */
+  hostGlobals?: Record<string, string | number | boolean>;
 }
 
 // --- 入力 ------------------------------------------------------------------

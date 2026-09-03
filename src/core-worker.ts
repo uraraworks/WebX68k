@@ -587,6 +587,21 @@ async function handleInitialize(
   const { generation, requestId, payload } = cmd;
   currentGeneration = generation;
   try {
+    // 2026-09-03追記(docs/STORAGE-SCSI.md参照): SCSI設定(__webx68kScsiUrl等)や計測用の
+    // 監視範囲(__webx68kRamWatchLo等)はwasmからglobalThis経由で読まれる。Workerは
+    // page側とは別のglobalThisを持つため、コアを作る(=wasmが実際にそれらを読みに来る)前に
+    // main側から渡された値をここで写す必要がある。無ければ丸ごと無効(SCSI-BPB読み出し失敗
+    // → ゲストで「ドライブ名が無効です」、実測済み)。無い/0件のときも黙らず必ずログを出す
+    // (陽性対照。橋が壊れていることに気づけるようにするため)。
+    const hostGlobals = payload.hostGlobals ?? {};
+    const hostGlobalKeys = Object.keys(hostGlobals);
+    for (const key of hostGlobalKeys) {
+      (globalThis as Record<string, unknown>)[key] = hostGlobals[key];
+    }
+    console.log(
+      `[WebX68k-worker] ホスト側グローバルを ${hostGlobalKeys.length} 件受け取った ` +
+        `(__webx68kScsiUrl: ${'__webx68kScsiUrl' in hostGlobals ? 'あり' : '無し'})`,
+    );
     await ensureCoreModuleLoaded();
     // scratch canvas: ファイル冒頭のコメント参照。
     scratchCanvas = new OffscreenCanvas(1, 1);

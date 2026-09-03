@@ -152,6 +152,10 @@ const FD1 = args.fd1 ?? null;
 const TYPE_TEXT = args.type === undefined ? null : String(args.type);
 // --hdd=<パス>: SASIのHDDスロットへ挿す(?hdd=)。SCSIと同居できるかを測る用。
 const HDD = args.hdd ?? null;
+// --worker: コアをWorkerで回す(?worker=1)。Worker既定化の前に、SCSI経路が
+// Worker側で成立するかを測るために足した。
+// 既定(未指定)はアプリ側の既定(=Worker)に任せる。--worker=0 で従来経路へ戻せる。
+const WORKER = args.worker === undefined ? null : String(args.worker);
 // 本物の外部SCSIボードROMイメージ(8192バイト)。指定時のみ window.__webx68kScsiRomBytes
 // へ数値配列として置く。逆アセンブルはせず、本物を走らせて実測するためのオラクルとして使う。
 // 未指定なら従来と1文字も挙動が変わらない。
@@ -546,8 +550,10 @@ try {
     }, romBytes);
   }
   const raw = [];
+  // Worker経路かどうかの判定に使う印も拾う(既定がどちらかを結果ファイルに残すため)。
   page.on('console', (msg) => {
     const text = msg.text();
+    if (text.includes('[WebX68k-worker]')) raw.push(text);
     // タグを列挙して照合すると、コア側でタグが増えたときに無言で取りこぼす
     // (実測: [SCSI-WINREAD]/[SCSI-WRITE] が '[SCSI]' に含まれず全て捨てられていた)。
     // 前方一致にして、SCSI 系のログは全て拾う。
@@ -555,7 +561,8 @@ try {
   });
   const fd1Query =
     (FD1 !== null ? `&fd1=${encodeURIComponent(FD1)}` : '') +
-    (HDD !== null ? `&hdd=${encodeURIComponent(HDD)}` : '');
+    (HDD !== null ? `&hdd=${encodeURIComponent(HDD)}` : '') +
+    (WORKER !== null ? `&worker=${encodeURIComponent(WORKER)}` : '');
   await page.goto(`http://localhost:${PORT}/?${args['no-system'] ? '' : 'system=1&'}run=1${fd1Query}`, { waitUntil: 'domcontentloaded' });
 
   // 起動待ち。到達しなくても観測は続行し、到達可否を結果に残す。
@@ -603,7 +610,9 @@ try {
     for (const cmdText of TYPE_TEXT.split(';;')) {
     // ';;' 区切りで複数コマンドを続けて打てる(コピーしてから dir で確かめる等)。
     for (const part of cmdText.split(':')) {
-      if (part) await page.keyboard.type(part, { delay: 60 });
+      // 実測(2026-09-03、Worker既定化後): delay=60 では "dir" が "dri" になる
+      // 打鍵の入れ替わりが出た。検証道具が偽の失敗を作らないよう間隔を広げる。
+      if (part) await page.keyboard.type(part, { delay: 120 });
       if (part !== cmdText.split(':').at(-1)) await pressHeld(page, 'Quote');
     }
     await sleep(300);

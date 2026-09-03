@@ -310,15 +310,17 @@ if (ramParamRaw !== null && urlRamSize === null) {
   ramSize = urlRamSize;
 }
 
-// `?worker=1` : Worker経路(段階移行 手順4のスケルトン)を試すための裏フラグ。指定が無い
-// (既定)場合は従来どおり LocalCoreProxy のみで、この変数は false のまま何も変えない。
-// docs/STORAGE-SCSI.md「段階移行の順序」参照。
+// `?worker=` : コアをWorkerで回すかどうか。**2026-09-03 から既定は Worker 経路**。
+// `?worker=0` で従来の LocalCoreProxy(メインスレッド)へ戻せる。
+// 既定を入れ替えた理由: 決定2(SCSIのI/OはOPFSの同期ハンドル経由)が
+// `FileSystemSyncAccessHandle`=ワーカー専用に依存しており、メインスレッド経路では
+// 原理的に成立しないため。docs/STORAGE-SCSI.md「段階移行の順序」参照。
 const workerParamRaw = new URLSearchParams(location.search).get('worker');
 const parsedWorkerMode = parseWorkerModeParam(workerParamRaw);
 if (workerParamRaw !== null && parsedWorkerMode === null) {
   console.warn('?worker= の値が不正です(1/0, true/false, yes/no, on/off のいずれかで指定してください)');
 }
-const urlWorkerMode = parsedWorkerMode ?? false;
+const urlWorkerMode = parsedWorkerMode ?? true;
 
 cfgCpuSpeed.value = cpuSpeed;
 cfgRamSize.value = ramSize;
@@ -2724,6 +2726,27 @@ let workerAvInfo: AvInfo | null = null;
  * SRAM・ステート保存/復元は今回もスコープ外のまま(docs/STORAGE-SCSI.md「段階移行の順序」
  * 参照)。HDDの起動中差し替えは元々既定経路でもisSlotLocked()で禁止されている機能で、
  * Worker経路固有の制約ではない。無言のno-opにせず、必ずここを通してから抜けること。 */
+/**
+ * ページ(main)側の `globalThis.__webx68k*` をWorkerへ渡すためのスナップショットを取る
+ * (docs/STORAGE-SCSI.md参照)。SCSIの設定(__webx68kScsiUrl等)や計測用の監視範囲
+ * (__webx68kRamWatchLo等)はwasmからglobalThis経由で読まれるため、Workerを別グローバル
+ * (別スレッド)で走らせるとこれが渡らず丸ごと効かない(2026-09-03実測)。
+ *
+ * **関数は渡さない**(構造化クローンできないため)。__webx68kScsiRead/__webx68kScsiWrite
+ * のようなコールバック関数はここで自動的に除外される。Worker側からホストへ書き戻す経路が
+ * 要るなら、それは別途OPFS実装側が持つべきもので、ここでは扱わない。
+ */
+function collectHostGlobals(): Record<string, string | number | boolean> {
+  const out: Record<string, string | number | boolean> = {};
+  for (const key of Object.keys(globalThis)) {
+    if (!key.startsWith('__webx68k')) continue;
+    const v = (globalThis as Record<string, unknown>)[key];
+    const t = typeof v;
+    if (t === 'string' || t === 'number' || t === 'boolean') out[key] = v as string | number | boolean;
+  }
+  return out;
+}
+
 function warnWorkerModeUnsupported(): void {
   console.warn('[worker] ?worker=1 ではこの機能はまだ未対応です(SRAM・ステート保存/復元)。');
   showToast(t('workerModeUnsupported'));
@@ -2923,7 +2946,14 @@ async function bootWorkerCore(): Promise<void> {
   });
   virtualPad.setPadType(gamepadStore.joyType[0]);
 
-  await proxy.init(biosIplBytes, biosCgBytes, savedSram ?? undefined, initialDisks, workerCoreOptions);
+  await proxy.init(
+    biosIplBytes,
+    biosCgBytes,
+    savedSram ?? undefined,
+    initialDisks,
+    workerCoreOptions,
+    collectHostGlobals(),
+  );
   await proxy.loadGame('/game/boot.cmd');
   workerAvInfo = await proxy.fetchAvInfo();
   await proxy.setRunning(true);
