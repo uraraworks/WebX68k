@@ -58,6 +58,10 @@ const SRAM_INIT = args['scsi-sram'] !== undefined;
 // __webx68kScsiRead フック)を有効にする。永続化はしない。本命の書き戻し経路
 // (OPFS)が入るまで、書き込み経路を端から端まで確かめるためだけのもの。
 const SCSI_RAM_WRITES = args['scsi-ram-writes'] !== undefined;
+// 本命の書き戻し経路(OPFS、src/scsi-opfs.ts)を有効にする。値を取らないフラグ。
+// --scsi-ram-writes とは排他ではないが、両方指定した場合は評価順(下記)により
+// SCSI_RAM_WRITES側のwindow.__webx68kScsiRead/Writeが後勝ちで上書きする点に注意。
+const SCSI_OPFS = args['scsi-opfs'] !== undefined;
 // 初期化コマンド($00)への返答値。どの欄が Human68k の判断に効くかを切り分けるための
 // 実験用スイッチ。意味は core-shim.c の js_scsi_reply_* を参照。未指定はコア側の既定に任せる。
 const REPLY_ERR = args['reply-err'] === undefined ? null : Number(args['reply-err']);
@@ -308,7 +312,10 @@ let profile;
 let imageServer = null;
 try {
   server = await startServer(PORT);
-  profile = await mkdtemp(join(tmpdir(), 'webx68k-probe-scsi-'));
+  // --profile=<パス> を渡すと、そのプロファイルを使い回し、終了時にも消さない。
+  // OPFS は プロファイル(オリジンのストレージ)に紐づくので、
+  // 「書いた内容が次の起動でも残っているか」を2回の実行に分けて測るために要る。
+  profile = args.profile ? String(args.profile) : await mkdtemp(join(tmpdir(), 'webx68k-probe-scsi-'));
   // Chrome の起動待ちタイムアウト(docs/STORAGE-SCSI.md 宿題20)が実際に出るため、
   // 待ち時間を延ばしたうえで1回だけ再試行する。原因は未特定であり、これは回避策である。
   const launchOnce = () =>
@@ -366,6 +373,15 @@ try {
         heap.set(hit, ptr);
         return 0;
       };
+    });
+  }
+  if (SCSI_OPFS) {
+    // 本命の書き戻し経路(src/scsi-opfs.ts)。値は boolean なので collectHostGlobals()
+    // (src/main.ts)経由でWorkerのglobalThisへちゃんと転写される
+    // (__webx68kScsiRead/Write自体は関数なので転写されないが、それはWorker内の
+    // setupScsiOpfs()自身が自分のglobalThisへ生やす。src/core-worker.ts参照)。
+    await page.evaluateOnNewDocument(() => {
+      window.__webx68kScsiOpfs = true;
     });
   }
   if (INIT_A4 !== null) {
@@ -727,7 +743,8 @@ try {
   );
 } finally {
   if (browser) await browser.close().catch(() => {});
-  if (profile) await rm(profile, { recursive: true, force: true }).catch(() => {});
+  // --profile= で指定されたものは消さない(次の実行で使い回すため)。
+  if (profile && !args.profile) await rm(profile, { recursive: true, force: true }).catch(() => {});
   if (imageServer) imageServer.server.close();
   if (server && server.exitCode === null) {
     server.kill('SIGTERM');

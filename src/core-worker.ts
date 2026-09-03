@@ -94,6 +94,7 @@ import { WorkerInputState } from './worker-input';
 import { MouseTracker } from './mouse-track';
 import { initialTrackerState, trackKeyBufWrite, type KeyBufWriteTrackerState } from './keybuf-attribution';
 import { WorkerMediaState, type DiskSlotId } from './worker-dirty-capture';
+import { setupScsiOpfs } from './scsi-opfs';
 
 // --- DEV専用: 駆動ループ内訳プローブ (性能調査。既定off) --------------------------------
 //
@@ -602,6 +603,18 @@ async function handleInitialize(
       `[WebX68k-worker] ホスト側グローバルを ${hostGlobalKeys.length} 件受け取った ` +
         `(__webx68kScsiUrl: ${'__webx68kScsiUrl' in hostGlobals ? 'あり' : '無し'})`,
     );
+    // SCSI I/O の実体を OPFS 同期ハンドルへ差し替える(決定2)。hostGlobalsを写した直後、
+    // かつコアが __webx68kScsiRead/__webx68kScsiSize 等を実際に読みに来る前
+    // (ensureCoreModuleLoaded()より前)に呼ぶ必要がある。none のときも含め、
+    // 必ず1行ログを出す(沈黙させない。src/scsi-opfs.tsのScsiOpfsResult参照)。
+    const scsi = await setupScsiOpfs();
+    if (scsi.mode === 'opfs') {
+      console.log(
+        `[WebX68k-worker] SCSI I/O: opfs (${scsi.bytes ?? '?'} バイト, 取り込み=${scsi.imported ? 'あり' : 'なし'})`,
+      );
+    } else {
+      console.log(`[WebX68k-worker] SCSI I/O: none (理由: ${scsi.reason ?? '不明'}) — 従来のXHR経路(読み取り専用)を使う`);
+    }
     await ensureCoreModuleLoaded();
     // scratch canvas: ファイル冒頭のコメント参照。
     scratchCanvas = new OffscreenCanvas(1, 1);

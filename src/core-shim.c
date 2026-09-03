@@ -364,6 +364,13 @@ void webx68k_send_key_make(int scancode)
  */
 EM_JS(int, js_scsi_get_size, (), {
   var g = globalThis;
+  /* OPFS経路(src/scsi-opfs.ts の setupScsiOpfs())が成功しているときは、
+   * そちらが確定させたサイズを最優先で返す。OPFS経路ではイメージ全体を既にOPFSへ
+   * 取り込み済みのため、ここでXHRによるサイズの取り直しは行わない
+   * (取り直すとURL側の原本サイズに化け、ローカルで書き込んだ結果と食い違いうる)。 */
+  if (typeof g.__webx68kScsiSize === 'number' && g.__webx68kScsiSize > 0) {
+    return g.__webx68kScsiSize;
+  }
   var url = g.__webx68kScsiUrl;
   if (!url) {
     console.log('[SCSI] __webx68kScsiUrl が未設定');
