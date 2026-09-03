@@ -1436,8 +1436,26 @@
         // ツールバーのボタン一覧テーブルを生成する。
         // アイコンのpath dは index.html のツールバーボタン定義と同一。
 
-        // 常設(5個): リセット / フルスクリーン / 仮想キーボード / スクリーンショット / 速度変更。
+        // 常設(6個): ポーズ / リセット / フルスクリーン / 仮想キーボード(入力パネル) /
+        // スクリーンショット / 速度変更。
         var PERMANENT_BUTTONS = [
+          {
+            icon: 'M8 5v14 M16 5v14',
+            ja: 'ポーズ',
+            en: 'Pause',
+            descJa:
+              'エミュレーションを一時停止し、画面に半透明の「ポーズ中」オーバーレイを表示します。' +
+              '再開はオーバーレイ中央の再生ボタンからのみ行います(誤操作防止のため、余白クリックでは' +
+              '再開しません)。ポーズ中も音声は止めず、フレーム供給が止まったぶんは自然にフェード' +
+              'アウトして無音になり、再開時はフェードインします。ポーズ状態はページの再読み込みでは' +
+              '保持されません。',
+            descEn:
+              'Pauses emulation and shows a translucent "Paused" overlay on the screen. Resume only' +
+              ' from the play button in the center of the overlay (clicking elsewhere on it does' +
+              ' nothing, to avoid accidental resumes). Audio keeps running while paused; once the' +
+              ' frame supply stops it fades out naturally to silence and fades back in on resume.' +
+              ' Pause state is not preserved across a page reload.',
+          },
           {
             icon: 'M3 12a9 9 0 1 0 3-6.7M3 4v5h5',
             ja: 'リセット',

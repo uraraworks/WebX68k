@@ -990,6 +990,59 @@ main {
   display: none;
 }
 
+/* ポーズ中オーバーレイ。#boot-overlay(z-index:10)とは別要素で、下の画面がうっすら
+   見える程度の薄い黒(0.82より薄い0.55)にする。ページのライト/ダークどちらのテーマでも
+   下は常に黒いエミュ画面なので、#boot-overlay と同じく白系の文字色で固定して成立させる。
+   両者が同時に出ることは無い(ポーズは起動後のみ)が、念のため #boot-overlay より下の
+   z-index にする(#virtual-pad=5 より上、#boot-overlay=10 より下の 9)。 */
+.pause-overlay {
+  position: absolute;
+  inset: 0;
+  z-index: 9;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 12px;
+  background: rgba(0, 0, 0, 0.55);
+}
+
+.pause-overlay.hidden {
+  display: none;
+}
+
+/* 再開はこのボタンからのみ(オーバーレイの余白クリックでは再開しない)。
+   本体は下の要素へクリックを通さず自分で受け止めるだけ。 */
+.pause-overlay-resume {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 72px;
+  height: 72px;
+  border-radius: 50%;
+  border: 2px solid #ffffff;
+  background: rgba(255, 255, 255, 0.12);
+  color: #ffffff;
+  cursor: pointer;
+  padding: 0;
+}
+
+.pause-overlay-resume:hover {
+  background: rgba(255, 255, 255, 0.24);
+}
+
+/* .btn-icon の16px固定と衝突しないよう専用クラスで48px表示にする。 */
+.pause-overlay-icon {
+  width: 48px;
+  height: 48px;
+}
+
+.pause-overlay-label {
+  color: #ffffff;
+  font-size: 14px;
+  letter-spacing: 0.05em;
+}
+
 .overlay-choices {
   display: flex;
   flex-direction: row;

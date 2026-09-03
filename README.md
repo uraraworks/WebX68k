@@ -102,15 +102,22 @@ Notes on `lib` (for sharing links to multi-disk collections):
 
 ### Toolbar
 
-Five buttons stay directly on the toolbar: Reset, Fullscreen, Virtual
-Keyboard, Screenshot, and Speed. Everything else lives behind the "..." (More)
-button as a two-level menu: Display (4:3 display toggle), Input (mouse
-capture/resync, gamepad settings), Disk (Disk Library, file transfer), and
-State (save/load state) groups, plus Settings, Help, and the language toggle
-listed directly below the groups. At 640px and wider, opening a group keeps
-the menu open and shows the submenu cascading to the right of it (flipping
-to the left near the screen edge); narrower screens replace the menu in
-place with a "← Back" row instead.
+Six buttons stay directly on the toolbar: Pause, Fullscreen, Virtual
+Keyboard, Screenshot, Speed, and Reset. Everything else lives behind the
+"..." (More) button as a two-level menu: Display (4:3 display toggle), Input
+(mouse capture/resync, gamepad settings), Disk (Disk Library, file transfer),
+and State (save/load state) groups, plus Settings, Help, and the language
+toggle listed directly below the groups. At 640px and wider, opening a group
+keeps the menu open and shows the submenu cascading to the right of it
+(flipping to the left near the screen edge); narrower screens replace the
+menu in place with a "← Back" row instead.
+
+**Pause stops emulation and shows a translucent "Paused" overlay** on the
+screen. Resume only from the play button in the center of that overlay —
+clicking elsewhere on it does nothing, to avoid accidental resumes. Audio
+keeps running while paused; once the frame supply stops it fades out
+naturally to silence and fades back in on resume. Pause state is not
+preserved across a reload (reloading the page always resumes).
 
 **Reset performs a full core restart**, not just a CPU reset: it flushes any
 pending disk writes back to storage, then tears down and rebuilds the whole

@@ -50,6 +50,18 @@
                 <span id="overlay-note-2">ディスクはツールバーのライブラリ、または下のドライブ行から追加できます。</span>
               </div>
             </div>
+            <!-- ポーズ中オーバーレイ。#boot-overlay(起動前、z-index:10)とは別要素で、起動後に
+                 ツールバーのポーズボタンから止めたときだけ出す。#virtual-pad(z-index:5)より上、
+                 #boot-overlay より下の z-index:9 にする(両者が同時に出ることは無いが念のため)。
+                 再開はこのオーバーレイ中央の再生ボタンからのみ行う(余白クリックでは再開しない。
+                 WebNP2 6d7dbe7 と同じ判断: 押し直しの誤操作で再開してしまうのを防ぐ)。
+                 状態(pausedByUser)の扱いは main.ts の setPaused() 定義箇所のコメント参照。 -->
+            <div id="pause-overlay" class="pause-overlay hidden">
+              <button id="btn-pause-overlay-resume" type="button" class="pause-overlay-resume" aria-label="再開">
+                <svg class="pause-overlay-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M7 4l13 8-13 8z"/></svg>
+              </button>
+              <div id="pause-overlay-label" class="pause-overlay-label">ポーズ中</div>
+            </div>
           </div>
         </div>
         <div id="virtual-keyboard" class="virtual-keyboard hidden" aria-label="X68000 仮想キーボード"></div>
@@ -60,10 +72,16 @@
         <div id="virtual-trackpad" class="virtual-trackpad hidden" aria-label="バーチャルトラックパッド"></div>
         <div class="console-footer">
           <div class="toolbar">
-            <!-- 常設4種(リセット/フルスクリーン/仮想キーボード/スクリーンショット)+「…」オーバーフロー。
-                 元は14個のアイコンが横一列で分かりにくかったため、使用頻度の低いものは
-                 「…」ボタン配下の階層メニュー(#slot-popup-menu を共用、main.ts の
-                 renderOverflowMenu() 系参照)へ畳んだ。 -->
+            <!-- 常設5種(ポーズ/リセット/フルスクリーン/仮想キーボード/スクリーンショット)+
+                 速度変更+「…」オーバーフロー。元は14個のアイコンが横一列で分かりにくかったため、
+                 使用頻度の低いものは「…」ボタン配下の階層メニュー(#slot-popup-menu を共用、
+                 main.ts の renderOverflowMenu() 系参照)へ畳んだ。 -->
+            <!-- ポーズ/再開。libretro コアのメインループは JS 側(main.ts の loop())にあるため
+                 コアの再ビルドは不要で、host.runFrame() を呼ばないだけでポーズになる。
+                 詳細な状態遷移は main.ts の setPaused() 定義箇所のコメント参照。 -->
+            <button id="btn-pause" type="button" class="icon-btn" title="ポーズ" aria-label="ポーズ" disabled>
+              <svg class="btn-icon" viewBox="0 0 24 24" aria-hidden="true"><path id="btn-pause-icon" d="M8 5v14 M16 5v14"/></svg>
+            </button>
             <button id="btn-reset" type="button" class="icon-btn" title="リセット" aria-label="リセット" disabled>
               <svg class="btn-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M3 12a9 9 0 1 0 3-6.7M3 4v5h5"/></svg>
             </button>

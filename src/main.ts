@@ -148,6 +148,11 @@ const bootOverlay = document.getElementById('boot-overlay') as HTMLDivElement;
 const btnBootPlain = document.getElementById('btn-boot-plain') as HTMLButtonElement;
 const btnBootSystem = document.getElementById('btn-boot-system') as HTMLButtonElement;
 const btnReset = document.getElementById('btn-reset') as HTMLButtonElement;
+const btnPause = document.getElementById('btn-pause') as HTMLButtonElement;
+const btnPauseIcon = document.getElementById('btn-pause-icon') as unknown as SVGPathElement;
+const pauseOverlay = document.getElementById('pause-overlay') as HTMLDivElement;
+const btnPauseOverlayResume = document.getElementById('btn-pause-overlay-resume') as HTMLButtonElement;
+const pauseOverlayLabelEl = document.getElementById('pause-overlay-label') as HTMLDivElement;
 const btnScreenshot = document.getElementById('btn-screenshot') as HTMLButtonElement;
 const btnSpeed = document.getElementById('btn-speed') as HTMLButtonElement;
 const btnSpeedBadge = document.getElementById('btn-speed-badge') as HTMLSpanElement;
@@ -2829,6 +2834,12 @@ function applyDocumentStrings(): void {
 
   btnReset.title = t('toolbarReset');
   btnReset.setAttribute('aria-label', t('toolbarReset'));
+  {
+    const pauseLabel = t(pausedByUser ? 'toolbarResume' : 'toolbarPause');
+    btnPause.title = pauseLabel;
+    btnPause.setAttribute('aria-label', pauseLabel);
+  }
+  pauseOverlayLabelEl.textContent = t('pauseOverlayLabel');
   btnScreenshot.title = t('toolbarScreenshot');
   btnScreenshot.setAttribute('aria-label', t('toolbarScreenshot'));
   updateSpeedButtonUi();
@@ -3806,6 +3817,20 @@ let accumulator = 0;
 let rafId = 0;
 let timerId: ReturnType<typeof setTimeout> | undefined;
 
+// ユーザーがツールバーのポーズボタンで止めているか。WebNP2 はコア(SDL2)が内部で
+// メインループを持つためコア側にポーズフラグが必要だったが、WebX68k は libretro で
+// メインループが JS 側(この下の loop())にあるため、コアの再ビルドは不要で
+// host.runFrame() を呼ばないだけでポーズになる。
+//
+// 意図的に localStorage へは保存しない。ポーズしたままリロードすると、次回起動時に
+// コアはポーズされていない(コアの状態はページ再読み込みで消える)のにこのフラグだけ
+// 「ポーズ中」を覚えていて画面が理由もわからず止まって見える、という事故を避けるため。
+let pausedByUser = false;
+
+// ポーズ中に rAF を使わず待機する間隔。60Hz で空回りさせないための CPU 削減用で、
+// あくまで「次に enterLoop を呼ぶまでの待ち時間」であり精度は要らない。
+const PAUSE_SLEEP_MS = 200;
+
 // rAF と setTimeout の両方でスケジュールし、先に発火した方が他方を取り消す。
 // rAF が抑制される環境(非アクティブタブ・ヘッドレス)でもエミュレーションを止めないため。
 // さらに AudioWorklet の tick (タブ非表示でも止まらない) からも enterLoop が呼ばれる。
@@ -3821,9 +3846,49 @@ function enterLoop(): void {
 }
 
 function scheduleNext(): void {
+  // ポーズ中は rAF を張らず setTimeout だけにする。AudioWorklet の tick からも
+  // enterLoop() が呼ばれ続けるが、loop() 冒頭の pausedByUser 早期 return が受けるので
+  // 二重駆動にはならない。
+  if (pausedByUser) {
+    timerId = setTimeout(() => enterLoop(), PAUSE_SLEEP_MS);
+    return;
+  }
   rafId = requestAnimationFrame(() => enterLoop());
   timerId = setTimeout(() => enterLoop(), 32);
 }
+
+// ポーズ状態の唯一の更新経路。pausedByUser の書き換えとUI反映(ボタンのアイコン/
+// title/aria-label/active クラス、オーバーレイの表示)を1か所に集約する。
+//
+// WebNP2 では4Hzのポーリングから毎回無条件にボタンの子要素を replaceChildren して
+// いたため、mousedown〜mouseup の間に要素が差し替わって click が発火しない不具合が
+// あった(WebNP2 src/ui/pause-ui.ts 冒頭のコメント参照)。WebX68k はポーズ状態が
+// コアでなく JS 側のこの pausedByUser 一つだけにあるためポーリングが要らない。
+// 状態が変わったときだけ DOM を触る設計にし、定期ポーリングは足さないこと。
+// またアイコンは <svg> ごと作り直さず <path> の d 属性だけを setAttribute で
+// 差し替える(クリック対象の要素そのものを DOM から外さないため)。
+function setPaused(next: boolean): void {
+  pausedByUser = next;
+  btnPause.classList.toggle('active', pausedByUser);
+  btnPauseIcon.setAttribute('d', pausedByUser ? 'M7 4l13 8-13 8z' : 'M8 5v14 M16 5v14');
+  const label = t(pausedByUser ? 'toolbarResume' : 'toolbarPause');
+  btnPause.title = label;
+  btnPause.setAttribute('aria-label', label);
+  pauseOverlay.classList.toggle('hidden', !pausedByUser);
+  if (!pausedByUser) {
+    // 200ms の setTimeout を待たせず即座にループを再開させる。
+    cancelScheduled();
+    enterLoop();
+  }
+}
+
+btnPause.addEventListener('click', () => {
+  if (btnPause.disabled) return;
+  setPaused(!pausedByUser);
+});
+// 再開はこのボタンからのみ行う(オーバーレイの余白クリックでは再開しない。誤操作防止。
+// WebNP2 6d7dbe7 と同じ判断)。
+btnPauseOverlayResume.addEventListener('click', () => setPaused(false));
 
 // アクセスランプ: コアが実際にディスクを読み書きしたフレームだけ点灯させる。
 // 単純にそのフレームだけだと視認しづらいため、直近アクセスから ACCESS_GLOW_MS の間は
@@ -4029,11 +4094,30 @@ if (import.meta.env.DEV) {
       maxDuty: UNLIMITED_MAX_DUTY,
       nextAllowedInMs: unlimitedNextAllowedAt - performance.now(),
     }),
+    // ポーズ状態の取得/設定。ヘッドレスでの自動検証用(実ブラウザで rAF が回るとは
+    // 限らないため、フレーム進行の判定は canvas 内容のハッシュ等の末端の値で行うこと)。
+    // 引数省略時は現在の状態を返すだけ(副作用なし)。
+    pause: (v?: boolean) => {
+      if (v !== undefined) setPaused(v);
+      return pausedByUser;
+    },
   };
 }
 
 function loop(t: number): void {
   if (!running || !host) return;
+
+  // ポーズ中は host.runFrame() を呼ばずに抜ける。lastFrameTime/accumulator を
+  // 0 に戻しておかないと、再開直後の dt が「ポーズしていた時間ぶん」の巨大な値になり、
+  // computeFrameBudget() がその巨大な dt を一気に消化しようとして大量のフレームを
+  // まとめて回す(早送りになる)。scheduleNext() 側でポーズ中は rAF を張らず
+  // setTimeout(PAUSE_SLEEP_MS) だけにして 60Hz の空回りを避ける。
+  if (pausedByUser) {
+    lastFrameTime = 0;
+    accumulator = 0;
+    scheduleNext();
+    return;
+  }
 
   if (lastFrameTime === 0) lastFrameTime = t;
   const dt = (t - lastFrameTime) / 1000;
@@ -4229,6 +4313,8 @@ async function startFromOverlay(withSystemDisk: boolean): Promise<void> {
     rescale();
 
     btnReset.disabled = false;
+    btnPause.disabled = false;
+    setPaused(false);
     btnSaveState.disabled = false;
     btnLoadState.disabled = false;
     btnScreenshot.disabled = false;
@@ -4268,12 +4354,16 @@ btnReset.addEventListener('click', () => {
   restartCore()
     .then(() => {
       btnReset.disabled = false;
+      setPaused(false);
       hideToast();
     })
     .catch((err) => {
       console.error(err);
       alert(t('alertResetFailed', { message: describeError(err) }));
       // host が null のまま(コア破棄後に再構築失敗)なので、操作不能を隠さずボタンは無効のままにする。
+      // ただしポーズ中オーバーレイだけは解除する(コアが無い=止まっているのが正しい状態で、
+      // 「ポーズ中」の表示のまま残るのは事実と食い違うため)。
+      setPaused(false);
     });
 });
 

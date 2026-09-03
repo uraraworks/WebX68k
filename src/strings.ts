@@ -22,6 +22,12 @@ interface Dict {
   overlayNote1(): string;
   overlayNote2(): string;
   toolbarReset(): string;
+  /** ツールバーのポーズボタン(実行中)。 */
+  toolbarPause(): string;
+  /** ツールバーのポーズボタン(ポーズ中、再開させるとき)。 */
+  toolbarResume(): string;
+  /** ポーズ中オーバーレイの「ポーズ中」ラベル。 */
+  pauseOverlayLabel(): string;
   toolbarHelp(): string;
   toolbarSettings(): string;
   toolbarSaveState(): string;
@@ -451,6 +457,9 @@ const STRINGS: Record<Lang, Dict> = {
     overlayNote1: () => '音声再生の制限上、クリック操作で起動します。',
     overlayNote2: () => 'ディスクはツールバーのライブラリ、下のドライブ行、または画面へのドラッグ&ドロップから追加できます。',
     toolbarReset: () => 'リセット',
+    toolbarPause: () => 'ポーズ',
+    toolbarResume: () => '再開',
+    pauseOverlayLabel: () => 'ポーズ中',
     toolbarHelp: () => 'ヘルプ',
     toolbarSettings: () => '設定(BIOS / マシン構成)',
     toolbarSaveState: () => 'ステート保存',
@@ -785,6 +794,9 @@ const STRINGS: Record<Lang, Dict> = {
     overlayNote1: () => 'Audio requires a user gesture, so click to start.',
     overlayNote2: () => 'You can add disks from the toolbar library, the drive rows below, or by dragging & dropping onto the screen.',
     toolbarReset: () => 'Reset',
+    toolbarPause: () => 'Pause',
+    toolbarResume: () => 'Resume',
+    pauseOverlayLabel: () => 'Paused',
     toolbarHelp: () => 'Help',
     toolbarSettings: () => 'Settings (BIOS / Machine Config)',
     toolbarSaveState: () => 'Save State',
