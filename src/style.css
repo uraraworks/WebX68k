@@ -1136,6 +1136,27 @@ main {
   white-space: nowrap;
 }
 
+.serial-unsupported {
+  margin: 0;
+  line-height: 1.6;
+}
+
+#settings-serial-toggle {
+  margin-left: auto;
+}
+
+.settings-serial-heading {
+  margin-top: 18px;
+}
+
+.serial-baud-note {
+  flex-basis: 100%;
+  margin: 4px 0 0;
+  color: var(--text-dim);
+  font-size: 11px;
+  line-height: 1.45;
+}
+
 .status-ok {
   color: var(--status-ok);
 }

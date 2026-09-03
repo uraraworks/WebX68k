@@ -109,6 +109,18 @@ interface Dict {
   settingsSpeedNote(): string;
   settingsSpeedLabel(): string;
   settingsSpeedActualPrefix(): string;
+  settingsSerialTitle(): string;
+  settingsSerialStatusLabel(): string;
+  settingsSerialBaudLabel(): string;
+  settingsSerialBaudNote(): string;
+  settingsSerialConnect(): string;
+  settingsSerialDisconnect(): string;
+  settingsSerialConnected(): string;
+  settingsSerialDisconnected(): string;
+  settingsSerialConnecting(): string;
+  settingsSerialError(): string;
+  settingsSerialUnsupported(): string;
+  settingsSerialCoreUnsupported(): string;
   settingsClose(): string;
   biosStatusUser(): string;
   biosStatusBundled(): string;
@@ -523,7 +535,7 @@ const STRINGS: Record<Lang, Dict> = {
     alertDownloadNoImage: () => 'このドライブにはディスクが挿入されていません。',
     settingsTitle: () => '設定',
     settingsDescription: () =>
-      'BIOS ファイル(IPLROM.DAT / CGROM.DAT)とマシン構成を設定します。設定はブラウザに保存され、次回起動時から反映されます。',
+      'BIOS ファイル(IPLROM.DAT / CGROM.DAT)、マシン構成、シリアルポートを設定します。設定はブラウザに保存されます。',
     settingsBiosSectionTitle: () => 'BIOS 設定',
     settingsMachineSectionTitle: () => 'マシン構成',
     settingsMachineSectionNote: () => '(既定: X68000 XVI 相当 = 16MHz / 2MB)',
@@ -534,6 +546,20 @@ const STRINGS: Record<Lang, Dict> = {
     settingsSpeedNote: () => 'ツールバーの速度ボタンをONにしたときの倍率です。リセット不要で即時反映し、設定は保存されません。',
     settingsSpeedLabel: () => '速度ボタンON時の倍率',
     settingsSpeedActualPrefix: () => '実測',
+    settingsSerialTitle: () => 'シリアルポート',
+    settingsSerialStatusLabel: () => '状態',
+    settingsSerialBaudLabel: () => 'ボーレート',
+    settingsSerialBaudNote: () => 'X68000 側と同じボーレートを選択してください。',
+    settingsSerialConnect: () => '接続',
+    settingsSerialDisconnect: () => '切断',
+    settingsSerialConnected: () => '接続済み',
+    settingsSerialDisconnected: () => '未接続',
+    settingsSerialConnecting: () => '接続中…',
+    settingsSerialError: () => '接続エラー',
+    settingsSerialUnsupported: () =>
+      'このブラウザでは Web Serial API を利用できません。対応するデスクトップブラウザを使用してください。',
+    settingsSerialCoreUnsupported: () =>
+      '読み込まれたエミュレーターコアはシリアルブリッジに対応していません。ページを再読み込みしてください。',
     settingsClose: () => '閉じる',
     biosStatusUser: () => '設定済み',
     biosStatusBundled: () => '同梱ROM使用中(差し替え可)',
@@ -854,7 +880,7 @@ const STRINGS: Record<Lang, Dict> = {
     alertDownloadNoImage: () => 'No disk is inserted in this drive.',
     settingsTitle: () => 'Settings',
     settingsDescription: () =>
-      'Configure the BIOS files (IPLROM.DAT / CGROM.DAT) and machine settings. Settings are saved in your browser and applied from the next start.',
+      'Configure the BIOS files (IPLROM.DAT / CGROM.DAT), machine settings, and serial port. Settings are saved in your browser.',
     settingsBiosSectionTitle: () => 'BIOS Settings',
     settingsMachineSectionTitle: () => 'Machine Configuration',
     settingsMachineSectionNote: () => '(default: X68000 XVI equivalent = 16MHz / 2MB)',
@@ -866,6 +892,20 @@ const STRINGS: Record<Lang, Dict> = {
       'The multiplier used when the toolbar speed button is turned on. Applied instantly, no reset needed, and not saved.',
     settingsSpeedLabel: () => 'Multiplier when the speed button is on',
     settingsSpeedActualPrefix: () => 'Actual',
+    settingsSerialTitle: () => 'Serial Port',
+    settingsSerialStatusLabel: () => 'Status',
+    settingsSerialBaudLabel: () => 'Baud rate',
+    settingsSerialBaudNote: () => 'Select the same baud rate as the X68000 guest.',
+    settingsSerialConnect: () => 'Connect',
+    settingsSerialDisconnect: () => 'Disconnect',
+    settingsSerialConnected: () => 'Connected',
+    settingsSerialDisconnected: () => 'Disconnected',
+    settingsSerialConnecting: () => 'Connecting…',
+    settingsSerialError: () => 'Connection error',
+    settingsSerialUnsupported: () =>
+      'Web Serial API is not available in this browser. Use a supported desktop browser.',
+    settingsSerialCoreUnsupported: () =>
+      'The loaded emulator core does not support the serial bridge. Reload the page.',
     settingsClose: () => 'Close',
     biosStatusUser: () => 'Configured',
     biosStatusBundled: () => 'Using bundled ROM (replaceable)',

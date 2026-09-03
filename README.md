@@ -141,6 +141,15 @@ elsewhere on the overlay does nothing.
 silently instead of failing to boot at all — audio simply has nowhere to
 go.
 
+### Web Serial / RS-232C
+
+The Settings dialog can connect X68000 SCC channel A to a host serial port in a
+desktop browser that supports Web Serial, such as Chrome, Edge, or Firefox.
+Web Serial requires HTTPS. Firefox for Android, browsers on iOS/iPadOS, and
+Safari on macOS do not currently expose this API.
+Setup, platform notes, and a Windows com0com loopback procedure are documented
+in [docs/WEB_SERIAL.md](docs/WEB_SERIAL.md).
+
 ### Drag & drop
 
 There are three places you can drop a disk image, ZIP, or LZH archive; the
