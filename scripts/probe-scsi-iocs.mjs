@@ -173,6 +173,11 @@ const WORKER = args.worker === undefined ? null : String(args.worker);
 // 本物の外部SCSIボードROMイメージ(8192バイト)。指定時のみ window.__webx68kScsiRomBytes
 // へ数値配列として置く。逆アセンブルはせず、本物を走らせて実測するためのオラクルとして使う。
 // 未指定なら従来と1文字も挙動が変わらない。
+// 2026-09-04以前は Worker 経路(既定)の InitPayload.hostGlobals が number/string/boolean
+// しか転写せず、この配列は無言で落ちて Worker 側は自前スタブへフォールバックしていた
+// (--worker=0 で初めてROMが読めていた)。src/host-globals.ts の修正で配列/ArrayBuffer/
+// TypedArrayも転写対象になったため、現在は --worker=0 を付けなくても届く
+// (転写できない値があれば必ずconsole.warn+トーストが出るので、無音での取りこぼしは無い)。
 const ROM = args.rom ?? null;
 // ゲストRAM書き込みの実測用フック(x68k/mem_wrap.c の webx68k_ram_watch_check)。
 // --ram-watch=<開始>:<終了> で範囲(両端含む)を指定する。10進・16進(0x接頭辞)どちらも可。

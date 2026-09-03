@@ -11,10 +11,12 @@
 //   - globalThis.__webx68kScsiSize -> js_scsi_get_size() がXHRより優先して読む値
 //     (このセットアップが成功したときだけ置く。core-shim.c側のコメント参照)
 //
-// 有効化条件 __webx68kScsiOpfs / __webx68kScsiUrl は src/main.ts の collectHostGlobals() が
-// ページ側の globalThis.__webx68k* (string/number/boolean のみ)をWorkerへ転写する仕組みに
-// 乗る。ただし __webx68kScsiRead/__webx68kScsiWrite 自体は関数なので転写対象から自動的に
-// 除外される(collectHostGlobals()のコメント参照)。よってこれらのフックはWorker自身の
+// 有効化条件 __webx68kScsiOpfs / __webx68kScsiUrl は src/host-globals.ts の
+// collectHostGlobals() が、ページ側の globalThis.__webx68k*
+// (string/number/boolean/ArrayBuffer/ArrayBufferView/配列。2026-09-04以降)をWorkerへ
+// 転写する仕組みに乗る。ただし __webx68kScsiRead/__webx68kScsiWrite 自体は関数なので
+// 転写対象から自動的に除外される(collectHostGlobals()は転写できない値を警告のうえ
+// 除外する。src/host-globals.tsのコメント参照)。よってこれらのフックはWorker自身の
 // globalThisへここで直接生やす必要がある。
 
 // lib.dom.d.ts (このプロジェクトのtsconfigは"DOM"のみで"WebWorker"は含めていない、

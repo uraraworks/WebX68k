@@ -322,6 +322,24 @@ export interface CoreError {
  * 旧コメント(参考): 「設計文書は『初期ディスク参照』としか書いておらず、bytesを含めるか
  * path参照のみにするかは明記されていない。ここではメッセージ量を抑えるためpath参照のみとした」。
  */
+/**
+ * `collectHostGlobals()`(main.ts)が Worker へ写せる値の型。structured clone で運べる型の
+ * うち、実際に `__webx68k*` の設定として使われている範囲(プリミティブ・配列・バイト列)に
+ * 限定して列挙する(汎用の deep clone 判定はしない。関数やSymbol等、写せない値は
+ * ここに含めず、呼び出し側が警告を出したうえで除外する)。
+ *
+ * ArrayBuffer/ArrayBufferView/配列を含めたのは2026-09-04の修正(docs/STORAGE-SCSI.md参照):
+ * 以前は string/number/boolean しか転写せず、配列等で渡す設定(例: ROM本体を渡す設定)が
+ * 無言で落ち、Worker側は気づかずフォールバックに切り替わっていた。
+ */
+export type HostGlobalValue =
+  | string
+  | number
+  | boolean
+  | ArrayBuffer
+  | ArrayBufferView
+  | unknown[];
+
 export interface InitPayload {
   biosIpl: ArrayBuffer;
   biosCg: ArrayBuffer;
@@ -330,14 +348,20 @@ export interface InitPayload {
   initialDisks?: Array<{ slot: 'fdd0' | 'fdd1' | 'hdd'; name: string; bytes: ArrayBuffer }>;
   offscreenCanvas?: OffscreenCanvas;
   /**
-   * ページ(main)側の `globalThis.__webx68k*` のうち、値が number/string/boolean のものを
-   * そのまま Worker の globalThis へ写すための橋。SCSI の設定(__webx68kScsiUrl 等)や
-   * 計測用の監視範囲(__webx68kRamWatchLo 等)は wasm から globalThis 経由で読まれるため、
+   * ページ(main)側の `globalThis.__webx68k*` のうち、structured clone で運べる値
+   * (string/number/boolean/ArrayBuffer/ArrayBufferView/配列)をそのまま Worker の
+   * globalThis へ写すための橋。SCSI の設定(__webx68kScsiUrl 等)や計測用の監視範囲
+   * (__webx68kRamWatchLo 等)は wasm から globalThis 経由で読まれるため、
    * Worker 経路ではこれを渡さないと丸ごと効かない(2026-09-03 実測: SCSI-BPB読み出し失敗
    * → SCSIドライバとして名乗らない → ゲストで「ドライブ名が無効です」)。
    * **初期化時に1回だけ写す**。実行中に main 側で値を変えても Worker には反映されない。
+   *
+   * ここに含まれる ArrayBuffer/ArrayBufferView は `collectTransferables()` が
+   * `initialize` の transfer list に加える対象として列挙していないため、postMessage の
+   * 既定動作(structured clone によるコピー)で渡る。main.ts 側の実体は detach されず
+   * 無傷のまま残る(biosIpl/biosCg等と違い、意図的にコピー渡しにしている)。
    */
-  hostGlobals?: Record<string, string | number | boolean>;
+  hostGlobals?: Record<string, HostGlobalValue>;
 }
 
 // --- 入力 ------------------------------------------------------------------

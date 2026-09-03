@@ -25,6 +25,7 @@ import {
   type CoreErrorCode,
   type CoreEvent,
   type Generation,
+  type HostGlobalValue,
   type HotSwapFddPayload,
   type HotSwapFddResult,
   type InputUpdate,
@@ -722,7 +723,7 @@ export class WorkerCoreProxy implements LibretroHostProxy {
     // 監視範囲(__webx68kRamWatchLo等)はwasmからglobalThis経由で読まれるため、Worker経路
     // ではpage側のglobalThisが見えず丸ごと効かなかった(実測: SCSI-BPB読み出し失敗→
     // ゲストで「ドライブ名が無効です」)。initialize時に1回だけWorkerのglobalThisへ写す。
-    hostGlobals?: Record<string, string | number | boolean>,
+    hostGlobals?: Record<string, HostGlobalValue>,
   ): Promise<void> {
     await this.issue<unknown>('initialize', {
       biosIpl: copyArrayBuffer(biosIpl),

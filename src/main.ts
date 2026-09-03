@@ -66,7 +66,14 @@ import {
   type InitialDiskInput,
   type LibretroHostProxy,
 } from './core-proxy';
-import type { CoreEvent, FrameSnapshot, KeyBufFrameProbe, MouseTrackFrameProbe } from './core-protocol';
+import type {
+  CoreEvent,
+  FrameSnapshot,
+  HostGlobalValue,
+  KeyBufFrameProbe,
+  MouseTrackFrameProbe,
+} from './core-protocol';
+import { collectHostGlobals } from './host-globals';
 import { sliceKeyBufSnapshot } from './keybuf-probe';
 import { computeShouldAcceptGuestKeyInput, MainInputSnapshot } from './worker-input';
 import { MouseTracker } from './mouse-track';
@@ -3148,23 +3155,25 @@ let workerAvInfo: AvInfo | null = null;
  * Worker経路固有の制約ではない。無言のno-opにせず、必ずここを通してから抜けること。 */
 /**
  * ページ(main)側の `globalThis.__webx68k*` をWorkerへ渡すためのスナップショットを取る
- * (docs/STORAGE-SCSI.md参照)。SCSIの設定(__webx68kScsiUrl等)や計測用の監視範囲
- * (__webx68kRamWatchLo等)はwasmからglobalThis経由で読まれるため、Workerを別グローバル
- * (別スレッド)で走らせるとこれが渡らず丸ごと効かない(2026-09-03実測)。
- *
- * **関数は渡さない**(構造化クローンできないため)。__webx68kScsiRead/__webx68kScsiWrite
- * のようなコールバック関数はここで自動的に除外される。Worker側からホストへ書き戻す経路が
- * 要るなら、それは別途OPFS実装側が持つべきもので、ここでは扱わない。
+ * (docs/STORAGE-SCSI.md参照)。判定・収集ロジック本体は src/host-globals.ts に切り出して
+ * ある(globalThisやDOM/showToastに依存しない形にして単体テスト可能にするため。
+ * test/host-globals.test.ts参照)。ここでは実際の globalThis を渡し、除外が発生した際の
+ * 通知(console.warn + トースト)だけを担う。
  */
-function collectHostGlobals(): Record<string, string | number | boolean> {
-  const out: Record<string, string | number | boolean> = {};
-  for (const key of Object.keys(globalThis)) {
-    if (!key.startsWith('__webx68k')) continue;
-    const v = (globalThis as Record<string, unknown>)[key];
-    const t = typeof v;
-    if (t === 'string' || t === 'number' || t === 'boolean') out[key] = v as string | number | boolean;
-  }
-  return out;
+function collectHostGlobalsFromWindow(): Record<string, HostGlobalValue> {
+  return collectHostGlobals(globalThis as unknown as Record<string, unknown>, (skippedKeys) => {
+    const message =
+      `[worker] Workerへ転写できない __webx68k* 設定を ${skippedKeys.length} 件、` +
+      `無言で無視せず警告として落としました(structured cloneできない型: 関数等): ` +
+      `${skippedKeys.join(', ')}`;
+    console.warn(message);
+    try {
+      showToast(message, 8000);
+    } catch {
+      // showToast未初期化(DOM構築前)等でも、collectHostGlobalsFromWindow自体は落とさない。
+      // console.warnで既に利用者に伝わる経路は確保済み。
+    }
+  });
 }
 
 function warnWorkerModeUnsupported(): void {
@@ -3372,7 +3381,7 @@ async function bootWorkerCore(): Promise<void> {
     savedSram ?? undefined,
     initialDisks,
     workerCoreOptions,
-    collectHostGlobals(),
+    collectHostGlobalsFromWindow(),
   );
   await proxy.loadGame('/game/boot.cmd');
   workerAvInfo = await proxy.fetchAvInfo();
