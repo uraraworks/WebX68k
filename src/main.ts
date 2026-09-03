@@ -1246,6 +1246,10 @@ async function resolveUrlToLibrary(url: string, label: string): Promise<UrlLibra
     return { kind: 'error' };
   }
 
+  // 取得完了後は最後の進捗表示を0.5秒だけ残して消す(持続表示のままだと、以降トーストが
+  // 出ない経路(単体ディスクをスロットへ入れて起動するだけ)で画面に固着してしまう)。
+  scheduleToastHide(500);
+
   // 拡張子で判定できない配布URL(拡張子無し)向けに、バイト列のシグネチャでもアーカイブかどうかを見る。
   const archiveName = resolveArchiveFileName(name, bytes);
   if (archiveName) {
@@ -4460,6 +4464,12 @@ function hideToast(): void {
     clearTimeout(toastTimer);
     toastTimer = undefined;
   }
+}
+
+/** 現在表示中のトーストを指定ミリ秒後に消す(持続表示で出したものを、後から時間で閉じたいとき用)。 */
+function scheduleToastHide(delayMs: number): void {
+  if (toastTimer !== undefined) clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => toastEl.classList.add('hidden'), delayMs);
 }
 
 /**
