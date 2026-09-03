@@ -2332,7 +2332,16 @@ function overflowActionRow(btn: HTMLButtonElement): HTMLElement {
  * 左右反転を重ねてもタップしづらいだけなので分岐する)。
  */
 function isWideOverflowMenu(): boolean {
-  return !window.matchMedia('(width < 640px)').matches;
+  return !isNarrowToolbar();
+}
+
+/**
+ * ツールバーが「スマホ幅」ブレークポイント未満かどうか。style.css の `@media (width < 640px)`
+ * (#btn-speed を非表示にする条件)と必ず同じ 640px を使う共有ヘルパ。JS側で数値をここ以外に
+ * 書かないこと(CSSとJSで条件がずれると「ボタンは消えたがメニューにも出ない」穴が空くため)。
+ */
+function isNarrowToolbar(): boolean {
+  return window.matchMedia('(width < 640px)').matches;
 }
 
 /** 第1階層: グループ4種 + グループ無しの直置き項目(設定/ヘルプ/言語切替)。 */
@@ -2343,6 +2352,12 @@ function renderOverflowMenu(anchorEl: HTMLButtonElement): void {
   // (第2階層 renderOverflowGroupMenu() は親メニューが消えて階層が分からなくなるので見出しを残す)。
 
   const wide = isWideOverflowMenu();
+  if (!wide) {
+    // 狭い画面(#btn-speed が常設から外れる)では速度切替をメニュー先頭に単独行で出す。
+    // 表示/入力/ディスク/状態のどのグループにも意味的に合わないため、グループより前に置く
+    // (常設から降りてきた頻用トグルなので埋もれさせない)。
+    slotPopupMenu.append(overflowActionRow(btnSpeed));
+  }
   for (const groupId of OVERFLOW_GROUP_ORDER) {
     const group = OVERFLOW_GROUPS[groupId];
     const row = menuRow(group.title(), undefined, 'group', { iconSlot: true });
@@ -2437,6 +2452,12 @@ btnToolbarOverflow.addEventListener('click', (e) => {
     return;
   }
   renderOverflowMenu(btnToolbarOverflow);
+});
+
+// メニューを開いたまま画面幅が変わると、#btn-speed 行の有無(isNarrowToolbar())が
+// 実際の配置と食い違いうるため、開いていれば閉じる(再度開けば作り直される)。
+window.addEventListener('resize', () => {
+  if (!slotPopupMenu.classList.contains('hidden')) closeSlotPopupMenu();
 });
 
 /*

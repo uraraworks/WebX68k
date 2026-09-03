@@ -1510,7 +1510,9 @@
               '処理能力次第で、設定パネルには実測の速度が表示されます。マシン構成の「CPU速度」' +
               '(実機のクロックを変える設定でリセットが必要)とは別物です。「無制限」を選ぶと' +
               '端末の性能が許すかぎり速く動きます。そのかわり音は出ず、画面の更新も少し粗く' +
-              '(約20〜30fps)なります。',
+              '(約20〜30fps)なります。画面幅640px未満(スマホ幅)では常設から外れ、「…」メニュー' +
+              '先頭の単独行に移ります(バーチャルパッド表示時にツールバーが2段折り返すのを' +
+              '防ぐため)。',
             descEn:
               'A toggle button. OFF (the default) runs at 100% speed; ON runs at whatever multiplier' +
               ' is chosen in the settings panel (25% / 50% / 75% / 150% / 200% / 300% / 400% /' +
@@ -1523,7 +1525,9 @@
               ' is separate from the machine configuration\'s "CPU speed" setting, which changes the' +
               ' emulated clock and needs a reset. Choosing "Unlimited" runs the emulator as fast as' +
               ' your device allows — but with no audio, and the screen updates a bit more coarsely' +
-              ' (roughly 20-30fps).',
+              ' (roughly 20-30fps). Below 640px (phone width), this button moves off the toolbar' +
+              ' into a standalone row at the top of the "..." menu, to keep the toolbar from' +
+              ' wrapping to two rows when the virtual pad is shown.',
           },
           {
             icon: 'M3 12a9 9 0 1 0 3-6.7M3 4v5h5',

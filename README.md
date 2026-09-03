@@ -112,6 +112,13 @@ keeps the menu open and shows the submenu cascading to the right of it
 (flipping to the left near the screen edge); narrower screens replace the
 menu in place with a "← Back" row instead.
 
+Below 640px (phone width), Speed also moves off the toolbar into a
+standalone row at the top of the "..." menu (this keeps the toolbar from
+wrapping to two rows when it doesn't have room for both Speed and the
+virtual pad). Speed doesn't fit any of the four groups, so it isn't grouped
+with the others; the row's label shows the current multiplier and gets a
+checkmark while enabled.
+
 Reset sits apart at the toolbar's right edge, a finger's width from the
 frequently-pressed buttons, since a misclick there is costlier than on the
 others.

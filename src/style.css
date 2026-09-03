@@ -1484,6 +1484,12 @@ footer.app-footer a {
 
 /* スマホ幅 */
 @media (width < 640px) {
+  /* WebX68k は WebNP2 に無い #btn-speed(62px固定幅)がある分だけ横幅が足りず、
+     375x812+バーチャルパッド表示でツールバーが2段に折り返す。狭幅では常設から外し、
+     「…」オーバーフローメニュー先頭の単独行(renderOverflowMenu())へ移す。
+     JS側は isNarrowToolbar() が同じ 640px を参照する(条件がずれると
+     「ボタンは消えたがメニューにも出ない」穴が空くため、数値を二重管理しない)。 */
+  #btn-speed { display: none; }
   main { padding: 8px 4px; gap: 8px; }
   header.app-header { padding: 6px 10px; }
   .footer-version { font-size: 9px; }
