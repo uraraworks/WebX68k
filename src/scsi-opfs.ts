@@ -99,8 +99,25 @@ async function importImage(
 export async function setupScsiOpfs(): Promise<ScsiOpfsResult> {
   const g = globalThis as Record<string, unknown>;
 
+  // __webx68kScsiOpfsPath(「もうOPFSにある物を開くだけ」の経路)を優先する。
+  // __webx68kScsiUrl(プローブが使う、リモートから取り込む経路)はそのまま残す。
+  const opfsPath = g.__webx68kScsiOpfsPath;
+  if (typeof opfsPath === 'string' && opfsPath.length > 0) {
+    // secure contextでない/OPFSが無い環境では navigator.storage.getDirectory 自体が
+    // 消える(feedback_secure_context_hides_capability.md参照)。この分岐は必ず残すこと。
+    if (
+      (typeof isSecureContext !== 'undefined' && !isSecureContext) ||
+      typeof navigator === 'undefined' ||
+      !navigator.storage ||
+      typeof navigator.storage.getDirectory !== 'function'
+    ) {
+      return { mode: 'none', reason: 'secure context でない/OPFSが無い' };
+    }
+    return setupScsiOpfsFromExisting(opfsPath);
+  }
+
   if (!g.__webx68kScsiOpfs) {
-    return { mode: 'none', reason: '__webx68kScsiOpfs が未設定' };
+    return { mode: 'none', reason: '__webx68kScsiOpfsPath も __webx68kScsiOpfs も未設定' };
   }
   const url = g.__webx68kScsiUrl;
   if (typeof url !== 'string' || url.length === 0) {
@@ -158,6 +175,60 @@ export async function setupScsiOpfs(): Promise<ScsiOpfsResult> {
     return { mode: 'none', reason: `OPFSへの取り込みに失敗: ${String(e)}` };
   }
 
+  return installScsiHooks(handle, imported);
+}
+
+/**
+ * 「もうOPFSにある物を開くだけ」の経路(__webx68kScsiOpfsPath)。
+ * URLからの取り込みは一切行わず、指定パスのファイルをそのまま開いて使う。
+ * パスが無い/サイズ0なら none(理由付き)を返す。
+ */
+async function setupScsiOpfsFromExisting(path: string): Promise<ScsiOpfsResult> {
+  const segments = path.split('/').filter((s) => s.length > 0);
+  if (segments.length === 0) {
+    return { mode: 'none', reason: `__webx68kScsiOpfsPath が不正: ${JSON.stringify(path)}` };
+  }
+  const fileName = segments[segments.length - 1];
+  const dirSegments = segments.slice(0, -1);
+
+  let fileHandle: FileSystemFileHandle;
+  try {
+    let dir = await navigator.storage.getDirectory();
+    for (const seg of dirSegments) {
+      dir = await dir.getDirectoryHandle(seg, { create: false });
+    }
+    fileHandle = await dir.getFileHandle(fileName, { create: false });
+  } catch (e) {
+    return { mode: 'none', reason: `OPFS上に ${path} が無い: ${String(e)}` };
+  }
+
+  let handle: FileSystemSyncAccessHandle;
+  try {
+    handle = await fileHandle.createSyncAccessHandle();
+  } catch (e) {
+    return { mode: 'none', reason: `同期ハンドルの取得に失敗: ${String(e)}` };
+  }
+
+  const size = handle.getSize();
+  if (size === 0) {
+    try {
+      handle.close();
+    } catch {
+      /* close失敗は無視(どうせ捨てるハンドル) */
+    }
+    return { mode: 'none', reason: `${path} のサイズが0` };
+  }
+
+  return installScsiHooks(handle, false);
+}
+
+/**
+ * __webx68kScsiRead/__webx68kScsiWrite/__webx68kScsiSize のフックをWorkerの
+ * globalThisへ生やし、定期flushを開始する(2つの経路(URL取り込み/OPFS直接オープン)で
+ * 共通の後処理)。
+ */
+function installScsiHooks(handle: FileSystemSyncAccessHandle, imported: boolean): ScsiOpfsResult {
+  const g = globalThis as Record<string, unknown>;
   const size = handle.getSize();
   let dirty = false;
 

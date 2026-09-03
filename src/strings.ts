@@ -76,6 +76,18 @@ interface Dict {
   slotInsert(): string;
   slotEject(): string;
   slotLockedWhileRunning(): string;
+  /** SCSIスロットのドライブラベル。 */
+  scsiSlotLabel(): string;
+  /** SCSIスロット未挿入時の表示。 */
+  scsiEmpty(): string;
+  /** SCSIがこの環境で使えない(secure contextでない等)ときにスロットへ出す文言。 */
+  scsiUnavailable(): string;
+  /** SCSIディスクをOPFSへ取り込み中の進捗表示。 */
+  scsiImporting(args: { percent: number }): string;
+  /** SCSIディスクを挿したときの通知(次回起動から反映)。 */
+  scsiInsertedNeedsRestart(): string;
+  /** 起動中はSCSIディスクを差し替えられないときのツールチップ・通知。 */
+  scsiLockedWhileRunning(): string;
   /** ドライブアクセスランプのスクリーンリーダー向けラベル。 */
   diskLampLabel(args: { drive: string }): string;
   /** スロットの「ライブラリから挿入」ボタン(ツールチップ)。 */
@@ -484,6 +496,12 @@ const STRINGS: Record<Lang, Dict> = {
     slotInsert: () => 'ディスク挿入',
     slotEject: () => 'ディスク取り出し',
     slotLockedWhileRunning: () => '起動中はHDDを交換できません(ページを再読み込みしてから操作してください)',
+    scsiSlotLabel: () => 'SCSI',
+    scsiEmpty: () => '未挿入',
+    scsiUnavailable: () => 'この環境では使えません(保護された接続が必要です)',
+    scsiImporting: ({ percent }) => `取り込み中… ${percent}%`,
+    scsiInsertedNeedsRestart: () => 'SCSIディスクを挿しました。次回の起動から使えます',
+    scsiLockedWhileRunning: () => '起動中はSCSIディスクを差し替えられません',
     diskLampLabel: ({ drive }) => `${drive} アクセスランプ`,
     slotInsertFromLibrary: () => 'ライブラリから挿入',
     slotInsertFromLibraryTitle: ({ drive }) => `${drive} へ挿入`,
@@ -796,6 +814,12 @@ const STRINGS: Record<Lang, Dict> = {
     slotInsert: () => 'Insert disk',
     slotEject: () => 'Eject disk',
     slotLockedWhileRunning: () => 'The HDD cannot be swapped while running (reload the page first)',
+    scsiSlotLabel: () => 'SCSI',
+    scsiEmpty: () => 'Empty',
+    scsiUnavailable: () => 'Not available here (a secure connection is required)',
+    scsiImporting: ({ percent }) => `Importing… ${percent}%`,
+    scsiInsertedNeedsRestart: () => 'SCSI disk inserted. It will be used from the next boot.',
+    scsiLockedWhileRunning: () => 'The SCSI disk cannot be changed while running.',
     diskLampLabel: ({ drive }) => `${drive} access lamp`,
     slotInsertFromLibrary: () => 'Insert from library',
     slotInsertFromLibraryTitle: ({ drive }) => `Insert into ${drive}`,

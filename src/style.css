@@ -786,7 +786,12 @@ main {
   display: flex;
   align-items: center;
   gap: 6px;
-  flex: 1 1 auto;
+  /* flex-basis を 45% にして「1行に2つ」を保ちつつ、**どのスロットも同じ幅**にする。
+   * - auto のままだと、ボタンの数や名前の長さが違うスロット(SCSIはボタンが3つ)が
+   *   混ざったときに幅が変わり、上下の行でボタンの位置がずれる
+   * - 0 にすると幅が縮んで1行に3つ入ってしまい、名前が "h…" のように潰れる
+   * 名前は flex:1 で伸びるので、ボタン群は右端に揃う。 */
+  flex: 1 1 45%;
   min-width: 220px;
 }
 
@@ -834,7 +839,9 @@ main {
   font-size: 11px;
   font-weight: 600;
   color: var(--footer-text-dim);
-  min-width: 20px;
+  /* "FDD0"/"SCSI"(4文字)と "HDD"(3文字)で幅が変わると、後ろのボタンが
+   * 1文字ぶんずれる。いちばん長いラベルが収まる幅で揃える。 */
+  min-width: 32px;
 }
 
 .fd-name {

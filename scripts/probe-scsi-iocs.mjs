@@ -624,7 +624,15 @@ try {
   // 起動後に DIR C: 等を打って読み出しコマンドが来るかを測る用。
   // 打鍵後の画面は typedScreen に残す(打つ前の lastLines と区別するため)。
   let typedScreen = null;
-  if (TYPE_TEXT !== null) {
+  let typedMismatch = null;
+  // 起動を検知できていないのに打鍵しても意味が無い(プロンプトが出る前に押した
+  // キーは落ちる)。実測2026-09-03: booted=false のまま打鍵して "dir a:" が
+  // "ir a:" になり、製品の不具合と紛らわしい結果になった。
+  if (TYPE_TEXT !== null && !booted) {
+    typedMismatch = '起動を検知できなかったので打鍵しなかった';
+    console.error(`[probe] ${typedMismatch}`);
+  }
+  if (TYPE_TEXT !== null && booted) {
     await page.evaluate(() => {
       const c = document.querySelector('canvas');
       if (c) { c.setAttribute('tabindex', '0'); c.focus(); }
@@ -657,6 +665,23 @@ try {
         try { return (await dbg.screenText())?.lines ?? null; } catch { return null; }
       })
       .catch(() => null);
+
+    // 陽性対照: 打った文字列が画面にそのまま出ているかを照合する。
+    // 実測(2026-09-03)で "dir c:"→"dirc :"、"copy"→"coyp" のような
+    // 入れ替わりや脱落が起きた。照合しないと、道具側の失敗を
+    // 製品の不具合と読み違える。
+    if (typedScreen) {
+      const echoed = typedScreen
+        .map((l) => l.trim())
+        .filter((l) => l.startsWith('A>') && l.length > 2 && l !== 'A>ECHO OFF')
+        .map((l) => l.slice(2).trim());
+      const wanted = TYPE_TEXT.split(';;').map((t) => t.trim());
+      const missing = wanted.filter((w) => !echoed.includes(w));
+      if (missing.length > 0) {
+        typedMismatch = `打鍵が画面と一致しない: 期待=${JSON.stringify(wanted)} 実際=${JSON.stringify(echoed)}`;
+        console.error(`[probe] ${typedMismatch}`);
+      }
+    }
   }
 
   // SCSI IOCS ベクタ($7d4)が設定されているかを見る。ROMスタブの
@@ -737,6 +762,7 @@ try {
         invocation: process.argv.slice(2),
         booted,
         typedScreen,
+        typedMismatch,
         dumps,
         screenshot: shot,
         iocsVectors: vectors,

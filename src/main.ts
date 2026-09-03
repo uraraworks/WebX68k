@@ -19,6 +19,7 @@ import { loadBiosFile, saveBiosFile } from './bios-store';
 import { storageProbe, frameProbe, keybufAttributionProbe } from './storage-probe';
 import { computeAttributionBreakdown } from './keybuf-attribution';
 import { loadSramFile, saveSramFile } from './sram-store';
+import { isScsiStorageAvailable, putScsiImage, readScsiImage } from './scsi-store';
 import {
   classifyDiskBytes,
   classifyDiskKind,
@@ -239,6 +240,28 @@ const slotElements: Record<SlotId, SlotElements> = {
   hdd: slotEls('hdd'),
 };
 
+// SCSIスロット(手順4の1枚目)。FDD/HDDのSlotId系(コアへ渡すFDD/HDDの経路)とは別系統。
+// ライブラリ・ブランク作成は今回スコープ外のため、SlotElementsより要素が少ない。
+interface ScsiElements {
+  lamp: HTMLElement;
+  label: HTMLElement;
+  name: HTMLElement;
+  insertBtn: HTMLButtonElement;
+  input: HTMLInputElement;
+  ejectBtn: HTMLButtonElement;
+  downloadBtn: HTMLButtonElement;
+}
+
+const scsiElements: ScsiElements = {
+  lamp: document.getElementById('lamp-scsi') as HTMLElement,
+  label: document.getElementById('label-scsi') as HTMLElement,
+  name: document.getElementById('name-scsi') as HTMLElement,
+  insertBtn: document.getElementById('btn-insert-scsi') as HTMLButtonElement,
+  input: document.getElementById('input-scsi') as HTMLInputElement,
+  ejectBtn: document.getElementById('btn-eject-scsi') as HTMLButtonElement,
+  downloadBtn: document.getElementById('btn-download-scsi') as HTMLButtonElement,
+};
+
 // iOS の Chrome ではファイル選択ダイアログが accept 属性の拡張子を UTI(Uniform Type
 // Identifier)へ変換して候補を絞る。.xdf/.hdf/.dup/.hdm/.2hd/.dim のような拡張子は
 // UTI が登録されておらず、候補から丸ごと消えて .zip だけが残ってしまう(ホーム画面に
@@ -251,6 +274,7 @@ if (isIOS()) {
   for (const key of Object.keys(slotElements) as SlotId[]) {
     slotElements[key].input.removeAttribute('accept');
   }
+  scsiElements.input.removeAttribute('accept');
   biosIplInput.removeAttribute('accept');
   biosCgInput.removeAttribute('accept');
 }
@@ -268,6 +292,16 @@ const slots: Record<SlotId, PendingDisk | null> = { fdd0: null, fdd1: null, hdd:
 // 実行中コアの FS 上のパス。ダウンロード時にゲスト側の書き込みを反映した最新バイト列を
 // mod.FS.readFile() で読み直すために使う(コアは /game 配下のファイルを直接書き換えるため)。
 const mountedPaths: Record<SlotId, string | null> = { fdd0: null, fdd1: null, hdd: null };
+
+// --- SCSI(OPFS常駐、手順4の1枚目)---
+// FDD/HDDのslots/mountedPathsとは独立に管理する。現在挿している名前だけを
+// localStorage(webx68k.scsi)へ持ち、実体(バイト列)は常にOPFSの scsi/<name> に置く
+// (取出はlocalStorageのエントリを消すだけで、OPFS側のファイルは消さない)。
+const SCSI_STORAGE_KEY = 'webx68k.scsi';
+let scsiName: string | null = localStorage.getItem(SCSI_STORAGE_KEY);
+// isScsiStorageAvailable() の判定結果(secure contextでない等でOPFSが使えない環境)。
+// 判定前はtrueのまま(=通常表示)にしておき、initScsiUi()の完了後に確定する。
+let scsiStorageAvailable = true;
 
 let biosIplBytes: Uint8Array | null = null;
 let biosCgBytes: Uint8Array | null = null;
@@ -1480,7 +1514,133 @@ function updateSlotControls(): void {
   // 起動前にセットしただけ(コア未マウント)のHDDは、マウント済みと区別できるよう控えめに印を付ける。
   slotElements.hdd.name.classList.toggle('pending', slots.hdd !== null && !running);
   updateOverlayBootLabel();
+  updateScsiControls();
 }
+
+/**
+ * SCSI(SASI経路とは別のOPFS常駐イメージ)は活線挿抜すると次回起動まで反映されないため、
+ * HDDと同じ考え方で起動中は挿入/取出を禁止する(isSlotLocked相当)。
+ */
+function isScsiLocked(): boolean {
+  return running;
+}
+
+/** SCSIドライブ行のボタン活性・ツールチップ・表示名を現在の状態に合わせて更新する。 */
+function updateScsiControls(): void {
+  if (!scsiStorageAvailable) {
+    scsiElements.insertBtn.disabled = true;
+    scsiElements.ejectBtn.disabled = true;
+    scsiElements.downloadBtn.disabled = true;
+    scsiElements.name.textContent = t('scsiUnavailable');
+    return;
+  }
+  const locked = isScsiLocked();
+  const mounted = scsiName !== null;
+  scsiElements.insertBtn.disabled = locked;
+  scsiElements.ejectBtn.disabled = locked || !mounted;
+  // ダウンロードは中身を読むだけなので起動中でも許可する
+  scsiElements.downloadBtn.disabled = !mounted;
+
+  const lockedHint = t('scsiLockedWhileRunning');
+  scsiElements.insertBtn.title = locked ? lockedHint : t('slotInsert');
+  scsiElements.ejectBtn.title = locked ? lockedHint : t('slotEject');
+  scsiElements.downloadBtn.title = t('slotDownload');
+
+  scsiElements.name.textContent = scsiName ?? t('scsiEmpty');
+}
+
+/**
+ * SCSIディスクを挿入する。putScsiImage()でOPFSへ書き込みながら name-scsi に進捗を出し、
+ * 完了したら localStorage に名前を保存して次回起動から使われるようにする(活線挿抜はしない)。
+ */
+async function handleInsertScsi(file: File): Promise<void> {
+  if (isScsiLocked()) {
+    alert(t('scsiLockedWhileRunning'));
+    return;
+  }
+  try {
+    scsiElements.name.textContent = t('scsiImporting', { percent: 0 });
+    await putScsiImage(file, (done, total) => {
+      const percent = total > 0 ? Math.floor((done / total) * 100) : 0;
+      scsiElements.name.textContent = t('scsiImporting', { percent });
+    });
+    scsiName = file.name;
+    localStorage.setItem(SCSI_STORAGE_KEY, scsiName);
+    updateScsiControls();
+    showToast(t('scsiInsertedNeedsRestart'));
+  } catch (e) {
+    console.error('SCSIディスクの取り込みに失敗しました。', e);
+    updateScsiControls();
+    alert(t('alertBootFailed', { message: String(e) }));
+  }
+}
+
+/**
+ * SCSIディスクを取り出す(localStorageのエントリを消すだけ。OPFS上の実体は消さない。
+ * 削除はライブラリUI(次回)の仕事)。
+ */
+function handleEjectScsi(): void {
+  if (isScsiLocked()) {
+    alert(t('scsiLockedWhileRunning'));
+    return;
+  }
+  scsiName = null;
+  localStorage.removeItem(SCSI_STORAGE_KEY);
+  updateScsiControls();
+}
+
+/** 現在挿しているSCSIディスクをファイルとしてダウンロードする(既存のhandleDownloadDiskと同じ導線)。 */
+async function handleDownloadScsi(): Promise<void> {
+  if (!scsiName) {
+    alert(t('alertDownloadNoImage'));
+    return;
+  }
+  let file: File;
+  try {
+    file = await readScsiImage(scsiName);
+  } catch (e) {
+    console.error('SCSIディスクの読み出しに失敗しました。', e);
+    alert(t('alertDownloadNoImage'));
+    return;
+  }
+  const url = URL.createObjectURL(file);
+  try {
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = file.name;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+  } finally {
+    setTimeout(() => URL.revokeObjectURL(url), 10_000);
+  }
+}
+
+scsiElements.insertBtn.addEventListener('click', () => {
+  if (isScsiLocked()) {
+    alert(t('scsiLockedWhileRunning'));
+    return;
+  }
+  scsiElements.input.click();
+});
+scsiElements.input.addEventListener('change', () => {
+  const file = scsiElements.input.files?.[0];
+  scsiElements.input.value = '';
+  if (!file) return;
+  void handleInsertScsi(file);
+});
+scsiElements.ejectBtn.addEventListener('click', () => handleEjectScsi());
+scsiElements.downloadBtn.addEventListener('click', () => void handleDownloadScsi());
+
+/**
+ * 起動前に一度だけ呼ぶ: この環境でSCSIのOPFS保存が使えるか確認し、使えなければ
+ * スロット全体を無効化して name-scsi に案内を出す。使える場合は現在の表示を合わせる。
+ */
+async function initScsiUi(): Promise<void> {
+  scsiStorageAvailable = await isScsiStorageAvailable();
+  updateScsiControls();
+}
+void initScsiUi();
 
 /** スロット1件分の表示(ドライブ行のファイル名 + 各ボタン活性)を更新する。 */
 function updateSlotDisplay(slot: SlotId, label: string | null): void {
@@ -2992,6 +3152,16 @@ async function bootCore(): Promise<void> {
   // `?worker=1` は既定経路(この関数の残り、host=メインスレッドのLibretroHostを使う経路)を
   // 一切変えない裏フラグ(制約: 既定経路の挙動を変えないこと)。ここで完全に分岐する。
   if (urlWorkerMode) {
+    // SCSI(手順4の1枚目)はWorker内(src/scsi-opfs.ts)からだけ使われる経路。
+    // 「もうOPFSにある物を開くだけ」で、URLからの取り込みはしない。scsiName が無ければ
+    // ここでは何もしない(既存のプローブ(scripts/probe-scsi-iocs.mjs)が
+    // window.__webx68kScsiOpfs/__webx68kScsiUrl を直接立てて使う経路と衝突しないよう、
+    // UIが一度もSCSIを挿していないときに他所が立てた値を勝手に消さない)。
+    if (scsiName) {
+      const g = globalThis as Record<string, unknown>;
+      g.__webx68kScsiOpfs = true;
+      g.__webx68kScsiOpfsPath = `scsi/${scsiName}`;
+    }
     await bootWorkerCore();
     return;
   }
