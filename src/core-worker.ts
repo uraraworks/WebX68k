@@ -575,6 +575,10 @@ function sendFrame(
       cursor: host.readGuestCursor(),
       core: host.readMouseState(),
     };
+    // 調査用(2026-09-04、docs/STORAGE-SCSI.md参照): SCSI要求カウンタを同じ相乗りで運ぶ。
+    // 古いwasm(再ビルド前)ではnullが返るので、その場合はフィールド自体を載せない。
+    const scsiDebugProbe = host.scsiDebugCounters();
+    if (scsiDebugProbe) snapshot.scsiDebugProbe = scsiDebugProbe;
   }
   const postStart = onProbe ? ctx.performance.now() : 0;
   post({ kind: 'event', generation: currentGeneration, event: 'frame', snapshot });

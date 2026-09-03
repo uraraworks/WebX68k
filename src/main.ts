@@ -72,6 +72,7 @@ import type {
   HostGlobalValue,
   KeyBufFrameProbe,
   MouseTrackFrameProbe,
+  ScsiDebugFrameProbe,
 } from './core-protocol';
 import { collectHostGlobals } from './host-globals';
 import { sliceKeyBufSnapshot } from './keybuf-probe';
@@ -553,6 +554,9 @@ let workerLastInputApplyFrameNo: number | null = null;
 // FrameSnapshot.mouseTrackProbeコメント参照)。__webx68kDebug.mouse()がこれを同期のまま
 // 切り出して返す。
 let workerLastMouseTrackProbe: MouseTrackFrameProbe | null = null;
+// 調査用(2026-09-04、docs/STORAGE-SCSI.md参照): SCSI要求カウンタ。
+// mouseTrackProbeと同じ相乗り方式(workerKeyBufProbeWanted)。
+let workerLastScsiDebugProbe: ScsiDebugFrameProbe | null = null;
 let running = false;
 let bootStarted = false;
 
@@ -3207,6 +3211,7 @@ async function bootWorkerCore(): Promise<void> {
     workerLastInputSendFrameNo = null;
     workerLastInputApplyFrameNo = null;
     workerLastMouseTrackProbe = null;
+    workerLastScsiDebugProbe = null;
     try {
       await previous.dispose();
     } catch (err) {
@@ -3272,6 +3277,7 @@ async function bootWorkerCore(): Promise<void> {
       if (snapshot.keyBufWriteFrameNo !== undefined) workerLastKeyBufWriteFrameNo = snapshot.keyBufWriteFrameNo;
       if (snapshot.inputApplyFrameNo !== undefined) workerLastInputApplyFrameNo = snapshot.inputApplyFrameNo;
       if (snapshot.mouseTrackProbe) workerLastMouseTrackProbe = snapshot.mouseTrackProbe;
+      if (snapshot.scsiDebugProbe) workerLastScsiDebugProbe = snapshot.scsiDebugProbe;
       if (snapshot.video.kind === 'rgba') {
         const { bytes, width, height } = snapshot.video;
         if (canvas.width !== width || canvas.height !== height) {
@@ -4916,6 +4922,12 @@ if (import.meta.env.DEV) {
     // Pointer Lock を経由せずに相対移動/ボタンを注入する。自動テスト用で、
     // 将来の MCP ブリッジ(mouse_move 相当)もこの経路をそのまま使う想定。
     peek: (addr: number) => host?.peekWord(addr) ?? null,
+    // 調査用(2026-09-04、docs/STORAGE-SCSI.md参照): console/log_cbを経由しない
+    // SCSI要求カウンタ。「本当にSCSI要求が来なくなったか」をログの取りこぼしや
+    // 上限とは無関係に確かめる用。Worker経路(urlWorkerMode)では host が常にnullのため、
+    // mouse()と同じ作法でworkerLastScsiDebugProbe(frame event相乗り、
+    // keybufProbeEnable(true)で有効化)へフォールバックする。
+    scsiDebug: () => (urlWorkerMode ? workerLastScsiDebugProbe : host?.scsiDebugCounters()) ?? null,
     moveMouse: (dx: number, dy: number) => applyMouseDelta(dx, dy),
     mouseButton: (button: 'left' | 'right', down: boolean) => applyMouseButton(button, down),
     // 各ポートの解決済みRetroPadビットマスクと、解決前の生の入力(pressed/axes)を返す。

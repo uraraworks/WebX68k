@@ -484,6 +484,26 @@ export interface FrameSnapshot {
    * (workerProbeDisabled/workerProbePending)で返す(keybuf()フックと同じ作法)。
    */
   mouseTrackProbe?: MouseTrackFrameProbe;
+  /**
+   * 調査用(2026-09-04、docs/STORAGE-SCSI.md参照): console.log/log_cbを一切経由しない
+   * SCSI要求カウンタ(host.scsiDebugCounters())をWorker経路でも読めるようにする、
+   * mouseTrackProbeと同じ「keyBufProbeの有効化フラグに相乗り」方式。
+   * 「SCSI要求が本当に来なくなったか」をログの取りこぼしや上限とは無関係に
+   * 確かめるためのもの。無効時・古いwasmではこのフィールド自体が存在しない。
+   */
+  scsiDebugProbe?: ScsiDebugFrameProbe;
+}
+
+/** host.scsiDebugCounters()と同じ形。core-worker.ts/src/main.tsで共有する。 */
+export interface ScsiDebugFrameProbe {
+  reqTotal: number;
+  unsupported: number;
+  readCount: number;
+  lastReadUnit: number;
+  lastReadLogsec: number;
+  writeCount: number;
+  lastWriteUnit: number;
+  lastWriteLogsec: number;
 }
 
 export interface MouseTrackFrameProbe {

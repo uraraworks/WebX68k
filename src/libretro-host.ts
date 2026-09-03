@@ -178,6 +178,17 @@ export interface PX68KModule {
   _webx68k_sram_read?(offset: number): number;
   // 実機と同じmakeのみのキーリピート注入用。古いwasmでも落ちないよう任意プロパティ。
   _webx68k_send_key_make?(scancode: number): void;
+  // 調査用(2026-09-04、docs/STORAGE-SCSI.md参照): console/log_cbを一切経由しない
+  // SCSI要求カウンタ。「ログが途絶えた=止まった」を独立に裏取りするためのもの。
+  // 古いwasm(再ビルド前)でも落ちないよう任意プロパティにしている。
+  _get_scsi_req_total?(): number;
+  _get_scsi_unsupported_count?(): number;
+  _get_scsi_read_count?(): number;
+  _get_scsi_last_read_unit?(): number;
+  _get_scsi_last_read_logsec?(): number;
+  _get_scsi_write_count?(): number;
+  _get_scsi_last_write_unit?(): number;
+  _get_scsi_last_write_logsec?(): number;
 }
 
 /**
@@ -393,6 +404,35 @@ export class LibretroHost {
   /** ゲストメモリを1ワード(ビッグエンディアン)読む(デバッグ・IOCSワーク参照用) */
   peekWord(addr: number): number {
     return this.mod._webx68k_peek16(addr);
+  }
+
+  /**
+   * 調査用(2026-09-04、docs/STORAGE-SCSI.md参照): console.log/log_cbを一切経由しない
+   * SCSI要求カウンタをまとめて読む。「新規複数クラスタ割り当ての直後にSCSI要求が
+   * 本当に来なくなっているか」を、Puppeteerのconsoleキャプチャや将来のログ上限とは
+   * 無関係に確かめるためのもの。古いwasm(再ビルド前)では null を返す。
+   */
+  scsiDebugCounters(): {
+    reqTotal: number;
+    unsupported: number;
+    readCount: number;
+    lastReadUnit: number;
+    lastReadLogsec: number;
+    writeCount: number;
+    lastWriteUnit: number;
+    lastWriteLogsec: number;
+  } | null {
+    if (!this.mod._get_scsi_req_total) return null;
+    return {
+      reqTotal: this.mod._get_scsi_req_total(),
+      unsupported: this.mod._get_scsi_unsupported_count?.() ?? -1,
+      readCount: this.mod._get_scsi_read_count?.() ?? -1,
+      lastReadUnit: this.mod._get_scsi_last_read_unit?.() ?? -1,
+      lastReadLogsec: this.mod._get_scsi_last_read_logsec?.() ?? -1,
+      writeCount: this.mod._get_scsi_write_count?.() ?? -1,
+      lastWriteUnit: this.mod._get_scsi_last_write_unit?.() ?? -1,
+      lastWriteLogsec: this.mod._get_scsi_last_write_logsec?.() ?? -1,
+    };
   }
 
   /**

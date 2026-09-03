@@ -1179,3 +1179,69 @@ void webx68k_mem_read_watch_refresh(void)
   webx68k_mem_read_watch_pc_hi = pc_hi;
 }
 
+
+/*
+ * 調査用(2026-09-04): 「新規複数クラスタ割り当ての直後にHuman68kが
+ * SCSI要求を一切出さなくなる」という観測を、console/log_cb を一切経由しない
+ * 経路で裏取りするためのカウンタ。x68k/scsi.c 側で SCSI_HandleRequestHeader
+ * (総呼び出し回数)・未対応コマンド分岐・$04/$08 それぞれの呼び出し回数と
+ * 直近のユニット/開始論理セクタを積むだけの生カウンタへ足しており、
+ * ここではそれを素通しで返すだけ。JS 側はこれをポーリングして
+ * 「本当に増えなくなったか」を確かめる(console.log の取りこぼしやログの
+ * 上限とは無関係)。 */
+extern unsigned int SCSIReqTotalCount;
+extern unsigned int SCSIUnsupportedCmdCount;
+extern unsigned int SCSIReadCount;
+extern unsigned int SCSILastReadUnit;
+extern unsigned int SCSILastReadLogsec;
+extern unsigned int SCSIWriteCount;
+extern unsigned int SCSILastWriteUnit;
+extern unsigned int SCSILastWriteLogsec;
+
+__attribute__((used))
+unsigned int get_scsi_req_total(void)
+{
+  return SCSIReqTotalCount;
+}
+
+__attribute__((used))
+unsigned int get_scsi_unsupported_count(void)
+{
+  return SCSIUnsupportedCmdCount;
+}
+
+__attribute__((used))
+unsigned int get_scsi_read_count(void)
+{
+  return SCSIReadCount;
+}
+
+__attribute__((used))
+unsigned int get_scsi_last_read_unit(void)
+{
+  return SCSILastReadUnit;
+}
+
+__attribute__((used))
+unsigned int get_scsi_last_read_logsec(void)
+{
+  return SCSILastReadLogsec;
+}
+
+__attribute__((used))
+unsigned int get_scsi_write_count(void)
+{
+  return SCSIWriteCount;
+}
+
+__attribute__((used))
+unsigned int get_scsi_last_write_unit(void)
+{
+  return SCSILastWriteUnit;
+}
+
+__attribute__((used))
+unsigned int get_scsi_last_write_logsec(void)
+{
+  return SCSILastWriteLogsec;
+}

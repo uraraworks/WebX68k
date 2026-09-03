@@ -630,6 +630,7 @@ try {
   // 打鍵後の画面は typedScreen に残す(打つ前の lastLines と区別するため)。
   let typedScreen = null;
   let typedMismatch = null;
+  let scsiDebugSamples = null;
   // 起動を検知できていないのに打鍵しても意味が無い(プロンプトが出る前に押した
   // キーは落ちる)。実測2026-09-03: booted=false のまま打鍵して "dir a:" が
   // "ir a:" になり、製品の不具合と紛らわしい結果になった。
@@ -663,6 +664,27 @@ try {
     await sleep(4000);
     }
     await sleep(Number(args['type-wait'] ?? 6000));
+    // 調査用(2026-09-04、docs/STORAGE-SCSI.md参照): 「ログが途絶えた=止まった」を
+    // console.log/log_cbとは独立の経路(host.scsiDebugCounters())で裏取りする。
+    // --poll-scsi-debug=<ms> を指定すると、この時点から指定ミリ秒のあいだ
+    // 500ms間隔でカウンタをサンプリングして結果へ残す。--worker=0 と併用が必須
+    // (host はWorker経路ではnullを返す。src/main.tsのscsiDebug参照)。
+    if (args['poll-scsi-debug'] !== undefined) {
+      const pollMs = Number(args['poll-scsi-debug']);
+      // Worker経路(既定)ではhostが常にnullなので、frame event相乗り経路
+      // (workerLastScsiDebugProbe)を有効化しないと常にnullが返る
+      // (src/main.tsのscsiDebugフック参照)。--worker=0のときは無害な空振り。
+      await page.evaluate(() => window.__webx68kDebug?.keybufProbeEnable?.(true)).catch(() => {});
+      scsiDebugSamples = [];
+      const pollStart = Date.now();
+      while (Date.now() - pollStart < pollMs) {
+        const sample = await page
+          .evaluate(() => window.__webx68kDebug?.scsiDebug?.() ?? null)
+          .catch((err) => ({ error: String(err) }));
+        scsiDebugSamples.push({ t: Date.now() - pollStart, ...sample });
+        await sleep(500);
+      }
+    }
     typedScreen = await page
       .evaluate(async () => {
         const dbg = window.__webx68kDebug;
@@ -768,6 +790,7 @@ try {
         booted,
         typedScreen,
         typedMismatch,
+        scsiDebugSamples,
         dumps,
         screenshot: shot,
         iocsVectors: vectors,
