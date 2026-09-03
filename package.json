@@ -7,8 +7,10 @@
   "scripts": {
     "dev": "vite",
     "build": "tsc && vite build",
+    "typecheck": "tsc --noEmit",
     "preview": "vite preview",
     "test": "vitest run",
+    "test:core": "vitest run test/core-serial-integration.test.ts",
     "capture-help": "node scripts/capture-help-shots.mjs",
     "verify:version": "node tools/verify_version_determinism.mjs"
   },

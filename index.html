@@ -250,7 +250,7 @@
     <div class="rom-modal" role="dialog" aria-modal="true" aria-labelledby="settings-title">
       <h2 id="settings-title" class="rom-modal-title">設定</h2>
       <p id="settings-description" class="rom-modal-description">
-        BIOS ファイル(IPLROM.DAT / CGROM.DAT)とマシン構成を設定します。設定はブラウザに保存され、次回起動時から反映されます。
+        BIOS、マシン構成、シリアルポートを設定します。設定はブラウザに保存されます。
       </p>
 
       <h3 id="settings-bios-title" class="rom-modal-section-title">BIOS 設定</h3>
@@ -319,6 +319,33 @@
           <option id="speed-opt-unlimited" value="unlimited">無制限</option>
         </select>
         <span id="speed-actual"></span>
+      </div>
+
+      <div class="settings-serial-heading">
+        <h3 id="settings-serial-title" class="rom-modal-section-title">シリアルポート</h3>
+        <p id="settings-serial-unsupported" class="rom-modal-section-note serial-unsupported" hidden>
+          このブラウザでは Web Serial API を利用できません。対応するデスクトップブラウザを使用してください。
+        </p>
+      </div>
+      <div id="settings-serial-controls" hidden>
+        <div class="field-row">
+          <span id="settings-serial-status-label">状態</span>
+          <span id="settings-serial-status" class="status-ng" role="status" aria-live="polite" aria-labelledby="settings-serial-status-label">未接続</span>
+          <button id="settings-serial-toggle" type="button" class="rom-close-btn">接続</button>
+        </div>
+        <div class="field-row">
+          <label id="settings-serial-baud-label" for="cfg-serial-baud">ボーレート</label>
+          <select id="cfg-serial-baud" aria-describedby="settings-serial-baud-note">
+            <option value="2400">2400</option>
+            <option value="4800">4800</option>
+            <option value="9600">9600</option>
+            <option value="19200">19200</option>
+            <option value="38400" selected>38400</option>
+            <option value="57600">57600</option>
+            <option value="115200">115200</option>
+          </select>
+          <p id="settings-serial-baud-note" class="serial-baud-note">X68000 側と同じボーレートを選択してください。</p>
+        </div>
       </div>
 
       <div class="rom-modal-footer">

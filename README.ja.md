@@ -137,6 +137,14 @@ X68000 エミュレータ [px68k-libretro](https://github.com/uraraworks/px68k-l
 IPアドレス(`http://192.168.x.x:port/`)で開くと利用できません。この場合は以前のように
 起動そのものが失敗するのではなく、**無音で起動します**(音の行き先が無いだけです)。
 
+### Web Serial / RS-232C
+
+設定ダイアログから、X68000 の SCC チャネル A をホストのシリアルポートへ接続できます。
+Chrome・Edge・Firefoxなど、Web Serial APIに対応するデスクトップブラウザとhttpsが必要です。
+Android版Firefox、iOS/iPadOS上のブラウザ、およびmacOS版Safariは現在対応していません。設定方法、各OSの
+注意点、Windows の com0com を使ったループバック確認は
+[docs/WEB_SERIAL.ja.md](docs/WEB_SERIAL.ja.md)を参照してください。
+
 ### ドラッグ&ドロップ
 
 ファイル(ディスクイメージ・ZIP・LZH)をドロップできる場所は3か所あり、ドラッグ中は
