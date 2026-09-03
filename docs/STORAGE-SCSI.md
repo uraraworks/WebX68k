@@ -6576,6 +6576,67 @@ number/string/boolean だけを写す）。プローブが警告を出すよう�
 `tsc` / `vitest`(655件) 通過。`--scsi-opfs` の実測で `booted=true` /
 `打鍵不一致=None` / `<dir>` 10行 / `SCSI I/O: opfs`。
 
+## SCSIライブラリとD&Dを足した（2026-09-04）
+
+手順4の残り2枚のうち「ライブラリ一覧」「D&D」を実装した。**ブランク作成は今回もやらない**
+（SCSIはブランク作成そのものが未検討のため、引き続き宿題として残す）。
+
+- `#slot-scsi` に `btn-library-scsi` を追加。位置・アイコンは `btn-library-fdd0` と同じ意匠
+  （FDD/HDDのライブラリボタンをそのまま踏襲）
+- 押すと `listScsiImages()` の結果を、FDD/HDDの「ライブラリから挿入」と**同じ
+  `#slot-popup-menu` 要素・同じ `menuRow`/`positionSlotPopupMenu`/`closeSlotPopupMenu`**で
+  表示する（`openScsiLibraryMenu()`）。選ぶと `selectScsiFromLibrary()` が
+  localStorage(`webx68k.scsi`)を差し替えて `updateScsiControls()` を呼ぶだけで、
+  実体は既にOPFSにあるため `putScsiImage()` での再取り込みはしない
+- 一覧が空のときはFDDライブラリメニューと同じ `libraryMenuEmpty()` を出す。起動中
+  (`isScsiLocked()`)とOPFS利用不可時は他のSCSIボタンと同様に無効化する
+  （`updateScsiControls()` に `libraryBtn` の分岐を追加）
+- ディスクライブラリダイアログ(`#library-backdrop`)に `#library-scsi-section` を追加し、
+  OPFS上のSCSIイメージを一覧＋削除できるようにした（`refreshScsiLibraryList()`/
+  `buildScsiLibraryRow()`）。**現在SCSIスロットに挿入中のイメージは削除ボタンを無効化**し、
+  理由(`scsiLibraryDeleteDisabledMounted`)をtitleに出す。削除は既存の
+  `libraryDeleteConfirm()` で確認ダイアログを出してから `deleteScsiImage()` を呼ぶ。
+  OPFSが使えない環境(`scsiStorageAvailable === false`)では節ごと隠す。リネームはしない
+- `#slot-scsi` へのD&D配線は、既存のFDD/HDDスロット(`dragenter`のdepthカウンタ方式、
+  `dropzone-active`)をそのまま複製し、ドロップされたファイルを既存の `handleInsertScsi()`
+  へ渡すだけにした。stage全体へのD&D(`resolveStageDropSlot`)とライブラリダイアログへの
+  D&Dには触れていない
+- 文言は既存のSCSI関連キー(`scsiEmpty`等)の命名に合わせて3件追加
+  (`scsiLibrarySectionTitle`/`scsiLibrarySectionDescription`/`scsiLibraryDeleteDisabledMounted`)。
+  「ライブラリから挿入」のボタン文言・メニュー見出しは既存の `slotInsertFromLibrary`/
+  `slotInsertFromLibraryTitle`(drive引数にSCSIの表示名を渡すだけ)をそのまま流用でき、
+  新規キーは増やさなかった
+
+### 踏んだ落とし穴
+
+**SCSI行のaria-labelは、実は元々どこでも言語切替に追従していなかった。**
+`applyDocumentStrings()`(言語切替時に呼ばれる関数)には FDD/HDD の `SLOT_IDS` ループで
+`els.insertBtn.setAttribute('aria-label', ...)` 等を貼る処理があるが、SCSIは
+`ScsiElements` という別の型・別のオブジェクトのため、このループの対象に入っていなかった
+（挿入・取出・ダウンロードのボタンも同様で、今回の変更前から既存の抜けだった）。
+新しく足す `btn-library-scsi` のaria-labelだけ直しても中途半端なので、この機会にSCSI行
+全体(ラベル/ランプ/挿入/ライブラリ/取出/ダウンロード)のaria-label更新をまとめて
+`applyDocumentStrings()` 内に専用ブロックとして追加した。
+
+### 確認
+
+- `tsc` 通過
+- `vitest` 667件通過（655件 + 新規12件。`test/scsi-store.test.ts` に
+  `sortScsiEntries`/`canDeleteScsiImage`の純粋関数テストと、OPFSを偽物(`FakeDirHandle`等)に
+  差し替えた`listScsiImages`/`deleteScsiImage`/`isScsiStorageAvailable`の結合テストを追加）
+- 実ブラウザ確認（puppeteer-core、dev サーバ ポート5299、`_local/`配下の使い捨てスクリプトで
+  Chromeを直接操作。OPFSへ`zeta.hds`/`alpha.hds`を直接seedしてから検証）:
+  - ライブラリポップアップに2件表示・名前昇順(`alpha`→`zeta`)であることを確認
+  - `alpha.hds`を選ぶとスロット表示(`name-scsi`)が`alpha.hds`に変わることを確認
+  - ライブラリモーダルのSCSI節が表示され、挿入中の`alpha.hds`は削除ボタンが`disabled`、
+    未挿入の`zeta.hds`は有効であることを確認
+  - `zeta.hds`を削除すると、OPFS上からも(`for await`で列挙して確認)モーダル一覧からも
+    消えることを確認
+  - `#slot-scsi`へ合成`DataTransfer`(`dragenter`→`drop`)でファイルをドロップすると、
+    スロット表示が`dropped.hds`に変わり、OPFS上にも実際に書き込まれていることを確認
+  - 全11項目(seed含む)が合格。「開いて動いた」で止めず、DOM状態とOPFSの実体を毎回
+    読み直して確かめた
+
 ## 次にやること
 
 移行前基準は2組そろい、**ワーカー移行に着手できる状態になった**。
@@ -6628,3 +6689,7 @@ number/string/boolean だけを写す）。プローブが警告を出すよう�
     デバイスドライバ連鎖に `SCHDISK` が現れない（RAM全体を検索しても0件）。
     2026-09-02 の測定（`$0001a46c` に SCHDISK）が再現していない。イメージ・ROM・既定設定は同一。
     条件を1つずつ振って再現条件を特定する（「直した観測系で本物ROM側を取り直した（実測、2026-09-03）」参照）。
+26. **SCSI UI 手順4の残り、ブランク作成。**「SCSIライブラリとD&Dを足した（2026-09-04）」節で
+    ライブラリ一覧・D&Dは実装済みになった。残るのはブランクSCSIディスク作成
+    （FDD/HDDの `handleCreateBlank`/`handleCreateBlankHdd` に相当するもの）で、
+    サイズ・フォーマットの既定値をどうするか自体が未検討のまま残っている。

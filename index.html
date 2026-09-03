@@ -201,6 +201,9 @@
                 <svg class="btn-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 19l6-8H6l6 8z M6 5h12"/></svg>
               </button>
               <input id="input-scsi" type="file" class="fd-file-input" accept=".hds" />
+              <button id="btn-library-scsi" type="button" class="icon-btn" title="ライブラリから挿入" aria-label="SCSIにライブラリから挿入">
+                <svg class="btn-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 16h13l3-3V6a1 1 0 0 0-1-1H4a1 1 0 0 0-1 1v9a1 1 0 0 0 1 1z M4 20h13a3 3 0 0 0 3-3 M8 9h6v4H8z"/></svg>
+              </button>
               <button id="btn-eject-scsi" type="button" class="icon-btn" title="ディスク取り出し" aria-label="SCSIからディスク取り出し" disabled>
                 <svg class="btn-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5l6 8H6l6-8z M6 19h12"/></svg>
               </button>
@@ -311,6 +314,17 @@
         これまでに挿入したディスクイメージはブラウザに保存され、ここから挿入するドライブ(FDD0 / FDD1 / HDD)を選んで再挿入できます。
       </p>
       <div id="library-list" class="library-list"></div>
+
+      <!-- SCSI用OPFSイメージの一覧+削除の受け皿。FDD/HDD用(IndexedDB)とは別系統。
+           挿入操作はスロット側の「ライブラリから挿入」ポップアップで行い、ここでは削除だけを扱う。 -->
+      <div id="library-scsi-section" class="hidden">
+        <h3 id="library-scsi-title" class="rom-modal-section-title">SCSIディスク</h3>
+        <p id="library-scsi-description" class="rom-modal-description">
+          SCSIスロットに割り当てられるイメージです。削除すると復元できません(現在挿入中のものは削除できません)。
+        </p>
+        <div id="library-scsi-list" class="library-list"></div>
+      </div>
+
       <div class="rom-modal-footer">
         <button id="library-close" type="button" class="rom-close-btn">閉じる</button>
       </div>

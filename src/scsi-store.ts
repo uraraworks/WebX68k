@@ -33,7 +33,25 @@ async function getScsiDir(create: boolean): Promise<FileSystemDirectoryHandle> {
   return root.getDirectoryHandle(SCSI_DIR, { create });
 }
 
-/** `scsi/` ディレクトリ内のファイル一覧を返す(無ければ空配列)。 */
+/**
+ * 一覧の並び順(名前の昇順、localeCompareで日本語ファイル名も自然な順になる)。
+ * ディレクトリの列挙順(挿入順)は環境依存で不安定なため、表示前に必ずこれを通す。
+ * DOM非依存の純粋関数として切り出してあり単体テスト可能。
+ */
+export function sortScsiEntries(entries: ScsiEntry[]): ScsiEntry[] {
+  return [...entries].sort((a, b) => a.name.localeCompare(b.name));
+}
+
+/**
+ * 指定ファイルを削除してよいか(=現在SCSIスロットに挿入中でないか)。
+ * `mountedName` は呼び出し側が持つ現在の挿入名(localStorage `webx68k.scsi` の値)。
+ * DOM非依存の純粋関数として切り出してあり単体テスト可能。
+ */
+export function canDeleteScsiImage(name: string, mountedName: string | null): boolean {
+  return name !== mountedName;
+}
+
+/** `scsi/` ディレクトリ内のファイル一覧を、名前の昇順に揃えて返す(無ければ空配列)。 */
 export async function listScsiImages(): Promise<ScsiEntry[]> {
   let dir: FileSystemDirectoryHandle;
   try {
@@ -50,7 +68,7 @@ export async function listScsiImages(): Promise<ScsiEntry[]> {
     const file = await (handle as FileSystemFileHandle).getFile();
     out.push({ name, bytes: file.size });
   }
-  return out;
+  return sortScsiEntries(out);
 }
 
 /**

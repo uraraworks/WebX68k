@@ -19,7 +19,15 @@ import { loadBiosFile, saveBiosFile } from './bios-store';
 import { storageProbe, frameProbe, keybufAttributionProbe } from './storage-probe';
 import { computeAttributionBreakdown } from './keybuf-attribution';
 import { loadSramFile, saveSramFile } from './sram-store';
-import { isScsiStorageAvailable, putScsiImage, readScsiImage } from './scsi-store';
+import {
+  canDeleteScsiImage,
+  deleteScsiImage,
+  isScsiStorageAvailable,
+  listScsiImages,
+  putScsiImage,
+  readScsiImage,
+  type ScsiEntry,
+} from './scsi-store';
 import {
   classifyDiskBytes,
   classifyDiskKind,
@@ -187,6 +195,12 @@ const libraryBackdrop = document.getElementById('library-backdrop') as HTMLDivEl
 const libraryList = document.getElementById('library-list') as HTMLDivElement;
 const libraryDescriptionEl = document.getElementById('library-description') as HTMLParagraphElement;
 const libraryCloseBtn = document.getElementById('library-close') as HTMLButtonElement;
+// SCSI用OPFSイメージ一覧(FDD/HDD用のIndexedDBライブラリとは別系統)。「削除の受け皿」専用で、
+// 挿入操作はスロット側の「ライブラリから挿入」ポップアップ(openScsiLibraryMenu)で行う。
+const libraryScsiSection = document.getElementById('library-scsi-section') as HTMLDivElement;
+const libraryScsiList = document.getElementById('library-scsi-list') as HTMLDivElement;
+const libraryScsiTitleEl = document.getElementById('library-scsi-title') as HTMLElement;
+const libraryScsiDescriptionEl = document.getElementById('library-scsi-description') as HTMLParagraphElement;
 const slotPopupMenu = document.getElementById('slot-popup-menu') as HTMLDivElement;
 // ツールバー「…」オーバーフローメニュー専用のカスケードサブメニュー要素。詳細は renderOverflowMenu() 群を参照。
 const overflowSubmenu = document.getElementById('overflow-submenu') as HTMLDivElement;
@@ -248,6 +262,7 @@ interface ScsiElements {
   name: HTMLElement;
   insertBtn: HTMLButtonElement;
   input: HTMLInputElement;
+  libraryBtn: HTMLButtonElement;
   ejectBtn: HTMLButtonElement;
   downloadBtn: HTMLButtonElement;
 }
@@ -258,6 +273,7 @@ const scsiElements: ScsiElements = {
   name: document.getElementById('name-scsi') as HTMLElement,
   insertBtn: document.getElementById('btn-insert-scsi') as HTMLButtonElement,
   input: document.getElementById('input-scsi') as HTMLInputElement,
+  libraryBtn: document.getElementById('btn-library-scsi') as HTMLButtonElement,
   ejectBtn: document.getElementById('btn-eject-scsi') as HTMLButtonElement,
   downloadBtn: document.getElementById('btn-download-scsi') as HTMLButtonElement,
 };
@@ -1529,6 +1545,7 @@ function isScsiLocked(): boolean {
 function updateScsiControls(): void {
   if (!scsiStorageAvailable) {
     scsiElements.insertBtn.disabled = true;
+    scsiElements.libraryBtn.disabled = true;
     scsiElements.ejectBtn.disabled = true;
     scsiElements.downloadBtn.disabled = true;
     scsiElements.name.textContent = t('scsiUnavailable');
@@ -1537,12 +1554,14 @@ function updateScsiControls(): void {
   const locked = isScsiLocked();
   const mounted = scsiName !== null;
   scsiElements.insertBtn.disabled = locked;
+  scsiElements.libraryBtn.disabled = locked;
   scsiElements.ejectBtn.disabled = locked || !mounted;
   // ダウンロードは中身を読むだけなので起動中でも許可する
   scsiElements.downloadBtn.disabled = !mounted;
 
   const lockedHint = t('scsiLockedWhileRunning');
   scsiElements.insertBtn.title = locked ? lockedHint : t('slotInsert');
+  scsiElements.libraryBtn.title = locked ? lockedHint : t('slotInsertFromLibrary');
   scsiElements.ejectBtn.title = locked ? lockedHint : t('slotEject');
   scsiElements.downloadBtn.title = t('slotDownload');
 
@@ -1568,6 +1587,7 @@ async function handleInsertScsi(file: File): Promise<void> {
     localStorage.setItem(SCSI_STORAGE_KEY, scsiName);
     updateScsiControls();
     showToast(t('scsiInsertedNeedsRestart'));
+    if (!libraryBackdrop.classList.contains('hidden')) void refreshScsiLibraryList();
   } catch (e) {
     console.error('SCSIディスクの取り込みに失敗しました。', e);
     updateScsiControls();
@@ -1576,8 +1596,25 @@ async function handleInsertScsi(file: File): Promise<void> {
 }
 
 /**
+ * ライブラリ(OPFS上に既にあるSCSIイメージ)から選んでSCSIスロットへ割り当てる。
+ * 実体は既にOPFSにあるので putScsiImage() での再取り込みは不要で、handleInsertScsi() の
+ * 取り込み完了後と同じ状態(localStorageの紐付け差し替え)にするだけでよい。
+ */
+function selectScsiFromLibrary(name: string): void {
+  if (isScsiLocked()) {
+    alert(t('scsiLockedWhileRunning'));
+    return;
+  }
+  scsiName = name;
+  localStorage.setItem(SCSI_STORAGE_KEY, scsiName);
+  updateScsiControls();
+  showToast(t('scsiInsertedNeedsRestart'));
+  if (!libraryBackdrop.classList.contains('hidden')) void refreshScsiLibraryList();
+}
+
+/**
  * SCSIディスクを取り出す(localStorageのエントリを消すだけ。OPFS上の実体は消さない。
- * 削除はライブラリUI(次回)の仕事)。
+ * 削除はライブラリダイアログのSCSI節の仕事)。
  */
 function handleEjectScsi(): void {
   if (isScsiLocked()) {
@@ -1587,6 +1624,8 @@ function handleEjectScsi(): void {
   scsiName = null;
   localStorage.removeItem(SCSI_STORAGE_KEY);
   updateScsiControls();
+  // 挿入中は削除できない節なので、取り出した直後は削除ボタンが有効になり得る。
+  if (!libraryBackdrop.classList.contains('hidden')) void refreshScsiLibraryList();
 }
 
 /** 現在挿しているSCSIディスクをファイルとしてダウンロードする(既存のhandleDownloadDiskと同じ導線)。 */
@@ -1629,8 +1668,40 @@ scsiElements.input.addEventListener('change', () => {
   if (!file) return;
   void handleInsertScsi(file);
 });
+scsiElements.libraryBtn.addEventListener('click', (e) => {
+  e.stopPropagation();
+  if (!slotPopupMenu.classList.contains('hidden')) {
+    closeSlotPopupMenu();
+    return;
+  }
+  void openScsiLibraryMenu(scsiElements.libraryBtn);
+});
 scsiElements.ejectBtn.addEventListener('click', () => handleEjectScsi());
 scsiElements.downloadBtn.addEventListener('click', () => void handleDownloadScsi());
+
+// SCSIドライブ行へのD&D配線(他スロットと同じdragenterカウンタ方式)。取り込み先は常にSCSIスロット
+// 固定なので resolveStageDropSlot 相当の判定は不要。stage全体へのD&Dは今回は触らない。
+{
+  const scsiRow = document.getElementById('slot-scsi') as HTMLDivElement;
+  let scsiDropDepth = 0;
+  scsiRow.addEventListener('dragover', (e) => e.preventDefault());
+  scsiRow.addEventListener('dragenter', (e) => {
+    e.preventDefault();
+    scsiDropDepth++;
+    scsiRow.classList.add('dropzone-active');
+  });
+  scsiRow.addEventListener('dragleave', () => {
+    scsiDropDepth = Math.max(0, scsiDropDepth - 1);
+    if (scsiDropDepth === 0) scsiRow.classList.remove('dropzone-active');
+  });
+  scsiRow.addEventListener('drop', (e) => {
+    e.preventDefault();
+    scsiDropDepth = 0;
+    scsiRow.classList.remove('dropzone-active');
+    const file = e.dataTransfer?.files?.[0];
+    if (file) void handleInsertScsi(file);
+  });
+}
 
 /**
  * 起動前に一度だけ呼ぶ: この環境でSCSIのOPFS保存が使えるか確認し、使えなければ
@@ -2326,6 +2397,72 @@ async function refreshLibraryList(): Promise<void> {
 }
 
 /**
+ * ライブラリダイアログのSCSI節(OPFS上のSCSIイメージの一覧+削除)を組み立てる1行。
+ * FDD/HDD用の buildLibraryRow() と違い、リネームや複数挿入先は無く(挿入はスロット側の
+ * openScsiLibraryMenu() の仕事)、削除だけを扱う。現在SCSIスロットに挿入中のイメージは
+ * canDeleteScsiImage() で判定して削除ボタンを無効化し、理由をtitleに出す。
+ */
+function buildScsiLibraryRow(entry: ScsiEntry): HTMLElement {
+  const row = document.createElement('div');
+  row.className = 'library-list-item';
+
+  const nameEl = document.createElement('span');
+  nameEl.className = 'library-item-name';
+  appendSplitName(nameEl, entry.name, 'library-item-name-head', 'library-item-name-tail');
+  nameEl.title = entry.name;
+  row.append(nameEl);
+
+  const metaEl = document.createElement('span');
+  metaEl.className = 'library-item-meta';
+  metaEl.textContent = formatLibrarySize(entry.bytes);
+  row.append(metaEl);
+
+  const actions = document.createElement('div');
+  actions.className = 'library-item-actions';
+
+  const deleteBtn = document.createElement('button');
+  deleteBtn.type = 'button';
+  deleteBtn.className = 'library-action-btn danger';
+  deleteBtn.textContent = t('libraryActionDelete');
+  const deletable = canDeleteScsiImage(entry.name, scsiName);
+  deleteBtn.disabled = !deletable;
+  deleteBtn.title = deletable ? '' : t('scsiLibraryDeleteDisabledMounted');
+  deleteBtn.addEventListener('click', () => {
+    if (!confirm(t('libraryDeleteConfirm', { name: entry.name }))) return;
+    void (async () => {
+      await deleteScsiImage(entry.name);
+      await refreshScsiLibraryList();
+    })();
+  });
+  actions.append(deleteBtn);
+
+  row.append(actions);
+  return row;
+}
+
+/**
+ * ライブラリダイアログのSCSI節を再描画する。OPFSが使えない環境では節ごと隠す
+ * (scsiStorageAvailable は initScsiUi() で確定済みの値をそのまま見る)。
+ */
+async function refreshScsiLibraryList(): Promise<void> {
+  if (!scsiStorageAvailable) {
+    libraryScsiSection.classList.add('hidden');
+    return;
+  }
+  libraryScsiSection.classList.remove('hidden');
+  const entries = await listScsiImages();
+  libraryScsiList.textContent = '';
+  if (entries.length === 0) {
+    const empty = document.createElement('div');
+    empty.className = 'library-menu-empty';
+    empty.textContent = t('libraryMenuEmpty');
+    libraryScsiList.append(empty);
+    return;
+  }
+  for (const entry of entries) libraryScsiList.append(buildScsiLibraryRow(entry));
+}
+
+/**
  * ディスクライブラリダイアログを開く。`focusGroupId` を渡すと(URLパラメータ/D&D等の
  * 複数枚アーカイブ取り込み直後の呼び出し)、そのグループを展開・強調・スクロール表示し、
  * 案内文を差し替える。手動でのオープン(ツールバーのボタン等)は引数なしで呼ばれ、従来どおりの見た目になる。
@@ -2336,6 +2473,7 @@ function openLibraryModal(focusGroupId?: string): void {
   if (focusGroupId) expandedLibraryGroups.add(focusGroupId);
   libraryDescriptionEl.textContent = focusGroupId ? t('libraryGroupFocusHint') : t('libraryDialogDescription');
   void refreshLibraryList();
+  void refreshScsiLibraryList();
 }
 function closeLibraryModal(): void {
   libraryBackdrop.classList.add('hidden');
@@ -2549,6 +2687,42 @@ async function openSlotLibraryMenu(slot: SlotId, anchorEl: HTMLButtonElement): P
   const stored = await listDisks();
   const nodes = buildLibraryNodes(stored, classifyDiskKind);
   renderSlotLibraryMenu(slot, anchorEl, nodes);
+}
+
+/**
+ * SCSIスロットの「ライブラリから挿入」ポップアップ。FDD/HDDの openSlotLibraryMenu() と
+ * 同じ #slot-popup-menu 要素・同じ体裁(menuRow/positionSlotPopupMenu)を使い回すが、
+ * ソースはOPFSの scsi/ ディレクトリ(listScsiImages())で、FDD/HDD用IndexedDBライブラリとは別系統。
+ * 選択したイメージは既にOPFSにある実体をそのまま使うので、選択= localStorageの紐付け差し替えのみ
+ * (selectScsiFromLibrary)。空のときは既存のFDDライブラリメニューと同じ libraryMenuEmpty() を出す。
+ */
+async function openScsiLibraryMenu(anchorEl: HTMLButtonElement): Promise<void> {
+  const entries = await listScsiImages();
+  slotPopupMenu.textContent = '';
+  const title = document.createElement('div');
+  title.className = 'library-menu-title';
+  title.textContent = t('slotInsertFromLibraryTitle', { drive: t('scsiSlotLabel') });
+  slotPopupMenu.append(title);
+
+  if (entries.length === 0) {
+    const empty = document.createElement('div');
+    empty.className = 'library-menu-empty';
+    empty.textContent = t('libraryMenuEmpty');
+    slotPopupMenu.append(empty);
+  } else {
+    for (const entry of entries) {
+      const row = menuRow(entry.name, formatLibrarySize(entry.bytes), '', {
+        splitName: true,
+        title: entry.name,
+      });
+      onActivate(row, () => {
+        closeSlotPopupMenu();
+        selectScsiFromLibrary(entry.name);
+      });
+      slotPopupMenu.append(row);
+    }
+  }
+  positionSlotPopupMenu(anchorEl);
 }
 
 /**
@@ -3538,6 +3712,18 @@ function applyDocumentStrings(): void {
   }
   updateSlotControls();
 
+  // SCSI行(SlotId系とは別のScsiElements)。他スロットと違いここに専用ブロックを持たないと
+  // ライブラリボタンのaria-labelが言語切替に追従しなかったため、他スロットと同じ場所にまとめる。
+  {
+    const scsiDrive = t('scsiSlotLabel');
+    scsiElements.label.textContent = scsiDrive;
+    scsiElements.lamp.setAttribute('aria-label', t('diskLampLabel', { drive: scsiDrive }));
+    scsiElements.insertBtn.setAttribute('aria-label', `${scsiDrive} ${t('slotInsert')}`);
+    scsiElements.libraryBtn.setAttribute('aria-label', `${scsiDrive} ${t('slotInsertFromLibrary')}`);
+    scsiElements.ejectBtn.setAttribute('aria-label', `${scsiDrive} ${t('slotEject')}`);
+    scsiElements.downloadBtn.setAttribute('aria-label', `${scsiDrive} ${t('slotDownload')}`);
+  }
+  updateScsiControls();
 
   document.getElementById('footer-copyright')!.textContent = t('footerCopyright');
   document.getElementById('footer-github')!.textContent = t('footerGithubLabel');
@@ -3566,7 +3752,12 @@ function applyDocumentStrings(): void {
   document.getElementById('library-title')!.textContent = t('libraryDialogTitle');
   libraryDescriptionEl.textContent = highlightedLibraryGroupId ? t('libraryGroupFocusHint') : t('libraryDialogDescription');
   libraryCloseBtn.textContent = t('libraryDialogClose');
-  if (!libraryBackdrop.classList.contains('hidden')) void refreshLibraryList();
+  libraryScsiTitleEl.textContent = t('scsiLibrarySectionTitle');
+  libraryScsiDescriptionEl.textContent = t('scsiLibrarySectionDescription');
+  if (!libraryBackdrop.classList.contains('hidden')) {
+    void refreshLibraryList();
+    void refreshScsiLibraryList();
+  }
 
   fileManagerDialog.applyStrings();
 }

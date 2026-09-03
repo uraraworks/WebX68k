@@ -88,6 +88,12 @@ interface Dict {
   scsiInsertedNeedsRestart(): string;
   /** 起動中はSCSIディスクを差し替えられないときのツールチップ・通知。 */
   scsiLockedWhileRunning(): string;
+  /** ディスクライブラリダイアログ内、SCSI用OPFSイメージ一覧セクションの見出し。 */
+  scsiLibrarySectionTitle(): string;
+  /** 同セクションの説明文(削除は取消不可・挿入中は削除不可であることを伝える)。 */
+  scsiLibrarySectionDescription(): string;
+  /** SCSIライブラリの削除ボタンが、現在挿入中のため無効化されているときのツールチップ。 */
+  scsiLibraryDeleteDisabledMounted(): string;
   /** ドライブアクセスランプのスクリーンリーダー向けラベル。 */
   diskLampLabel(args: { drive: string }): string;
   /** スロットの「ライブラリから挿入」ボタン(ツールチップ)。 */
@@ -502,6 +508,10 @@ const STRINGS: Record<Lang, Dict> = {
     scsiImporting: ({ percent }) => `取り込み中… ${percent}%`,
     scsiInsertedNeedsRestart: () => 'SCSIディスクを挿しました。次回の起動から使えます',
     scsiLockedWhileRunning: () => '起動中はSCSIディスクを差し替えられません',
+    scsiLibrarySectionTitle: () => 'SCSIディスク',
+    scsiLibrarySectionDescription: () =>
+      'SCSIスロットに割り当てられるイメージです。削除すると復元できません(現在挿入中のものは削除できません)。',
+    scsiLibraryDeleteDisabledMounted: () => '現在SCSIスロットに挿入中のため削除できません',
     diskLampLabel: ({ drive }) => `${drive} アクセスランプ`,
     slotInsertFromLibrary: () => 'ライブラリから挿入',
     slotInsertFromLibraryTitle: ({ drive }) => `${drive} へ挿入`,
@@ -820,6 +830,10 @@ const STRINGS: Record<Lang, Dict> = {
     scsiImporting: ({ percent }) => `Importing… ${percent}%`,
     scsiInsertedNeedsRestart: () => 'SCSI disk inserted. It will be used from the next boot.',
     scsiLockedWhileRunning: () => 'The SCSI disk cannot be changed while running.',
+    scsiLibrarySectionTitle: () => 'SCSI Disks',
+    scsiLibrarySectionDescription: () =>
+      'Images that can be assigned to the SCSI slot. Deleting one cannot be undone (the one currently inserted cannot be deleted).',
+    scsiLibraryDeleteDisabledMounted: () => 'Cannot delete: currently inserted in the SCSI slot',
     diskLampLabel: ({ drive }) => `${drive} access lamp`,
     slotInsertFromLibrary: () => 'Insert from library',
     slotInsertFromLibraryTitle: ({ drive }) => `Insert into ${drive}`,
