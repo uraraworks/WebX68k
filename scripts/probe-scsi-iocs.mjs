@@ -54,6 +54,10 @@ const INIT_A4 = args['init-a4'] === undefined ? null : Number(args['init-a4']);
 // デバイスドライバヘッダの属性ワード(+4)。意味が未確定のため振れるようにしてある。
 const DRV_ATTR = args['drv-attr'] === undefined ? null : Number(args['drv-attr']);
 const SRAM_INIT = args['scsi-sram'] !== undefined;
+// テスト専用のRAMオーバーレイで書き込み経路(core-shim.c の __webx68kScsiWrite/
+// __webx68kScsiRead フック)を有効にする。永続化はしない。本命の書き戻し経路
+// (OPFS)が入るまで、書き込み経路を端から端まで確かめるためだけのもの。
+const SCSI_RAM_WRITES = args['scsi-ram-writes'] !== undefined;
 // 初期化コマンド($00)への返答値。どの欄が Human68k の判断に効くかを切り分けるための
 // 実験用スイッチ。意味は core-shim.c の js_scsi_reply_* を参照。未指定はコア側の既定に任せる。
 const REPLY_ERR = args['reply-err'] === undefined ? null : Number(args['reply-err']);
@@ -338,6 +342,26 @@ try {
       window.__webx68kScsiSramInit = true;
     });
   }
+  if (SCSI_RAM_WRITES) {
+    // テスト専用のRAMオーバーレイ。書き込みは永続化しない。
+    // 本番の書き戻し経路(OPFS)が入るまで、書き込み経路を端から端まで
+    // 確かめるためだけのもの。
+    await page.evaluateOnNewDocument(() => {
+      window.__webx68kScsiOverlay = new Map(); // lba -> Uint8Array(512)
+      window.__webx68kScsiWrite = (lba, heap, ptr) => {
+        window.__webx68kScsiOverlay.set(lba >>> 0, heap.slice(ptr, ptr + 512));
+        return 0;
+      };
+      // 読み出し側: オーバーレイに書いたセクタがあればそれを返し、
+      // 無ければ -2 を返して core-shim.c 側で従来のXHR経路へ委譲させる。
+      window.__webx68kScsiRead = (lba, heap, ptr) => {
+        const hit = window.__webx68kScsiOverlay.get(lba >>> 0);
+        if (!hit) return -2;
+        heap.set(hit, ptr);
+        return 0;
+      };
+    });
+  }
   if (INIT_A4 !== null) {
     await page.evaluateOnNewDocument((v) => {
       window.__webx68kScsiInitA4 = v;
@@ -572,12 +596,16 @@ try {
     // 実測(2026-09-03): "DIR C:" と打つと画面には "dir c;" と出た(Shift+Semicolon が
     // JISでは ';' のまま)。':' はJISでは独立キー(US配列の Quote の位置)なので、
     // ':' だけキー名で押す。他にずれる記号が出たら、同じ形でここに足すこと。
-    for (const part of TYPE_TEXT.split(':')) {
+    for (const cmdText of TYPE_TEXT.split(';;')) {
+    // ';;' 区切りで複数コマンドを続けて打てる(コピーしてから dir で確かめる等)。
+    for (const part of cmdText.split(':')) {
       if (part) await page.keyboard.type(part, { delay: 60 });
-      if (part !== TYPE_TEXT.split(':').at(-1)) await pressHeld(page, 'Quote');
+      if (part !== cmdText.split(':').at(-1)) await pressHeld(page, 'Quote');
     }
     await sleep(300);
     await pressHeld(page, 'Enter');
+    await sleep(4000);
+    }
     await sleep(Number(args['type-wait'] ?? 6000));
     typedScreen = await page
       .evaluate(async () => {

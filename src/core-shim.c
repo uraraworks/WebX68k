@@ -401,6 +401,16 @@ EM_JS(int, js_scsi_get_size, (), {
  * (Map の挿入順を利用し、ヒット時に末尾へ移動させるだけの実装)とする。
  */
 EM_JS(int, js_scsi_read_sector, (unsigned int lba, unsigned char *buf), {
+  /* テスト/将来の書き戻し経路用の差し込み口。
+   * __webx68kScsiRead が -2 を返した場合は「自分では扱わない」の意味とし、
+   * 従来のXHR経路(下のtryブロック)へ処理を委譲する約束にする。
+   * フックが無い既定状態では、この分岐には一切入らず従来どおり動く。 */
+  var readHook = globalThis.__webx68kScsiRead;
+  if (typeof readHook === 'function') {
+    var hooked = readHook(lba, HEAPU8, buf) | 0;
+    if (hooked !== -2) return hooked;
+  }
+
   var g = globalThis;
   var url = g.__webx68kScsiUrl;
   if (!url) return -1;
@@ -472,6 +482,26 @@ __attribute__((used))
 int webx68k_scsi_read_sector(unsigned int lba, unsigned char *buf)
 {
   return js_scsi_read_sector(lba, buf);
+}
+
+/*
+ * セクタ書き込みの差し込み口。本命は決定2のOPFS経路(コアをWorkerで回すのが前提で
+ * まだ先)だが、ここはその差し込み口として先に用意する。
+ * いまは scripts/probe-scsi-iocs.mjs の --scsi-ram-writes が使う、テスト用の
+ * RAMオーバーレイ(永続化しない)だけがこのフックを埋める。
+ * フックが無ければ書き戻し経路そのものが無いので -1 を返し、呼び出し側(scsi.c)で
+ * 従来どおりエラー扱いにする。
+ */
+EM_JS(int, js_scsi_write_sector, (unsigned int lba, unsigned char *buf), {
+  var hook = globalThis.__webx68kScsiWrite;
+  if (typeof hook === 'function') return hook(lba, HEAPU8, buf) | 0;
+  return -1;  /* 書き戻し経路が無い */
+});
+
+__attribute__((used))
+int webx68k_scsi_write_sector(unsigned int lba, const unsigned char *buf)
+{
+  return js_scsi_write_sector(lba, (unsigned char *)buf);
 }
 
 /*
