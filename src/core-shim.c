@@ -988,6 +988,8 @@ extern int32_t webx68k_ram_watch_pc_lo;
 extern int32_t webx68k_ram_watch_pc_hi;
 extern int      webx68k_ram_watch_count;
 
+/* PC絞り込みの無効条件は pc_lo が負であること。
+ * mem_wrap.c 側の判定式と必ず一致させること。 */
 __attribute__((used))
 void webx68k_ram_watch_refresh(void)
 {
@@ -998,7 +1000,19 @@ void webx68k_ram_watch_refresh(void)
 
   if (lo != webx68k_ram_watch_lo || hi != webx68k_ram_watch_hi ||
       pc_lo != webx68k_ram_watch_pc_lo || pc_hi != webx68k_ram_watch_pc_hi)
+  {
     webx68k_ram_watch_count = 0; /* 範囲が変わったら件数を数え直す */
+    if (lo <= hi)
+    {
+      int pc_enabled = (pc_lo >= 0 && pc_lo <= pc_hi);
+      if (pc_enabled)
+        printf("[SCSI-RAM] 監視設定: adr=$%06x..$%06x pc絞り込み=有効($%08x..$%08x)\n",
+               (unsigned)lo, (unsigned)hi, (unsigned)pc_lo, (unsigned)pc_hi);
+      else
+        printf("[SCSI-RAM] 監視設定: adr=$%06x..$%06x pc絞り込み=無効(pc_lo=%d pc_hi=%d)\n",
+               (unsigned)lo, (unsigned)hi, pc_lo, pc_hi);
+    }
+  }
 
   webx68k_ram_watch_lo = lo;
   webx68k_ram_watch_hi = hi;
@@ -1040,6 +1054,8 @@ extern int32_t webx68k_mem_read_watch_pc_lo;
 extern int32_t webx68k_mem_read_watch_pc_hi;
 extern int      webx68k_mem_read_watch_count;
 
+/* PC絞り込みの無効条件は pc_lo が負であること。
+ * mem_wrap.c 側の判定式と必ず一致させること。 */
 __attribute__((used))
 void webx68k_mem_read_watch_refresh(void)
 {
@@ -1050,7 +1066,19 @@ void webx68k_mem_read_watch_refresh(void)
 
   if (lo != webx68k_mem_read_watch_lo || hi != webx68k_mem_read_watch_hi ||
       pc_lo != webx68k_mem_read_watch_pc_lo || pc_hi != webx68k_mem_read_watch_pc_hi)
+  {
     webx68k_mem_read_watch_count = 0; /* 範囲が変わったら件数を数え直す */
+    if (lo <= hi)
+    {
+      int pc_enabled = (pc_lo >= 0 && pc_lo <= pc_hi);
+      if (pc_enabled)
+        printf("[SCSI-MEMR] 監視設定: adr=$%06x..$%06x pc絞り込み=有効($%08x..$%08x)\n",
+               (unsigned)lo, (unsigned)hi, (unsigned)pc_lo, (unsigned)pc_hi);
+      else
+        printf("[SCSI-MEMR] 監視設定: adr=$%06x..$%06x pc絞り込み=無効(pc_lo=%d pc_hi=%d)\n",
+               (unsigned)lo, (unsigned)hi, pc_lo, pc_hi);
+    }
+  }
 
   webx68k_mem_read_watch_lo = lo;
   webx68k_mem_read_watch_hi = hi;
