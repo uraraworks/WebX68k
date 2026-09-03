@@ -479,9 +479,11 @@ int webx68k_scsi_read_sector(unsigned int lba, unsigned char *buf)
  * この値の意味はまだ確定しておらず、値を振って挙動を見る必要がある。
  * 再ビルドせずに振れるよう、JS 側のグローバルから読む。
  */
+/* 2026-09-03、この組み合わせ(d2=1, a4=$00ea0100, drv_attr=$4000,
+ * drv_ram_from=$66ca, reply_init_once=1)で `dir c:` が通ることを実測したので既定にした。 */
 EM_JS(int, js_scsi_init_d2, (), {
   var v = globalThis.__webx68kScsiInitD2;
-  return (typeof v === 'number') ? (v | 0) : -1;
+  return (typeof v === 'number') ? (v | 0) : 1;
 });
 
 __attribute__((used))
@@ -490,10 +492,11 @@ int webx68k_scsi_init_d2(void)
   return js_scsi_init_d2();
 }
 
-/* ベクタ設定エントリが返す a4。既定 0(元の状態と同じ)。d2 と同じ理由で振れるようにする。 */
+/* ベクタ設定エントリが返す a4。d2 と同じ理由で振れるようにする。
+ * 2026-09-03、この組み合わせで `dir c:` が通ることを実測したので既定にした。 */
 EM_JS(int, js_scsi_init_a4, (), {
   var v = globalThis.__webx68kScsiInitA4;
-  return (typeof v === 'number') ? (v | 0) : 0;
+  return (typeof v === 'number') ? (v | 0) : 0x00ea0100;
 });
 
 __attribute__((used))
@@ -502,12 +505,13 @@ int webx68k_scsi_init_a4(void)
   return js_scsi_init_a4();
 }
 
-/* デバイスドライバヘッダ(+$04)の属性ワード。既定 0。
+/* デバイスドライバヘッダ(+$04)の属性ワード。
  * ヘッダの形自体は Human68k デバイスドライバの一般形(未実測の知識)から
- * 組んでいるため、値の意味が分かるまで再ビルドせずに振れるようにする。 */
+ * 組んでいるため、値の意味が分かるまで再ビルドせずに振れるようにする。
+ * 2026-09-03、この組み合わせで `dir c:` が通ることを実測したので既定にした。 */
 EM_JS(int, js_scsi_drv_attr, (), {
   var v = globalThis.__webx68kScsiDrvAttr;
-  return (typeof v === 'number') ? (v | 0) : 0;
+  return (typeof v === 'number') ? (v | 0) : 0x4000;
 });
 
 __attribute__((used))
@@ -559,10 +563,11 @@ int webx68k_scsi_reply_units(void)
  * 1以上のとき、2回目以降の初期化コマンドには「ドライバは無い」返答をする。
  * Human68k が初期化を繰り返し呼ぶ(2回目の入力 +14 が前回の終了アドレス)
  * ことへの切り分け用。
+ * 2026-09-03、この組み合わせで `dir c:` が通ることを実測したので既定にした。
  */
 EM_JS(int, js_scsi_reply_init_once, (), {
   var v = globalThis.__webx68kScsiReplyInitOnce;
-  return (typeof v === 'number') ? (v | 0) : 0;
+  return (typeof v === 'number') ? (v | 0) : 1;
 });
 
 __attribute__((used))
@@ -652,10 +657,11 @@ unsigned int webx68k_scsi_drv_ram(void)
 }
 
 /* この番地から32bit値を読み、それをドライバの置き場所として使う。
- * 既定0(無効)。0以外のときは webx68k_scsi_drv_ram() より優先する。 */
+ * 0以外のときは webx68k_scsi_drv_ram() より優先する。
+ * 2026-09-03、この組み合わせで `dir c:` が通ることを実測したので既定にした。 */
 EM_JS(int, js_scsi_drv_ram_from, (), {
   var v = globalThis.__webx68kScsiDrvRamFrom;
-  return (typeof v === 'number') ? (v | 0) : 0;
+  return (typeof v === 'number') ? (v | 0) : 0x66ca;
 });
 
 __attribute__((used))
