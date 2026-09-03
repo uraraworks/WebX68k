@@ -94,6 +94,20 @@ interface Dict {
   scsiLibrarySectionDescription(): string;
   /** SCSIライブラリの削除ボタンが、現在挿入中のため無効化されているときのツールチップ。 */
   scsiLibraryDeleteDisabledMounted(): string;
+  /** SCSIブランク作成ボタンのタイトル・aria-label(サイズはprompt()で別途聞くため範囲は含めない)。 */
+  scsiCreateBlank(): string;
+  /** ブランクSCSIディスクのサイズを尋ねるprompt()のメッセージ。 */
+  scsiBlankSizePrompt(args: { min: number; max: number }): string;
+  /** サイズ入力が数値として解釈できないときのアラート。 */
+  scsiBlankSizeInvalidNotANumber(): string;
+  /** サイズ入力が整数でない(小数)ときのアラート。 */
+  scsiBlankSizeInvalidNotInteger(): string;
+  /** サイズ入力が下限未満のときのアラート。 */
+  scsiBlankSizeInvalidTooSmall(args: { min: number }): string;
+  /** サイズ入力が上限超過のときのアラート。 */
+  scsiBlankSizeInvalidTooLarge(args: { max: number }): string;
+  /** ブランクSCSIディスクの作成が完了したときのトースト。 */
+  statusScsiBlankCreated(args: { name: string; sizeMiB: number }): string;
   /** ドライブアクセスランプのスクリーンリーダー向けラベル。 */
   diskLampLabel(args: { drive: string }): string;
   /** スロットの「ライブラリから挿入」ボタン(ツールチップ)。 */
@@ -512,6 +526,15 @@ const STRINGS: Record<Lang, Dict> = {
     scsiLibrarySectionDescription: () =>
       'SCSIスロットに割り当てられるイメージです。削除すると復元できません(現在挿入中のものは削除できません)。',
     scsiLibraryDeleteDisabledMounted: () => '現在SCSIスロットに挿入中のため削除できません',
+    scsiCreateBlank: () => 'ブランクSCSIディスクを作成(サイズ指定・FAT16)',
+    scsiBlankSizePrompt: ({ min, max }) => `作成するSCSIディスクのサイズをMB単位で入力してください(${min}〜${max})`,
+    scsiBlankSizeInvalidNotANumber: () => '数値を入力してください',
+    scsiBlankSizeInvalidNotInteger: () => '整数(MB単位)で入力してください。小数は使えません',
+    scsiBlankSizeInvalidTooSmall: ({ min }) => `${min}MB以上を指定してください`,
+    scsiBlankSizeInvalidTooLarge: ({ max }) =>
+      `${max}MBまでです(SCSI HLEがイメージサイズを32bit符号あり整数で扱うため、これを超えると壊れます)`,
+    statusScsiBlankCreated: ({ name, sizeMiB }) =>
+      `ブランクSCSIディスク「${name}」(${sizeMiB}MB)を作成しました。次回の起動から使えます`,
     diskLampLabel: ({ drive }) => `${drive} アクセスランプ`,
     slotInsertFromLibrary: () => 'ライブラリから挿入',
     slotInsertFromLibraryTitle: ({ drive }) => `${drive} へ挿入`,
@@ -834,6 +857,15 @@ const STRINGS: Record<Lang, Dict> = {
     scsiLibrarySectionDescription: () =>
       'Images that can be assigned to the SCSI slot. Deleting one cannot be undone (the one currently inserted cannot be deleted).',
     scsiLibraryDeleteDisabledMounted: () => 'Cannot delete: currently inserted in the SCSI slot',
+    scsiCreateBlank: () => 'Create blank SCSI disk (choose size, FAT16)',
+    scsiBlankSizePrompt: ({ min, max }) => `Enter the SCSI disk size in MB (${min}–${max})`,
+    scsiBlankSizeInvalidNotANumber: () => 'Please enter a number',
+    scsiBlankSizeInvalidNotInteger: () => 'Please enter a whole number of MB. Decimals are not allowed',
+    scsiBlankSizeInvalidTooSmall: ({ min }) => `Please enter at least ${min}MB`,
+    scsiBlankSizeInvalidTooLarge: ({ max }) =>
+      `The limit is ${max}MB (the SCSI HLE stores the image size as a signed 32-bit integer; larger sizes get corrupted)`,
+    statusScsiBlankCreated: ({ name, sizeMiB }) =>
+      `Created blank SCSI disk "${name}" (${sizeMiB}MB). It will be used from the next boot.`,
     diskLampLabel: ({ drive }) => `${drive} access lamp`,
     slotInsertFromLibrary: () => 'Insert from library',
     slotInsertFromLibraryTitle: ({ drive }) => `Insert into ${drive}`,

@@ -5,6 +5,7 @@ import { computeFrameBudget } from './frameBudget';
 import {
   createFormattedFd,
   createFormattedHdd,
+  createFormattedScsi,
   fatDeleteFile,
   fatFreeSpace,
   fatList,
@@ -12,6 +13,9 @@ import {
   fatReadFile,
   fatWriteFile,
   openDiskImage,
+  validateScsiBlankSizeMiB,
+  SCSI_BLANK_MAX_MIB,
+  SCSI_BLANK_MIN_MIB,
   type BlankFdFormatId,
   type FatEntry,
 } from './api/fat';
@@ -254,8 +258,8 @@ const slotElements: Record<SlotId, SlotElements> = {
   hdd: slotEls('hdd'),
 };
 
-// SCSIスロット(手順4の1枚目)。FDD/HDDのSlotId系(コアへ渡すFDD/HDDの経路)とは別系統。
-// ライブラリ・ブランク作成は今回スコープ外のため、SlotElementsより要素が少ない。
+// SCSIスロット(手順4)。FDD/HDDのSlotId系(コアへ渡すFDD/HDDの経路)とは別系統。
+// ライブラリ・D&Dは2026-09-04に対応済み。ブランク作成(サイズ指定)も同日対応した。
 interface ScsiElements {
   lamp: HTMLElement;
   label: HTMLElement;
@@ -263,6 +267,7 @@ interface ScsiElements {
   insertBtn: HTMLButtonElement;
   input: HTMLInputElement;
   libraryBtn: HTMLButtonElement;
+  blankBtn: HTMLButtonElement;
   ejectBtn: HTMLButtonElement;
   downloadBtn: HTMLButtonElement;
 }
@@ -274,6 +279,7 @@ const scsiElements: ScsiElements = {
   insertBtn: document.getElementById('btn-insert-scsi') as HTMLButtonElement,
   input: document.getElementById('input-scsi') as HTMLInputElement,
   libraryBtn: document.getElementById('btn-library-scsi') as HTMLButtonElement,
+  blankBtn: document.getElementById('btn-blank-scsi') as HTMLButtonElement,
   ejectBtn: document.getElementById('btn-eject-scsi') as HTMLButtonElement,
   downloadBtn: document.getElementById('btn-download-scsi') as HTMLButtonElement,
 };
@@ -1546,6 +1552,7 @@ function updateScsiControls(): void {
   if (!scsiStorageAvailable) {
     scsiElements.insertBtn.disabled = true;
     scsiElements.libraryBtn.disabled = true;
+    scsiElements.blankBtn.disabled = true;
     scsiElements.ejectBtn.disabled = true;
     scsiElements.downloadBtn.disabled = true;
     scsiElements.name.textContent = t('scsiUnavailable');
@@ -1555,6 +1562,7 @@ function updateScsiControls(): void {
   const mounted = scsiName !== null;
   scsiElements.insertBtn.disabled = locked;
   scsiElements.libraryBtn.disabled = locked;
+  scsiElements.blankBtn.disabled = locked;
   scsiElements.ejectBtn.disabled = locked || !mounted;
   // ダウンロードは中身を読むだけなので起動中でも許可する
   scsiElements.downloadBtn.disabled = !mounted;
@@ -1562,6 +1570,7 @@ function updateScsiControls(): void {
   const lockedHint = t('scsiLockedWhileRunning');
   scsiElements.insertBtn.title = locked ? lockedHint : t('slotInsert');
   scsiElements.libraryBtn.title = locked ? lockedHint : t('slotInsertFromLibrary');
+  scsiElements.blankBtn.title = locked ? lockedHint : t('scsiCreateBlank');
   scsiElements.ejectBtn.title = locked ? lockedHint : t('slotEject');
   scsiElements.downloadBtn.title = t('slotDownload');
 
@@ -1590,6 +1599,75 @@ async function handleInsertScsi(file: File): Promise<void> {
     if (!libraryBackdrop.classList.contains('hidden')) void refreshScsiLibraryList();
   } catch (e) {
     console.error('SCSIディスクの取り込みに失敗しました。', e);
+    updateScsiControls();
+    alert(t('alertBootFailed', { message: String(e) }));
+  }
+}
+
+/** 既存のOPFS上のSCSIイメージ名(listScsiImages()の結果)と衝突しない名前を作る。 */
+function uniqueScsiName(baseName: string, existingNames: Set<string>): string {
+  const ext = '.hds';
+  let name = `${baseName}${ext}`;
+  for (let i = 2; existingNames.has(name); i++) {
+    name = `${baseName}${i}${ext}`;
+  }
+  return name;
+}
+
+/**
+ * サイズ指定のブランクSCSIディスクを生成し、SCSIスロットへセットしてライブラリにも登録する。
+ * FDD/HDDのhandleCreateBlank()系と同じ導線(prompt()でサイズを聞く→生成→OPFSへ保存→
+ * スロットへ割り当て→開いていればライブラリ一覧も更新)にする。1パーティション固定
+ * (createFormattedScsi()参照)。上限・下限・非数値・小数は validateScsiBlankSizeMiB() が
+ * 理由付きで弾き、対応する文言をアラートで出す。
+ */
+async function handleCreateBlankScsi(): Promise<void> {
+  if (isScsiLocked()) {
+    alert(t('scsiLockedWhileRunning'));
+    return;
+  }
+  const input = prompt(
+    t('scsiBlankSizePrompt', { min: SCSI_BLANK_MIN_MIB, max: SCSI_BLANK_MAX_MIB }),
+    '100',
+  );
+  if (input === null) return;
+
+  const validation = validateScsiBlankSizeMiB(input);
+  if (!validation.ok) {
+    switch (validation.reason) {
+      case 'notANumber':
+        alert(t('scsiBlankSizeInvalidNotANumber'));
+        break;
+      case 'notInteger':
+        alert(t('scsiBlankSizeInvalidNotInteger'));
+        break;
+      case 'tooSmall':
+        alert(t('scsiBlankSizeInvalidTooSmall', { min: SCSI_BLANK_MIN_MIB }));
+        break;
+      case 'tooLarge':
+        alert(t('scsiBlankSizeInvalidTooLarge', { max: SCSI_BLANK_MAX_MIB }));
+        break;
+    }
+    return;
+  }
+
+  try {
+    const existingNames = new Set((await listScsiImages()).map((e) => e.name));
+    const name = uniqueScsiName(`blank_scsi_${validation.sizeMiB}mb`, existingNames);
+    const data = createFormattedScsi(validation.sizeMiB);
+    const file = new File([data.slice()], name, { type: 'application/octet-stream' });
+    scsiElements.name.textContent = t('scsiImporting', { percent: 0 });
+    await putScsiImage(file, (done, total) => {
+      const percent = total > 0 ? Math.floor((done / total) * 100) : 0;
+      scsiElements.name.textContent = t('scsiImporting', { percent });
+    });
+    scsiName = name;
+    localStorage.setItem(SCSI_STORAGE_KEY, scsiName);
+    updateScsiControls();
+    showToast(t('statusScsiBlankCreated', { name, sizeMiB: validation.sizeMiB }));
+    if (!libraryBackdrop.classList.contains('hidden')) void refreshScsiLibraryList();
+  } catch (e) {
+    console.error('ブランクSCSIディスクの作成に失敗しました。', e);
     updateScsiControls();
     alert(t('alertBootFailed', { message: String(e) }));
   }
@@ -1675,6 +1753,14 @@ scsiElements.libraryBtn.addEventListener('click', (e) => {
     return;
   }
   void openScsiLibraryMenu(scsiElements.libraryBtn);
+});
+scsiElements.blankBtn.addEventListener('click', (e) => {
+  e.stopPropagation();
+  if (!slotPopupMenu.classList.contains('hidden')) {
+    closeSlotPopupMenu();
+    return;
+  }
+  void handleCreateBlankScsi();
 });
 scsiElements.ejectBtn.addEventListener('click', () => handleEjectScsi());
 scsiElements.downloadBtn.addEventListener('click', () => void handleDownloadScsi());
@@ -3720,6 +3806,7 @@ function applyDocumentStrings(): void {
     scsiElements.lamp.setAttribute('aria-label', t('diskLampLabel', { drive: scsiDrive }));
     scsiElements.insertBtn.setAttribute('aria-label', `${scsiDrive} ${t('slotInsert')}`);
     scsiElements.libraryBtn.setAttribute('aria-label', `${scsiDrive} ${t('slotInsertFromLibrary')}`);
+    scsiElements.blankBtn.setAttribute('aria-label', `${scsiDrive} ${t('scsiCreateBlank')}`);
     scsiElements.ejectBtn.setAttribute('aria-label', `${scsiDrive} ${t('slotEject')}`);
     scsiElements.downloadBtn.setAttribute('aria-label', `${scsiDrive} ${t('slotDownload')}`);
   }

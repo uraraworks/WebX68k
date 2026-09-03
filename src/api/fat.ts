@@ -20,7 +20,8 @@ export type DiskErrorCode =
   | 'hddInvalidHeader'
   | 'hddNoFatPartition'
   | 'invalidShortName'
-  | 'notFormatted';
+  | 'notFormatted'
+  | 'scsiSizeInvalid';
 
 export class DiskError extends Error {
   constructor(
@@ -128,7 +129,12 @@ export function openFat(image: Uint8Array, offset = 0): FatVolume {
   const rootEntries = human68k ? readU16BE(b, o + 0x18) : readU16(b, o + 17);
   const totalSectors16 = human68k ? readU16BE(b, o + 0x1a) : readU16(b, o + 19);
   const sectorsPerFat = human68k ? b[o + 0x1d] : readU16(b, o + 22);
-  const totalSectors32 = human68k ? 0 : readU32(b, o + 32);
+  // Human68k形式でも32bit総セクタ数(+0x1e、BE)を読む。createFormattedHdd()の40MBパーティション
+  // (総セクタ40960)は16bit値に収まるため以前はここが常に0で問題にならなかったが、
+  // createFormattedScsi()の大きいパーティションは16bit値(+0x1a)が0で32bit値だけが有効になる
+  // (実測: twopart.HDS、docs/STORAGE-SCSI.md参照)。ここを直さないと大きいSCSIパーティションが
+  // 「total sectors=0」で開けなくなる。
+  const totalSectors32 = human68k ? readU32BE(b, o + 0x1e) : readU32(b, o + 32);
   const totalSectors = totalSectors16 !== 0 ? totalSectors16 : totalSectors32;
 
   if (!VALID_SECTOR_SIZES.includes(bytesPerSector)) {
@@ -469,10 +475,20 @@ function resolveParentDir(vol: FatVolume, segments: string[]): number | null {
 // --- FDIヘッダ対応 ---------------------------------------------------------
 
 const FDI_DEFAULT_HEADER_SIZE = 4096;
+// SASI/.hdf形式: パーティションテーブルがオフセット0x400、単位256バイト。
 const HUMAN68K_PARTITION_TABLE_OFFSET = 0x400;
 const HUMAN68K_PARTITION_ENTRY_OFFSET = 0x410;
 const HUMAN68K_PARTITION_ENTRY_SIZE = 16;
 const HUMAN68K_BLOCK_SIZE = 256;
+// SCSI(.hds)形式: LBA0に"X68SCSI1"ヘッダがあり、パーティションテーブルは
+// オフセット0x800(=LBA4、物理512バイトセクタ単位)、テーブル内の単位は1024バイト
+// (実測: twopart.HDS、docs/STORAGE-SCSI.md参照)。SASI形式とはテーブル位置・単位の
+// 両方が異なるため、同じ走査ロジックにテーブルオフセット/ブロックサイズを渡して共用する。
+const SCSI_HEADER_MAGIC = 'X68SCSI1';
+const SCSI_PARTITION_TABLE_OFFSET = 0x800;
+const SCSI_PARTITION_ENTRY_OFFSET = SCSI_PARTITION_TABLE_OFFSET + 0x10;
+const SCSI_PARTITION_ENTRY_SIZE = 16;
+const SCSI_TABLE_BLOCK_SIZE = 1024;
 
 interface Human68kPartition {
   name: string;
@@ -482,7 +498,19 @@ interface Human68kPartition {
 
 /** オフセット0x400にHuman68kのX68Kパーティションテーブルシグネチャがあるか(HDDの内容ベース判定に使う)。 */
 export function hasHuman68kPartitionSignature(image: Uint8Array): boolean {
-  const table = HUMAN68K_PARTITION_TABLE_OFFSET;
+  return hasX68kTableSignatureAt(image, HUMAN68K_PARTITION_TABLE_OFFSET);
+}
+
+/** オフセット0に"X68SCSI1"シグネチャがあるか(SCSI(.hds)形式の内容ベース判定に使う)。 */
+export function hasScsiHeaderSignature(image: Uint8Array): boolean {
+  if (image.length < SCSI_HEADER_MAGIC.length) return false;
+  for (let i = 0; i < SCSI_HEADER_MAGIC.length; i++) {
+    if (image[i] !== SCSI_HEADER_MAGIC.charCodeAt(i)) return false;
+  }
+  return true;
+}
+
+function hasX68kTableSignatureAt(image: Uint8Array, table: number): boolean {
   return (
     image.length >= table + 4 &&
     image[table] === 0x58 &&
@@ -492,14 +520,23 @@ export function hasHuman68kPartitionSignature(image: Uint8Array): boolean {
   );
 }
 
-/** X68Kパーティションテーブルを走査し、範囲内にあるエントリを順番どおり返す。 */
-function parseHuman68kPartitions(image: Uint8Array): Human68kPartition[] {
-  const table = HUMAN68K_PARTITION_TABLE_OFFSET;
-  if (image.length < HUMAN68K_PARTITION_ENTRY_OFFSET + HUMAN68K_PARTITION_ENTRY_SIZE || !hasHuman68kPartitionSignature(image)) {
+/**
+ * X68Kパーティションテーブルを走査し、範囲内にあるエントリを順番どおり返す。
+ * `table`/`entryOffset`/`blockSize` を渡すことでSASI(0x400・256B単位)と
+ * SCSI(0x800・1024B単位)の両方に対応する。
+ */
+function parseHuman68kPartitionsAt(
+  image: Uint8Array,
+  table: number,
+  entryOffset: number,
+  entrySize: number,
+  blockSize: number,
+): Human68kPartition[] {
+  if (image.length < entryOffset + entrySize || !hasX68kTableSignatureAt(image, table)) {
     return [];
   }
 
-  const totalBytes = readU32BE(image, table + 4) * HUMAN68K_BLOCK_SIZE;
+  const totalBytes = readU32BE(image, table + 4) * blockSize;
   if (totalBytes === 0 || totalBytes > image.length) {
     throw new DiskError('hddInvalidHeader', 'X68Kパーティションテーブルのサイズが不正です', {
       format: 'X68K',
@@ -507,23 +544,42 @@ function parseHuman68kPartitions(image: Uint8Array): Human68kPartition[] {
   }
 
   const partitions: Human68kPartition[] = [];
-  for (
-    let entry = HUMAN68K_PARTITION_ENTRY_OFFSET;
-    entry + HUMAN68K_PARTITION_ENTRY_SIZE <= image.length;
-    entry += HUMAN68K_PARTITION_ENTRY_SIZE
-  ) {
+  for (let entry = entryOffset; entry + entrySize <= image.length; entry += entrySize) {
     if (image[entry] === 0) break;
     let name = '';
     for (let i = 0; i < 8 && image[entry + i] !== 0; i++) name += String.fromCharCode(image[entry + i]);
     const startBlock = ((image[entry + 9] << 16) | (image[entry + 10] << 8) | image[entry + 11]) >>> 0;
     const blockCount = readU32BE(image, entry + 12);
-    const offset = startBlock * HUMAN68K_BLOCK_SIZE;
-    const size = blockCount * HUMAN68K_BLOCK_SIZE;
+    const offset = startBlock * blockSize;
+    const size = blockCount * blockSize;
     if (startBlock !== 0 && blockCount !== 0 && offset + size <= image.length) {
       partitions.push({ name: name.trimEnd(), offset, size });
     }
   }
   return partitions;
+}
+
+/** SASI(.hdf)形式のX68Kパーティションテーブル(オフセット0x400・256B単位)を走査する。 */
+function parseHuman68kPartitions(image: Uint8Array): Human68kPartition[] {
+  return parseHuman68kPartitionsAt(
+    image,
+    HUMAN68K_PARTITION_TABLE_OFFSET,
+    HUMAN68K_PARTITION_ENTRY_OFFSET,
+    HUMAN68K_PARTITION_ENTRY_SIZE,
+    HUMAN68K_BLOCK_SIZE,
+  );
+}
+
+/** SCSI(.hds)形式のX68Kパーティションテーブル(オフセット0x800・1024B単位)を走査する。 */
+function parseScsiPartitions(image: Uint8Array): Human68kPartition[] {
+  if (!hasScsiHeaderSignature(image)) return [];
+  return parseHuman68kPartitionsAt(
+    image,
+    SCSI_PARTITION_TABLE_OFFSET,
+    SCSI_PARTITION_ENTRY_OFFSET,
+    SCSI_PARTITION_ENTRY_SIZE,
+    SCSI_TABLE_BLOCK_SIZE,
+  );
 }
 
 /**
@@ -555,7 +611,9 @@ export function openDiskImage(image: Uint8Array, fileName: string): FatVolume {
     }
     return openFat(image, headerSize);
   }
-  const partitions = parseHuman68kPartitions(image);
+  // SCSI(.hds、"X68SCSI1"ヘッダ付き)を先に試す。SASIのテーブル(0x400)と場所・単位が
+  // 異なるため、どちらの形式かは"X68SCSI1"シグネチャの有無で切り分ける。
+  const partitions = hasScsiHeaderSignature(image) ? parseScsiPartitions(image) : parseHuman68kPartitions(image);
   if (partitions.length > 0) {
     const partition = partitions.find((candidate) => isHuman68kBootSector(image, candidate.offset));
     if (!partition) {
@@ -808,6 +866,201 @@ export function createFormattedHdd(): Uint8Array {
     const base = fatStartByte + f * sectorsPerFat * HDD_BYTES_PER_SECTOR;
     writeU16BE(image, base, 0xff00 | HDD_MEDIA_BYTE);
     writeU16BE(image, base + 2, 0xffff);
+  }
+
+  return image;
+}
+
+// --- Human68k SCSI(.hds)向けFAT16フォーマット済みブランクイメージ生成 -------
+//
+// createFormattedHdd()(SASI・256Bブロック単位・ヘッダ無し40MB固定)とは別形式。
+// 実機のFORMAT.Xが作ったSCSIハードディスク(twopart.HDS)を実測して確定させた:
+//   - LBA0(先頭512バイト)に"X68SCSI1"ヘッダ(物理セクタサイズ・総ブロック数・機種名)
+//   - オフセット0x800(=LBA4)からX68Kパーティションテーブル(1024バイト単位・BE)
+//   - パーティション先頭にHuman68k形式BPB(SASIと同じオフセット規約、値だけ異なる)
+// SASIとはテーブル位置・単位・BPBの値(spc/媒体バイト/sectorsPerFatの式)が異なるため、
+// 定数・関数とも完全に分離し、どちらかを直すときにもう片方を壊さないようにする。
+
+/** SCSIブランク作成でサポートするサイズの下限(MiB)。小さすぎるとFAT16として意味を成さない。 */
+export const SCSI_BLANK_MIN_MIB = 1;
+/**
+ * SCSIブランク作成でサポートするサイズの上限(MiB)。
+ *
+ * FAT16のクラスタ数上限(65524)やBPBのsectorsPerFat(1バイト、255以下)から来る制約では
+ * ない(sectorsPerClusterを増やせば回避できるため、後述のcomputeScsiFatLayout()が
+ * 自動的に大きいクラスタへ切り替える)。実際に効いているのはSCSI HLE側の制約で、
+ * src/core-shim.c の js_scsi_get_size() がイメージサイズを符号付き32bit整数(int)で
+ * 返しており、0x7fffffff(2147483647バイト)を超える値は同じ関数内でその値へ
+ * クランプされる。作成時のサイズとコアが後で認識するサイズが食い違うと、
+ * 末尾が切り詰められたのに気づかないまま静かに壊れることになるため、
+ * MiB単位で切り下げた2047MiB(2146435072バイト、0x7fffffff未満)を上限にする。
+ */
+export const SCSI_BLANK_MAX_MIB = 2047;
+
+const SCSI_HEADER_MODEL = 'WebX68k SCSI'; // 実機の機種名文字列は写さず、自前の識別子にする
+const SCSI_PHYS_SECTOR_SIZE = 512; // LBA0ヘッダの単位(実測)
+const SCSI_PARTITION_START_1K_BLOCK = 32; // 実測(twopart.HDS)と同じパーティション開始位置
+const SCSI_BYTES_PER_SECTOR = 1024; // パーティション内BPBのセクタサイズ(実測)
+const SCSI_NUM_FATS = 2;
+const SCSI_RESERVED_SECTORS = 1;
+const SCSI_ROOT_ENTRIES = 512;
+const SCSI_MEDIA_BYTE = 0xf7; // 実測(twopart.HDS)。createFormattedHdd()の0xF8とは異なる値
+const SCSI_PARTITION_NAME = 'Human68k'; // Human68kがドライブレターを割り当てる条件(HDDと同じ)
+const FAT16_MAX_CLUSTERS = 65524; // FAT16として扱われる上限(これを超えるとFAT32扱いになる)
+const SCSI_MAX_SECTORS_PER_CLUSTER = 128; // sectorsPerClusterは1バイトかつ通常2の冪(実用上の上限)
+
+export type ScsiBlankSizeInvalidReason = 'notANumber' | 'notInteger' | 'tooSmall' | 'tooLarge';
+
+export type ScsiBlankSizeValidation =
+  | { ok: true; sizeMiB: number }
+  | { ok: false; reason: ScsiBlankSizeInvalidReason };
+
+/**
+ * SCSIブランク作成のサイズ入力(MB単位、文字列)を検証する。UIの `prompt()` から渡された
+ * 生の文字列をそのまま受け取り、非数値・小数・整数だが範囲外を理由付きで弾く。
+ * DOM非依存の純粋関数として切り出してあり単体テスト可能。
+ */
+export function validateScsiBlankSizeMiB(input: string): ScsiBlankSizeValidation {
+  const trimmed = input.trim();
+  if (trimmed === '' || !/^-?\d+(\.\d+)?$/.test(trimmed)) {
+    return { ok: false, reason: 'notANumber' };
+  }
+  const value = Number(trimmed);
+  if (!Number.isFinite(value)) return { ok: false, reason: 'notANumber' };
+  if (!Number.isInteger(value)) return { ok: false, reason: 'notInteger' };
+  if (value < SCSI_BLANK_MIN_MIB) return { ok: false, reason: 'tooSmall' };
+  if (value > SCSI_BLANK_MAX_MIB) return { ok: false, reason: 'tooLarge' };
+  return { ok: true, sizeMiB: value };
+}
+
+/**
+ * sectorsPerCluster(spc)・sectorsPerFatを決める。
+ *
+ * Human68kはBPBのspcを尊重せず自前でsectorsPerFatを計算するが、createFormattedHdd()の
+ * コメントにある式(総セクタ数から `ceil((totalSectors+2)*2/bytesPerSector)`)は
+ * spc=1のときだけ成り立つ特殊解である。実測(twopart.HDS、spc=2・99MB区画=101376個の
+ * 1KBセクタ)では sectorsPerFat=100 だった。ここで使われている「クラスタ数」は
+ * reserved/FAT/root分を差し引いた実データ領域のクラスタ数ではなく、
+ * `floor(総セクタ数 / spc)` (このケースでは 101376/2 = 50688) をそのまま使うと
+ * `ceil((50688+2)*2/1024) = 100` に一致する。すなわちspc=1の特殊解
+ * (`ceil((totalSectors+2)*2/bytesPerSector)`、spc=1なのでtotalSectors=クラスタ数)を
+ * 一般のspcへそのまま拡張した式であり、実データ領域を差し引く二段階計算にすると
+ * (小さいサイズで顕著に)1ずれる。sectorsPerCluster もこの同じ近似クラスタ数
+ * (`floor(totalSectors/spc)`)がFAT16の上限(65524)に収まる最小の2の冪を選ぶ
+ * (docs/STORAGE-SCSI.md「BPBを基準器イメージから写した」節参照)。
+ */
+function computeScsiFatLayout(totalSectors: number): {
+  sectorsPerCluster: number;
+  sectorsPerFat: number;
+  totalClusters: number;
+} {
+  for (let sectorsPerCluster = 1; sectorsPerCluster <= SCSI_MAX_SECTORS_PER_CLUSTER; sectorsPerCluster *= 2) {
+    const totalClusters = Math.floor(totalSectors / sectorsPerCluster);
+    if (totalClusters > 0 && totalClusters <= FAT16_MAX_CLUSTERS) {
+      const sectorsPerFat = Math.ceil(((totalClusters + 2) * 2) / SCSI_BYTES_PER_SECTOR);
+      if (sectorsPerFat > 255) {
+        // BPBのsectorsPerFatは1バイト。理論上ここに来る前にSCSI_BLANK_MAX_MIBで
+        // 弾かれているはずだが、定数を変えたときの安全策として残す。
+        throw new DiskError('scsiSizeInvalid', `sectorsPerFatが255を超えます(${sectorsPerFat})`);
+      }
+      return { sectorsPerCluster, sectorsPerFat, totalClusters };
+    }
+  }
+  throw new DiskError('scsiSizeInvalid', `sectorsPerClusterの上限(${SCSI_MAX_SECTORS_PER_CLUSTER})でもFAT16のクラスタ数上限に収まりません`);
+}
+
+/**
+ * Human68k形式(SCSI、"X68SCSI1"ヘッダ + X68Kパーティションテーブル + FAT16)で
+ * フォーマット済みのブランクイメージを新規生成する。1パーティション固定(複数区画は非対応)。
+ * IPLの実体は持たないため単体では起動できず、FDからHuman68kを起動したうえで
+ * データドライブとして使う想定(createFormattedHdd()と同じ)。
+ *
+ * `sizeMiB` は事前に validateScsiBlankSizeMiB() で検証済みの整数(SCSI_BLANK_MIN_MIB〜
+ * SCSI_BLANK_MAX_MIB)を渡すこと。範囲外はここでも DiskError('scsiSizeInvalid') を投げる。
+ */
+export function createFormattedScsi(sizeMiB: number): Uint8Array {
+  if (
+    !Number.isInteger(sizeMiB) ||
+    sizeMiB < SCSI_BLANK_MIN_MIB ||
+    sizeMiB > SCSI_BLANK_MAX_MIB
+  ) {
+    throw new DiskError('scsiSizeInvalid', `createFormattedScsi: sizeMiB out of range (${sizeMiB})`);
+  }
+
+  const partitionStartByte = SCSI_PARTITION_START_1K_BLOCK * SCSI_TABLE_BLOCK_SIZE;
+  const partitionBytes = sizeMiB * 1024 * 1024;
+  const totalBytes = partitionStartByte + partitionBytes;
+  const image = new Uint8Array(totalBytes);
+
+  // LBA0: "X68SCSI1"ヘッダ。
+  for (let i = 0; i < SCSI_HEADER_MAGIC.length; i++) image[i] = SCSI_HEADER_MAGIC.charCodeAt(i);
+  writeU16BE(image, 8, SCSI_PHYS_SECTOR_SIZE);
+  writeU32BE(image, 10, totalBytes / SCSI_PHYS_SECTOR_SIZE - 1);
+  for (let i = 0; i < SCSI_HEADER_MODEL.length; i++) image[16 + i] = SCSI_HEADER_MODEL.charCodeAt(i);
+
+  // パーティションテーブル(オフセット0x800、1024バイト単位・BE)。
+  const table = SCSI_PARTITION_TABLE_OFFSET;
+  image[table] = 0x58; // 'X'
+  image[table + 1] = 0x36; // '6'
+  image[table + 2] = 0x38; // '8'
+  image[table + 3] = 0x4b; // 'K'
+  // +4(使用済み末尾ブロック)と+8/+12(総1KBブロック数-1)は別の値。実測(twopart.HDS)では
+  // +4=203808(=総ブロック数そのもの)、+8=+12=203807(=総ブロック数-1)で、
+  // 両者はちょうど1違う。ここを両方とも同じ値(total-1)にすると、Human68kの整合性検査に
+  // 引っかかって「ディスクの管理領域が壊されています」を起こすことを実機(実ブラウザでの
+  // Human68k起動)で確認した(docs/STORAGE-SCSI.md参照)。
+  const total1kBlocks = totalBytes / SCSI_TABLE_BLOCK_SIZE;
+  writeU32BE(image, table + 4, total1kBlocks);
+  writeU32BE(image, table + 8, total1kBlocks - 1);
+  writeU32BE(image, table + 12, total1kBlocks - 1);
+
+  // パーティションエントリ(1個のみ、ディスク全体を1パーティションとして使う)。
+  const entry = SCSI_PARTITION_ENTRY_OFFSET;
+  for (let i = 0; i < 8; i++) {
+    image[entry + i] = i < SCSI_PARTITION_NAME.length ? SCSI_PARTITION_NAME.charCodeAt(i) : 0;
+  }
+  writeU32BE(image, entry + 8, SCSI_PARTITION_START_1K_BLOCK);
+  writeU32BE(image, entry + 12, partitionBytes / SCSI_TABLE_BLOCK_SIZE);
+
+  // パーティション先頭のブートセクタ(Human68k形式BPB)。
+  const totalSectors = partitionBytes / SCSI_BYTES_PER_SECTOR;
+  const { sectorsPerCluster, sectorsPerFat } = computeScsiFatLayout(totalSectors);
+
+  const p = partitionStartByte;
+  image[p] = 0x60; // isHuman68kBootSector()が判定に使う分岐命令(ダミー)
+  image[p + 1] = 0x00;
+  const oem = 'WebX68k SCSI    '.slice(0, 16); // 実機のSHARP文字列は写さず、自前の識別子にする
+  for (let i = 0; i < 16; i++) image[p + 2 + i] = oem.charCodeAt(i);
+  writeU16BE(image, p + 0x12, SCSI_BYTES_PER_SECTOR);
+  image[p + 0x14] = sectorsPerCluster;
+  image[p + 0x15] = SCSI_NUM_FATS;
+  writeU16BE(image, p + 0x16, SCSI_RESERVED_SECTORS);
+  writeU16BE(image, p + 0x18, SCSI_ROOT_ENTRIES);
+  writeU16BE(image, p + 0x1a, 0); // 16bit総セクタ数は使わない(実測どおり0)
+  image[p + 0x1c] = SCSI_MEDIA_BYTE; // 実測 0xF7。createFormattedHdd()の0xF8とは異なる
+  image[p + 0x1d] = sectorsPerFat;
+  writeU32BE(image, p + 0x1e, totalSectors); // 32bit総セクタ数(実測どおりこちらが有効値)
+  writeU32BE(image, p + 0x22, SCSI_PARTITION_START_1K_BLOCK); // 区画の開始ブロック(1KB単位)
+  image[p + 510] = 0x55;
+  image[p + 511] = 0xaa;
+
+  // FAT先頭の予約エントリ(メディアバイト + EOC)。
+  //
+  // createFormattedHdd()(SASI)は「Human68kはFAT16もBEで格納する」という前提で
+  // writeU16BE(base, 0xff00|media)(バイト列 [0xFF, media])を書いているが、
+  // 実測(twopart.HDS)のSCSI区画の予約エントリは [media, 0xFF] という逆順だった
+  // (chain本体(クラスタ2以降、entry+4以降)は 00 03/00 04/... と連番でBEそのものなので、
+  // BE/LEの解釈自体が違うのではなく、予約エントリ0の値そのものが `0xFF00|media` ではなく
+  // `(media<<8)|0xFF` になっている、という食い違い)。ここを直さずに実ブラウザでHuman68kへ
+  // copyすると「ディスクの管理領域が壊されています」で拒否されることを実測で確認した。
+  // 論理値の抽象化(writeU16BE)を介さず、実測したバイト列をそのまま書く。
+  const fatStartByte = p + SCSI_RESERVED_SECTORS * SCSI_BYTES_PER_SECTOR;
+  for (let f = 0; f < SCSI_NUM_FATS; f++) {
+    const base = fatStartByte + f * sectorsPerFat * SCSI_BYTES_PER_SECTOR;
+    image[base] = SCSI_MEDIA_BYTE;
+    image[base + 1] = 0xff;
+    image[base + 2] = 0xff;
+    image[base + 3] = 0xff;
   }
 
   return image;
