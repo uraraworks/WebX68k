@@ -112,6 +112,10 @@ keeps the menu open and shows the submenu cascading to the right of it
 (flipping to the left near the screen edge); narrower screens replace the
 menu in place with a "← Back" row instead.
 
+Reset sits apart at the toolbar's right edge, a finger's width from the
+frequently-pressed buttons, since a misclick there is costlier than on the
+others.
+
 **Pause stops emulation and shows a translucent "Paused" overlay** on the
 screen. Resume only from the play button in the center of that overlay —
 clicking elsewhere on it does nothing, to avoid accidental resumes. Audio

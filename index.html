@@ -72,18 +72,19 @@
         <div id="virtual-trackpad" class="virtual-trackpad hidden" aria-label="バーチャルトラックパッド"></div>
         <div class="console-footer">
           <div class="toolbar">
-            <!-- 常設5種(ポーズ/リセット/フルスクリーン/仮想キーボード/スクリーンショット)+
-                 速度変更+「…」オーバーフロー。元は14個のアイコンが横一列で分かりにくかったため、
+            <!-- 中央グループ(頻繁に押す操作)と右端グループ(リセット)に分ける。リセットは
+                 誤爆時の被害が大きいため、頻繁に押す操作から指1本ぶん離す(WebNP2 593b44d
+                 と同じ判断)。列構成は src/style.css の .toolbar コメント参照。
+                 常設(ポーズ/フルスクリーン/仮想キーボード/スクリーンショット/速度/リセット)
+                 +「…」オーバーフロー。元は14個のアイコンが横一列で分かりにくかったため、
                  使用頻度の低いものは「…」ボタン配下の階層メニュー(#slot-popup-menu を共用、
                  main.ts の renderOverflowMenu() 系参照)へ畳んだ。 -->
+            <div class="toolbar-center">
             <!-- ポーズ/再開。libretro コアのメインループは JS 側(main.ts の loop())にあるため
                  コアの再ビルドは不要で、host.runFrame() を呼ばないだけでポーズになる。
                  詳細な状態遷移は main.ts の setPaused() 定義箇所のコメント参照。 -->
             <button id="btn-pause" type="button" class="icon-btn" title="ポーズ" aria-label="ポーズ" disabled>
               <svg class="btn-icon" viewBox="0 0 24 24" aria-hidden="true"><path id="btn-pause-icon" d="M8 5v14 M16 5v14"/></svg>
-            </button>
-            <button id="btn-reset" type="button" class="icon-btn" title="リセット" aria-label="リセット" disabled>
-              <svg class="btn-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M3 12a9 9 0 1 0 3-6.7M3 4v5h5"/></svg>
             </button>
             <button id="btn-fullscreen" type="button" class="icon-btn" title="フルスクリーン" aria-label="フルスクリーン" disabled>
               <svg class="btn-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 9V5a1 1 0 0 1 1-1h4 M15 4h4a1 1 0 0 1 1 1v4 M20 15v4a1 1 0 0 1-1 1h-4 M9 20H5a1 1 0 0 1-1-1v-4"/></svg>
@@ -109,6 +110,12 @@
             <button id="btn-toolbar-overflow" type="button" class="icon-btn" title="その他" aria-label="その他" aria-haspopup="menu">
               <svg class="btn-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M5 12h.01 M12 12h.01 M19 12h.01"/></svg>
             </button>
+            </div>
+            <div class="toolbar-end">
+            <button id="btn-reset" type="button" class="icon-btn" title="リセット" aria-label="リセット" disabled>
+              <svg class="btn-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M3 12a9 9 0 1 0 3-6.7M3 4v5h5"/></svg>
+            </button>
+            </div>
           </div>
           <!-- 「…」オーバーフローメニューが呼び出す実体ボタン群。id とクリックハンドラは main.ts 側で
                従来どおり個別に配線したまま(二重実装を避けるため)、表示上だけここへ移して隠す。

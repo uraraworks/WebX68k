@@ -633,13 +633,42 @@ main {
   border-top: 1px solid var(--footer-border);
 }
 
+/* WebNP2 f9b4daa と同じ3列(gap:0)構成。中央グループ(toolbar-center)とリセットの
+ * 右端グループ(toolbar-end)を分離し、中央グループを真に中央寄せする。
+ *
+ * gap:8px の3列対称(旧案)は、1列目が0まで潰れてもその後ろの列間gapが幽霊のように
+ * 残り続けるため、狭い画面(375x812+バーチャルパッド)で中央列がgap分だけ足りず
+ * 3段/72pxに折り返した(WebNP2実測)。column-gap:0にして隙間を.toolbar-endの
+ * margin-leftへ移すことで、1列目が0まで潰れても幽霊のgapが残らないようにする。
+ * 3列目は minmax(max-content, 1fr) にし、最小をautoでなく中身幅に固定して
+ * リセットボタンより縮んで中央グループと重なるのを防ぐ。
+ */
 .toolbar {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto minmax(max-content, 1fr);
+  align-items: center;
+  column-gap: 0;
+  row-gap: 8px;
+  width: 100%;
+}
+
+.toolbar-center {
+  grid-column: 2;
   display: flex;
   flex-wrap: wrap;
   gap: 8px;
   align-items: center;
   justify-content: center;
-  width: 100%;
+  min-width: 0;
+}
+
+.toolbar-end {
+  grid-column: 3;
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  justify-content: end;
+  margin-left: 8px;
 }
 
 .toolbar button {

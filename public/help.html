@@ -1436,8 +1436,9 @@
         // ツールバーのボタン一覧テーブルを生成する。
         // アイコンのpath dは index.html のツールバーボタン定義と同一。
 
-        // 常設(6個): ポーズ / リセット / フルスクリーン / 仮想キーボード(入力パネル) /
-        // スクリーンショット / 速度変更。
+        // 常設(6個): ポーズ / フルスクリーン / 仮想キーボード(入力パネル) / スクリーンショット /
+        // 速度変更 / リセット。リセットは誤操作時の被害が大きいため、ツールバーの右端に
+        // 離して置いてある(他の常設ボタンとは指1本ぶんの間隔)。
         var PERMANENT_BUTTONS = [
           {
             icon: 'M8 5v14 M16 5v14',
@@ -1455,19 +1456,6 @@
               ' nothing, to avoid accidental resumes). Audio keeps running while paused; once the' +
               ' frame supply stops it fades out naturally to silence and fades back in on resume.' +
               ' Pause state is not preserved across a page reload.',
-          },
-          {
-            icon: 'M3 12a9 9 0 1 0 3-6.7M3 4v5h5',
-            ja: 'リセット',
-            en: 'Reset',
-            descJa:
-              'エミュレータをハードリセットし、コアごと再起動します。CPU速度・RAM容量・パッド種別などの' +
-              'マシン構成の変更はこのタイミングで反映されます(ページの再読み込みは不要です)。ゲストが' +
-              'ディスクへ書き込んだ内容は再起動前に回収されるので失われません。',
-            descEn:
-              'Performs a hard reset, restarting the core itself. Changes to machine configuration' +
-              ' (CPU speed, RAM size, pad type, etc.) take effect right here — no page reload needed.' +
-              " Anything the guest wrote to disk is flushed before the restart, so it isn't lost.",
           },
           {
             icon: 'M4 9V5a1 1 0 0 1 1-1h4 M15 4h4a1 1 0 0 1 1 1v4 M20 15v4a1 1 0 0 1-1 1h-4 M9 20H5a1 1 0 0 1-1-1v-4',
@@ -1536,6 +1524,19 @@
               ' emulated clock and needs a reset. Choosing "Unlimited" runs the emulator as fast as' +
               ' your device allows — but with no audio, and the screen updates a bit more coarsely' +
               ' (roughly 20-30fps).',
+          },
+          {
+            icon: 'M3 12a9 9 0 1 0 3-6.7M3 4v5h5',
+            ja: 'リセット',
+            en: 'Reset',
+            descJa:
+              'エミュレータをハードリセットし、コアごと再起動します。CPU速度・RAM容量・パッド種別などの' +
+              'マシン構成の変更はこのタイミングで反映されます(ページの再読み込みは不要です)。ゲストが' +
+              'ディスクへ書き込んだ内容は再起動前に回収されるので失われません。',
+            descEn:
+              'Performs a hard reset, restarting the core itself. Changes to machine configuration' +
+              ' (CPU speed, RAM size, pad type, etc.) take effect right here — no page reload needed.' +
+              " Anything the guest wrote to disk is flushed before the restart, so it isn't lost.",
           },
         ];
 
