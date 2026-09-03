@@ -598,6 +598,11 @@ try {
   console.log(
     JSON.stringify(
       {
+        // 実行時の引数をそのまま残す。2026-09-03、過去の成功例(hdr2.json)の
+        // 条件が復元できず行き止まりになった。当時の陽性対照ログは設定の一部しか
+        // 出しておらず、どの --spc-* で走らせたのかが結果ファイルから分からなかった。
+        // 代理(ログに出る一部の設定)ではなく、条件そのものを記録する。
+        invocation: process.argv.slice(2),
         booted,
         dumps,
         screenshot: shot,
