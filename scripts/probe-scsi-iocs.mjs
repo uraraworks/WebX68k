@@ -325,6 +325,7 @@ let server;
 let browser;
 let profile;
 let imageServer = null;
+let hddServer = null;
 try {
   server = await startServer(PORT);
   // --profile=<パス> を渡すと、そのプロファイルを使い回し、終了時にも消さない。
@@ -352,6 +353,15 @@ try {
   if (IMAGE) {
     imageServer = await startImageServer(IMAGE);
     console.error(`[probe] 基準器を配信: ${IMAGE} (${imageServer.size} バイト) -> ${imageServer.url}`);
+  }
+  // 調査用(2026-09-04): --hdd にローカルパスを渡せるようにする(SASIとSCSIを
+  // 同時にマウントしてDPBを突き合わせるため)。http(s):// で始まるものはURLとして
+  // そのまま扱う(従来どおり)。
+  let effectiveHdd = HDD;
+  if (HDD && !/^https?:\/\//.test(HDD)) {
+    hddServer = await startImageServer(HDD);
+    effectiveHdd = hddServer.url;
+    console.error(`[probe] SASI基準器を配信: ${HDD} (${hddServer.size} バイト) -> ${hddServer.url}`);
   }
   const page = await browser.newPage();
   if (imageServer) {
@@ -592,7 +602,7 @@ try {
   });
   const fd1Query =
     (FD1 !== null ? `&fd1=${encodeURIComponent(FD1)}` : '') +
-    (HDD !== null ? `&hdd=${encodeURIComponent(HDD)}` : '') +
+    (effectiveHdd !== null ? `&hdd=${encodeURIComponent(effectiveHdd)}` : '') +
     (WORKER !== null ? `&worker=${encodeURIComponent(WORKER)}` : '');
   await page.goto(`http://localhost:${PORT}/?${args['no-system'] ? '' : 'system=1&'}run=1${fd1Query}`, { waitUntil: 'domcontentloaded' });
 
@@ -814,6 +824,7 @@ try {
   // --profile= で指定されたものは消さない(次の実行で使い回すため)。
   if (profile && !args.profile) await rm(profile, { recursive: true, force: true }).catch(() => {});
   if (imageServer) imageServer.server.close();
+  if (hddServer) hddServer.server.close();
   if (server && server.exitCode === null) {
     server.kill('SIGTERM');
     await sleep(500);
