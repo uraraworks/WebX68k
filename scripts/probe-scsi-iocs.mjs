@@ -25,6 +25,16 @@ const REPO_ROOT = new URL('..', import.meta.url).pathname;
 const DEFAULT_CHROME = '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome';
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
+// 押して離すまでを1フレーム以上あける。puppeteer の press は down/up が同一フレームに
+// 収まりゲスト側のポーリングに拾われないことがある(実測 2026-09-03: Enter が効かず
+// コマンドが実行されなかった)。
+async function pressHeld(page, key, holdMs = 120) {
+  await page.keyboard.down(key);
+  await sleep(holdMs);
+  await page.keyboard.up(key);
+  await sleep(80);
+}
+
 const args = Object.fromEntries(
   process.argv.slice(2).map((a) => {
     const m = /^--([a-z0-9-]+)(?:=(.+))?$/.exec(a);
@@ -134,6 +144,8 @@ const BUS_LOG_MAX = args['bus-log-max'] === undefined ? null : Number(args['bus-
 // dev サーバ経由(例: public/test/ 配下、.gitignore で除外)で読ませたいときに使う。
 // 未指定時はURLに一切手を加えない(挙動を変えないため)。
 const FD1 = args.fd1 ?? null;
+// --type=<文字列>: 起動後にゲストへ打鍵する(末尾で Enter)。--type-wait=<ms> で待ち時間。
+const TYPE_TEXT = args.type === undefined ? null : String(args.type);
 // 本物の外部SCSIボードROMイメージ(8192バイト)。指定時のみ window.__webx68kScsiRomBytes
 // へ数値配列として置く。逆アセンブルはせず、本物を走らせて実測するためのオラクルとして使う。
 // 未指定なら従来と1文字も挙動が変わらない。
@@ -546,6 +558,36 @@ try {
   // プロンプト到達後もしばらく観測する(常駐ドライバが後から叩く可能性)。
   await sleep(3000);
 
+  // --type=<文字列> でゲストへ打鍵する(末尾に改行を付ける)。
+  // ドライブが実際に見えているかは「誰かが触る」まで分からないため、
+  // 起動後に DIR C: 等を打って読み出しコマンドが来るかを測る用。
+  // 打鍵後の画面は typedScreen に残す(打つ前の lastLines と区別するため)。
+  let typedScreen = null;
+  if (TYPE_TEXT !== null) {
+    await page.evaluate(() => {
+      const c = document.querySelector('canvas');
+      if (c) { c.setAttribute('tabindex', '0'); c.focus(); }
+    }).catch(() => {});
+    // ゲストはJIS配列で解釈するため、US配列前提の puppeteer の打鍵とずれる記号がある。
+    // 実測(2026-09-03): "DIR C:" と打つと画面には "dir c;" と出た(Shift+Semicolon が
+    // JISでは ';' のまま)。':' はJISでは独立キー(US配列の Quote の位置)なので、
+    // ':' だけキー名で押す。他にずれる記号が出たら、同じ形でここに足すこと。
+    for (const part of TYPE_TEXT.split(':')) {
+      if (part) await page.keyboard.type(part, { delay: 60 });
+      if (part !== TYPE_TEXT.split(':').at(-1)) await pressHeld(page, 'Quote');
+    }
+    await sleep(300);
+    await pressHeld(page, 'Enter');
+    await sleep(Number(args['type-wait'] ?? 6000));
+    typedScreen = await page
+      .evaluate(async () => {
+        const dbg = window.__webx68kDebug;
+        if (!dbg?.screenText) return null;
+        try { return (await dbg.screenText())?.lines ?? null; } catch { return null; }
+      })
+      .catch(() => null);
+  }
+
   // SCSI IOCS ベクタ($7d4)が設定されているかを見る。ROMスタブの
   // 「IOCSベクタ設定エントリ」が呼ばれていれば $00ea004a が入るはずで、
   // 入っていなければ ROMスタブがそもそも拾われていないことになる。
@@ -623,6 +665,7 @@ try {
         // 代理(ログに出る一部の設定)ではなく、条件そのものを記録する。
         invocation: process.argv.slice(2),
         booted,
+        typedScreen,
         dumps,
         screenshot: shot,
         iocsVectors: vectors,
