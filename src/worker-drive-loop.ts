@@ -87,7 +87,8 @@ export function runTick(
 /** runUnlimitedTick() の戻り値。runTick()のTickResultと同じ流儀だが、無制限モードは
  * accumulatorを使わない(常に0)ため意味を持たない値として返す。 */
 export interface UnlimitedTickResult {
-  /** このtickで実際に進めたフレーム数(映像提示用の最後の1フレームを含む)。 */
+  /** このtickで実際に進めたフレーム数(映像提示用の最後の1フレームを含む)。占有率の
+   * 上限に引っかかって何もしなかったtickでは0。 */
   ranFrames: number;
   /** 無制限モードでは使わないため常に0(呼び出し側は捨ててよい)。 */
   accumulator: number;
@@ -97,13 +98,25 @@ export interface UnlimitedTickResult {
    * frameCostMsIn としてそのまま渡すこと(呼び出し側=core-worker.tsがモジュールスコープの
    * 変数として持ち越す)。 */
   frameCostMs: number;
+  /** 次にretro_run()を回してよい時刻(ms、nowと同じ時刻系)。呼び出し側は次回呼び出し時に
+   * nextAllowedAtMsInとしてそのまま渡すこと(占有率の上限を実時間で守るため。
+   * src/frameBudget.tsのWORKER_UNLIMITED_MAX_DUTYのコメント参照)。 */
+  nextAllowedAtMs: number;
 }
 
 /**
  * 無制限速度モード用のWorker側1tickぶんの駆動ロジック(純粋関数)。runTick()と対になる
  * 別経路: 「目標倍率」が無いため fps/accumulator/computeFrameBudget() は一切使わず、
- * 時間予算(budgetMs、src/frameBudget.ts の workerUnlimitedBudgetMs() で算出したもの)
- * いっぱいまで retro_run() を回し切る。
+ * 時間予算(budgetMs、src/frameBudget.ts の WORKER_UNLIMITED_TICK_BUDGET_MS)いっぱいまで
+ * retro_run() を回し切る。budgetMsはtick間隔(TICK_MS)に縛られない絶対値であり、1tickを
+ * またいで走り続けてよい(src/frameBudget.tsの2026-09-04コメント参照。旧実装は
+ * tick間隔に収めようとしたため、フレーム単価が刻みの半分を超える環境で1フレームしか
+ * 回せなかった)。
+ *
+ * 占有率の上限は「1tickの中の割合」ではなく「実際にかかった時間から、次に走ってよい
+ * 時刻を決める」方式で守る(master(既定経路)のmain.tsのunlimitedNextAllowedAtと同じ
+ * 考え方)。呼び出し側から渡されたnextAllowedAtMsInより前に呼ばれたtickは、
+ * retro_run()を1回も回さず即座に戻る。
  *
  * 画面提示のthrottleは入れない(master(メインスレッド専用実装)の
  * UNLIMITED_PRESENT_INTERVAL_MSはここには持ち込まない): frame event は音声サンプルも
@@ -117,7 +130,11 @@ export interface UnlimitedTickResult {
  * (frameCostMs = frameCostMs*0.8 + measured*0.2)で持ち越す。
  *
  * @param now 時刻取得(ms)。呼び出し側がWorkerグローバル(performance.now())等を注入する。
- * @param budgetMs このtickでretro_run()に使ってよい時間(ms)の総量。
+ * @param budgetMs このtickでretro_run()に使ってよい時間(ms)の総量(絶対値。tick間隔に
+ *   縛られない)。
+ * @param maxDuty 実時間に対してretro_run()に使ってよい占有率の上限(0〜1)。
+ * @param nextAllowedAtMsIn 前回このtickが返したnextAllowedAtMs(初回は0でよい)。
+ *   nowがこれより前ならこのtickは何もしない。
  * @param frameCostMsIn 1フレームあたりコストの実測移動平均の持ち越し値(ms)。
  * @param runFrameOnce 1フレーム進め、ディスクアクセス状態を返すコールバック(runTickと同じ)。
  * @param setVideoSkip 中間フレームの映像変換・描画をスキップするかを切り替えるコールバック
@@ -126,11 +143,20 @@ export interface UnlimitedTickResult {
 export function runUnlimitedTick(
   now: () => number,
   budgetMs: number,
+  maxDuty: number,
+  nextAllowedAtMsIn: number,
   frameCostMsIn: number,
   runFrameOnce: () => DiskAccessFlags,
   setVideoSkip: (skip: boolean) => void,
 ): UnlimitedTickResult {
-  const deadline = now() + budgetMs;
+  const tickStart = now();
+  // 占有率の上限(実時間ベース)。前回のtickがまだ「次に走ってよい時刻」に達していなければ
+  // retro_run()を1回も回さず即座に戻る(頻繁に呼ばれてもここで間引かれる)。
+  if (tickStart < nextAllowedAtMsIn) {
+    return { ranFrames: 0, accumulator: 0, access: NO_ACCESS, frameCostMs: frameCostMsIn, nextAllowedAtMs: nextAllowedAtMsIn };
+  }
+
+  const deadline = tickStart + budgetMs;
   let frameCostMs = frameCostMsIn;
   let ranFrames = 0;
   let fddReading = false;
@@ -168,11 +194,17 @@ export function runUnlimitedTick(
   frameCostMs = frameCostMs * 0.8 + (now() - presentStart) * 0.2;
   ranFrames++;
 
+  // 実際にかかった時間costMsから、占有率がmaxDutyを超えないだけの間隔を空ける
+  // (予算値ではなく実コストを使うので、遅いホストでは自動的に間隔が広がる)。
+  const costMs = now() - tickStart;
+  const nextAllowedAtMs = tickStart + costMs / maxDuty;
+
   return {
     ranFrames,
     accumulator: 0,
     access: ranFrames > 0 ? { fddReading, fddDrive, hddAccessing } : NO_ACCESS,
     frameCostMs,
+    nextAllowedAtMs,
   };
 }
 

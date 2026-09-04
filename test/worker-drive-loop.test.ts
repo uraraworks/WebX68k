@@ -115,6 +115,36 @@ describe('runUnlimitedTick(無制限速度モードのWorker側1tick駆動、こ
     return { fddReading: false, fddDrive: -1, hddAccessing: false };
   }
 
+  // 2026-09-04の設計修正: 占有率上限は「1tickの中の割合」ではなく実時間ベースの
+  // nextAllowedAtMsで守るようになった。既存テストの多くは占有率の上限そのものを
+  // 見ていないため、maxDuty=1・nextAllowedAtMsIn=0(常に許可)で固定して呼ぶ。
+
+  it('【不具合の再現】フレーム単価がtick間隔(16ms)の半分を超えても、複数フレーム回る', () => {
+    // 実機実測: この環境の1フレームのコストは約8.3ms(4倍速で頭打ち122.7fpsから逆算)。
+    // 旧実装(tick間隔16msに収める予算11.2ms、そこから1フレーム分を引いたdeadline)では
+    // 2フレーム目を始める余地が無く、無制限モードが「1tickにつき1フレームしか回らない」
+    // (62.5fps、2倍速より遅い)という不具合になっていた。
+    // 新実装は絶対値の予算(初期値33ms、tick間隔に縛られない)いっぱいまで回るため、
+    // フレーム単価8.3msでも複数フレーム回ること。
+    const FRAME_COST = 8.3;
+    const clock = makeClock(FRAME_COST);
+    let calls = 0;
+    const result = runUnlimitedTick(
+      clock.now,
+      33, // WORKER_UNLIMITED_TICK_BUDGET_MSの初期値と同じ
+      1, // maxDuty(このテストでは占有率上限は見ない)
+      0, // nextAllowedAtMsIn(常に許可)
+      FRAME_COST, // frameCostMsIn(実測と一致させ、EMAのドリフトを無くして決定的にする)
+      () => {
+        calls++;
+        return clock.runFrameOnce();
+      },
+      () => {},
+    );
+    expect(result.ranFrames).toBeGreaterThanOrEqual(3);
+    expect(calls).toBe(result.ranFrames);
+  });
+
   it('予算いっぱいまで中間フレームを回し、最後に必ず1フレーム映像提示ぶんを追加する', () => {
     const FRAME_COST = 2;
     const clock = makeClock(FRAME_COST);
@@ -124,6 +154,8 @@ describe('runUnlimitedTick(無制限速度モードのWorker側1tick駆動、こ
     const result = runUnlimitedTick(
       clock.now,
       20, // budgetMs
+      1,
+      0,
       FRAME_COST, // frameCostMsIn(実測と一致させ、EMAのドリフトを無くして決定的にする)
       () => {
         calls++;
@@ -148,6 +180,8 @@ describe('runUnlimitedTick(無制限速度モードのWorker側1tick駆動、こ
     runUnlimitedTick(
       clock.now,
       20,
+      1,
+      0,
       FRAME_COST,
       () => {
         skipStates.push(currentSkip);
@@ -171,6 +205,8 @@ describe('runUnlimitedTick(無制限速度モードのWorker側1tick駆動、こ
       runUnlimitedTick(
         clock.now,
         20,
+        1,
+        0,
         2,
         () => {
           call++;
@@ -191,6 +227,8 @@ describe('runUnlimitedTick(無制限速度モードのWorker側1tick駆動、こ
     const result = runUnlimitedTick(
       clock.now,
       0, // budgetMs
+      1,
+      0,
       2,
       () => {
         calls++;
@@ -204,7 +242,7 @@ describe('runUnlimitedTick(無制限速度モードのWorker側1tick駆動、こ
 
   it('accumulatorは常に0を返す(無制限モードでは使わない)', () => {
     const clock = makeClock(2);
-    const result = runUnlimitedTick(clock.now, 20, 2, () => clock.runFrameOnce(), () => {});
+    const result = runUnlimitedTick(clock.now, 20, 1, 0, 2, () => clock.runFrameOnce(), () => {});
     expect(result.accumulator).toBe(0);
   });
 
@@ -214,6 +252,8 @@ describe('runUnlimitedTick(無制限速度モードのWorker側1tick駆動、こ
     const result = runUnlimitedTick(
       clock.now,
       20,
+      1,
+      0,
       2,
       () => {
         call++;
@@ -229,9 +269,41 @@ describe('runUnlimitedTick(無制限速度モードのWorker側1tick駆動、こ
 
   it('frameCostMsは実測に応じて更新され呼び出し側へ返る(次tickへ持ち越すため)', () => {
     const clock = makeClock(5); // 実測は5msだが、初期推定は1msとずれさせる
-    const result = runUnlimitedTick(clock.now, 20, 1, () => clock.runFrameOnce(), () => {});
+    const result = runUnlimitedTick(clock.now, 20, 1, 0, 1, () => clock.runFrameOnce(), () => {});
     // EMAが実測(5ms)方向へ動くこと(初期値1から増えていること)。
     expect(result.frameCostMs).toBeGreaterThan(1);
+  });
+
+  it('nextAllowedAtMsより前に呼ばれたtickは何もしない(占有率の上限)', () => {
+    const clock = makeClock(2);
+    let calls = 0;
+    const result = runUnlimitedTick(
+      clock.now,
+      20,
+      1,
+      100, // nextAllowedAtMsIn: now()=0はこれより前なので何もしない
+      2,
+      () => {
+        calls++;
+        return clock.runFrameOnce();
+      },
+      () => {},
+    );
+    expect(result.ranFrames).toBe(0);
+    expect(calls).toBe(0);
+    expect(result.access).toEqual(noAccess());
+    // 何もしなかった場合はnextAllowedAtMsInをそのまま持ち越す。
+    expect(result.nextAllowedAtMs).toBe(100);
+  });
+
+  it('costMsが大きいほどnextAllowedAtMsが先になる(占有率の式が効いている)', () => {
+    // budgetMsを変え、実際にかかる時間(costMs)を変えて比較する。
+    const shortClock = makeClock(2);
+    const shortResult = runUnlimitedTick(shortClock.now, 4, 0.5, 0, 2, () => shortClock.runFrameOnce(), () => {});
+    const longClock = makeClock(2);
+    const longResult = runUnlimitedTick(longClock.now, 20, 0.5, 0, 2, () => longClock.runFrameOnce(), () => {});
+    expect(longResult.ranFrames).toBeGreaterThan(shortResult.ranFrames);
+    expect(longResult.nextAllowedAtMs).toBeGreaterThan(shortResult.nextAllowedAtMs);
   });
 });
 

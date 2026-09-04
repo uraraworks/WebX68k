@@ -532,7 +532,7 @@ function applySpeedChangeToWorker(): void {
   // unlimitedActiveも送る(この穴の是正、docs/STORAGE-SCSI.md参照): 以前はmultiplierしか
   // 送っておらず、無制限モードでもWorker側には等倍(1)が届くだけでボタンだけ光って
   // 実際には速度が変わらなかった。Worker側の無制限経路はsrc/worker-drive-loop.tsの
-  // runUnlimitedTick()(src/frameBudget.tsのworkerUnlimitedBudgetMs()参照)。
+  // runUnlimitedTick()(src/frameBudget.tsのWORKER_UNLIMITED_TICK_BUDGET_MS参照)。
   if (urlWorkerMode) workerCoreProxy?.setSpeedMultiplier(speedMultiplier, unlimitedActive);
 }
 

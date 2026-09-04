@@ -89,7 +89,11 @@ import {
 } from './core-protocol';
 import { LocalCoreProxy, toOwnedArrayBuffer } from './core-proxy';
 import { LibretroHost } from './libretro-host';
-import { computeFrameBudget, workerUnlimitedBudgetMs } from './frameBudget';
+import {
+  computeFrameBudget,
+  WORKER_UNLIMITED_MAX_DUTY,
+  WORKER_UNLIMITED_TICK_BUDGET_MS,
+} from './frameBudget';
 import { FrameBufferPool, runTick, runUnlimitedTick, type DiskAccessFlags } from './worker-drive-loop';
 import { WorkerInputState } from './worker-input';
 import { MouseTracker } from './mouse-track';
@@ -411,6 +415,11 @@ let unlimitedActive = false;
  * 持ち越す(src/worker-drive-loop.tsのUnlimitedTickResult.frameCostMs参照)。初期値は
  * 実測が無い最初のtick用の目安(母数はmain.tsのunlimitedFrameCostMs初期値と揃えた)。 */
 let workerUnlimitedFrameCostMs = 3;
+/** runUnlimitedTick()が返すnextAllowedAtMs(ms、ctx.performance.now()基準)の持ち越し値。
+ * 占有率の上限(WORKER_UNLIMITED_MAX_DUTY)を実時間で守るために使う
+ * (src/worker-drive-loop.tsのrunUnlimitedTick()参照)。初期値0はどのnowより小さいため、
+ * 最初のtickは必ず実行される。 */
+let workerUnlimitedNextAllowedAtMs = 0;
 
 function stopDriveLoop(): void {
   if (driveIntervalId !== undefined) {
@@ -467,18 +476,23 @@ function tick(): void {
   let result: { ranFrames: number; accumulator: number; access: DiskAccessFlags };
   if (unlimitedActive) {
     // 無制限速度モード(この穴の是正、docs/STORAGE-SCSI.md参照)。fps/accumulator/
-    // computeFrameBudget()は使わず、tick間隔に対する占有率上限(src/frameBudget.tsの
-    // workerUnlimitedBudgetMs())いっぱいまでretro_run()を回す別経路。
+    // computeFrameBudget()は使わず、tick間隔に縛られない絶対時間予算
+    // (WORKER_UNLIMITED_TICK_BUDGET_MS)いっぱいまでretro_run()を回す別経路。
+    // 占有率の上限は実時間ベースのnextAllowedAtMsで守る(2026-09-04修正、
+    // src/frameBudget.tsのコメント参照。旧実装のtick間隔ベースの予算は
+    // フレーム単価が刻みの半分を超える環境で1フレームしか回せなかった)。
     // speedMultiplierはここでは使わない(無制限モードには「目標倍率」が無いため)。
-    const budgetMs = workerUnlimitedBudgetMs(TICK_MS);
     const unlimitedResult = runUnlimitedTick(
       () => ctx.performance.now(),
-      budgetMs,
+      WORKER_UNLIMITED_TICK_BUDGET_MS,
+      WORKER_UNLIMITED_MAX_DUTY,
+      workerUnlimitedNextAllowedAtMs,
       workerUnlimitedFrameCostMs,
       runFrameOnce,
       (skip) => currentHost.setVideoSkip(skip),
     );
     workerUnlimitedFrameCostMs = unlimitedResult.frameCostMs;
+    workerUnlimitedNextAllowedAtMs = unlimitedResult.nextAllowedAtMs;
     result = unlimitedResult;
   } else {
     result = runTick(dt, fps, accumulator, speedMultiplier, runFrameOnce);
@@ -971,6 +985,9 @@ ctx.onmessage = (ev) => {
     // この穴の是正(docs/STORAGE-SCSI.md参照): 未指定はfalse扱い(SpeedUpdateMessage.unlimited
     // のコメント参照)。
     unlimitedActive = data.unlimited === true;
+    // 速度切り替え直後は必ず1tick即座に走らせる(main.tsのresetSpeedState()と同じ考え方。
+    // 古いnextAllowedAtMsを持ち越すと、切り替え直前の占有率制限が残ったままになる)。
+    workerUnlimitedNextAllowedAtMs = 0;
     return;
   }
   // SCSI(OPFS)の明示flush依頼(取りこぼしの窓の是正)。同じく低頻度の専用メッセージ。

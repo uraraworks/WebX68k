@@ -50,26 +50,54 @@ export const UNLIMITED_PRESENT_INTERVAL_MS = 33;
 export const UNLIMITED_MAX_DUTY = 0.7;
 
 /**
- * Worker経路(?worker=1)の無制限速度モードで、1tickあたりretro_run()に使ってよいmsの割合。
+ * 【2026-09-04 実測による修正: 「1tickの中に収める」という設計そのものが誤りだった】
  *
- * master(既定経路)の UNLIMITED_TICK_BUDGET_MS(=12ms)はここでは使わない。あの値は
- * 「コア実行と画面提示が同じスレッドに乗り、そこにUIも同居している」前提から逆算した値
- * (実測: コア実行12.37ms+画面提示6.56ms=19.74msで占有率95.9%、ページが固まった)。
- * Worker経路ではコアはWorker、画面提示はメインと別スレッドに分かれるため、この前提が
- * 成り立たない。Worker側が守るべき制約は「毎tick必ずイベントループへ戻り、入力更新や
- * コマンドのpostMessageを取りこぼさないこと」であり、画面提示の固定費は別スレッド
- * (メイン)の勘定なのでWorker側の予算には含めない。よってWorker側の上限は絶対時間(ms)
- * ではなく「tick間隔に対する占有率」で決める。
+ * 旧実装は `workerUnlimitedBudgetMs(tickMs) = tickMs(16) * WORKER_UNLIMITED_MAX_DUTY(0.7)
+ * = 11.2ms` を1tickの予算とし、さらに「入らないフレームは始めない」ために予算から
+ * 1フレームぶんの見込みコストを引いてdeadlineを決めていた(runUnlimitedTick()参照)。
+ *
+ * 実機計測(Worker経路、workerStats().frameNoの増分で実測):
+ *   等倍 55.6fps / 2倍 110.3fps(正しく2倍) / 4倍 122.7fps(頭打ち=この環境の上限)
+ *   無制限 62.5fps ← 2倍より遅い。全く機能していなかった
+ *
+ * 上限122.7fpsから逆算すると、この環境の1フレームのコストは約8.3ms。旧予算11.2msから
+ * 「1フレームぶん(8.3ms)を引いたdeadline」は2.9msしか残らず、2フレーム目のコストは
+ * 原理的に賄えない。結果「1tickにつき必ず1フレームしか回らない」状態になり、
+ * 1フレーム/tick × 62.5tick/秒 = 62.5fps という観測値と完全に一致する。
+ *
+ * フレーム単価がtickの刻み(16ms)の半分を超える環境では、「1tickの中に収める」設計は
+ * 原理的に複数フレームを回せない。無制限モードは刻みをまたいで回り続けられないと
+ * 意味が無いため、tick間隔に縛られない絶対値の予算に切り替えた
+ * (WORKER_UNLIMITED_TICK_BUDGET_MS)。占有率の上限は「1tickの中の割合」ではなく
+ * 「実際にかかった時間から、次に走ってよい時刻を決める」方式(master(既定経路)の
+ * main.tsのunlimitedNextAllowedAtと同じ考え方。ただし定数はWorker用に別途決める。
+ * runUnlimitedTick()参照)に変えた。
  */
-export const WORKER_UNLIMITED_MAX_DUTY = 0.7;
 
 /**
- * WORKER_UNLIMITED_MAX_DUTY から、tick間隔(ms)に対する実際の予算(ms)を求める。
- * 「12msのような由来不明の定数」を直接置かないためのヘルパ。
+ * Worker経路(?worker=1)の無制限速度モードで、1tickあたりretro_run()に使ってよい絶対時間(ms)。
+ * tick間隔(TICK_MS=16ms)には縛られない: 上のコメントの通り、tick間隔に収めようとすると
+ * フレーム単価が刻みの半分を超える環境で1フレームしか回せなくなる。
+ *
+ * 初期値33 = 表示1コマ(約16.7ms)の2つぶん。実機で観測したフレーム単価(約8.3ms)なら
+ * 33ms予算で4フレーム程度入る見込み(実測では「入らないフレームは始めない」判定の
+ * 余裕分だけ少なくなる)。
  */
-export function workerUnlimitedBudgetMs(tickMs: number): number {
-  return tickMs * WORKER_UNLIMITED_MAX_DUTY;
-}
+export const WORKER_UNLIMITED_TICK_BUDGET_MS = 33;
+
+/**
+ * 無制限モードでWorkerがretro_run()に使ってよい、実時間に対する占有率の上限。
+ *
+ * 「1tickの中の割合」ではなく「実時間に対して retro_run に使ってよい割合」に意味を変えた
+ * (上のコメント参照)。1tickぶんの予算(WORKER_UNLIMITED_TICK_BUDGET_MS)を使い切った後、
+ * 実際にかかった時間costMsから `次に走ってよい時刻 = tick開始時刻 + costMs / この値` を
+ * 求め、それより前のtickは何もせず即座に戻る(runUnlimitedTick()参照)。
+ *
+ * master(既定経路のUNLIMITED_MAX_DUTY=0.7)より高い0.9にしている: Workerはメインスレッドの
+ * ようにUIや画面提示を同居させていない(画面提示はメイン側の別スレッドの仕事)ため、
+ * イベントループを明け渡す猶予をより多く占有に回せる。
+ */
+export const WORKER_UNLIMITED_MAX_DUTY = 0.9;
 
 /**
  * @param dt 前フレームからの経過時間(秒)
