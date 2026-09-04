@@ -464,7 +464,26 @@ function updateSpeedAvailability(): void {
   updateSpeedButtonUi();
 }
 
-cfgCpuSpeed.value = cpuSpeed;
+/**
+ * 設定UIに「実際に効いている値」を表示する。
+ *
+ * `?cpu=` は選択肢に無い値も受け付ける(200/400/800MHz は罠になるので選択肢から外したが、
+ * URLからは 10〜1000 を指定できる)。その値を select にそのまま入れても一致する option が
+ * 無いため value は空になり、**コアは200MHzで動いているのに設定欄は空白**という食い違いが出る。
+ * 一致する option が無いときは、その値の option を固定クロックの末尾へ足してから選ぶ。
+ */
+function syncCpuSpeedSelect(): void {
+  cfgCpuSpeed.value = cpuSpeed;
+  if (cfgCpuSpeed.value === cpuSpeed) return;
+  const option = document.createElement('option');
+  option.value = cpuSpeed;
+  option.textContent = cpuSpeed;
+  const autoOption = cfgCpuSpeed.querySelector(`option[value="${AUTO_CPU_SPEED}"]`);
+  cfgCpuSpeed.insertBefore(option, autoOption);
+  cfgCpuSpeed.value = cpuSpeed;
+}
+
+syncCpuSpeedSelect();
 cfgRamSize.value = ramSize;
 
 cfgCpuSpeed.addEventListener('change', () => {
