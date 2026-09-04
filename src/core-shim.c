@@ -1306,6 +1306,53 @@ void webx68k_mem_read_watch_refresh(void)
   webx68k_mem_read_watch_require_trigger = require_trigger;
 }
 
+/*
+ * デバイスドライバ入口フック(調査用、2026-09-04)。
+ * 実体(ホットパス・ログ出力・再入防止)は px68k-libretro 側
+ * x68k/mem_wrap.c の webx68k_drv_hook_check() / webx68k_drv_hook_dump()。
+ * webx68k_ram_watch_refresh() と同じ流儀で JS 側グローバル
+ * (globalThis.__webx68kDrvHookStrategy / __webx68kDrvHookInterrupt /
+ * __webx68kDrvHookOutside、既定はそれぞれ -1 / -1 / 0x00010000)を読み、
+ * mem_wrap.c 側の static ではない extern int32_t 変数へ反映する。
+ */
+EM_JS(int, js_drv_hook_strategy, (), {
+  var v = globalThis.__webx68kDrvHookStrategy;
+  return (typeof v === 'number') ? (v | 0) : -1;
+});
+
+EM_JS(int, js_drv_hook_interrupt, (), {
+  var v = globalThis.__webx68kDrvHookInterrupt;
+  return (typeof v === 'number') ? (v | 0) : -1;
+});
+
+EM_JS(int, js_drv_hook_outside, (), {
+  var v = globalThis.__webx68kDrvHookOutside;
+  return (typeof v === 'number') ? (v | 0) : 0x00010000;
+});
+
+extern int32_t webx68k_drv_hook_strategy;
+extern int32_t webx68k_drv_hook_interrupt;
+extern int32_t webx68k_drv_hook_outside;
+
+__attribute__((used))
+void webx68k_drv_hook_refresh(void)
+{
+  int strategy = js_drv_hook_strategy();
+  int interrupt = js_drv_hook_interrupt();
+  int outside = js_drv_hook_outside();
+
+  if (strategy != webx68k_drv_hook_strategy || interrupt != webx68k_drv_hook_interrupt ||
+      outside != webx68k_drv_hook_outside)
+  {
+    printf("[DRV-HOOK] 監視設定: strategy=$%08x interrupt=$%08x outside=$%08x\n",
+           (unsigned)strategy, (unsigned)interrupt, (unsigned)outside);
+  }
+
+  webx68k_drv_hook_strategy = strategy;
+  webx68k_drv_hook_interrupt = interrupt;
+  webx68k_drv_hook_outside = outside;
+}
+
 
 /*
  * 調査用(2026-09-04): 「新規複数クラスタ割り当ての直後にHuman68kが

@@ -317,6 +317,19 @@ if (args['mem-read-watch-pc'] !== undefined) {
 // x68k/scsi.c・x68k/sasi.c の端数セクタ完了トリガ)発火後だけに限定する。
 // 値を取らないフラグ(コア側の既定は0=従来通り無条件)。
 const MEM_READ_WATCH_REQUIRE_TRIGGER = args['mem-read-watch-require-trigger'] !== undefined;
+// デバイスドライバ入口フック(x68k/mem_wrap.c の webx68k_drv_hook_check)。
+// 成功している側(Human68k内蔵HARDDSKドライバ=SASI用)が受け取る要求ヘッダを、
+// 逆アセせず走らせて外から覗く調査用。--drv-hook-strategy=<番地>(ストラテジ入口PC)、
+// --drv-hook-interrupt=<番地>(インタラプト入口PC)、--drv-hook-outside=<番地>
+// (このPC未満へ戻ったら「呼び出し元へ復帰した」とみなす境界)。10進・0x接頭の
+// 16進どちらも可。未指定なら window.__webx68kDrvHook* は一切設定せず、
+// コア側の既定(strategy/interrupt=-1=無効、outside=0x00010000)のまま。
+const DRV_HOOK_STRATEGY =
+  args['drv-hook-strategy'] === undefined ? null : parseRamWatchAddr(String(args['drv-hook-strategy']));
+const DRV_HOOK_INTERRUPT =
+  args['drv-hook-interrupt'] === undefined ? null : parseRamWatchAddr(String(args['drv-hook-interrupt']));
+const DRV_HOOK_OUTSIDE =
+  args['drv-hook-outside'] === undefined ? null : parseRamWatchAddr(String(args['drv-hook-outside']));
 
 /**
  * 基準器イメージを Range 対応で配信する小さなサーバ。
@@ -722,6 +735,21 @@ try {
     await page.evaluateOnNewDocument(() => {
       window.__webx68kMemReadWatchRequireTrigger = 1;
     });
+  }
+  if (DRV_HOOK_STRATEGY !== null) {
+    await page.evaluateOnNewDocument((v) => {
+      window.__webx68kDrvHookStrategy = v;
+    }, DRV_HOOK_STRATEGY);
+  }
+  if (DRV_HOOK_INTERRUPT !== null) {
+    await page.evaluateOnNewDocument((v) => {
+      window.__webx68kDrvHookInterrupt = v;
+    }, DRV_HOOK_INTERRUPT);
+  }
+  if (DRV_HOOK_OUTSIDE !== null) {
+    await page.evaluateOnNewDocument((v) => {
+      window.__webx68kDrvHookOutside = v;
+    }, DRV_HOOK_OUTSIDE);
   }
   if (ROM !== null) {
     const romBytes = Array.from(await readFile(ROM));
