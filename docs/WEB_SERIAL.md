@@ -37,7 +37,9 @@ Canceling the port chooser is not treated as an error; the connection simply
 stays disconnected. The chooser is shown for every connection attempt so the
 user always confirms the target port.
 
-The selected baud rate configures the physical browser port. The emulated SCC data path is not internally paced at that baud rate.
+The selected baud rate configures the physical browser port and the WebX68k transmit pacer. The transmit FIFO is drained in chunks representing at most about 250 ms of 8N1 data, using 10 bits per byte. Even if `writer.write()` resolves when the operating system merely queues the bytes, SCC TX-ready is not restored until the estimated on-wire time measured from the start of the write has elapsed. If the operating-system write itself takes longer, no second full delay is added.
+
+This is transmit-side approximation that prevents the browser bridge from feeding data faster than the selected physical line rate; it is not cycle-accurate SCC bit timing. Receive timing, RTS/CTS, and XON/XOFF are not emulated. When a standard internal BRG/PCLK setup can be recognized, the settings dialog warns if the estimated X68000 rate differs from the browser selection. No warning is shown for configurations that cannot be determined, such as external clocks.
 
 ## Data flow and backpressure
 
@@ -49,9 +51,8 @@ RTS/CTS hardware flow control nor XON/XOFF software flow control.
 - While that FIFO is full, the current receive chunk remains in JavaScript and
   is retried on the next frame after the guest reads data.
 - X68000 output uses a bounded 4096-byte SCC channel A transmit FIFO.
-- At most one browser write is active. No further core data is drained until
-  that write completes, so an unbounded JavaScript queue cannot form.
-- RR0 transmit-ready is cleared while the transmit FIFO is full.
+- At most one browser write is active, and each write is limited to about 250 ms of data at the selected baud rate. No further core data is drained until it completes, so an unbounded JavaScript queue cannot form.
+- RR0 transmit-ready and RR1 All Sent remain cleared while the transmit FIFO is full and until both `writer.write()` and the estimated 8N1 transmission time have completed.
 - Guest software that ignores transmit-ready can still lose output.
 
 The bridge supports receive interrupts, transmit-buffer-empty interrupts, RR8
@@ -120,8 +121,9 @@ ordered receive, capacity-aware receive waiting, discarding the parked receive
 remainder on machine reset, the single in-flight write limit, resource cleanup,
 read and write failures, aborting an in-flight write before closing the port when
 the read loop fails, repeated and physical disconnects, connection cancellation
-races, port-picker cancellation, retry after open failure, and baud-rate
-persistence.
+races, port-picker cancellation, retry after open failure, baud-rate
+persistence, 8N1 transmission time, 250 ms chunk sizing, and disconnecting
+during a low-baud pacing wait.
 
 `test/core-serial-integration.test.ts` exercises the compiled SCC implementation,
 including FIFO behavior, interrupts, IRQ5 de-assertion once no cause remains,
@@ -146,7 +148,9 @@ integration tests did not run.
 
 ## Behavior notes
 
-- Select the same baud rate in the browser and the X68000 guest. The Web Serial API cannot detect a baud-rate mismatch automatically.
+- Select the same baud rate in the browser and the X68000 guest. Standard internal BRG/PCLK settings are checked for mismatches; configurations that cannot be determined, such as external clocks, still require manual verification.
+- Transmit pacing uses the physical baud rate selected in the browser. A mismatch warning does not automatically reconfigure the port.
+- Because `writer.write()` completion does not guarantee that bytes have left the physical wire, TX-ready is held until the estimated transmission time has also elapsed. Hardware flow control is disabled, so this cannot prevent loss when the receiving device itself cannot keep up.
 - Bytes transmitted by the guest while disconnected are discarded. The SCC remains transmit-ready, and stale bytes are not sent after reconnection.
 - RR1 reports All Sent. Browser input retained for retry in JavaScript does not set Rx Overrun merely because the FIFO is full.
 - Bytes are not retried automatically after an operating-system or device write failure, avoiding duplicated or reordered data.

@@ -1239,12 +1239,19 @@ main {
   margin-top: 18px;
 }
 
-.serial-baud-note {
-  flex-basis: 100%;
+.field-row .serial-baud-note {
+  flex: 1 1 100%;
+  min-width: 0;
   margin: 4px 0 0;
   color: var(--text-dim);
   font-size: 11px;
   line-height: 1.45;
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+
+.field-row .serial-baud-note.status-ng {
+  color: var(--danger);
 }
 
 .status-ok {

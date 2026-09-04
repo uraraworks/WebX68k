@@ -61,10 +61,13 @@ echo "== px68k-libretro コアビルド (emscripten) =="
 cd "$CORE_SRC_DIR"
 # C68K=0 で Musashi CPU コアを使う (c68k は wasm で C68k_Exec が無限ループする)
 if [ "$CLEAN_BUILD" != "0" ]; then
-  emmake make -f Makefile.libretro platform=emscripten C68K=0 clean
+  emmake make -f Makefile.libretro platform=emscripten C68K=0 \
+    STATIC_LINKING=1 TARGET=px68k_libretro_emscripten.bc clean
 fi
 emmake make -f Makefile.libretro platform=emscripten C68K=0 \
-  GIT_VERSION="$CORE_GIT_VERSION" -j"$JOBS"
+  STATIC_LINKING=1 TARGET=px68k_libretro_emscripten.bc \
+  GIT_VERSION="$CORE_GIT_VERSION" \
+  WEBX68K_CORE_TEST_EXPORTS="$CORE_TEST_EXPORTS" -j"$JOBS"
 
 CORE_BC="$CORE_SRC_DIR/px68k_libretro_emscripten.bc"
 if [ ! -f "$CORE_BC" ]; then
@@ -79,13 +82,13 @@ echo "== emcc でリンクし wasm/js を生成 =="
 mkdir -p "$OUT_DIR"
 SHIM_C="$PROJECT_DIR/src/core-shim.c"
 SHIM_DEFINES=()
-EXPORTED_FUNCTIONS="_retro_set_environment,_retro_set_video_refresh,_retro_set_audio_sample,_retro_set_audio_sample_batch,_retro_set_input_poll,_retro_set_input_state,_retro_init,_retro_deinit,_retro_api_version,_retro_get_system_av_info,_retro_reset,_retro_run,_retro_load_game,_retro_unload_game,_retro_serialize_size,_retro_serialize,_retro_unserialize,_get_retro_log_shim,_get_fdd_is_reading,_get_fdd_access_drive,_get_sasi_is_accessing,_get_fdd_dirty_mask,_clear_fdd_dirty,_get_sasi_dirty,_clear_sasi_dirty,_webx68k_fdd_insert,_webx68k_fdd_eject,_get_mouse_dx,_get_mouse_dy,_get_mouse_stat,_get_mouse_enabled,_get_mouse_scc_x,_get_mouse_scc_y,_get_mouse_scc_stat,_webx68k_peek16,_webx68k_peek8,_webx68k_keybuf_peek,_webx68k_keybuf_write_pointer,_webx68k_tvram_data,_webx68k_text_dot_x,_webx68k_text_dot_y,_webx68k_text_scroll_x,_webx68k_text_scroll_y,_webx68k_joystick_read,_webx68k_configured_ram_size,_webx68k_sram_read,_webx68k_send_key_make,_webx68k_serial_rx,_webx68k_serial_tx_available,_webx68k_serial_tx_drain,_webx68k_serial_reset,_webx68k_serial_set_connected,_malloc,_free"
+EXPORTED_FUNCTIONS="_retro_set_environment,_retro_set_video_refresh,_retro_set_audio_sample,_retro_set_audio_sample_batch,_retro_set_input_poll,_retro_set_input_state,_retro_init,_retro_deinit,_retro_api_version,_retro_get_system_av_info,_retro_reset,_retro_run,_retro_load_game,_retro_unload_game,_retro_serialize_size,_retro_serialize,_retro_unserialize,_get_retro_log_shim,_get_fdd_is_reading,_get_fdd_access_drive,_get_sasi_is_accessing,_get_fdd_dirty_mask,_clear_fdd_dirty,_get_sasi_dirty,_clear_sasi_dirty,_webx68k_fdd_insert,_webx68k_fdd_eject,_get_mouse_dx,_get_mouse_dy,_get_mouse_stat,_get_mouse_enabled,_get_mouse_scc_x,_get_mouse_scc_y,_get_mouse_scc_stat,_webx68k_peek16,_webx68k_peek8,_webx68k_keybuf_peek,_webx68k_keybuf_write_pointer,_webx68k_tvram_data,_webx68k_text_dot_x,_webx68k_text_dot_y,_webx68k_text_scroll_x,_webx68k_text_scroll_y,_webx68k_joystick_read,_webx68k_configured_ram_size,_webx68k_sram_read,_webx68k_send_key_make,_webx68k_serial_rx,_webx68k_serial_tx_available,_webx68k_serial_tx_drain,_webx68k_serial_reset,_webx68k_serial_set_connected,_webx68k_serial_set_tx_writable,_webx68k_serial_guest_baud_rate,_malloc,_free"
 if [ "$CORE_TEST_EXPORTS" = "1" ]; then
   SHIM_DEFINES+=(-DWEBX68K_CORE_TEST_EXPORTS=1)
   EXPORTED_FUNCTIONS+=",_webx68k_scc_read,_webx68k_scc_write,_webx68k_scc_test_acknowledge_irq,_webx68k_scc_test_interrupt_cause,_webx68k_scc_test_irq_pending"
 fi
 # fmgenなどC++オブジェクトを含むため、最終リンクでlibc++を有効にする。
-emcc "$WORK_A" "$SHIM_C" "${SHIM_DEFINES[@]}" \
+emcc "$SHIM_C" "$WORK_A" "${SHIM_DEFINES[@]}" \
   -I"$CORE_SRC_DIR" -I"$CORE_SRC_DIR/libretro" -I"$CORE_SRC_DIR/x68k" \
   -I"$CORE_SRC_DIR/libretro-common/include" \
   -O2 -o "$OUT_DIR/px68k_libretro.js" \
