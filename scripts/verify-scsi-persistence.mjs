@@ -95,7 +95,7 @@ function parseArgs(argv) {
       continue;
     }
     const match =
-      /^--(port|probe-timeout|timeout|type-wait|post-write-wait|flush-grace|poll-scsi-debug|output|fault|chrome)=(.+)$/.exec(
+      /^--(port|probe-timeout|timeout|type-wait|type-attempts|post-write-wait|flush-grace|poll-scsi-debug|output|fault|chrome)=(.+)$/.exec(
         arg,
       );
     if (!match) throw new Error(`不明な引数です: ${arg}`);
