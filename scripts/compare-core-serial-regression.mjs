@@ -1,7 +1,7 @@
 import { existsSync } from 'node:fs';
 import { spawnSync } from 'node:child_process';
 
-const TARGET_TEST = 'Web Serial接続中も520個のマウスパケットを欠落なく処理する';
+const TARGET_TEST = 'Web Serial未接続時も520個のマウスパケットを欠落なく処理する';
 
 function readOption(name) {
   const index = process.argv.indexOf(name);
@@ -37,7 +37,14 @@ function runCore(label, corePath) {
   if (!npmCli) {
     fail('npm CLIのパスを取得できません。npm run test:core:compare から実行してください。');
   }
-  const result = spawnSync(process.execPath, [npmCli, 'run', 'test:core'], {
+  const result = spawnSync(process.execPath, [
+    npmCli,
+    'run',
+    'test:core',
+    '--',
+    '--testNamePattern',
+    TARGET_TEST,
+  ], {
     cwd: process.cwd(),
     env: {
       ...process.env,
@@ -82,4 +89,4 @@ if (after.status !== 0) {
   process.exit(1);
 }
 
-process.stdout.write('比較結果: 変更後コアでマウスパケット取りこぼしの回帰が解消されています。\n');
+process.stdout.write('比較結果: 変更後コアでは、報告された未接続時のマウス回帰を再現しません。\n');

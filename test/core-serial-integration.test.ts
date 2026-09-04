@@ -66,6 +66,7 @@ interface CoreModule {
   _webx68k_serial_rx?(data: number, length: number): number;
   _webx68k_serial_tx_available?(): number;
   _webx68k_serial_tx_drain?(data: number, length: number): number;
+  _webx68k_serial_reset?(): void;
   _webx68k_serial_set_connected?(connected: number): void;
   _webx68k_serial_set_tx_writable?(writable: number): void;
   _webx68k_serial_guest_baud_rate?(): number;
@@ -104,8 +105,8 @@ function mallocString(mod: CoreModule, value: string): number {
 async function initializeCore(): Promise<CoreModule> {
   const mod = await loadCoreFactory()({});
   if (!mod._webx68k_serial_rx || !mod._webx68k_serial_tx_available ||
-      !mod._webx68k_serial_tx_drain || !mod._webx68k_serial_set_connected ||
-      !mod._webx68k_serial_set_tx_writable || !mod._webx68k_serial_guest_baud_rate ||
+      !mod._webx68k_serial_tx_drain || !mod._webx68k_serial_reset ||
+      !mod._webx68k_serial_set_connected ||
       !mod._webx68k_scc_read || !mod._webx68k_scc_write ||
       !mod._webx68k_scc_test_acknowledge_irq || !mod._webx68k_scc_test_interrupt_cause ||
       !mod._webx68k_scc_test_irq_pending) {
@@ -369,6 +370,38 @@ describe.skipIf(!HAS_TEST_CORE)('px68k-libretro SCCチャネルA結合', () => {
     expect(mod._webx68k_scc_test_interrupt_cause!()).toBe(0);
 
     mod._free(pointer);
+  });
+
+  it('Web Serial未接続時も520個のマウスパケットを欠落なく処理する', async () => {
+    const mod = await initializeCore();
+
+    // 報告された回帰と同じく、シリアル接続APIを使わない状態を明示する。
+    mod._webx68k_serial_set_connected!(0);
+    writeRegister(mod, SCC_B_COMMAND, 2, 0x40);
+    writeRegister(mod, SCC_B_COMMAND, 1, 0x10);
+    writeRegister(mod, SCC_B_COMMAND, 3, 0x01);
+    writeRegister(mod, SCC_B_COMMAND, 9, 0x09);
+
+    for (let index = 0; index < 520; index += 1) {
+      // WR5のRTS立ち上がりで、従来実装と同じ3バイトのマウスパケットを生成する。
+      writeRegister(mod, SCC_B_COMMAND, 5, 0x00);
+      writeRegister(mod, SCC_B_COMMAND, 5, 0x02);
+      // 周期処理と同じSCC_IntCheckを決定的に呼び、ゲスト側が先にデータを消費する競合を避ける。
+      mod._webx68k_serial_reset!();
+
+      expect(mod._webx68k_scc_test_irq_pending!()).toBe(1);
+      expect(mod._webx68k_scc_test_interrupt_cause!()).toBe(0);
+      // 未接続時はチャネルA拡張前のRR2読出しを維持する。
+      expect(readRegister(mod, SCC_B_COMMAND, 2)).toBe(0);
+      expect(mod._webx68k_scc_test_acknowledge_irq!()).toBe(0x44);
+      expect(mod._webx68k_scc_test_irq_pending!()).toBe(0);
+
+      mod._webx68k_scc_read!(SCC_B_DATA);
+      mod._webx68k_scc_read!(SCC_B_DATA);
+      mod._webx68k_scc_read!(SCC_B_DATA);
+      expect(mod._webx68k_scc_test_irq_pending!()).toBe(0);
+      expect(mod._webx68k_scc_test_interrupt_cause!()).toBe(0);
+    }
   });
 
   it('Web Serial接続中も520個のマウスパケットを欠落なく処理する', async () => {

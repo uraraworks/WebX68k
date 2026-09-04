@@ -562,9 +562,9 @@ const STRINGS: Record<Lang, Dict> = {
     settingsSerialTitle: () => 'シリアルポート',
     settingsSerialStatusLabel: () => '状態',
     settingsSerialBaudLabel: () => 'ボーレート',
-    settingsSerialBaudNote: () => 'X68000 側と同じボーレートを選択してください。',
+    settingsSerialBaudNote: () => 'X68000（ゲスト）側と同じボーレートを選択してください。',
     settingsSerialBaudMismatch: ({ guestBaudRate, selectedBaudRate }) =>
-      `X68000 側は約 ${guestBaudRate} bps、ブラウザー側は ${selectedBaudRate} bps です。設定が一致しないため通信できない可能性があります。`,
+      `X68000（ゲスト）側は約 ${guestBaudRate} bps、ブラウザー側は ${selectedBaudRate} bps です。設定が一致しないため通信できない可能性があります。`,
     settingsSerialConnect: () => '接続',
     settingsSerialDisconnect: () => '切断',
     settingsSerialConnected: () => '接続済み',

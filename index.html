@@ -336,6 +336,9 @@
         <div class="field-row">
           <label id="settings-serial-baud-label" for="cfg-serial-baud">ボーレート</label>
           <select id="cfg-serial-baud" aria-describedby="settings-serial-baud-note">
+            <option value="300">300</option>
+            <option value="600">600</option>
+            <option value="1200">1200</option>
             <option value="2400">2400</option>
             <option value="4800">4800</option>
             <option value="9600">9600</option>
@@ -344,7 +347,7 @@
             <option value="57600">57600</option>
             <option value="115200">115200</option>
           </select>
-          <p id="settings-serial-baud-note" class="serial-baud-note">X68000 側と同じボーレートを選択してください。</p>
+          <p id="settings-serial-baud-note" class="serial-baud-note">X68000（ゲスト）側と同じボーレートを選択してください。</p>
         </div>
       </div>
 
