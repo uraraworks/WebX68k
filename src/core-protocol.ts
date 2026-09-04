@@ -169,6 +169,28 @@ export function isSpeedUpdateMessage(message: unknown): message is SpeedUpdateMe
   );
 }
 
+// --- SCSI(OPFS) 明示flush(取りこぼしの窓の是正、docs/STORAGE-SCSI.md参照) -----------
+//
+// 本命は src/scsi-opfs.ts 側のデバウンス(書き込みが止まったら短時間で自動flush)。
+// これはその上積みで、ページ離脱イベント(pagehide/visibilitychange/freeze、src/main.ts)を
+// 受けて「今すぐflushして」とWorkerへ伝える片道メッセージ。ページが破棄される瞬間の
+// postMessageが届く保証は無いので、これで確実に間に合うわけではない
+// (だからこそデバウンスが本命)。SPEED_UPDATE_KINDと同じ理由(低頻度・応答不要)で
+// generation/requestIdを持たない専用メッセージにする。
+export const FLUSH_SCSI_KIND = 'flushScsi' as const;
+
+export interface FlushScsiMessage {
+  kind: typeof FLUSH_SCSI_KIND;
+}
+
+export function isFlushScsiMessage(message: unknown): message is FlushScsiMessage {
+  return (
+    typeof message === 'object' &&
+    message !== null &&
+    (message as { kind?: unknown }).kind === FLUSH_SCSI_KIND
+  );
+}
+
 export type CoreCommand =
   | {
       kind: 'command';

@@ -4856,15 +4856,30 @@ function pollWorkerAutoSave(now: number): void {
   })();
 }
 
+// SCSI(OPFS)の明示flush依頼(取りこぼしの窓の是正、docs/STORAGE-SCSI.md参照)。
+// 本命は src/scsi-opfs.ts 側のデバウンスで、ここはページ離脱イベントに乗せた上積み
+// (ページが破棄される瞬間の postMessage が届く保証は無いため、これで確実というわけではない)。
+// Worker経路(OPFSハンドルはWorker内にしか無い)のときだけ意味がある。
+function flushScsiOnLeave(): void {
+  if (urlWorkerMode) workerCoreProxy?.sendFlushScsi();
+}
+
 // ページ離脱時の保険。beforeunload/unload は非同期処理を完走できず、モバイル Safari では
 // そもそも発火しないことがあるため、最後に信頼できる visibilitychange(hidden) で叩く。
 // ただし主役はあくまで上の定期保存で、こちらは取りこぼしを拾うだけ。
+// SCSI(OPFS)の明示flushもここに相乗りさせる(同じ「離脱の合図」を使うだけの別用途)。
 document.addEventListener('visibilitychange', () => {
   if (document.visibilityState === 'hidden') {
     if (urlWorkerMode) void flushAllSlotsWorker();
     else flushAllSlots();
+    flushScsiOnLeave();
   }
 });
+
+// visibilitychange(hidden)だけでは拾えない離脱経路の上積み(pagehide/freeze)。
+// SCSI(OPFS)の明示flush専用(FDD/HDDの定期保存は上のvisibilitychangeが担う)。
+window.addEventListener('pagehide', flushScsiOnLeave);
+document.addEventListener('freeze', flushScsiOnLeave);
 
 // iOS はアプリ切替/画面ロックで AudioContext を suspend し、復帰時に自動では
 // 再開しない。フォアグラウンド復帰のたびに running でなければ resume を試みる。

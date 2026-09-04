@@ -46,8 +46,16 @@ export interface ScsiOpfsResult {
 
 const SECTOR_SIZE = 512;
 // 1セクタごとの flush() は遅いので、dirtyを立てて低頻度でまとめてflushする。
-// 取りこぼしの窓が最大2秒ある。タブを閉じた瞬間の書き込みは失われうる。
+// 定期flush(FLUSH_INTERVAL_MS)だけだと最大2秒の取りこぼしの窓が残るため、
+// 「書き込みが止まったら短時間で追いかけてflushする」デバウンス(FLUSH_DEBOUNCE_MS)を
+// 主役に据える(docs/STORAGE-SCSI.md「取りこぼしの窓」の是正)。
 const FLUSH_INTERVAL_MS = 2000;
+// デバウンスの既定値。書き込みのたびにこの時間だけタイマを張り直し、書き込みが止まって
+// この時間が経ったら flush() する。__webx68kScsiFlushDebounceMs が数値ならそちらを使う
+// (0以下ならデバウンス自体を無効化する)。A/B比較・故障注入用の抜け道でもある
+// (feedback_fault_injection_needs_positive_control.md参照。「常に無効」側を作れないと
+// 陽性対照が取れない)。
+const FLUSH_DEBOUNCE_MS = 250;
 
 /**
  * リモートのイメージサイズを取る。js_scsi_get_size() (core-shim.c) と同じやり方で、
@@ -225,14 +233,43 @@ async function setupScsiOpfsFromExisting(path: string): Promise<ScsiOpfsResult> 
 }
 
 /**
- * __webx68kScsiRead/__webx68kScsiWrite/__webx68kScsiSize のフックをWorkerの
- * globalThisへ生やし、定期flushを開始する(2つの経路(URL取り込み/OPFS直接オープン)で
- * 共通の後処理)。
+ * __webx68kScsiRead/__webx68kScsiWrite/__webx68kScsiSize/__webx68kScsiFlushNow のフックを
+ * Workerのglobalthisへ生やし、デバウンスflush・保険の定期flushを開始する
+ * (2つの経路(URL取り込み/OPFS直接オープン)で共通の後処理)。
+ * テスト(test/scsi-opfs.test.ts)から直接呼べるようexportする。
  */
-function installScsiHooks(handle: FileSystemSyncAccessHandle, imported: boolean): ScsiOpfsResult {
+export function installScsiHooks(handle: FileSystemSyncAccessHandle, imported: boolean): ScsiOpfsResult {
   const g = globalThis as Record<string, unknown>;
   const size = handle.getSize();
   let dirty = false;
+  let debounceTimer: ReturnType<typeof setTimeout> | null = null;
+
+  // dirtyなら同期的にflushし、実際にflushしたら true を返す(何もしなかった/失敗したら false)。
+  // デバウンスタイマ・保険のsetInterval・明示flush(__webx68kScsiFlushNow)の3箇所から
+  // 共通で使う。
+  const flushIfDirty = (): boolean => {
+    if (!dirty) return false;
+    try {
+      handle.flush();
+      dirty = false;
+      return true;
+    } catch {
+      // 失敗時はdirtyを保持し、次回の機会(次のデバウンス/保険interval/次の明示flush)で
+      // 再試行する。
+      return false;
+    }
+  };
+
+  const scheduleDebounceFlush = (): void => {
+    const raw = g.__webx68kScsiFlushDebounceMs;
+    const debounceMs = typeof raw === 'number' && Number.isFinite(raw) ? raw : FLUSH_DEBOUNCE_MS;
+    if (debounceMs <= 0) return; // 0以下はデバウンス無効(故障注入)
+    if (debounceTimer !== null) clearTimeout(debounceTimer);
+    debounceTimer = setTimeout(() => {
+      debounceTimer = null;
+      flushIfDirty();
+    }, debounceMs);
+  };
 
   g.__webx68kScsiRead = (lba: number, heap: Uint8Array, ptr: number): number => {
     try {
@@ -249,6 +286,7 @@ function installScsiHooks(handle: FileSystemSyncAccessHandle, imported: boolean)
       const n = handle.write(heap.subarray(ptr, ptr + SECTOR_SIZE), { at: lba * SECTOR_SIZE });
       if (n !== SECTOR_SIZE) return -1;
       dirty = true;
+      scheduleDebounceFlush();
       return 0;
     } catch {
       return -1;
@@ -258,15 +296,17 @@ function installScsiHooks(handle: FileSystemSyncAccessHandle, imported: boolean)
   // 取り直さないため、ここで確定値を渡しておく。
   g.__webx68kScsiSize = size;
 
+  // 保険として残す: デバウンスのタイマが何かの理由(タイマ精度・例外・将来の変更等)で
+  // 発火しなかったときの取りこぼし防止。主役はあくまでデバウンス側。
   setInterval(() => {
-    if (!dirty) return;
-    try {
-      handle.flush();
-      dirty = false;
-    } catch {
-      /* 失敗時はdirtyを保持し、次回のintervalで再試行する */
-    }
+    flushIfDirty();
   }, FLUSH_INTERVAL_MS);
+
+  // main → Worker への「今すぐflushして」の明示口(src/core-worker.tsのflushScsiコマンド
+  // ハンドラから呼ばれる。docs/STORAGE-SCSI.md参照)。OPFSを使っていない経路(mode: 'none')
+  // では installScsiHooks 自体が呼ばれないため、この関数も生えない
+  // (呼び出し側は存在チェックすること)。
+  g.__webx68kScsiFlushNow = (): boolean => flushIfDirty();
 
   return { mode: 'opfs', bytes: size, imported };
 }

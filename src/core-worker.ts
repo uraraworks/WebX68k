@@ -73,6 +73,7 @@ import {
   collectTransferables,
   createCoreError,
   CoreProxyError,
+  isFlushScsiMessage,
   isInputUpdateMessage,
   isMouseTrackResyncMessage,
   isMouseTrackUpdateMessage,
@@ -940,6 +941,17 @@ ctx.onmessage = (ev) => {
   // 正の値しか持たないが、防御的に受信側でも丸める)。
   if (isSpeedUpdateMessage(data)) {
     speedMultiplier = Number.isFinite(data.multiplier) && data.multiplier > 0 ? data.multiplier : 1;
+    return;
+  }
+  // SCSI(OPFS)の明示flush依頼(取りこぼしの窓の是正)。同じく低頻度の専用メッセージ。
+  // __webx68kScsiFlushNowはOPFS経路が有効なときだけ生える(src/scsi-opfs.ts参照)ため、
+  // 存在チェックしてから呼ぶ。none経路(OPFS未使用)では何もしない。
+  if (isFlushScsiMessage(data)) {
+    const flushNow = (globalThis as Record<string, unknown>).__webx68kScsiFlushNow as
+      | (() => boolean)
+      | undefined;
+    const flushed = flushNow ? flushNow() : false;
+    console.log(`[WebX68k-worker] SCSI flush依頼を受信: ${flushed ? 'flushした' : '何もしなかった'}`);
     return;
   }
   const cmd = data as CoreCommand;

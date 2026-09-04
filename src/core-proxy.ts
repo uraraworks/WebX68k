@@ -12,6 +12,7 @@ import {
   collectTransferables,
   CoreProxyError,
   createCoreError,
+  FLUSH_SCSI_KIND,
   INPUT_UPDATE_KIND,
   isCoreResponse,
   isWorkerBootAck,
@@ -812,6 +813,14 @@ export class WorkerCoreProxy implements LibretroHostProxy {
   setSpeedMultiplier(multiplier: number): void {
     if (this.disposed || this.failed) return;
     this.worker.postMessage({ kind: SPEED_UPDATE_KIND, multiplier });
+  }
+
+  /** SCSI(OPFS)の明示flush依頼(取りこぼしの窓の是正)。sendMouseTrackResyncと同じ扱いの
+   * fire-and-forget。main.ts側のpagehide/visibilitychange(hidden)/freezeから送られる、
+   * デバウンス(src/scsi-opfs.ts)の上積み(core-protocol.tsのFLUSH_SCSI_KINDコメント参照)。 */
+  sendFlushScsi(): void {
+    if (this.disposed || this.failed) return;
+    this.worker.postMessage({ kind: FLUSH_SCSI_KIND });
   }
 
   async readMemory(_address: number, _length: number): Promise<ArrayBuffer> {

@@ -64,6 +64,17 @@ function parsePositiveInteger(value, name) {
   return parsed;
 }
 
+// --flush-grace は 0 を許す(デバウンスflush(src/scsi-opfs.ts)が効くようになったA/B比較で、
+// 「待たずに読み返しても残るか」を確かめたいため)。他の待ち時間パラメータはそのまま
+// parsePositiveInteger(>0必須)を使う。
+function parseNonNegativeInteger(value, name) {
+  const parsed = Number(value);
+  if (!Number.isSafeInteger(parsed) || parsed < 0) {
+    throw new Error(`${name} は0以上の整数で指定してください: ${value}`);
+  }
+  return parsed;
+}
+
 function parseArgs(argv) {
   const values = {};
   for (const arg of argv) {
@@ -72,7 +83,7 @@ function parseArgs(argv) {
       continue;
     }
     const match =
-      /^--(port|probe-timeout|timeout|type-wait|post-write-wait|poll-scsi-debug|output|fault|chrome)=(.+)$/.exec(
+      /^--(port|probe-timeout|timeout|type-wait|post-write-wait|flush-grace|poll-scsi-debug|output|fault|chrome)=(.+)$/.exec(
         arg,
       );
     if (!match) throw new Error(`不明な引数です: ${arg}`);
@@ -93,8 +104,13 @@ scripts/probe-scsi-iocs.mjs を子プロセスとして呼ぶオーケストレ�
   --probe-timeout=<ms>         probe側の起動待ちタイムアウト(--timeout) (既定: 150000)
   --timeout=<ms>               このスクリプト側の子プロセス強制終了タイムアウト
                                 (probe-timeoutより大きい値。既定: probe-timeout+60000)
-  --post-write-wait=<ms>       書き込み実行の直後に置く固定待ち(OPFSのflush窓が
-                                最大2秒あるため) (既定: 5000)
+  --post-write-wait=<ms>       (--flush-graceの旧名。互換のため残す。両方指定時は
+                                --flush-graceを優先)
+  --flush-grace=<ms>           書き込み実行の直後に置く固定待ち。デバウンスflush
+                                (src/scsi-opfs.ts、既定250ms)が効くようになったため
+                                目安は短くなったが、保険の定期flush(2秒)を跨ぎたい
+                                検証のために残す。0を指定すると待たずに読み返す
+                                (既定: 5000)
   --poll-scsi-debug=<ms>       読み返し実行でwriteCountを裏取りするポーリング時間
                                 (既定: 8000)
   --fault=<no-oracle-reply|all>
@@ -128,7 +144,10 @@ function buildConfig(args) {
     // 十分大きくする(probe自身が正常に打ち切るより先にここで殺してしまうと、
     // 「打ち切られた」のか「ハングした」のかが区別できなくなる)。
     childTimeoutMs: parsePositiveInteger(args.timeout ?? String(probeTimeoutMs + 60000), 'timeout'),
-    postWriteWaitMs: parsePositiveInteger(args['post-write-wait'] ?? '5000', 'post-write-wait'),
+    postWriteWaitMs: parseNonNegativeInteger(
+      args['flush-grace'] ?? args['post-write-wait'] ?? '5000',
+      args['flush-grace'] !== undefined ? 'flush-grace' : 'post-write-wait',
+    ),
     pollScsiDebugMs: parsePositiveInteger(args['poll-scsi-debug'] ?? '8000', 'poll-scsi-debug'),
     fault,
     chrome: args.chrome ?? null,

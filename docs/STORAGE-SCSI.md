@@ -8646,3 +8646,29 @@ node scripts/verify-scsi-persistence.mjs --fault=all
 
 この検査と `probe-scsi-iocs.mjs` は同じ固定ポートの dev server を使う。
 並行して走らせると「起動を検知できなかった」で偽の失敗が出る（実際に1回踏んだ）。
+
+## 「取りこぼしの窓が最大2秒」を塞いだ（実装、2026-09-04）
+
+上の実測時点で未対処だった「2秒ごとのまとめ書きだけなので、タブを閉じた瞬間の書き込みは
+失われうる」を塞いだ。
+
+- `src/scsi-opfs.ts`: `__webx68kScsiWrite` が成功するたびにデバウンスタイマ（既定250ms、
+  `FLUSH_DEBOUNCE_MS`）を張り直し、書き込みが止まってからその時間が経つと `flush()` する。
+  これが主役。既存の `setInterval`（2秒）は**保険として残した**（デバウンスのタイマが何らかの
+  理由で発火しなかったときの取りこぼし防止）
+  - `globalThis.__webx68kScsiFlushDebounceMs` が数値ならそちらを優先する（0以下でデバウンス
+    無効）。故障注入・A/B比較用の抜け道
+  - 明示flush口 `globalThis.__webx68kScsiFlushNow(): boolean` も生やした。dirtyなら同期
+    flushしてtrue、何もしなければfalseを返す。`mode:'none'`（OPFS未使用）では生えない
+- `src/core-protocol.ts` に `FLUSH_SCSI_KIND`（`SPEED_UPDATE_KIND` と同じ、generation/
+  requestId無しの片道メッセージ）を追加。`src/core-worker.ts` が受けて
+  `__webx68kScsiFlushNow?.()` を呼ぶ。`src/core-proxy.ts` の `WorkerCoreProxy#sendFlushScsi()`
+  から送る
+- `src/main.ts`: Worker経路のとき `pagehide` / `visibilitychange`(hidden) / `freeze` で
+  `sendFlushScsi()` を送る。`visibilitychange`(hidden) は既存のFDD/HDD定期保存の相乗り。
+  **ページが破棄される瞬間の `postMessage` が届く保証は無いため、これは上積みであり
+  本命はあくまでデバウンス側**
+- `scripts/verify-scsi-persistence.mjs` に `--flush-grace=<ms>`（0可、既定5000）を追加。
+  旧 `--post-write-wait` は互換のため残す（両方指定時は `--flush-grace` を優先）
+- 単体テスト `test/scsi-opfs.test.ts`: デバウンスの張り直し・既定time後の1回flush・
+  `__webx68kScsiFlushDebounceMs=0` での無効化・`__webx68kScsiFlushNow()` の成否を確認
