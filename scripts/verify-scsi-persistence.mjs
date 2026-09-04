@@ -50,6 +50,12 @@ import { randomBytes } from 'node:crypto';
 
 const REPO_ROOT = fileURLToPath(new URL('..', import.meta.url));
 const VALID_FAULTS = new Set(['no-oracle-reply', 'all']);
+/* 打鍵は一定の割合で文字が落ちる/入れ替わる(実測: "persist" が "perist" になる、
+ * "src2.dat" が "src2d.at" になる)。これは道具側の失敗であって製品の不具合ではないので、
+ * 再試行してよい。ただし無制限にはしない(本当に打てない状態を再試行で塗り潰さないため)。
+ * 陰性対照・故障注入の段は「目印が出ないこと」が期待で、打鍵が化けると中身に関わらず
+ * 期待どおりに見えてしまうため、ここを緩める(照合をやめる)のではなく再試行で通す。 */
+const DEFAULT_TYPE_ATTEMPTS = 3;
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 /** 検証の前提条件が満たせなかった(検証そのものが成立しなかった)ことを表す。
@@ -101,6 +107,8 @@ scripts/probe-scsi-iocs.mjs を子プロセスとして呼ぶオーケストレ�
 
   --port=<number>             probe-scsi-iocs.mjs のdev serverポート (既定: 5311)
   --type-wait=<ms>             打鍵後の待ち時間、probeへ--type-waitとして渡す (既定: 5000)
+  --type-attempts=<n>          打鍵が画面と一致しなかったときの試行回数 (既定: 3)。
+                                打鍵は一定割合で文字が落ちるため。緩めるのではなく打ち直す
   --probe-timeout=<ms>         probe側の起動待ちタイムアウト(--timeout) (既定: 150000)
   --timeout=<ms>               このスクリプト側の子プロセス強制終了タイムアウト
                                 (probe-timeoutより大きい値。既定: probe-timeout+60000)
@@ -139,6 +147,10 @@ function buildConfig(args) {
   return {
     port: parsePositiveInteger(args.port ?? '5311', 'port'),
     typeWaitMs: parsePositiveInteger(args['type-wait'] ?? '5000', 'type-wait'),
+    typeAttempts: parsePositiveInteger(
+      args['type-attempts'] ?? String(DEFAULT_TYPE_ATTEMPTS),
+      'type-attempts',
+    ),
     probeTimeoutMs,
     // 子プロセス強制終了のタイムアウトはprobe側の起動待ちタイムアウトより
     // 十分大きくする(probe自身が正常に打ち切るより先にここで殺してしまうと、
@@ -280,7 +292,7 @@ async function performWrite(fixturePath, profileDir, config, { oracleReplyOff = 
   if (oracleReplyOff) extraArgs.push('--scsi-oracle-reply=0');
   let json = null;
   let attempts = 0;
-  for (; attempts < 2; attempts++) {
+  for (; attempts < config.typeAttempts; attempts++) {
     json = await runProbe(extraArgs, config, label);
     if (json.typedMismatch === null) break;
   }
@@ -298,7 +310,7 @@ async function performReadback(fixturePath, profileDir, config, label) {
   ];
   let json = null;
   let attempts = 0;
-  for (; attempts < 2; attempts++) {
+  for (; attempts < config.typeAttempts; attempts++) {
     json = await runProbe(extraArgs, config, label);
     if (json.typedMismatch === null) break;
   }
