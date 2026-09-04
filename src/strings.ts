@@ -113,6 +113,7 @@ interface Dict {
   settingsSerialStatusLabel(): string;
   settingsSerialBaudLabel(): string;
   settingsSerialBaudNote(): string;
+  settingsSerialBaudMismatch(args: { guestBaudRate: number; selectedBaudRate: number }): string;
   settingsSerialConnect(): string;
   settingsSerialDisconnect(): string;
   settingsSerialConnected(): string;
@@ -550,6 +551,8 @@ const STRINGS: Record<Lang, Dict> = {
     settingsSerialStatusLabel: () => '状態',
     settingsSerialBaudLabel: () => 'ボーレート',
     settingsSerialBaudNote: () => 'X68000 側と同じボーレートを選択してください。',
+    settingsSerialBaudMismatch: ({ guestBaudRate, selectedBaudRate }) =>
+      `X68000 側は約 ${guestBaudRate} bps、ブラウザー側は ${selectedBaudRate} bps です。設定が一致しないため通信できない可能性があります。`,
     settingsSerialConnect: () => '接続',
     settingsSerialDisconnect: () => '切断',
     settingsSerialConnected: () => '接続済み',
@@ -896,6 +899,8 @@ const STRINGS: Record<Lang, Dict> = {
     settingsSerialStatusLabel: () => 'Status',
     settingsSerialBaudLabel: () => 'Baud rate',
     settingsSerialBaudNote: () => 'Select the same baud rate as the X68000 guest.',
+    settingsSerialBaudMismatch: ({ guestBaudRate, selectedBaudRate }) =>
+      `The X68000 guest is configured for approximately ${guestBaudRate} bps, but the browser port uses ${selectedBaudRate} bps. Communication may fail.`,
     settingsSerialConnect: () => 'Connect',
     settingsSerialDisconnect: () => 'Disconnect',
     settingsSerialConnected: () => 'Connected',

@@ -1,8 +1,12 @@
 import { describe, expect, it, vi } from 'vitest';
 import {
   DEFAULT_SERIAL_BAUD_RATE,
+  isSerialBaudRateMismatch,
   loadSerialBaudRate,
+  normalizeGuestSerialBaudRate,
   saveSerialBaudRate,
+  serialTransmissionDurationMs,
+  serialTxPacingChunkSize,
   type SerialApiLike,
   type SerialPortLike,
   type SerialReaderLike,
@@ -303,6 +307,46 @@ describe('WebSerialTransport', () => {
     await transport.disconnect();
   });
 
+  it('keeps TX unavailable until the selected 8N1 baud duration has elapsed', async () => {
+    vi.useFakeTimers();
+    try {
+      const { api } = mockConnection();
+      const transport = new WebSerialTransport(api);
+      await transport.connect({ baudRate: 9600 });
+      expect(transport.recommendedWriteSize()).toBe(240);
+
+      const pending = transport.write(new Uint8Array(960));
+      await vi.advanceTimersByTimeAsync(0);
+      expect(transport.canWrite).toBe(false);
+      await vi.advanceTimersByTimeAsync(900);
+      expect(transport.canWrite).toBe(false);
+      await vi.advanceTimersByTimeAsync(200);
+      await pending;
+      expect(transport.canWrite).toBe(true);
+      await transport.disconnect();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('cancels a long low-baud pacing wait when the port is disconnected', async () => {
+    vi.useFakeTimers();
+    try {
+      const { api } = mockConnection();
+      const transport = new WebSerialTransport(api);
+      await transport.connect({ baudRate: 300 });
+      const pending = transport.write(new Uint8Array(7));
+      await vi.advanceTimersByTimeAsync(0);
+      expect(transport.canWrite).toBe(false);
+
+      const disconnecting = transport.disconnect();
+      await Promise.all([pending, disconnecting]);
+      expect(transport.state).toBe('disconnected');
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it('cleans up the reader and port when a write fails', async () => {
     const { api, reader, close, writerRelease } = mockConnection(async () => {
       throw new Error('write failed');
@@ -440,6 +484,26 @@ describe('WebSerialTransport', () => {
 });
 
 describe('serial baud-rate persistence', () => {
+  it('calculates 8N1 transmission time and a bounded 250 ms write chunk', () => {
+    expect(serialTransmissionDurationMs(96, 9600)).toBe(100);
+    expect(serialTransmissionDurationMs(0, 9600)).toBe(0);
+    expect(serialTransmissionDurationMs(96, 0)).toBe(0);
+    expect(serialTxPacingChunkSize(300)).toBe(7);
+    expect(serialTxPacingChunkSize(9600)).toBe(240);
+    expect(serialTxPacingChunkSize(115200)).toBe(2880);
+    expect(serialTxPacingChunkSize(230400)).toBe(4096);
+  });
+
+  it('normalizes SCC BRG rates and detects only known mismatches', () => {
+    expect(normalizeGuestSerialBaudRate(9766)).toBe(9600);
+    expect(normalizeGuestSerialBaudRate(39063)).toBe(38400);
+    expect(normalizeGuestSerialBaudRate(12345)).toBe(12345);
+    expect(normalizeGuestSerialBaudRate(0)).toBeNull();
+    expect(isSerialBaudRateMismatch(9600, 9766)).toBe(false);
+    expect(isSerialBaudRateMismatch(38400, 9766)).toBe(true);
+    expect(isSerialBaudRateMismatch(38400, 0)).toBe(false);
+  });
+
   it('uses 38400 by default and only persists supported values', () => {
     const values = new Map<string, string>();
     const storage = {

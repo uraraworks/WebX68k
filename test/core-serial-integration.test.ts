@@ -67,6 +67,8 @@ interface CoreModule {
   _webx68k_serial_tx_available?(): number;
   _webx68k_serial_tx_drain?(data: number, length: number): number;
   _webx68k_serial_set_connected?(connected: number): void;
+  _webx68k_serial_set_tx_writable?(writable: number): void;
+  _webx68k_serial_guest_baud_rate?(): number;
   _webx68k_scc_read?(address: number): number;
   _webx68k_scc_write?(address: number, value: number): void;
   _webx68k_scc_test_acknowledge_irq?(): number;
@@ -103,6 +105,7 @@ async function initializeCore(): Promise<CoreModule> {
   const mod = await loadCoreFactory()({});
   if (!mod._webx68k_serial_rx || !mod._webx68k_serial_tx_available ||
       !mod._webx68k_serial_tx_drain || !mod._webx68k_serial_set_connected ||
+      !mod._webx68k_serial_set_tx_writable || !mod._webx68k_serial_guest_baud_rate ||
       !mod._webx68k_scc_read || !mod._webx68k_scc_write ||
       !mod._webx68k_scc_test_acknowledge_irq || !mod._webx68k_scc_test_interrupt_cause ||
       !mod._webx68k_scc_test_irq_pending) {
@@ -185,7 +188,12 @@ describe.skipIf(!HAS_TEST_CORE)('px68k-libretro SCCチャネルA結合', () => {
     }
     expect(readRegister(mod, SCC_A_COMMAND, 0) & 4).toBe(0);
     expect(readRegister(mod, SCC_A_COMMAND, 3) & 0x10).toBe(0);
+    mod._webx68k_serial_set_tx_writable!(0);
     expect(mod._webx68k_serial_tx_drain!(pointer, 1)).toBe(1);
+    expect(readRegister(mod, SCC_A_COMMAND, 0) & 4).toBe(0);
+    expect(readRegister(mod, SCC_A_COMMAND, 1) & 1).toBe(0);
+    expect(readRegister(mod, SCC_A_COMMAND, 3) & 0x10).toBe(0);
+    mod._webx68k_serial_set_tx_writable!(1);
     expect(readRegister(mod, SCC_A_COMMAND, 0) & 4).toBe(4);
     expect(readRegister(mod, SCC_A_COMMAND, 3) & 0x10).toBe(0x10);
 
@@ -207,6 +215,20 @@ describe.skipIf(!HAS_TEST_CORE)('px68k-libretro SCCチャネルA結合', () => {
     expect(readRegister(mod, SCC_A_COMMAND, 15)).toBe(0xaa);
     mod._free(statePointer);
     mod._free(pointer);
+  });
+
+  it('標準PCLKの内蔵BRG設定からチャネルAの通信速度を算出する', async () => {
+    const mod = await initializeCore();
+    mod._webx68k_serial_set_connected!(1);
+    writeRegister(mod, SCC_A_COMMAND, 4, 0x44);
+    writeRegister(mod, SCC_A_COMMAND, 11, 0x50);
+    writeRegister(mod, SCC_A_COMMAND, 12, 14);
+    writeRegister(mod, SCC_A_COMMAND, 13, 0);
+    writeRegister(mod, SCC_A_COMMAND, 14, 0x03);
+    expect(mod._webx68k_serial_guest_baud_rate!()).toBe(9766);
+
+    writeRegister(mod, SCC_A_COMMAND, 11, 0x00);
+    expect(mod._webx68k_serial_guest_baud_rate!()).toBe(0);
   });
 
   it('切断時RR0とTX割り込み、MIE解除、RR2 acknowledge、ラウンドロビン順を検証する', async () => {
@@ -246,12 +268,11 @@ describe.skipIf(!HAS_TEST_CORE)('px68k-libretro SCCチャネルA結合', () => {
     writeRegister(mod, SCC_B_COMMAND, 9, 0x09);
 
     expect(mod._webx68k_scc_test_irq_pending!()).toBe(1);
-    expect(mod._webx68k_scc_test_interrupt_cause!()).toBe(1);
-    expect(mod._webx68k_scc_test_acknowledge_irq!()).toBe(0x4c);
-    expect(readRegister(mod, SCC_B_COMMAND, 2)).toBe(0x4c);
-    expect(mod._webx68k_scc_test_interrupt_cause!()).toBe(3);
-    expect(readRegister(mod, SCC_B_COMMAND, 2)).toBe(0x44);
+    expect(mod._webx68k_scc_test_interrupt_cause!()).toBe(0);
     expect(mod._webx68k_scc_test_acknowledge_irq!()).toBe(0x44);
+    expect(mod._webx68k_scc_test_interrupt_cause!()).toBe(1);
+    expect(readRegister(mod, SCC_B_COMMAND, 2)).toBe(0x4c);
+    expect(mod._webx68k_scc_test_acknowledge_irq!()).toBe(0x4c);
 
     writeRegister(mod, SCC_B_COMMAND, 9, 0x01);
     expect(mod._webx68k_scc_test_irq_pending!()).toBe(0);
@@ -265,7 +286,8 @@ describe.skipIf(!HAS_TEST_CORE)('px68k-libretro SCCチャネルA結合', () => {
     writeRegister(mod, SCC_A_COMMAND, 9, 0x40);
     expect(readRegister(mod, SCC_A_COMMAND, 2)).toBe(0x5a);
     writeRegister(mod, SCC_A_COMMAND, 9, 0xc0);
-    expect(readRegister(mod, SCC_A_COMMAND, 2)).toBe(0);
+    // チャネルAのリセットから従来のチャネルBマウス状態を分離し、共有ベクタも保持する。
+    expect(readRegister(mod, SCC_A_COMMAND, 2)).toBe(0x5a);
     expect(mod._webx68k_scc_test_irq_pending!()).toBe(0);
 
     writeRegister(mod, SCC_A_COMMAND, 1, 0x10);
@@ -292,11 +314,12 @@ describe.skipIf(!HAS_TEST_CORE)('px68k-libretro SCCチャネルA結合', () => {
     writeRegister(mod, SCC_A_COMMAND, 1, 0x02);
     writeRegister(mod, SCC_B_COMMAND, 9, 0x09);
     expect(mod._webx68k_scc_test_irq_pending!()).toBe(1);
-    expect(mod._webx68k_scc_test_interrupt_cause!()).toBe(2);
+    expect(mod._webx68k_scc_test_interrupt_cause!()).toBe(0);
 
     mod._webx68k_serial_set_connected!(0);
     expect(mod._webx68k_scc_test_irq_pending!()).toBe(1);
-    expect(mod._webx68k_scc_test_interrupt_cause!()).toBe(3);
+    // 切断後は従来のマウス割り込み経路へ戻るため、共通の要因ラッチは使用しない。
+    expect(mod._webx68k_scc_test_interrupt_cause!()).toBe(0);
     expect(mod._webx68k_scc_test_acknowledge_irq!()).toBe(0x44);
   });
 
@@ -327,21 +350,72 @@ describe.skipIf(!HAS_TEST_CORE)('px68k-libretro SCCチャネルA結合', () => {
     expect(mod._webx68k_scc_test_interrupt_cause!()).toBe(0);
     writeRegister(mod, SCC_A_COMMAND, 1, 0);
 
-    // mouse: 3バイト読み切るまでpendingを維持し、読了時点でIRQ5を取り下げる。
+    // mouse: 従来どおりACKまでpendingを維持し、3バイト読了後のACKで取り下げる。
     writeRegister(mod, SCC_B_COMMAND, 1, 0x10);
     writeRegister(mod, SCC_B_COMMAND, 3, 0x01);
     writeRegister(mod, SCC_B_COMMAND, 5, 0x02);
     // チャネルBの書き込み経路はIntCheckを呼ばないため、WR9再書き込みで割り込み評価を促す。
     writeRegister(mod, SCC_B_COMMAND, 9, 0x09);
     expect(mod._webx68k_scc_test_irq_pending!()).toBe(1);
-    expect(mod._webx68k_scc_test_interrupt_cause!()).toBe(3);
+    expect(mod._webx68k_scc_test_interrupt_cause!()).toBe(0);
     mod._webx68k_scc_read!(SCC_B_DATA);
     expect(mod._webx68k_scc_test_irq_pending!()).toBe(1);
     mod._webx68k_scc_read!(SCC_B_DATA);
     expect(mod._webx68k_scc_test_irq_pending!()).toBe(1);
     mod._webx68k_scc_read!(SCC_B_DATA);
+    expect(mod._webx68k_scc_test_irq_pending!()).toBe(1);
+    expect(mod._webx68k_scc_test_acknowledge_irq!()).toBe(0x44);
     expect(mod._webx68k_scc_test_irq_pending!()).toBe(0);
     expect(mod._webx68k_scc_test_interrupt_cause!()).toBe(0);
+
+    mod._free(pointer);
+  });
+
+  it('Web Serial接続中も520個のマウスパケットを欠落なく処理する', async () => {
+    const mod = await initializeCore();
+    const pointer = mod._malloc(1);
+
+    mod._webx68k_serial_set_connected!(1);
+    writeRegister(mod, SCC_B_COMMAND, 2, 0x40);
+    writeRegister(mod, SCC_B_COMMAND, 1, 0x10);
+    writeRegister(mod, SCC_B_COMMAND, 3, 0x01);
+    writeRegister(mod, SCC_B_COMMAND, 9, 0x09);
+
+    for (let index = 0; index < 520; index += 1) {
+      // RXとTXを交互にpendingへして、serial割り込みとの同時発生を再現する。
+      writeRegister(mod, SCC_A_COMMAND, 1, 0x00);
+      if ((index & 1) === 0) {
+        writeRegister(mod, SCC_A_COMMAND, 1, 0x10);
+        mod.HEAPU8[pointer] = index & 0xff;
+        expect(mod._webx68k_serial_rx!(pointer, 1)).toBe(1);
+        expect(mod._webx68k_scc_test_interrupt_cause!()).toBe(1);
+      } else {
+        writeRegister(mod, SCC_A_COMMAND, 1, 0x02);
+        expect(mod._webx68k_scc_test_interrupt_cause!()).toBe(2);
+      }
+
+      // WR5のRTS立ち上がりで、従来実装と同じ3バイトのマウスパケットを生成する。
+      writeRegister(mod, SCC_B_COMMAND, 5, 0x00);
+      writeRegister(mod, SCC_B_COMMAND, 5, 0x02);
+      writeRegister(mod, SCC_B_COMMAND, 9, 0x09);
+
+      expect(mod._webx68k_scc_test_irq_pending!()).toBe(1);
+      expect(mod._webx68k_scc_test_interrupt_cause!()).toBe(0);
+      expect(mod._webx68k_scc_test_acknowledge_irq!()).toBe(0x44);
+      expect(mod._webx68k_scc_test_irq_pending!()).toBe(1);
+      if ((index & 1) === 0) {
+        expect(mod._webx68k_scc_test_interrupt_cause!()).toBe(1);
+        expect(mod._webx68k_scc_read!(SCC_A_DATA)).toBe(index & 0xff);
+      } else {
+        expect(mod._webx68k_scc_test_interrupt_cause!()).toBe(2);
+        mod._webx68k_scc_write!(SCC_A_COMMAND, SCC_WR0_RESET_TX_INT_PENDING);
+      }
+      expect(mod._webx68k_scc_test_irq_pending!()).toBe(0);
+      mod._webx68k_scc_read!(SCC_B_DATA);
+      mod._webx68k_scc_read!(SCC_B_DATA);
+      mod._webx68k_scc_read!(SCC_B_DATA);
+      expect(mod._webx68k_scc_test_irq_pending!()).toBe(0);
+    }
 
     mod._free(pointer);
   });

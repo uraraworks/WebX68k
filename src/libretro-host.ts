@@ -118,6 +118,8 @@ export interface PX68KModule {
   _webx68k_serial_tx_drain?(dataPtr: number, maxLength: number): number;
   _webx68k_serial_reset?(): void;
   _webx68k_serial_set_connected?(connected: number): void;
+  _webx68k_serial_set_tx_writable?(writable: number): void;
+  _webx68k_serial_guest_baud_rate?(): number;
   _webx68k_tvram_data?: () => number;
   _webx68k_text_dot_x?: () => number;
   _webx68k_text_dot_y?: () => number;
@@ -901,7 +903,8 @@ export class LibretroHost {
     return Boolean(
       mod?._webx68k_serial_rx && mod._webx68k_serial_tx_available &&
       mod._webx68k_serial_tx_drain && mod._webx68k_serial_reset &&
-      mod._webx68k_serial_set_connected,
+      mod._webx68k_serial_set_connected && mod._webx68k_serial_set_tx_writable &&
+      mod._webx68k_serial_guest_baud_rate,
     );
   }
 
@@ -949,6 +952,14 @@ export class LibretroHost {
 
   setSerialConnected(connected: boolean): void {
     this.mod?._webx68k_serial_set_connected?.(connected ? 1 : 0);
+  }
+
+  setSerialTxWritable(writable: boolean): void {
+    this.mod?._webx68k_serial_set_tx_writable?.(writable ? 1 : 0);
+  }
+
+  serialGuestBaudRate(): number {
+    return this.mod?._webx68k_serial_guest_baud_rate?.() ?? 0;
   }
 
   private ensureSerialBridgeBuffer(): number {

@@ -1,6 +1,37 @@
 export const SERIAL_BAUD_STORAGE_KEY = 'webx68k.serial.baudRate';
 export const DEFAULT_SERIAL_BAUD_RATE = 38400;
-export const SERIAL_BAUD_RATES = [2400, 4800, 9600, 19200, 38400, 57600, 115200] as const;
+export const SERIAL_BAUD_RATES = [300, 600, 1200, 2400, 4800, 9600, 19200, 38400, 57600, 115200] as const;
+export const SERIAL_BITS_PER_FRAME_8N1 = 10;
+export const SERIAL_TX_PACING_WINDOW_MS = 250;
+
+export function serialTransmissionDurationMs(byteLength: number, baudRate: number): number {
+  if (!Number.isFinite(byteLength) || byteLength <= 0 || !Number.isFinite(baudRate) || baudRate <= 0) return 0;
+  return byteLength * SERIAL_BITS_PER_FRAME_8N1 * 1000 / baudRate;
+}
+
+export function serialTxPacingChunkSize(baudRate: number, capacity = 4096): number {
+  const boundedCapacity = Math.max(0, Math.floor(capacity));
+  if (boundedCapacity === 0) return 0;
+  if (!Number.isFinite(baudRate) || baudRate <= 0) return boundedCapacity;
+  const bytesPerWindow = Math.max(
+    1,
+    Math.floor(baudRate * SERIAL_TX_PACING_WINDOW_MS / (SERIAL_BITS_PER_FRAME_8N1 * 1000)),
+  );
+  return Math.min(boundedCapacity, bytesPerWindow);
+}
+
+export function normalizeGuestSerialBaudRate(baudRate: number): number | null {
+  if (!Number.isFinite(baudRate) || baudRate <= 0) return null;
+  const nearest = SERIAL_BAUD_RATES.reduce((best, candidate) =>
+    Math.abs(candidate - baudRate) < Math.abs(best - baudRate) ? candidate : best,
+  );
+  return Math.abs(nearest - baudRate) / nearest <= 0.05 ? nearest : Math.round(baudRate);
+}
+
+export function isSerialBaudRateMismatch(selectedBaudRate: number, guestBaudRate: number): boolean {
+  const normalized = normalizeGuestSerialBaudRate(guestBaudRate);
+  return normalized !== null && normalized !== selectedBaudRate;
+}
 
 export type SerialConfig = {
   baudRate: number;
@@ -92,11 +123,13 @@ export class WebSerialTransport {
   private writer: SerialWriterLike | null = null;
   private readTask: Promise<void> | null = null;
   private writeTask: Promise<void> | null = null;
+  private writePacingWaiter: (() => void) | null = null;
   private receiveWaiter: (() => void) | null = null;
   private receiveGeneration = 0;
   private connectionGeneration = 0;
   private disconnectTask: Promise<void> | null = null;
   private currentState: SerialConnectionState;
+  private baudRate = DEFAULT_SERIAL_BAUD_RATE;
 
   onData?: (bytes: Uint8Array) => number;
   onStateChange?: (state: SerialConnectionState) => void;
@@ -119,6 +152,10 @@ export class WebSerialTransport {
 
   get canWrite(): boolean {
     return this.currentState === 'connected' && this.port !== null && this.writeTask === null;
+  }
+
+  recommendedWriteSize(maxBytes = 4096): number {
+    return serialTxPacingChunkSize(this.baudRate, maxBytes);
   }
 
   notifyReceiveCapacity(): void {
@@ -163,6 +200,7 @@ export class WebSerialTransport {
         await port.close().catch(() => undefined);
         return;
       }
+      this.baudRate = config.baudRate;
       this.setState('connected');
       this.readTask = this.readLoop(port, generation);
     } catch (error) {
@@ -192,6 +230,7 @@ export class WebSerialTransport {
   private async disconnectInternal(): Promise<void> {
     const wasConnecting = this.currentState === 'connecting';
     ++this.connectionGeneration;
+    this.cancelWritePacing();
     this.notifyReceiveCapacity();
     const port = this.port;
     this.port = null;
@@ -227,6 +266,8 @@ export class WebSerialTransport {
     }
     // 呼び出し元が書き込み完了まで不変のバッファを渡す前提で、余分なコピーを避ける。
     const generation = this.connectionGeneration;
+    const transmissionDurationMs = serialTransmissionDurationMs(bytes.length, this.baudRate);
+    const startedAt = performance.now();
     const task = (async () => {
       let writer: SerialWriterLike | null = null;
       try {
@@ -241,6 +282,10 @@ export class WebSerialTransport {
           if (this.writer === writer) this.writer = null;
           writer = null;
         }
+        // Web Serialのwrite完了はOSの送信キュー投入時点の場合がある。
+        // 8N1の物理線速より早くTX readyを戻さないよう、write経過時間との差分だけ待つ。
+        const remainingMs = transmissionDurationMs - (performance.now() - startedAt);
+        if (remainingMs > 0) await this.waitForWritePacing(remainingMs, port, generation);
       } catch (error) {
         // 容量待ちで止まっている readLoop を起こしてから待たないと、下の await が返らない。
         this.notifyReceiveCapacity();
@@ -255,6 +300,27 @@ export class WebSerialTransport {
       })
       .catch(() => undefined);
     return task;
+  }
+
+  private waitForWritePacing(delayMs: number, port: SerialPortLike, generation: number): Promise<void> {
+    if (delayMs <= 0 || this.port !== port || generation !== this.connectionGeneration) return Promise.resolve();
+    return new Promise((resolve) => {
+      let timer: ReturnType<typeof setTimeout> | null = null;
+      const finish = (): void => {
+        if (timer !== null) clearTimeout(timer);
+        if (this.writePacingWaiter === finish) this.writePacingWaiter = null;
+        resolve();
+      };
+      this.writePacingWaiter = finish;
+      timer = setTimeout(finish, delayMs);
+      if (this.port !== port || generation !== this.connectionGeneration) finish();
+    });
+  }
+
+  private cancelWritePacing(): void {
+    const waiter = this.writePacingWaiter;
+    this.writePacingWaiter = null;
+    waiter?.();
   }
 
   private async readLoop(port: SerialPortLike, generation: number): Promise<void> {
@@ -315,6 +381,7 @@ export class WebSerialTransport {
     if (this.port !== port || this.connectionGeneration !== generation) return;
 
     const cleanupGeneration = ++this.connectionGeneration;
+    this.cancelWritePacing();
     this.port = null;
     await Promise.resolve().then(() => this.reader?.cancel()).catch(() => undefined);
     if (origin === 'write') {

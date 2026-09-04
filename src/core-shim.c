@@ -388,6 +388,18 @@ void webx68k_serial_set_connected(int connected)
   SCC_SerialSetConnected(connected);
 }
 
+__attribute__((used))
+void webx68k_serial_set_tx_writable(int writable)
+{
+  SCC_SerialSetTxWritable(writable);
+}
+
+__attribute__((used))
+int webx68k_serial_guest_baud_rate(void)
+{
+  return SCC_SerialGetGuestBaudRate();
+}
+
 #ifdef WEBX68K_CORE_TEST_EXPORTS
 /* SCCチャネルAのレジスタ、FIFO、割り込み状態を実コア結合テストで観測するためのシム。 */
 __attribute__((used))

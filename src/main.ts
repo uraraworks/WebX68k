@@ -137,7 +137,9 @@ import { describeError, getLang, langSelfName, setLang, t } from './strings';
 import { fitDeviceScale, getTargetSize, resolveAspectMode, type AspectMode } from './aspect';
 import { isIOS } from './platform';
 import {
+  isSerialBaudRateMismatch,
   loadSerialBaudRate,
+  normalizeGuestSerialBaudRate,
   saveSerialBaudRate,
   type SerialConnectionState,
   WebSerialTransport,
@@ -446,7 +448,9 @@ function syncSerialConnectionToCore(): void {
     if (serialTransport.state === 'connected') void serialTransport.disconnect();
     return;
   }
-  host?.setSerialConnected(serialTransport.state === 'connected');
+  const connected = serialTransport.state === 'connected';
+  host?.setSerialConnected(connected);
+  host?.setSerialTxWritable(connected && serialTransport.canWrite);
 }
 serialTransport.onData = (bytes) => {
   // Web Serialの非同期コールバックと同期的なretro_run()は同じJSイベントループ上で直列実行される。
@@ -2826,6 +2830,36 @@ function serialStateLabel(state: SerialConnectionState): string {
   }
 }
 
+const SERIAL_BAUD_POLL_INTERVAL_MS = 250;
+let nextSerialBaudPollAt = 0;
+let lastSerialBaudNoteKey = '';
+let lastSerialBaudWarningKey = '';
+function updateSerialBaudNote(force = false): void {
+  const now = performance.now();
+  if (!force && now < nextSerialBaudPollAt) return;
+  nextSerialBaudPollAt = now + SERIAL_BAUD_POLL_INTERVAL_MS;
+
+  const selectedBaudRate = Number(cfgSerialBaud.value);
+  const guestBaudRate = host?.serialGuestBaudRate() ?? 0;
+  const normalizedGuestBaudRate = normalizeGuestSerialBaudRate(guestBaudRate);
+  const mismatch = serialTransport.state === 'connected' &&
+    isSerialBaudRateMismatch(selectedBaudRate, guestBaudRate);
+  const noteText = mismatch && normalizedGuestBaudRate !== null
+    ? t('settingsSerialBaudMismatch', { guestBaudRate: normalizedGuestBaudRate, selectedBaudRate })
+    : t('settingsSerialBaudNote');
+  const noteKey = `${serialTransport.state}:${selectedBaudRate}:${normalizedGuestBaudRate ?? 'unknown'}:${mismatch}:${noteText}`;
+  if (noteKey === lastSerialBaudNoteKey) return;
+  lastSerialBaudNoteKey = noteKey;
+
+  serialBaudNoteEl.textContent = noteText;
+  serialBaudNoteEl.classList.toggle('status-ng', mismatch);
+
+  const warningKey = mismatch ? `${normalizedGuestBaudRate}:${selectedBaudRate}` : '';
+  if (warningKey && warningKey !== lastSerialBaudWarningKey)
+    showToast(serialBaudNoteEl.textContent, 8000);
+  lastSerialBaudWarningKey = warningKey;
+}
+
 function updateSerialUi(): void {
   const browserSupported = serialTransport.isSupported();
   const coreSupported = !host || !host.isInitialized() || host.hasSerialBridge();
@@ -2842,8 +2876,9 @@ function updateSerialUi(): void {
   serialToggleBtn.disabled = state === 'connecting' || !supported;
   serialToggleBtn.setAttribute('aria-disabled', String(state === 'connecting' || !supported));
   serialToggleBtn.setAttribute('aria-busy', String(state === 'connecting'));
+  // 接続中のポート設定は Web Serial API から変更できないため、再接続まで固定する。
   cfgSerialBaud.disabled = state === 'connecting' || state === 'connected';
-  serialBaudNoteEl.textContent = t('settingsSerialBaudNote');
+  updateSerialBaudNote(true);
 }
 
 async function toggleSerialConnection(): Promise<void> {
@@ -2871,7 +2906,10 @@ async function toggleSerialConnection(): Promise<void> {
   }
 }
 
-cfgSerialBaud.addEventListener('change', () => saveSerialBaudRate(Number(cfgSerialBaud.value)));
+cfgSerialBaud.addEventListener('change', () => {
+  saveSerialBaudRate(Number(cfgSerialBaud.value));
+  updateSerialBaudNote();
+});
 serialToggleBtn.addEventListener('click', () => void toggleSerialConnection());
 window.addEventListener('pagehide', (event) => {
   // bfcacheへ退避する場合は同じページへ復帰するため、接続と読み取りタスクを維持する。
@@ -4140,13 +4178,23 @@ function loop(t: number): void {
   }
   if (ran > 0) {
     serialTransport.notifyReceiveCapacity();
+    updateSerialBaudNote();
     if (serialTransport.canWrite) {
-      const serialBytes = host.drainSerialTx();
+      const serialHost = host;
+      serialHost.setSerialTxWritable(false);
+      const serialBytes = serialHost.drainSerialTx(serialTransport.recommendedWriteSize());
       if (serialBytes.length > 0) {
         // 失敗時の再送は順序の重複を招くため行わない。
-        void serialTransport.write(serialBytes).catch((error) => {
-          console.warn('Web Serial write failed; bytes were not retried', error);
-        });
+        void serialTransport.write(serialBytes)
+          .catch((error) => {
+            console.warn('Web Serial write failed; bytes were not retried', error);
+          })
+          .finally(() => {
+            if (host === serialHost)
+              serialHost.setSerialTxWritable(serialTransport.canWrite);
+          });
+      } else {
+        serialHost.setSerialTxWritable(true);
       }
     }
     pollDiskAccess(t);
