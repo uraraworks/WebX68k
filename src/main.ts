@@ -735,6 +735,9 @@ updateSpeedAvailability();
 // 端末性能で頭打ちになったことが見えるように、設定した倍率どおりに出ていない場合に気づける。
 const SPEED_MEASURE_INTERVAL_MS = 500;
 let speedMeasureFrameCount = 0;
+/** 直近に判明しているコアのfps。既定経路は host.avInfo、Worker経路は frame event の av.fps。
+ * updateSpeedActualDisplay() が両経路で同じ意味の値を使えるようにするために持つ。 */
+let lastKnownAvFps: number | null = null;
 let speedMeasureLastAt = 0;
 
 /**
@@ -817,7 +820,9 @@ function updateSpeedActualDisplay(now: number): void {
   }
   const elapsedMs = now - speedMeasureLastAt;
   if (elapsedMs < SPEED_MEASURE_INTERVAL_MS) return;
-  const fps = host?.avInfo?.fps ?? 60;
+  // Worker経路では host が null なので、frame event が運んだ av.fps を使う
+  // (2026-09-05: ここが host?. のままだと Worker 経路で常に 60 になり、実測%が狂う)。
+  const fps = host?.avInfo?.fps ?? lastKnownAvFps ?? 60;
   const expectedFrames = fps * (elapsedMs / 1000);
   const pct = expectedFrames > 0 ? Math.round((speedMeasureFrameCount / expectedFrames) * 100) : 0;
   speedActualEl.textContent = isAutoClock()
@@ -3791,8 +3796,15 @@ async function bootWorkerCore(): Promise<void> {
       // (=このframe eventが運んだtickで実際に走ったフレーム数)として求める。overwriteする
       // 前のworkerLastFrameNoを使うこと。isAutoClock()でない間も無害(stepAutoClock()側で
       // 早期returnするだけ)なので、既定経路のloop()と同じく無条件に加算する。
-      autoClockFrames += snapshot.frameNo - workerLastFrameNo;
+      const ranThisEvent = snapshot.frameNo - workerLastFrameNo;
+      autoClockFrames += ranThisEvent;
       workerLastFrameNo = snapshot.frameNo;
+      // 実測表示(「実測 xx% / CPU xxxMHz」)。既定経路は loop() から呼んでいるが、
+      // Worker経路では loop() が回らないため、ここが唯一の呼び出し口になる。
+      // 2026-09-05: これが無いと ∞MHz の測定クロックが画面に一切出ず、
+      // 実装が動いていても利用者からは何も起きていないように見えていた。
+      lastKnownAvFps = snapshot.av.fps;
+      speedMeasureFrameCount += ranThisEvent;
       if (snapshot.keyBufProbe) workerLastKeyBufProbe = snapshot.keyBufProbe;
       if (snapshot.keyBufWriteFrameNo !== undefined) workerLastKeyBufWriteFrameNo = snapshot.keyBufWriteFrameNo;
       if (snapshot.inputApplyFrameNo !== undefined) workerLastInputApplyFrameNo = snapshot.inputApplyFrameNo;
@@ -3842,6 +3854,7 @@ async function bootWorkerCore(): Promise<void> {
       // `if (measureClock) { autoClockFrameCostMs = ... }`と同じくisAutoClock()時だけ更新する。
       if (isAutoClock()) autoClockFrameCostMs = snapshot.frameCostMs;
       stepAutoClock(performance.now(), 1 / snapshot.av.fps);
+      updateSpeedActualDisplay(performance.now());
       // 入力(手順6): 受信した frame event を契機に1回だけ、既定経路の host.onPoll と
       // 同じ合成規則(bits0 | virtualPad.getJoyBits() | hostKeyJoyBits())でポート0/1の
       // ビットを合成し、workerInput へ書いてから送信する(未決事項だった「ゲームパッドを
