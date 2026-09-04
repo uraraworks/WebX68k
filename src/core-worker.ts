@@ -73,6 +73,7 @@ import {
   collectTransferables,
   createCoreError,
   CoreProxyError,
+  isCoreOptionUpdateMessage,
   isFlushScsiMessage,
   isInputUpdateMessage,
   isMouseTrackResyncMessage,
@@ -96,6 +97,7 @@ import {
   WORKER_UNLIMITED_TICK_BUDGET_MS,
 } from './frameBudget';
 import {
+  FRAME_LOOP_MAX_DUTY,
   FrameBufferPool,
   runTick,
   runUnlimitedTick,
@@ -440,6 +442,14 @@ let workerUnlimitedNextAllowedAtMs = 0;
  * shouldPresentUnlimitedFrame()にそのまま渡す。0は「まだ一度も出していない/直近で
  * リセットされた」を表し、その場合は次のtickで必ず出す(SPEED_UPDATE_KINDハンドラ参照)。 */
 let workerUnlimitedLastPresentAtMs = 0;
+/** 呼び出し元指摘の是正(2026-09-04)で追加。通常速度(非無制限)tickのrunTick()占有率
+ * ゲート用の1フレームあたりコスト推定(ms、指数移動平均)。tickをまたいで持ち越す
+ * (src/worker-drive-loop.tsのTickResult.frameCostMs参照)。既定経路のframeCostMs(main.ts)と
+ * 同じ役割。 */
+let workerFrameCostMs = 0;
+/** runTick()が返すnextAllowedAtMs(ms、ctx.performance.now()基準)の持ち越し値。既定経路の
+ * frameLoopNextAllowedAtと同じ役割(FRAME_LOOP_MAX_DUTYを実時間で守るため)。 */
+let workerFrameLoopNextAllowedAtMs = 0;
 
 function stopDriveLoop(): void {
   if (driveIntervalId !== undefined) {
@@ -493,7 +503,7 @@ function tick(): void {
     return currentHost.readDiskAccess();
   };
 
-  let result: { ranFrames: number; accumulator: number; access: DiskAccessFlags };
+  let result: { ranFrames: number; accumulator: number; access: DiskAccessFlags; frameCostMs: number };
   // このtickでframe eventを出すか(既定経路と挙動を揃える無制限モードの間引き対象は
   // 無制限中のみ。無制限OFF時は従来どおり毎tick出す=trueのまま)。
   let shouldSendFrame = true;
@@ -538,7 +548,25 @@ function tick(): void {
     // `result.ranFrames > 0 && shouldSendFrame` で決まるので、更新もそこに合わせる。
     result = unlimitedResult;
   } else {
-    result = runTick(dt, fps, accumulator, speedMultiplier, runFrameOnce);
+    // 占有率ゲート(呼び出し元指摘の是正、2026-09-04): 既定経路のFRAME_LOOP_MAX_DUTYと
+    // 同じ考え方をrunTick()自身に持ち込んだ(src/worker-drive-loop.tsのコメント参照)。
+    // ゲートを効かせるのはcantKeepUp(1フレームの実測コスト>実時間1フレーム)のときだけで、
+    // 追いついている通常時・倍速時はworkerFrameCostMsが小さいままなので実質かからない
+    // (従来と完全に同じ経路を通る)。
+    const tickResult = runTick(
+      dt,
+      fps,
+      accumulator,
+      speedMultiplier,
+      runFrameOnce,
+      () => ctx.performance.now(),
+      workerFrameCostMs,
+      workerFrameLoopNextAllowedAtMs,
+      FRAME_LOOP_MAX_DUTY,
+    );
+    workerFrameCostMs = tickResult.frameCostMs;
+    workerFrameLoopNextAllowedAtMs = tickResult.nextAllowedAtMs;
+    result = tickResult;
   }
   accumulator = result.accumulator;
 
@@ -569,6 +597,10 @@ function tick(): void {
     if (unlimitedActive) workerUnlimitedLastPresentAtMs = now;
     sendFrame(
       result.access,
+      // ∞MHzの自動クロック調整用(呼び出し元指摘の是正)。無制限中はrunUnlimitedTick()の
+      // frameCostMs、通常速度中はrunTick()のframeCostMsがそのままresultに乗っている
+      // (どちらも同じ「1フレームの実測コストEMA」という意味)。
+      result.frameCostMs,
       probing
         ? (c, p) => {
             convertMs = c;
@@ -599,6 +631,7 @@ function tick(): void {
 
 function sendFrame(
   access: { fddReading: boolean; fddDrive: number; hddAccessing: boolean },
+  frameCostMs: number,
   onProbe?: (convertMs: number, postMs: number) => void,
 ): void {
   if (!host || !scratchCanvas || !scratchCtx) return;
@@ -634,6 +667,7 @@ function sendFrame(
       dirty: mediaState.dirtyState(host.readDirtyState()),
     },
     poolMisses: framePool.misses,
+    frameCostMs,
   };
   // 所有権はsnapshotへ移した(transferableとしてpost()で送る)。次tickぶんの蓄積を
   // 新しい配列で始める(snapshot.audio.chunksが指す配列そのものは元のままなので
@@ -1038,6 +1072,18 @@ ctx.onmessage = (ev) => {
     // 持ち越すと、切り替え直後の最初のframe eventが最大WORKER_UNLIMITED_PRESENT_INTERVAL_MS
     // ぶん遅れる。
     workerUnlimitedLastPresentAtMs = 0;
+    // 通常速度(非無制限)経路の占有率ゲート(呼び出し元指摘の是正)も同じ理由でリセットする。
+    // 古いworkerFrameLoopNextAllowedAtMsを持ち越すと、切り替え直前の制限が残ったままになる。
+    workerFrameLoopNextAllowedAtMs = 0;
+    workerFrameCostMs = 0;
+    return;
+  }
+  // コアオプションの走行中更新(呼び出し元指摘の是正)。同じく低頻度の専用メッセージ。
+  // main側のcfgCpuSpeedのchangeハンドラ・∞MHzの自動クロック調整(stepAutoClock())の
+  // どちらも、Worker経路ではここを通ってhost.setCoreOption()へ届く。起動前(host未生成)に
+  // 届いても無視してよい(次回のinitialize時にInitPayload.optionsが最新値を渡すため)。
+  if (isCoreOptionUpdateMessage(data)) {
+    host?.setCoreOption(data.key, data.value);
     return;
   }
   // SCSI(OPFS)の明示flush依頼(取りこぼしの窓の是正)。同じく低頻度の専用メッセージ。

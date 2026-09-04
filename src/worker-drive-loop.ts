@@ -15,6 +15,17 @@
 // speedMultiplier(手順9で追加): 以前は1固定だった(「速度ボタンは未移行」)。呼び出し側
 // (src/core-worker.ts)がSPEED_UPDATE_KINDで受け取った値をそのまま渡す。既定経路の
 // loop()と同じ式(frameInterval = 1/(fps*speedMultiplier))をここでも使う。
+//
+// 占有率ゲート(2026-09-04追加、呼び出し元指摘の是正): 既定経路(src/main.ts loop())には
+// 「コア実行が実時間に追いつけない設定では、次のtickの開始を実時間で遅らせて入力・UIの
+// 余地を残す」ゲート(FRAME_LOOP_MAX_DUTY)があるが、runTick()には無かった。無制限モード用の
+// runUnlimitedTick()には既に同種のゲートがある(あちらは「目標倍率が無い」別経路)ため、
+// こちらは既定経路と全く同じ考え方(cantKeepUp=1フレームの実測コスト>実時間1フレーム、
+// のときだけ発動)を持ち込む。now/frameCostMsIn/nextAllowedAtMsIn/maxDutyは末尾に追加した
+// 引数で、省略時(now省略→常に0を返す・frameCostMsIn省略→0)は cantKeepUp が常に偽になり
+// 旧来の(ゲート無し)動作と完全に一致する。追いついている通常時・倍速時はこの初期値のまま
+// 呼ばれてもゲートが実質かからないのと同じ理屈(既定経路のコメント参照)で、既存呼び出し・
+// 既存テスト(この引数を渡さない5引数呼び出し)の挙動は変えない。
 
 import { computeFrameBudget } from './frameBudget';
 
@@ -32,9 +43,34 @@ export interface TickResult {
   /** このtick内のいずれかのフレームでアクセスがあれば立つ(runFrame()直後でないと
    * コア側がクリアしてしまうため、tick内で複数フレーム進めた場合はORで合成する)。 */
   access: DiskAccessFlags;
+  /** 更新後の1フレームあたりコスト推定(ms、指数移動平均)。次回呼び出し時に
+   * frameCostMsIn としてそのまま渡すこと(呼び出し側=core-worker.tsがモジュールスコープの
+   * 変数として持ち越す。runUnlimitedTick()のUnlimitedTickResult.frameCostMsと同じ流儀)。
+   * ∞MHzのクロック決定(src/main.tsのautoClockFrameCostMs相当)にもこの値を使う。 */
+  frameCostMs: number;
+  /** 次にこのtick(通常速度経路)でコアを回してよい時刻(ms、nowと同じ時刻系)。
+   * cantKeepUpでなかった(=ゲートが働かなかった)tickでは、呼び出し側から渡された値を
+   * そのまま返す(変化しない)。呼び出し側は次回呼び出し時にnextAllowedAtMsInとして
+   * そのまま渡すこと。 */
+  nextAllowedAtMs: number;
 }
 
 const NO_ACCESS: DiskAccessFlags = { fddReading: false, fddDrive: -1, hddAccessing: false };
+
+/**
+ * 通常速度(非無制限)tickの占有率ゲート用の上限。既定経路(src/main.ts)の
+ * FRAME_LOOP_MAX_DUTY(=0.85)と同じ値をそのまま流用する: 「コア実行に C ミリ秒かかったら、
+ * 次に走らせるのは C/FRAME_LOOP_MAX_DUTY ミリ秒後まで待つ」という目的自体が既定経路と
+ * 完全に同じ(追いつけない設定でも入力・UIの余地を実時間で残す)ため、専用の値を
+ * 新設する理由が無い。
+ */
+export const FRAME_LOOP_MAX_DUTY = 0.85;
+
+/** now引数省略時の既定値。常に0を返すため、frameCostMsIn省略時の0と組み合わさって
+ * cantKeepUpが常に偽になり、ゲート自体が無かった旧実装と同じ挙動になる。 */
+function zeroClock(): number {
+  return 0;
+}
 
 /**
  * 駆動ループ1tickぶんの取り戻しロジック。
@@ -47,6 +83,14 @@ const NO_ACCESS: DiskAccessFlags = { fddReading: false, fddDrive: -1, hddAccessi
  *   呼び出し側(src/core-worker.ts)で1に丸めてから渡すこと(ここでは丸めない)。
  * @param runFrameOnce 1フレーム進め、そのフレームのディスクアクセス状態を返すコールバック
  *   (呼び出し側が host.runFrame() + host.readDiskAccess() をまとめて渡す)。
+ * @param now 時刻取得(ms)。省略時は常に0を返す擬似クロック(ゲートを無効化する)。
+ *   実運用では呼び出し側(src/core-worker.ts)が ctx.performance.now() を注入すること。
+ * @param frameCostMsIn 1フレームあたりコストの実測移動平均の持ち越し値(ms)。省略時0。
+ *   cantKeepUp(このtickでゲートを効かせるか)の判定に使う。
+ * @param nextAllowedAtMsIn 前回このtickが返したnextAllowedAtMs(初回は0でよい)。
+ *   cantKeepUpのときだけ意味を持つ(cantKeepUpでなければ無視される)。
+ * @param maxDuty 実時間に対してコア実行に使ってよい占有率の上限(0〜1)。省略時
+ *   FRAME_LOOP_MAX_DUTY(既定経路と同じ値)。
  */
 export function runTick(
   dt: number,
@@ -54,18 +98,38 @@ export function runTick(
   accumulatorIn: number,
   speedMultiplier: number,
   runFrameOnce: () => DiskAccessFlags,
+  now: () => number = zeroClock,
+  frameCostMsIn = 0,
+  nextAllowedAtMsIn = 0,
+  maxDuty = FRAME_LOOP_MAX_DUTY,
 ): TickResult {
   const frameInterval = 1 / (fps * speedMultiplier);
   let accumulator = accumulatorIn + dt;
   // 音声キュー未移行のため queued=0 固定(±2%補正なし。ファイル冒頭コメント参照)。
   const budget = computeFrameBudget(dt, frameInterval, 0, speedMultiplier);
 
+  // ゲートを効かせるのは「1フレームの実行そのものが実時間1フレームより長い」ときだけ。
+  // 追いついている通常時・倍速時はこの条件が偽なので、下のwhileループは従来と完全に
+  // 同じ条件(accumulator/budgetのみ)で回る(既定経路のloop()と同じ線引き)。
+  const realFrameMs = 1000 / fps;
+  const cantKeepUp = frameCostMsIn > realFrameMs;
+  const tickStart = now();
+  const coreTickDeadline = tickStart + realFrameMs * maxDuty;
+
   let ranFrames = 0;
   let fddReading = false;
   let fddDrive = -1;
   let hddAccessing = false;
-  while (accumulator >= frameInterval && ranFrames < budget) {
+  let frameCostMs = frameCostMsIn;
+  while (
+    accumulator >= frameInterval &&
+    ranFrames < budget &&
+    (!cantKeepUp || now() >= nextAllowedAtMsIn)
+  ) {
+    const frameStart = now();
     const access = runFrameOnce();
+    const cost = now() - frameStart;
+    frameCostMs = frameCostMs === 0 ? cost : frameCostMs * 0.9 + cost * 0.1;
     if (access.fddReading) {
       fddReading = true;
       fddDrive = access.fddDrive;
@@ -73,14 +137,23 @@ export function runTick(
     if (access.hddAccessing) hddAccessing = true;
     accumulator -= frameInterval;
     ranFrames++;
+    if (cantKeepUp && now() >= coreTickDeadline) break;
   }
   // 破綻(タブ非アクティブ復帰等)からの復帰。メインループのloop()と同じ保険。
   if (accumulator > frameInterval * 4) accumulator = 0;
+
+  let nextAllowedAtMs = nextAllowedAtMsIn;
+  if (cantKeepUp && ranFrames > 0) {
+    const coreCostMs = now() - tickStart;
+    nextAllowedAtMs = tickStart + coreCostMs / maxDuty;
+  }
 
   return {
     ranFrames,
     accumulator,
     access: ranFrames > 0 ? { fddReading, fddDrive, hddAccessing } : NO_ACCESS,
+    frameCostMs,
+    nextAllowedAtMs,
   };
 }
 

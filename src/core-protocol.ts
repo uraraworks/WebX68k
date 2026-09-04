@@ -174,6 +174,32 @@ export function isSpeedUpdateMessage(message: unknown): message is SpeedUpdateMe
   );
 }
 
+// --- コアオプションの走行中更新(呼び出し元指摘の是正、2026-09-04) -------------------
+//
+// px68k_cpuspeed 等のコアオプションは LIVE_UPDATABLE_CORE_OPTIONS として走行中に変更できる
+// 設計になっている(既定経路はhost.setCoreOption()を直接呼ぶだけで反映される)。ところが
+// Worker経路にはInitPayload.options(起動時1回だけ)しか渡す経路が無く、走行中の更新
+// (cfgCpuSpeedのchangeハンドラ、∞MHzの自動クロック調整)がWorker経路では丸ごと無反応に
+// なっていた。SPEED_UPDATE_KINDと同じ理由(低頻度・応答不要)でgeneration/requestIdを
+// 持たない専用メッセージにする。
+export const CORE_OPTION_UPDATE_KIND = 'coreOptionUpdate' as const;
+
+export interface CoreOptionUpdateMessage {
+  kind: typeof CORE_OPTION_UPDATE_KIND;
+  /** host.setCoreOption(key, value) にそのまま渡すキー(例: 'px68k_cpuspeed')。 */
+  key: string;
+  /** host.setCoreOption(key, value) にそのまま渡す値。 */
+  value: string;
+}
+
+export function isCoreOptionUpdateMessage(message: unknown): message is CoreOptionUpdateMessage {
+  return (
+    typeof message === 'object' &&
+    message !== null &&
+    (message as { kind?: unknown }).kind === CORE_OPTION_UPDATE_KIND
+  );
+}
+
 // --- SCSI(OPFS) 明示flush(取りこぼしの窓の是正、docs/STORAGE-SCSI.md参照) -----------
 //
 // 本命は src/scsi-opfs.ts 側のデバウンス(書き込みが止まったら短時間で自動flush)。
@@ -440,6 +466,16 @@ export interface FrameSnapshot {
    * 返却が黙って失敗している(取りこぼし)ときに気づけるようにするための観測値
    * (docs/STORAGE-SCSI.md 参照。「効果があった」の確認ではなく、取りこぼしの検知が目的)。 */
   poolMisses: number;
+  /**
+   * 1フレームあたりの実測コスト推定(ms、指数移動平均)。呼び出し元指摘の是正で追加:
+   * ∞MHz(自動クロック調整、src/main.tsのstepAutoClock())は「実際に実時間を維持できたか」を
+   * この値の天井判定(atCoreCeiling)に使う。既定経路はhost.runFrame()の前後をメイン
+   * スレッドで直接計るが、Worker経路はコアがWorker側にあるため、ここで計った値を
+   * frame eventに相乗りさせて運ぶ(既定経路のautoClockFrameCostMsと同じ意味の値になるよう、
+   * 測り方を揃える。通常速度中はsrc/worker-drive-loop.tsのrunTick()、無制限速度モード中は
+   * runUnlimitedTick()のframeCostMsをそのまま渡す。src/core-worker.ts参照)。
+   */
+  frameCostMs: number;
   /**
    * DEV専用・既定off: KeyBuf(wasm内128バイトリングバッファ)全体のスナップショット
    * (docs/STORAGE-SCSI.md「KeyBufプローブのWorker対応」参照)。

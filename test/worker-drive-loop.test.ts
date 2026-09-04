@@ -438,3 +438,95 @@ describe('runUnlimitedTick の presentFinalFrame引数(frame event間引き対�
     expect(skipCalls[skipCalls.length - 1]).toBe(false);
   });
 });
+
+describe('runTick: 占有率ゲート(呼び出し元指摘の是正、2026-09-04追加)', () => {
+  // 既定経路(src/main.ts loop())のFRAME_LOOP_MAX_DUTYゲートと同じ考え方をrunTick()自身に
+  // 持ち込んだ。ゲートを効かせるのはcantKeepUp(1フレームの実測コスト>実時間1フレーム)の
+  // ときだけで、追いついている通常時・倍速時は従来と完全に同じ経路を通ること(倍速を
+  // 潰さないための線引き)。
+
+  it('陽性対照: 追いついているとき(frameCostMsInが実時間1フレーム以下)は、ゲート引数の有無で回るフレーム数が変わらない', () => {
+    const dt = FRAME_INTERVAL_60 * 5; // 遅れを取り戻す典型ケース
+    const runFrameOnce = () => ({ fddReading: false, fddDrive: -1, hddAccessing: false });
+
+    // ゲート引数を渡さない(＝ゲートが存在しなかった旧実装と同じ)呼び出し。
+    const ungated = runTick(dt, FPS_60, 0, 1, runFrameOnce);
+
+    // ゲート引数を渡すが、frameCostMsIn(1ms)は実時間1フレーム(1000/60≈16.7ms)より
+    // 十分小さい=cantKeepUpが偽になるケース。nowは呼ばれるたびに時計を進めるが、
+    // cantKeepUpが偽なのでゲート条件`(!cantKeepUp || ...)`は常にtrueのまま素通りするはず。
+    let nowValue = 0;
+    const gated = runTick(
+      dt,
+      FPS_60,
+      0,
+      1,
+      runFrameOnce,
+      () => (nowValue += 0.1),
+      1, // frameCostMsIn(実時間1フレームよりずっと小さい)
+      0,
+      0.85,
+    );
+
+    expect(gated.ranFrames).toBe(ungated.ranFrames);
+    expect(gated.accumulator).toBeCloseTo(ungated.accumulator, 10);
+  });
+
+  it('追いつけないとき(frameCostMsInが実時間1フレームより大きい)は、nextAllowedAtMsより前のtickでフレームを回さない', () => {
+    const dt = FRAME_INTERVAL_60 * 5;
+    let calls = 0;
+    const runFrameOnce = () => {
+      calls++;
+      return { fddReading: false, fddDrive: -1, hddAccessing: false };
+    };
+    const realFrameMs = 1000 / FPS_60;
+
+    const result = runTick(
+      dt,
+      FPS_60,
+      0,
+      1,
+      runFrameOnce,
+      () => 1000, // now(): tickStartが常に1000msを指す固定クロック
+      realFrameMs * 2, // frameCostMsIn: 実時間1フレームより明らかに大きい(cantKeepUp=true)
+      2000, // nextAllowedAtMsIn: nowより先の時刻なので、このtickはまだ許可されていない
+      0.85,
+    );
+
+    expect(result.ranFrames).toBe(0);
+    expect(calls).toBe(0);
+    // ゲートで弾かれたtickはnextAllowedAtMsをそのまま持ち越す(変化しない)。
+    expect(result.nextAllowedAtMs).toBe(2000);
+  });
+
+  it('追いつけない状態から回復すると(nextAllowedAtMsを過ぎたら)フレームが回り、次のnextAllowedAtMsが実測コストから再計算される', () => {
+    const dt = FRAME_INTERVAL_60 * 5;
+    const realFrameMs = 1000 / FPS_60;
+    // nowは呼び出しごとに5msずつ進む擬似クロック(1回目の呼び出しがtickStart=0)。
+    let nowValue = -5;
+    const now = () => (nowValue += 5);
+    let calls = 0;
+    const runFrameOnce = () => {
+      calls++;
+      return { fddReading: false, fddDrive: -1, hddAccessing: false };
+    };
+
+    const result = runTick(
+      dt,
+      FPS_60,
+      0,
+      1,
+      runFrameOnce,
+      now,
+      realFrameMs * 2, // cantKeepUp=true
+      0, // nextAllowedAtMsIn: 過去(tickStart=0以下)なのでこのtickは許可される
+      0.85,
+    );
+
+    expect(result.ranFrames).toBeGreaterThan(0);
+    expect(calls).toBe(result.ranFrames);
+    // cantKeepUpかつ1フレーム以上回った場合、nextAllowedAtMsはtickStart基準で
+    // 実測コストから再計算される(0より大きい新しい値になる)。
+    expect(result.nextAllowedAtMs).toBeGreaterThan(0);
+  });
+});

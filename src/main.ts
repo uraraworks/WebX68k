@@ -581,6 +581,23 @@ function syncCpuSpeedSelect(): void {
 syncCpuSpeedSelect();
 cfgRamSize.value = ramSize;
 
+/**
+ * コアオプションの走行中更新を、既定経路・Worker経路の両方へ明示的に振り分ける
+ * (呼び出し元指摘の是正、2026-09-04)。`host` と `workerCoreProxy` は全く別の実体なので、
+ * `host?.setCoreOption(...)` だけ呼ぶと Worker 経路では `?.` が無言で素通りして
+ * 何も起きない(cfgCpuSpeedのchangeハンドラ・∞MHzの自動クロック調整の両方がこの欠陥を
+ * 持っていた)。urlWorkerModeでどちらの経路かを先に判定してから、それぞれの実体へ渡す。
+ * Worker経路はCORE_OPTION_UPDATE_KIND(src/core-protocol.ts)の専用メッセージで送る
+ * (src/core-worker.tsのisCoreOptionUpdateMessageハンドラがhost.setCoreOption()を呼ぶ)。
+ */
+function setCoreOptionLive(key: string, value: string): void {
+  if (urlWorkerMode) {
+    workerCoreProxy?.setCoreOptionLive(key, value);
+  } else {
+    host?.setCoreOption(key, value);
+  }
+}
+
 cfgCpuSpeed.addEventListener('change', () => {
   cpuSpeed = cfgCpuSpeed.value;
   localStorage.setItem(CPU_SPEED_KEY, cpuSpeed);
@@ -594,7 +611,7 @@ cfgCpuSpeed.addEventListener('change', () => {
     autoClockFine = false;
     autoClockTurboLastPresentAt = 0;
   }
-  host?.setCoreOption('px68k_cpuspeed', resolveCpuSpeedOption());
+  setCoreOptionLive('px68k_cpuspeed', resolveCpuSpeedOption());
   updateSpeedAvailability();
 });
 cfgRamSize.addEventListener('change', () => {
@@ -735,11 +752,19 @@ let speedMeasureLastAt = 0;
  * 実測%は 100% ちょうどではなく数%下を行き来する。これは想定どおりで、
  * 「比較可能なベンチ値が要るなら固定クロック」という但し書きとセットの挙動。
  *
- * @param now loop() の t(performance.now() 基準)
+ * Worker経路対応(呼び出し元指摘の是正、2026-09-04): 以前はloop()内でしか呼ばれておらず、
+ * loop()は`!host`で即returnするためWorker経路(hostは常にnull)では一度も呼ばれていなかった。
+ * bootWorkerCore()のframe eventハンドラからも呼ぶようにし、判定ロジック自体(このコメントの
+ * 上半分)は変えていない。autoClockFrameCostMsの供給元だけが経路で変わる:
+ * 既定経路はloop()内でhost.runFrame()を直接計測するが、Worker経路はコアがWorker側にある
+ * ため、frame eventのsnapshot.frameCostMs(既定経路と同じ意味の値になるよう測り方を揃えた。
+ * src/core-protocol.tsのFrameSnapshot.frameCostMs参照)をそのまま使う。
+ *
+ * @param now loop() の t(performance.now() 基準)。Worker経路ではframe event受信時刻。
  * @param frameIntervalSec エミュ1フレームぶんの目標間隔(秒)
  */
 function stepAutoClock(now: number, frameIntervalSec: number): void {
-  if (!isAutoClock() || !host) return;
+  if (!isAutoClock() || (!host && !workerCoreProxy)) return;
   if (autoClockLastAdjustAt === 0) {
     autoClockLastAdjustAt = now;
     autoClockFrames = 0;
@@ -777,7 +802,7 @@ function stepAutoClock(now: number, frameIntervalSec: number): void {
   next = Math.max(CPU_MHZ_MIN, Math.min(CPU_MHZ_MAX, Math.round(next)));
   if (next === autoClockMhz) return;
   autoClockMhz = next;
-  host.setCoreOption('px68k_cpuspeed', cpuSpeedOptionForMhz(autoClockMhz));
+  setCoreOptionLive('px68k_cpuspeed', cpuSpeedOptionForMhz(autoClockMhz));
 }
 
 function updateSpeedActualDisplay(now: number): void {
@@ -3761,6 +3786,12 @@ async function bootWorkerCore(): Promise<void> {
     if (event.event === 'frame') {
       const snapshot: FrameSnapshot = event.snapshot;
       workerLastPoolMisses = snapshot.poolMisses;
+      // ∞MHzの自動クロック調整(呼び出し元指摘の是正、stepAutoClock()参照)。loop()の
+      // 「autoClockFrames += ran」に相当する値を、直前のframe eventからのframeNoの差分
+      // (=このframe eventが運んだtickで実際に走ったフレーム数)として求める。overwriteする
+      // 前のworkerLastFrameNoを使うこと。isAutoClock()でない間も無害(stepAutoClock()側で
+      // 早期returnするだけ)なので、既定経路のloop()と同じく無条件に加算する。
+      autoClockFrames += snapshot.frameNo - workerLastFrameNo;
       workerLastFrameNo = snapshot.frameNo;
       if (snapshot.keyBufProbe) workerLastKeyBufProbe = snapshot.keyBufProbe;
       if (snapshot.keyBufWriteFrameNo !== undefined) workerLastKeyBufWriteFrameNo = snapshot.keyBufWriteFrameNo;
@@ -3802,6 +3833,15 @@ async function bootWorkerCore(): Promise<void> {
       // 更新し、同じframe eventを契機にオートセーブ判定を行う(pollDiskAccessと同じ考え方)。
       workerLastDirty = snapshot.disk.dirty;
       pollWorkerAutoSave(performance.now());
+      // ∞MHzの自動クロック調整(呼び出し元指摘の是正): 既定経路はloop()内でhost.runFrame()を
+      // 直接計測してautoClockFrameCostMsを更新するが、Worker経路はコアがWorker側にあるため
+      // 直接計測できない。frame eventが運んできたsnapshot.frameCostMs(既定経路の
+      // autoClockFrameCostMsと同じ意味になるよう測り方を揃えた値。src/core-protocol.tsの
+      // FrameSnapshot.frameCostMsコメント参照)をそのまま使う。stepAutoClock()自体の判定
+      // ロジックは既定経路と同じもの(isAutoClock()でなければ早期return)。既定経路の
+      // `if (measureClock) { autoClockFrameCostMs = ... }`と同じくisAutoClock()時だけ更新する。
+      if (isAutoClock()) autoClockFrameCostMs = snapshot.frameCostMs;
+      stepAutoClock(performance.now(), 1 / snapshot.av.fps);
       // 入力(手順6): 受信した frame event を契機に1回だけ、既定経路の host.onPoll と
       // 同じ合成規則(bits0 | virtualPad.getJoyBits() | hostKeyJoyBits())でポート0/1の
       // ビットを合成し、workerInput へ書いてから送信する(未決事項だった「ゲームパッドを

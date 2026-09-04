@@ -8,6 +8,7 @@
 // 一時的にソースを壊して実施した(このファイル自体は正常経路の検査のみを持つ)。
 import { describe, expect, it } from 'vitest';
 import {
+  CORE_OPTION_UPDATE_KIND,
   INPUT_UPDATE_KIND,
   RETURN_FRAME_BUFFER_KIND,
   SPEED_UPDATE_KIND,
@@ -59,11 +60,13 @@ class FakeWorker implements WorkerLike {
     }
     this.rawSent.push(message);
     const asRecord = message as { kind?: unknown };
-    // 応答不要のfire-and-forget(RETURN_FRAME_BUFFER_KIND/INPUT_UPDATE_KIND/SPEED_UPDATE_KIND)。
+    // 応答不要のfire-and-forget(RETURN_FRAME_BUFFER_KIND/INPUT_UPDATE_KIND/SPEED_UPDATE_KIND/
+    // CORE_OPTION_UPDATE_KIND)。
     if (
       asRecord.kind === RETURN_FRAME_BUFFER_KIND ||
       asRecord.kind === INPUT_UPDATE_KIND ||
-      asRecord.kind === SPEED_UPDATE_KIND
+      asRecord.kind === SPEED_UPDATE_KIND ||
+      asRecord.kind === CORE_OPTION_UPDATE_KIND
     )
       return;
     const cmd = message as CoreCommand;
@@ -170,6 +173,7 @@ function makeFrameEvent(generation = 0): CoreEvent {
     audio: { chunks: [], sampleFrames: 0 },
     disk: { access: { fddReading: false, fddDrive: 0, hddAccessing: false }, dirty: { fddMask: 0, hdd: false } },
     poolMisses: 0,
+    frameCostMs: 0,
   };
   return { kind: 'event', generation, event: 'frame', snapshot };
 }
@@ -336,6 +340,7 @@ describe('WorkerCoreProxy', () => {
       audio: { chunks: [], sampleFrames: 0 },
       disk: { access: { fddReading: false, fddDrive: 0, hddAccessing: false }, dirty: { fddMask: 0, hdd: false } },
       poolMisses: 0,
+      frameCostMs: 0,
     };
     worker.emit({ kind: 'event', generation: sentCmd.generation + 1, event: 'frame', snapshot: staleSnapshot });
     expect(received.some((e) => e.event === 'frame')).toBe(false); // 旧世代のframeは届かない
@@ -661,6 +666,40 @@ describe('WorkerCoreProxy', () => {
     expect(worker.rawSent.length).toBe(rawSentCountBefore);
   });
 
+  it('この是正(コアオプションの走行中更新): setCoreOptionLive()はgeneration/requestIdを持たない一方向メッセージを送る(応答を待たない)', async () => {
+    // 呼び出し元指摘への対応: cfgCpuSpeedのchangeハンドラ・∞MHzの自動クロック調整が
+    // Worker経路では丸ごと無反応になっていた欠陥の是正。setSpeedMultiplier()と同じ
+    // fire-and-forgetの枠組み。
+    const worker = new FakeWorker();
+    const proxy = new WorkerCoreProxy({ createWorker: () => worker });
+    const { biosIpl, biosCg } = makeBios();
+    await proxy.init(biosIpl, biosCg);
+
+    proxy.setCoreOptionLive('px68k_cpuspeed', '25Mhz');
+
+    expect(worker.rawSent).toContainEqual({
+      kind: CORE_OPTION_UPDATE_KIND,
+      key: 'px68k_cpuspeed',
+      value: '25Mhz',
+    });
+    // command/responseの往復には乗らない(sentに積まれるのはcommandだけ)。
+    expect(
+      worker.sent.some((c) => (c as unknown as { kind: unknown }).kind === CORE_OPTION_UPDATE_KIND),
+    ).toBe(false);
+  });
+
+  it('この是正: dispose後にsetCoreOptionLive()を呼んでも何も送らない(fire-and-forgetの安全側。setSpeedMultiplierと同じ規約)', async () => {
+    const worker = new FakeWorker();
+    const proxy = new WorkerCoreProxy({ createWorker: () => worker });
+    const { biosIpl, biosCg } = makeBios();
+    await proxy.init(biosIpl, biosCg);
+    await proxy.dispose();
+
+    const rawSentCountBefore = worker.rawSent.length;
+    proxy.setCoreOptionLive('px68k_cpuspeed', '25Mhz');
+    expect(worker.rawSent.length).toBe(rawSentCountBefore);
+  });
+
   it('手順9: init()にoptionsを渡すとinitializeコマンドのpayload.optionsとして送られる(px68k_cpuspeed等)', async () => {
     // コーディネータ指摘への対応: src/core-worker.tsのhandleInitialize()はpayload.optionsを
     // 読んでsetCoreOption()を回す実装が既にあったが、呼び出し元(ここ)が一度もoptionsを
@@ -742,6 +781,7 @@ describe('WorkerCoreProxy', () => {
       audio: { chunks: [], sampleFrames: 0 },
       disk: { access: { fddReading: true, fddDrive: 0, hddAccessing: false }, dirty: { fddMask: 0, hdd: false } },
       poolMisses: 2,
+      frameCostMs: 0,
     };
     worker.emit({ kind: 'event', generation: 0, event: 'frame', snapshot });
 

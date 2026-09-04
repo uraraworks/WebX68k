@@ -10,6 +10,7 @@
 
 import {
   collectTransferables,
+  CORE_OPTION_UPDATE_KIND,
   CoreProxyError,
   createCoreError,
   FLUSH_SCSI_KIND,
@@ -875,6 +876,19 @@ export class WorkerCoreProxy implements LibretroHostProxy {
     } else {
       this.worker.postMessage({ kind: SPEED_UPDATE_KIND, multiplier });
     }
+  }
+
+  /**
+   * コアオプションの走行中更新(呼び出し元指摘の是正、2026-09-04)。setSpeedMultiplierと
+   * 同じ扱いのfire-and-forget。既存の非同期 setCoreOption()(LibretroHostProxy、CoreCommand
+   * 経由)はWorker経路では未実装(unsupported、このファイル末尾参照)のままにする:
+   * cfgCpuSpeedのchangeハンドラ・∞MHzの自動クロック調整はどちらも低頻度・応答不要で、
+   * フレームを1つ進めて応答を待つ意味が薄いため、SPEED_UPDATE_KINDと同じ専用メッセージに
+   * 揃える。
+   */
+  setCoreOptionLive(key: string, value: string): void {
+    if (this.disposed || this.failed) return;
+    this.worker.postMessage({ kind: CORE_OPTION_UPDATE_KIND, key, value });
   }
 
   /** SCSI(OPFS)の明示flush依頼(取りこぼしの窓の是正)。sendMouseTrackResyncと同じ扱いの
