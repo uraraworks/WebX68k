@@ -142,6 +142,14 @@ import {
 import { describeError, getLang, langSelfName, setLang, t } from './strings';
 import { fitDeviceScale, getTargetSize, resolveAspectMode, type AspectMode } from './aspect';
 import { isIOS } from './platform';
+import {
+  isSerialBaudRateMismatch,
+  loadSerialBaudRate,
+  normalizeGuestSerialBaudRate,
+  saveSerialBaudRate,
+  type SerialConnectionState,
+  WebSerialTransport,
+} from './serial';
 
 const canvas = document.getElementById('screen') as HTMLCanvasElement;
 const bootOverlay = document.getElementById('boot-overlay') as HTMLDivElement;
@@ -212,6 +220,12 @@ const cfgCpuSpeed = document.getElementById('cfg-cpuspeed') as HTMLSelectElement
 const cfgRamSize = document.getElementById('cfg-ramsize') as HTMLSelectElement;
 const cfgSpeed = document.getElementById('cfg-speed') as HTMLSelectElement;
 const speedActualEl = document.getElementById('speed-actual') as HTMLSpanElement;
+const serialControlsEl = document.getElementById('settings-serial-controls') as HTMLDivElement;
+const serialUnsupportedEl = document.getElementById('settings-serial-unsupported') as HTMLParagraphElement;
+const serialStatusEl = document.getElementById('settings-serial-status') as HTMLSpanElement;
+const serialToggleBtn = document.getElementById('settings-serial-toggle') as HTMLButtonElement;
+const cfgSerialBaud = document.getElementById('cfg-serial-baud') as HTMLSelectElement;
+const serialBaudNoteEl = document.getElementById('settings-serial-baud-note') as HTMLParagraphElement;
 
 // WebNP2 のドライブ行に合わせた FDD0 / FDD1 / HDD の3スロット構成(実機のFDD呼称
 // FDD0/FDD1に合わせ、表示ラベルもコア内部のドライブindex 0/1 と一致させている。
@@ -457,6 +471,31 @@ function updateSpeedActualDisplay(now: number): void {
 
 let audio: AudioEngine | null = null;
 let host: LibretroHost | null = null;
+const serialTransport = new WebSerialTransport();
+function resetSerialBridge(): void {
+  serialTransport.discardPendingReceive();
+  host?.resetSerialBridge();
+}
+function syncSerialConnectionToCore(): void {
+  if (host?.isInitialized() && !host.hasSerialBridge()) {
+    if (serialTransport.state === 'connected') void serialTransport.disconnect();
+    return;
+  }
+  const connected = serialTransport.state === 'connected';
+  host?.setSerialConnected(connected);
+  host?.setSerialTxWritable(connected && serialTransport.canWrite);
+}
+serialTransport.onData = (bytes) => {
+  // Web Serialの非同期コールバックと同期的なretro_run()は同じJSイベントループ上で直列実行される。
+  return host?.serialReceive(bytes) ?? 0;
+};
+serialTransport.onStateChange = (state) => {
+  const connected = state === 'connected';
+  syncSerialConnectionToCore();
+  if (!connected) resetSerialBridge();
+  updateSerialUi();
+};
+cfgSerialBaud.value = String(loadSerialBaudRate());
 let running = false;
 let bootStarted = false;
 
@@ -2641,6 +2680,9 @@ async function bootCore(): Promise<void> {
   // retro_load_game()より前に渡す(無ければ未初期化のままIPLが既定値を書く=初回起動相当)。
   const savedSram = await loadSramFile();
   await host.init(biosIplBytes!, biosCgBytes!, savedSram ?? undefined);
+  syncSerialConnectionToCore();
+  serialTransport.notifyReceiveCapacity();
+  updateSerialUi();
   host.startSramAutosave((bytes) => {
     saveSramFile(bytes).catch((err) => console.warn('SRAMの保存に失敗しました', err));
   });
@@ -2722,9 +2764,16 @@ async function restartCore(): Promise<void> {
   await diskPersistence.restartWithFlush(async () => {
     running = false;
     cancelScheduled();
+    resetSerialBridge();
     host?.dispose();
     host = null;
-    await bootCore();
+    try {
+      await bootCore();
+    } catch (error) {
+      await serialTransport.disconnect();
+      updateSerialUi();
+      throw error;
+    }
   });
 }
 
@@ -2832,6 +2881,109 @@ document.addEventListener('dragover', (e) => e.preventDefault());
 document.addEventListener('drop', (e) => e.preventDefault());
 
 // 設定ダイアログ(BIOS登録 + マシン構成)。WebNP2 の ROM登録ダイアログと同じ開閉の仕組み。
+function serialStateLabel(state: SerialConnectionState): string {
+  switch (state) {
+    case 'connected':
+      return t('settingsSerialConnected');
+    case 'connecting':
+      return t('settingsSerialConnecting');
+    case 'error':
+      return t('settingsSerialError');
+    default:
+      return t('settingsSerialDisconnected');
+  }
+}
+
+const SERIAL_BAUD_POLL_INTERVAL_MS = 250;
+let nextSerialBaudPollAt = 0;
+let lastSerialBaudNoteKey = '';
+let lastSerialBaudWarningKey = '';
+function updateSerialBaudNote(force = false): void {
+  const now = performance.now();
+  if (!force && now < nextSerialBaudPollAt) return;
+  nextSerialBaudPollAt = now + SERIAL_BAUD_POLL_INTERVAL_MS;
+
+  const selectedBaudRate = Number(cfgSerialBaud.value);
+  const guestBaudRate = host?.serialGuestBaudRate() ?? 0;
+  const normalizedGuestBaudRate = normalizeGuestSerialBaudRate(guestBaudRate);
+  const mismatch = serialTransport.state === 'connected' &&
+    isSerialBaudRateMismatch(selectedBaudRate, guestBaudRate);
+  const noteText = mismatch && normalizedGuestBaudRate !== null
+    ? t('settingsSerialBaudMismatch', { guestBaudRate: normalizedGuestBaudRate, selectedBaudRate })
+    : t('settingsSerialBaudNote');
+  const noteKey = `${serialTransport.state}:${selectedBaudRate}:${normalizedGuestBaudRate ?? 'unknown'}:${mismatch}:${noteText}`;
+  if (noteKey === lastSerialBaudNoteKey) return;
+  lastSerialBaudNoteKey = noteKey;
+
+  serialBaudNoteEl.textContent = noteText;
+  serialBaudNoteEl.classList.toggle('status-ng', mismatch);
+
+  const warningKey = mismatch ? `${normalizedGuestBaudRate}:${selectedBaudRate}` : '';
+  if (warningKey && warningKey !== lastSerialBaudWarningKey)
+    showToast(serialBaudNoteEl.textContent, 8000);
+  lastSerialBaudWarningKey = warningKey;
+}
+
+function updateSerialUi(): void {
+  const browserSupported = serialTransport.isSupported();
+  const coreSupported = !host || !host.isInitialized() || host.hasSerialBridge();
+  const supported = browserSupported && coreSupported;
+  const state = serialTransport.state;
+  serialUnsupportedEl.textContent = browserSupported
+    ? t('settingsSerialCoreUnsupported')
+    : t('settingsSerialUnsupported');
+  serialUnsupportedEl.hidden = supported;
+  serialControlsEl.hidden = !supported;
+  serialStatusEl.textContent = serialStateLabel(state);
+  serialStatusEl.className = state === 'connected' ? 'status-ok' : state === 'connecting' ? 'status-bundled' : 'status-ng';
+  serialToggleBtn.textContent = state === 'connected' ? t('settingsSerialDisconnect') : t('settingsSerialConnect');
+  serialToggleBtn.disabled = state === 'connecting' || !supported;
+  serialToggleBtn.setAttribute('aria-disabled', String(state === 'connecting' || !supported));
+  serialToggleBtn.setAttribute('aria-busy', String(state === 'connecting'));
+  // 接続中のポート設定は Web Serial API から変更できないため、再接続まで固定する。
+  cfgSerialBaud.disabled = state === 'connecting' || state === 'connected';
+  updateSerialBaudNote(true);
+}
+
+async function toggleSerialConnection(): Promise<void> {
+  if (serialTransport.state === 'connecting') return;
+  if (serialTransport.state === 'connected') {
+    host?.setSerialConnected(false);
+    await serialTransport.disconnect();
+    resetSerialBridge();
+    return;
+  }
+  if (host?.isInitialized() && !host.hasSerialBridge()) {
+    showToast(t('settingsSerialCoreUnsupported'), 8000);
+    updateSerialUi();
+    return;
+  }
+  const baudRate = Number(cfgSerialBaud.value);
+  saveSerialBaudRate(baudRate);
+  try {
+    resetSerialBridge();
+    await serialTransport.connect({ baudRate });
+    syncSerialConnectionToCore();
+  } catch (error) {
+    console.error('Web Serial connection failed', error);
+    showToast(`${t('settingsSerialError')}: ${describeError(error)}`, 8000);
+  }
+}
+
+cfgSerialBaud.addEventListener('change', () => {
+  saveSerialBaudRate(Number(cfgSerialBaud.value));
+  updateSerialBaudNote();
+});
+serialToggleBtn.addEventListener('click', () => void toggleSerialConnection());
+window.addEventListener('pagehide', (event) => {
+  // bfcacheへ退避する場合は同じページへ復帰するため、接続と読み取りタスクを維持する。
+  if (event.persisted) return;
+  // pagehide では非同期切断を待てないため、先にコア側の接続状態を解除する。
+  host?.setSerialConnected(false);
+  resetSerialBridge();
+  void serialTransport.disconnect();
+});
+
 function openSettingsDialog(): void {
   settingsBackdrop.classList.remove('hidden');
 }
@@ -2946,6 +3098,11 @@ function applyDocumentStrings(): void {
   document.getElementById('settings-speed-note')!.textContent = t('settingsSpeedNote');
   document.getElementById('settings-speed-label')!.textContent = t('settingsSpeedLabel');
   document.getElementById('speed-opt-unlimited')!.textContent = t('settingsSpeedUnlimited');
+  document.getElementById('settings-serial-title')!.textContent = t('settingsSerialTitle');
+  document.getElementById('settings-serial-status-label')!.textContent = t('settingsSerialStatusLabel');
+  document.getElementById('settings-serial-baud-label')!.textContent = t('settingsSerialBaudLabel');
+  serialUnsupportedEl.textContent = t('settingsSerialUnsupported');
+  updateSerialUi();
   settingsCloseBtn.textContent = t('settingsClose');
   setBiosStatus(biosIplStatus, biosIplState);
   setBiosStatus(biosCgStatus, biosCgState);
@@ -4242,6 +4399,26 @@ function loop(t: number): void {
     ran++;
   }
   if (ran > 0) {
+    serialTransport.notifyReceiveCapacity();
+    updateSerialBaudNote();
+    if (serialTransport.canWrite) {
+      const serialHost = host;
+      serialHost.setSerialTxWritable(false);
+      const serialBytes = serialHost.drainSerialTx(serialTransport.recommendedWriteSize());
+      if (serialBytes.length > 0) {
+        // 失敗時の再送は順序の重複を招くため行わない。
+        void serialTransport.write(serialBytes)
+          .catch((error) => {
+            console.warn('Web Serial write failed; bytes were not retried', error);
+          })
+          .finally(() => {
+            if (host === serialHost)
+              serialHost.setSerialTxWritable(serialTransport.canWrite);
+          });
+      } else {
+        serialHost.setSerialTxWritable(true);
+      }
+    }
     pollDiskAccess(t);
     pollAutoSave(t);
     stepMouseTracking();
@@ -4540,6 +4717,7 @@ async function handleLoadState(): Promise<void> {
     showToast(t('stateLoadFailed'));
     return;
   }
+  resetSerialBridge();
   // 復元直後は旧状態の音がキューに残っているので捨て、フレーム供給の蓄積もリセットする
   audio?.flush();
   resetResampleState(audioResampleState);
@@ -4892,7 +5070,13 @@ const bridgeHost: BridgeHost = {
     for (let i = 0; i < d.length; i += 997) h = (h * 31 + d[i]) | 0;
     return h;
   },
-  reset: () => host?.reset(),
+  reset: () => {
+    // UIのリセットボタン(restartCore)と同じく、リセット後に旧セッションのシリアルデータが
+    // 流入しないようJS側の受信残りとコア側FIFOを破棄する。_retro_reset()自体もコア側FIFOを
+    // 消すが、WebSerialTransportが保持している受信チャンクの残りには手が届かない。
+    host?.reset();
+    resetSerialBridge();
+  },
   setKey: (retrok, down) => down
     ? sharedKeyInput.press('bridge:key', retrok)
     : sharedKeyInput.release('bridge:key', retrok),
