@@ -160,6 +160,20 @@ function makeBios(): { biosIpl: Uint8Array; biosCg: Uint8Array } {
   return { biosIpl: new Uint8Array([1, 2, 3]), biosCg: new Uint8Array([4, 5, 6]) };
 }
 
+/** 最初のframe eventを模す(WorkerCoreProxy#startupSettledの境界)。'ready'ではなく
+ * 'frame'を受け取って初めて起動完了とみなす実装であることをテストから明示的に叩くために使う。 */
+function makeFrameEvent(generation = 0): CoreEvent {
+  const snapshot: FrameSnapshot = {
+    frameNo: 1,
+    av: { fps: 60, sampleRate: 44100, width: 768, height: 512 },
+    video: { kind: 'rgba', bytes: new ArrayBuffer(4), width: 1, height: 1 },
+    audio: { chunks: [], sampleFrames: 0 },
+    disk: { access: { fddReading: false, fddDrive: 0, hddAccessing: false }, dirty: { fddMask: 0, hdd: false } },
+    poolMisses: 0,
+  };
+  return { kind: 'event', generation, event: 'frame', snapshot };
+}
+
 describe('WorkerCoreProxy', () => {
   it('command/response が往復する(initialize→ready/loadGame/fetchAvInfo/dispose)', async () => {
     const worker = new FakeWorker();
@@ -370,81 +384,86 @@ describe('WorkerCoreProxy', () => {
     const proxy = new WorkerCoreProxy({ createWorker: () => worker, responseTimeoutMs: 20 });
     const { biosIpl, biosCg } = makeBios();
     await proxy.init(biosIpl, biosCg);
+    worker.emit(makeFrameEvent()); // 起動完了(startupSettled=true)にしてから通常timeoutを確認する。
 
     const p = proxy.fetchAvInfo();
     await expect(p).rejects.toMatchObject({ coreError: { code: 'WORKER_FAILURE' } });
     expect(worker.terminated).toBe(true);
   });
 
-  describe('起動中(initializeの応答が返るまで)は応答timeoutの時計を止める', () => {
-    // 実測(2026-09-04): まっさらなブラウザプロファイルではWorker初期化に約22秒かかり、
-    // 旧実装(応答timeoutが固定10秒)だとその最中に投げたcommandが「まだ初期化中なだけの
-    // Worker」を異常終了(WORKER_FAILURE)扱いにしてしまい、復帰手段が無いまま画面が
-    // 死んでいた(60秒に伸ばすと同条件で56.5秒で正常起動することを実測で確認済み)。
-    // src/core-proxy.ts の WorkerCoreProxy#startupSettled 参照。
+  describe('起動中(最初のframe eventを受け取るまで)は長い方のtimeout(startupResponseTimeoutMs)を使う', () => {
+    // 実測(2026-09-04): まっさらなプロファイルではコアが最初のフレームを出すまで約22秒
+    // かかる。固定10秒だとその途中でコアを異常終了扱いにして復帰できなくなる(実測)。
+    // f0642f1で「initializeの応答が返るまで」を境界にしたが、実機で効いていないことを
+    // 実測した(probe-scsi-iocs.mjs): workerStats().frameNoが+28sまで0のままなのに
+    // 「応答timeout(10000ms): readTextScreen」が出た。initializeの応答は先に返っており、
+    // 重い処理はその後にある。そのため境界を「最初のframe eventを受け取ったとき」に
+    // 変更した。無タイマにはせず、起動中は長い方(startupResponseTimeoutMs)のtimeoutを
+    // 張る(src/core-proxy.ts の WorkerCoreProxy#startupSettled 参照)。
 
-    it('起動中に投げたコマンドは、タイムアウト時間を過ぎてもWORKER_FAILUREにならない', async () => {
+    it('起動中(最初のframe受信前)に投げたコマンドは、通常timeout相当の時間を過ぎてもWORKER_FAILUREにならない', async () => {
       const worker = new FakeWorker();
-      worker.respond = () => []; // initializeを含め一切自動応答しない(=起動中のまま)
-      const proxy = new WorkerCoreProxy({ createWorker: () => worker, responseTimeoutMs: 20 });
+      // initializeだけ自動応答('ready'は届くが'frame'は届かない=起動中のまま)、以後は応答しない。
+      worker.respond = (cmd) => (cmd.op === 'initialize' ? defaultAutoResponder(cmd) : []);
+      const proxy = new WorkerCoreProxy({
+        createWorker: () => worker,
+        responseTimeoutMs: 20,
+        startupResponseTimeoutMs: 10_000, // 通常timeout(20ms)を大きく超える値にしておく
+      });
       const { biosIpl, biosCg } = makeBios();
 
       const failures: string[] = [];
       proxy.setFailureHandler((message) => failures.push(message));
 
-      const initPromise = proxy.init(biosIpl, biosCg);
-      // initializeの応答がまだ無い(=startupSettled===falseの)うちに別commandを投げる。
+      await proxy.init(biosIpl, biosCg); // 'ready'のみ届く。frameはまだ=startupSettled===false
       const p = proxy.fetchAvInfo();
-      let initSettled = false;
       let pSettled = false;
-      void initPromise.then(
-        () => (initSettled = true),
-        () => (initSettled = true),
-      );
       void p.then(
         () => (pSettled = true),
         () => (pSettled = true),
       );
 
-      // responseTimeoutMs(20ms)を大きく超えて待っても、どちらも未解決のまま
-      // (=偽タイマならぬ実タイマでtimeout時間ぶん経過させても異常終了しない)。
+      // responseTimeoutMs(20ms)を大きく超えて待っても、startupResponseTimeoutMs(10s)には
+      // 遠く及ばないため未解決のまま(=偽タイマならぬ実タイマで通常timeout分だけ経過させても
+      // 異常終了しない)。
       await new Promise((resolve) => setTimeout(resolve, 60));
 
-      expect(initSettled).toBe(false);
       expect(pSettled).toBe(false);
       expect(worker.terminated).toBe(false);
       expect(failures).toHaveLength(0);
     });
 
-    it('陽性対照: 起動が終わったあとは従来どおり、応答が無いコマンドはタイムアウトでWORKER_FAILUREになる', async () => {
+    it('陽性対照: 最初のframeを受け取ったあとは従来どおり、応答が無いコマンドは通常timeoutでWORKER_FAILUREになる', async () => {
       const worker = new FakeWorker();
       worker.respond = (cmd) => (cmd.op === 'initialize' ? defaultAutoResponder(cmd) : []);
       const proxy = new WorkerCoreProxy({ createWorker: () => worker, responseTimeoutMs: 20 });
       const { biosIpl, biosCg } = makeBios();
-      await proxy.init(biosIpl, biosCg); // 起動完了(startupSettled=true)
+      await proxy.init(biosIpl, biosCg);
+      worker.emit(makeFrameEvent()); // 最初のframeを受け取り起動完了(startupSettled=true)
 
       const p = proxy.fetchAvInfo();
       await expect(p).rejects.toMatchObject({ coreError: { code: 'WORKER_FAILURE' } });
       expect(worker.terminated).toBe(true);
     });
 
-    it('起動中に投げてまだ応答が無いコマンドは、起動完了時点からタイマが張られ、そこからタイムアウト時間が過ぎるとWORKER_FAILUREになる', async () => {
+    it('起動中に投げてまだ応答が無いコマンドは、最初のframeを受け取った時点からタイマが張られ、そこから通常timeout時間が過ぎるとWORKER_FAILUREになる', async () => {
       const worker = new FakeWorker();
-      // initializeだけ自動応答(=起動完了)し、以後は一切応答しない。
+      // initializeだけ自動応答('ready'のみ)し、以後は一切応答しない。
       worker.respond = (cmd) => (cmd.op === 'initialize' ? defaultAutoResponder(cmd) : []);
-      const proxy = new WorkerCoreProxy({ createWorker: () => worker, responseTimeoutMs: 30 });
+      const proxy = new WorkerCoreProxy({
+        createWorker: () => worker,
+        responseTimeoutMs: 30,
+        startupResponseTimeoutMs: 10_000,
+      });
       const { biosIpl, biosCg } = makeBios();
 
-      const initPromise = proxy.init(biosIpl, biosCg);
-      // initPromiseがまだawaitされていない(=startupSettled===falseの)うちに投げる。
-      // FakeWorker#postMessageはinitializeの応答も同期的に返すが、initPromiseの
-      // awaitが実際に解決してstartupSettled=trueになるのはマイクロタスク後なので、
-      // この行の時点ではまだ起動完了前(WorkerCoreProxy#dispatchCommandコメント参照)。
+      await proxy.init(biosIpl, biosCg);
+      // まだframeを受け取っていない(=startupSettled===falseの)うちに投げる。
       const p = proxy.fetchAvInfo();
 
-      await initPromise; // ここでstartupSettled=trueになり、pへタイマが張られる
+      worker.emit(makeFrameEvent()); // ここでstartupSettled=trueになり、pへ通常timeoutが張られる
 
-      // 起動完了直後(タイマが張られた直後)は、まだ余裕があるので生きている。
+      // タイマが張られた直後は、まだ余裕があるので生きている。
       let pSettled = false;
       void p.then(
         () => (pSettled = true),
@@ -453,9 +472,28 @@ describe('WorkerCoreProxy', () => {
       await new Promise((resolve) => setTimeout(resolve, 15));
       expect(pSettled).toBe(false);
 
-      // 起動完了時点から responseTimeoutMs(30ms) を過ぎるとWORKER_FAILUREになる。
+      // frame受信時点から responseTimeoutMs(30ms) を過ぎるとWORKER_FAILUREになる。
       await expect(p).rejects.toMatchObject({ coreError: { code: 'WORKER_FAILURE' } });
       expect(worker.terminated).toBe(true);
+    });
+
+    it('起動が永久に終わらない(frameが一度も来ない)場合、startupResponseTimeoutMsを過ぎるとWORKER_FAILUREになる', async () => {
+      const worker = new FakeWorker();
+      worker.respond = () => []; // initializeを含め一切自動応答しない(=起動が永久に終わらない)
+      const proxy = new WorkerCoreProxy({
+        createWorker: () => worker,
+        responseTimeoutMs: 10_000, // 通常timeoutは大きくしておき、こちらでは満了しないようにする
+        startupResponseTimeoutMs: 20,
+      });
+      const { biosIpl, biosCg } = makeBios();
+
+      const failures: string[] = [];
+      proxy.setFailureHandler((message) => failures.push(message));
+
+      const initPromise = proxy.init(biosIpl, biosCg);
+      await expect(initPromise).rejects.toMatchObject({ coreError: { code: 'WORKER_FAILURE' } });
+      expect(worker.terminated).toBe(true);
+      expect(failures).toHaveLength(1);
     });
   });
 
@@ -468,6 +506,7 @@ describe('WorkerCoreProxy', () => {
       const proxy = new WorkerCoreProxy({ createWorker: () => worker, responseTimeoutMs: 20 });
       const { biosIpl, biosCg } = makeBios();
       await proxy.init(biosIpl, biosCg);
+      worker.emit(makeFrameEvent()); // 起動完了(startupSettled=true)にして通常timeoutで検査する
 
       const failures: string[] = [];
       proxy.setFailureHandler((message) => failures.push(message));

@@ -439,9 +439,14 @@ export interface WorkerCoreProxyOptions {
   createWorker?: () => WorkerLike;
   /** 応答timeoutミリ秒(既定 DEFAULT_RESPONSE_TIMEOUT_MS)。テストで短縮するために公開する。 */
   responseTimeoutMs?: number;
+  /** 起動中(最初のframe eventを受け取るまで)の応答timeoutミリ秒(既定
+   * STARTUP_RESPONSE_TIMEOUT_MS)。テストで短縮するために公開する。 */
+  startupResponseTimeoutMs?: number;
 }
 
 const DEFAULT_RESPONSE_TIMEOUT_MS = 10_000;
+/** 起動中(最初のframe eventを受け取るまで)専用の応答timeout。startupSettledのコメント参照。 */
+const STARTUP_RESPONSE_TIMEOUT_MS = 120_000;
 
 function defaultCreateWorker(): WorkerLike {
   // 実測(docs/STORAGE-SCSI.md 手順4参照): vite dev server はクラシックworker指定でも
@@ -456,15 +461,17 @@ function defaultCreateWorker(): WorkerLike {
 interface PendingRequest {
   resolve: (value: unknown) => void;
   reject: (reason: unknown) => void;
-  /** 起動中(startupSettled===false)は張らないため未設定になりうる。起動完了時に
-   * armPendingTimeouts() が取り残した分へ後付けする(WorkerCoreProxyクラスの
-   * startupSettled コメント参照)。 */
-  timeoutHandle: ReturnType<typeof setTimeout> | undefined;
+  /** 起動中(startupSettled===false)はstartupResponseTimeoutMs、起動後(===true)は
+   * responseTimeoutMsで張る。最初のframe eventを受け取った瞬間に、armPendingTimeouts()が
+   * 起動中ぶんを全部通常timeoutへ張り直す(WorkerCoreProxyクラスのstartupSettledコメント
+   * 参照)。 */
+  timeoutHandle: ReturnType<typeof setTimeout>;
 }
 
 export class WorkerCoreProxy implements LibretroHostProxy {
   private readonly worker: WorkerLike;
   private readonly responseTimeoutMs: number;
+  private readonly startupResponseTimeoutMs: number;
   private readonly generation: Generation;
   private nextRequestId: RequestId = 1;
   private disposed = false;
@@ -490,19 +497,26 @@ export class WorkerCoreProxy implements LibretroHostProxy {
     resolve: (value: unknown) => void;
     reject: (reason: unknown) => void;
   }> = [];
-  /** 実測(2026-09-04): まっさらなブラウザプロファイル(冷えた初回アクセス相当)では
-   * Worker初期化(≒initializeコマンドの応答が返るまで)に約22秒かかる
-   * (workerStats().frameNoが+20sまで0のまま、+22sで初めて2になる)。この最中に
-   * readTextScreen等を投げると、応答timeoutが従来の10秒固定だったため「まだ初期化中」
-   * なだけのWorkerを異常終了扱いにしてしまい、画面に「Workerコアが異常終了しました」と
-   * 出たきり復帰手段が無かった(60_000msに伸ばすと同条件で56.5秒で正常起動することを
-   * 実測済み)。応答timeoutの目的はWorkerの死活監視であって、初期化中のWorkerは死んで
-   * いないため、起動(initializeの応答が返るまで)の間だけ時計を止める。起動後の挙動は
-   * 一切変えない。 */
+  /** 実測(2026-09-04): まっさらなプロファイルではコアが最初のフレームを出すまで約22秒
+   * かかる(workerStats().frameNoが+20sまで0のまま、+22sで初めて2になる)。固定10秒だと
+   * その途中でコアを異常終了扱いにして復帰できなくなる。
+   *
+   * 当初(f0642f1)はinitializeコマンドの応答が返るまでを起動中とみなしていたが、
+   * 実機で修正が効いていないことを実測した(probe-scsi-iocs.mjs、まっさらなプロファイル):
+   * workerStats().frameNoが+28sまで0のままなのに「応答timeout(10000ms): readTextScreen」
+   * が出た。つまりinitializeの応答はもっと早く返っており、重い処理はその後にある
+   * (initialize自体は起動シーケンスの一部を投げているだけで、コアが実際に動き出して
+   * 最初のフレームを描くところまでは面倒を見ていない)。initializeの応答を境界にしても
+   * 効かなかったため、「動き始めた」と言える最初のframe eventを受け取った時点を境界にする。
+   *
+   * 境界を無タイマにはしない: 起動そのものが失敗して固まったWorkerを検出できなくなる
+   * ため、起動中は短い方(DEFAULT_RESPONSE_TIMEOUT_MS)ではなく長い方
+   * (STARTUP_RESPONSE_TIMEOUT_MS)のtimeoutを張る。起動後の挙動は一切変えない。 */
   private startupSettled = false;
 
   constructor(opts?: WorkerCoreProxyOptions) {
     this.responseTimeoutMs = opts?.responseTimeoutMs ?? DEFAULT_RESPONSE_TIMEOUT_MS;
+    this.startupResponseTimeoutMs = opts?.startupResponseTimeoutMs ?? STARTUP_RESPONSE_TIMEOUT_MS;
     // 手順9(再生成)はスコープ外なので、この proxy 1インスタンス = generation 0 固定。
     this.generation = 0;
     this.worker = (opts?.createWorker ?? defaultCreateWorker)();
@@ -563,6 +577,12 @@ export class WorkerCoreProxy implements LibretroHostProxy {
     if (message.event === 'fatal') {
       this.handleWorkerFailure(message.error.message, message.error, false);
       return;
+    }
+    // 起動完了の境界: 最初のframe eventを受け取った瞬間(startupSettledコメント参照)。
+    // 'ready'はまだコアが1フレームも進んでいなくても届くため境界にはしない。
+    if (!this.startupSettled && message.event === 'frame') {
+      this.startupSettled = true;
+      this.armPendingTimeouts();
     }
     // 'ready'/'frame'/'sramChanged': src/main.ts 側が setEventHandler() で登録した購読者へ
     // そのまま転送する(手順5・7: 映像・アクセスフラグをここで main へ橋渡しする)。
@@ -657,26 +677,24 @@ export class WorkerCoreProxy implements LibretroHostProxy {
     resolve: (value: unknown) => void,
     reject: (reason: unknown) => void,
   ): void {
-    // startupSettled===false(起動中、initializeの応答がまだ返っていない)の間は
-    // setTimeoutを張らない。initializeコマンド自身もこの分岐を通るため、意図せず
-    // 起動時間そのものにtimeoutが張られることもない(これも意図。クラス冒頭の
-    // startupSettledコメント参照)。pendingへの登録とpostMessageは従来どおり行う。
-    const timeoutHandle = this.startupSettled
-      ? setTimeout(() => {
-          this.handleWorkerFailure(`応答timeout(${this.responseTimeoutMs}ms): ${command.op}`, undefined);
-        }, this.responseTimeoutMs)
-      : undefined;
+    // startupSettled===false(起動中、最初のframe eventをまだ受け取っていない)の間は
+    // 長い方のstartupResponseTimeoutMsで張る(無タイマにはしない。クラス冒頭の
+    // startupSettledコメント参照)。initializeコマンド自身もこの分岐を通る。
+    const timeoutMs = this.startupSettled ? this.responseTimeoutMs : this.startupResponseTimeoutMs;
+    const timeoutHandle = setTimeout(() => {
+      this.handleWorkerFailure(`応答timeout(${timeoutMs}ms): ${command.op}`, undefined);
+    }, timeoutMs);
     this.pending.set(command.requestId, { resolve, reject, timeoutHandle });
     this.worker.postMessage(command, collectTransferables(command));
   }
 
-  /** 起動完了(initializeの応答が返った瞬間、成功・失敗どちらでも)に呼ぶ。それまでの間に
-   * dispatchCommand()されてtimeoutHandleが未設定のまま取り残されているpendingへ、
-   * この時点を起点としてtimeoutを張り直す。これをしないと、起動中に投げられて
-   * まだ応答が返っていないコマンドが永久に応答timeoutで死活監視されないままになる。 */
+  /** 起動完了(最初のframe eventを受け取った瞬間)に呼ぶ。それまでの間にdispatchCommand()
+   * されてstartupResponseTimeoutMsの長いタイマが張られたまま取り残されているpendingを、
+   * この時点を起点として通常のresponseTimeoutMsへ張り直す。これをしないと、起動中に
+   * 投げられてまだ応答が返っていないコマンドが、起動後もずっと長いタイマのままになる。 */
   private armPendingTimeouts(): void {
     for (const [requestId, req] of this.pending.entries()) {
-      if (req.timeoutHandle !== undefined) continue;
+      clearTimeout(req.timeoutHandle);
       req.timeoutHandle = setTimeout(() => {
         this.handleWorkerFailure(`応答timeout(${this.responseTimeoutMs}ms): (起動完了後に計時開始)`, undefined);
       }, this.responseTimeoutMs);
@@ -759,26 +777,21 @@ export class WorkerCoreProxy implements LibretroHostProxy {
     // ゲストで「ドライブ名が無効です」)。initialize時に1回だけWorkerのglobalThisへ写す。
     hostGlobals?: Record<string, HostGlobalValue>,
   ): Promise<void> {
-    try {
-      await this.issue<unknown>('initialize', {
-        biosIpl: copyArrayBuffer(biosIpl),
-        biosCg: copyArrayBuffer(biosCg),
-        sram: sram ? copyArrayBuffer(sram) : undefined,
-        initialDisks: initialDisks?.map((d) => ({
-          slot: d.slot,
-          name: d.name,
-          bytes: copyArrayBuffer(d.bytes),
-        })),
-        options,
-        hostGlobals,
-      });
-    } finally {
-      // initializeの応答が返った時点(成功・失敗どちらでも)で起動完了とみなす。
-      // startupSettledコメント参照: ここから先はdispatchCommand()が通常どおり
-      // timeoutを張るようになる。起動中に取り残されたpendingにもここで計時を開始する。
-      this.startupSettled = true;
-      this.armPendingTimeouts();
-    }
+    // 起動完了(startupSettled)の判定はここでは行わない。initializeの応答が返っても
+    // コアはまだ動き出していないため(startupSettledコメント参照、実測2026-09-04)、
+    // 最初のframe eventを受け取るまでhandleMessage()側でstartupSettledはfalseのまま。
+    await this.issue<unknown>('initialize', {
+      biosIpl: copyArrayBuffer(biosIpl),
+      biosCg: copyArrayBuffer(biosCg),
+      sram: sram ? copyArrayBuffer(sram) : undefined,
+      initialDisks: initialDisks?.map((d) => ({
+        slot: d.slot,
+        name: d.name,
+        bytes: copyArrayBuffer(d.bytes),
+      })),
+      options,
+      hostGlobals,
+    });
   }
 
   async setCoreOption(_key: string, _value: string): Promise<void> {
