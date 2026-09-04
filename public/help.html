@@ -1269,6 +1269,47 @@
           </div>
         </section>
 
+        <!-- 9.2 シリアルポート -->
+        <section class="help-card">
+          <div class="lang-ja">
+            <h2>シリアルポートを使う(RS-232C)</h2>
+            <p>
+              「…」メニューの「設定」を開き、いちばん下の「シリアルポート」から接続します。
+              接続ボタンを押すとブラウザがシリアルポートの選択を求めるので、使うポートを選んでください。
+            </p>
+            <img src="./help/serial.png" alt="シリアルポートの設定" />
+            <p>
+              ボーレートは接続先の機器と同じ値に合わせてください。X68000(ゲスト)側の設定と
+              食い違っている場合は警告が表示されます。
+            </p>
+            <div class="note-box">
+              Web Serial API に対応したデスクトップブラウザ(Chrome/Edge/Firefox)かつ https での
+              接続が必要です。Android版Firefox、iOS/iPadOSのブラウザ、macOS版Safariは非対応で、
+              非対応ブラウザでは操作欄そのものが表示されません。詳しい手順やOSごとの注意点は
+              <code>docs/WEB_SERIAL.ja.md</code> を参照してください。
+            </div>
+          </div>
+          <div class="lang-en">
+            <h2>Using the serial port (RS-232C)</h2>
+            <p>
+              Open "Settings" from the "…" menu and connect from the "Serial Port" section at the
+              very bottom. Pressing the connect button prompts the browser to choose a serial port;
+              pick the one you want to use.
+            </p>
+            <img src="./help/serial-en.png" alt="Serial port settings" />
+            <p>
+              Set the baud rate to match the connected device. A warning appears if it doesn't
+              match the X68000 (guest) side's setting.
+            </p>
+            <div class="note-box">
+              Requires a desktop browser that supports the Web Serial API (Chrome/Edge/Firefox)
+              and https. Firefox for Android, browsers on iOS/iPadOS, and Safari on macOS are not
+              supported, and on unsupported browsers the controls themselves don't appear. See
+              <code>docs/WEB_SERIAL.md</code> for detailed steps and OS-specific notes.
+            </div>
+          </div>
+        </section>
+
         <!-- 9.5 ホーム画面に追加(PWA) -->
         <section class="help-card">
           <div class="lang-ja">

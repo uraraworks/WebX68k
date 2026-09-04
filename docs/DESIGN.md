@@ -593,6 +593,40 @@ Pointer Lock を経由せずに入力を注入できる（将来の MCP ブリ�
 ポーリングしており、累積デルタは即座に吸われて次のポーリングで 0 に上書きされる。
 `requestAnimationFrame` ごとに読むこと。
 
+## Web Serial (SCCチャネルA)
+
+**構成:** ブラウザの Web Serial API ↔ `src/serial.ts` の `WebSerialTransport` ↔
+`src/libretro-host.ts` のブリッジ(`drainSerialTx()` 等) ↔ `src/core-shim.c` の
+`webx68k_serial_rx()`/`webx68k_serial_tx_available()`/`webx68k_serial_tx_drain()`/
+`webx68k_serial_guest_baud_rate()` 等 ↔ コアの `SCC_Serial*`(`x68k/scc.c`)。
+コア側は有限容量のFIFOを持つだけで、実ポートの所有(open/close/選択)はブラウザ側が
+握っている。
+
+**ボーレートは非対称。** 線の速度を決めているのはブラウザ側で選んだボーレートだけで、
+`Serial.open({ baudRate })` の値がそのまま実ポートに渡る。ゲスト(X68000)側のSCC設定は
+`webx68k_serial_guest_baud_rate()` で読めるが、これは不一致警告の表示に使っているだけで、
+データ経路にもペーシングにも一切関与しない。ビット単位の通信速度エミュレーションは
+していない。
+
+**バックプレッシャー。** 受信方向は、コア側FIFOが満杯なら `webx68k_serial_rx()` が
+実際に受理できたバイト数を返すだけで、`WebSerialTransport` の readLoop は
+`waitForReceiveCapacity()` で空きができるまで待つ。送信方向は、毎フレーム処理後に
+`LibretroHost.drainSerialTx()` でコア側の送信FIFOを吸い出して `writer.write()` に渡す。
+ただし `writer.write()` の完了は「ブラウザのバッファに積んだ」ことしか保証せず物理的な
+送信完了ではないため、送ったバイト数から推定した送信時間ぶん待ってからTX ready
+(`webx68k_serial_set_tx_writable()`)を戻している。
+
+**FIFOを消す境界。** マシンリセット、ステートロード、切断、通信エラーの4箇所で
+`webx68k_serial_reset()` 相当を呼び、FIFOを空にする。通信の途中で切っても
+未送受信データはそのまま失われるが、ロード前の古いデータが後から紛れ込んで再送される
+よりは安全という判断でこうしている。
+
+**落とし穴: 単一インスタンス前提。** `WebSerialTransport` は複数同時稼働を想定していない。
+`receiveWaiter` はコールバックを1枠しか持てないため、readLoopが2本以上同時に走ると
+待機が取りこぼされる。また、コンストラクタで登録する `disconnect` イベントリスナーは
+解除しないため、インスタンスを複数作ると古いリスナーが残り続ける。どちらも
+`src/serial.ts` のクラスコメントに明記済み。
+
 ## ゲームパッド入力
 
 Gamepad API(`navigator.getGamepads()`)を px68k-libretro の RetroPad 入力(`RETRO_DEVICE_JOYPAD`)
