@@ -19,11 +19,17 @@ export function parseRamSizeParam(raw: string | null): string | null {
 }
 
 /**
- * index.html の #cfg-cpuspeed が並べる option 値(∞MHz の 'auto' を除く)。
+ * index.html の #cfg-cpuspeed が並べる option 値(∞MHz の 'auto' 系を除く)。
  * px68k-libretro の libretro_core_options.h の表記と完全一致させる必要があるため、
- * この配列を書き換える場合は index.html とコア側の選択肢も合わせて直すこと。
+ * この配列を書き換える場合は index.html も合わせて直すこと。
  * パースはこの配列に限定しない(コアは選択肢外の値も受け付ける)が、
  * ここに並ぶ値は必ず正規化結果と一致すること(test/url-params.test.ts で検査)。
+ *
+ * 200/400/800MHz は**あえて選択肢に置いていない**。実測でこのクラスのMacでも
+ * 100MHz で実測50%(ベンチ所要が11.4秒→23.0秒)、800MHz で実測10%(同 約10倍)になり、
+ * 数字は伸びても待ち時間が線形に増えるだけで実用域を外れる。「このマシンで出せる最大」は
+ * ∞MHz が自動で見つけるので、固定の高クロックを選ぶ理由がほぼ無い。
+ * ただし capability は残してあり、`?cpu=200` のようなURL指定では 10〜1000 を指定できる。
  */
 export const CPU_SPEED_OPTIONS = [
   '10Mhz',
@@ -32,9 +38,6 @@ export const CPU_SPEED_OPTIONS = [
   '33Mhz (OC)',
   '66Mhz (OC)',
   '100Mhz (OC)',
-  '200Mhz (OC)',
-  '400Mhz (OC)',
-  '800Mhz (OC)',
 ] as const;
 
 /**

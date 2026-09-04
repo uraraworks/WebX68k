@@ -299,9 +299,17 @@ machine faster than the real thing, change "CPU speed" instead.
 
 ### CPU speed and ∞MHz (host-dependent)
 
-"CPU speed" offers 10/16/25/33/66/100/200/400/800MHz plus "∞MHz
-(host-dependent)". Changes now apply immediately, with no reset (they used to
-require one).
+"CPU speed" offers 10/16/25/33/66/100MHz plus "∞MHz (host-dependent)" and
+"∞MHz (max speed, coarse display)". Changes now apply immediately, with no
+reset (they used to require one).
+
+Fixed clocks above 100MHz are **deliberately absent from the menu**. Measured
+here, even 100MHz runs the guest at 50% of real time (the ChaCha benchmark
+takes 23.0s instead of 11.4s), and 800MHz runs it at 10% (about ten times as
+long): the number goes up but the wait grows with it. "As fast as this machine
+can go" is what ∞MHz finds on its own, so a fixed high clock has little reason
+to exist. The capability is still there for experiments: a URL can request any
+value from 10 to 1000, e.g. `?cpu=200`.
 
 "∞MHz" does not fix a clock. It aims for **the highest clock that still keeps
 real time**: once a second it looks at how many frames actually ran and raises
