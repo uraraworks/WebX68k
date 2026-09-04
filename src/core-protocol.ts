@@ -504,6 +504,14 @@ export interface ScsiDebugFrameProbe {
   writeCount: number;
   lastWriteUnit: number;
   lastWriteLogsec: number;
+  strategyCallCount: number;
+  interruptCallCount: number;
+  // 調査用(2026-09-04、docs/STORAGE-SCSI.md参照): SASI(成功する側)の裏取り用カウンタ。
+  sasiReqTotal: number;
+  sasiReadCount: number;
+  sasiLastReadLba: number;
+  sasiWriteCount: number;
+  sasiLastWriteLba: number;
 }
 
 export interface MouseTrackFrameProbe {

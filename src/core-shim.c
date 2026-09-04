@@ -660,6 +660,118 @@ int webx68k_scsi_reply_d0(void)
   return js_scsi_reply_d0();
 }
 
+/* 【調査用・実験スイッチ】2026-09-04: SCSI要求ヘッダの成功処理直後に
+ * 任意オフセットへ任意16bit値を書く。Human68kが要求ヘッダのどの欄を
+ * 実際に読んでいるかを故障注入で確認するための道具。
+ * off: 既定 -1(無効)。0以上のときだけ addr+off/addr+off+1 へ書く。
+ * val: 書き込む16bit値(既定0)。off<0のときは無視される。 */
+EM_JS(int, js_scsi_req_status_off, (), {
+  var v = globalThis.__webx68kScsiReqStatusOff;
+  return (typeof v === 'number') ? (v | 0) : -1;
+});
+
+__attribute__((used))
+int webx68k_scsi_req_status_off(void)
+{
+  return js_scsi_req_status_off();
+}
+
+EM_JS(int, js_scsi_req_status_val, (), {
+  var v = globalThis.__webx68kScsiReqStatusVal;
+  return (typeof v === 'number') ? (v | 0) : 0;
+});
+
+__attribute__((used))
+int webx68k_scsi_req_status_val(void)
+{
+  return js_scsi_req_status_val();
+}
+
+/* 【調査用・実験スイッチ】2026-09-04: 上のreq-status-off/valは全コマンド共通で
+ * 効いてしまうため、「指定したコマンド番号の要求に対してだけ」書きたい場合の
+ * 専用版。cmd: 既定 -1(無効)。0以上のときだけ、そのコマンド番号の要求の処理
+ * 直後にoff/valを使う(off<0なら何もしない)。 */
+EM_JS(int, js_scsi_cmd_answer_cmd, (), {
+  var v = globalThis.__webx68kScsiCmdAnswerCmd;
+  return (typeof v === 'number') ? (v | 0) : -1;
+});
+
+__attribute__((used))
+int webx68k_scsi_cmd_answer_cmd(void)
+{
+  return js_scsi_cmd_answer_cmd();
+}
+
+EM_JS(int, js_scsi_cmd_answer_off, (), {
+  var v = globalThis.__webx68kScsiCmdAnswerOff;
+  return (typeof v === 'number') ? (v | 0) : -1;
+});
+
+__attribute__((used))
+int webx68k_scsi_cmd_answer_off(void)
+{
+  return js_scsi_cmd_answer_off();
+}
+
+EM_JS(int, js_scsi_cmd_answer_val, (), {
+  var v = globalThis.__webx68kScsiCmdAnswerVal;
+  return (typeof v === 'number') ? (v | 0) : 0;
+});
+
+__attribute__((used))
+int webx68k_scsi_cmd_answer_val(void)
+{
+  return js_scsi_cmd_answer_val();
+}
+
+/* 【調査用・実験スイッチ】2026-09-04: cmd-answerは1箇所16bitしか埋められないため、
+ * 「指定コマンドの要求ヘッダの指定範囲を、指定バイト値で一様に埋める」ための専用版。
+ * cmd: 既定 -1(無効)。lo/hi: 既定 -1(無効、lo<=hiのときだけ有効)。
+ * val: 埋める1バイト値(既定0)。 */
+EM_JS(int, js_scsi_cmd_fill_cmd, (), {
+  var v = globalThis.__webx68kScsiCmdFillCmd;
+  return (typeof v === 'number') ? (v | 0) : -1;
+});
+
+__attribute__((used))
+int webx68k_scsi_cmd_fill_cmd(void)
+{
+  return js_scsi_cmd_fill_cmd();
+}
+
+EM_JS(int, js_scsi_cmd_fill_lo, (), {
+  var v = globalThis.__webx68kScsiCmdFillLo;
+  return (typeof v === 'number') ? (v | 0) : -1;
+});
+
+__attribute__((used))
+int webx68k_scsi_cmd_fill_lo(void)
+{
+  return js_scsi_cmd_fill_lo();
+}
+
+EM_JS(int, js_scsi_cmd_fill_hi, (), {
+  var v = globalThis.__webx68kScsiCmdFillHi;
+  return (typeof v === 'number') ? (v | 0) : -1;
+});
+
+__attribute__((used))
+int webx68k_scsi_cmd_fill_hi(void)
+{
+  return js_scsi_cmd_fill_hi();
+}
+
+EM_JS(int, js_scsi_cmd_fill_val, (), {
+  var v = globalThis.__webx68kScsiCmdFillVal;
+  return (typeof v === 'number') ? (v | 0) : 0;
+});
+
+__attribute__((used))
+int webx68k_scsi_cmd_fill_val(void)
+{
+  return js_scsi_cmd_fill_val();
+}
+
 /* デバイスドライバヘッダ +$00(次のヘッダ)。既定 $ffffffff(従来と同じ)。 */
 EM_JS(int, js_scsi_drv_next, (), {
   var v = globalThis.__webx68kScsiDrvNext;
@@ -1146,6 +1258,17 @@ extern int32_t webx68k_mem_read_watch_hi;
 extern int32_t webx68k_mem_read_watch_pc_lo;
 extern int32_t webx68k_mem_read_watch_pc_hi;
 extern int      webx68k_mem_read_watch_count;
+extern int      webx68k_mem_read_watch_require_trigger;
+
+/*
+ * 調査用(2026-09-04): 記録を実行トレース(webx68k_trace_*)のトリガ発火後だけに
+ * 限定するかどうか(globalThis.__webx68kMemReadWatchRequireTrigger、既定は
+ * 無効=0=従来通り無条件)。x68k/mem_wrap.c の webx68k_mem_read_watch_check() 参照。
+ */
+EM_JS(int, js_mem_read_watch_require_trigger, (), {
+  var v = globalThis.__webx68kMemReadWatchRequireTrigger;
+  return (typeof v === 'number' && v) ? 1 : 0;
+});
 
 /* PC絞り込みの無効条件は pc_lo が負であること。
  * mem_wrap.c 側の判定式と必ず一致させること。 */
@@ -1156,20 +1279,23 @@ void webx68k_mem_read_watch_refresh(void)
   int hi = js_mem_read_watch_hi();
   int pc_lo = js_mem_read_watch_pc_lo();
   int pc_hi = js_mem_read_watch_pc_hi();
+  int require_trigger = js_mem_read_watch_require_trigger();
 
   if (lo != webx68k_mem_read_watch_lo || hi != webx68k_mem_read_watch_hi ||
-      pc_lo != webx68k_mem_read_watch_pc_lo || pc_hi != webx68k_mem_read_watch_pc_hi)
+      pc_lo != webx68k_mem_read_watch_pc_lo || pc_hi != webx68k_mem_read_watch_pc_hi ||
+      require_trigger != webx68k_mem_read_watch_require_trigger)
   {
     webx68k_mem_read_watch_count = 0; /* 範囲が変わったら件数を数え直す */
     if (lo <= hi)
     {
       int pc_enabled = (pc_lo >= 0 && pc_lo <= pc_hi);
       if (pc_enabled)
-        printf("[SCSI-MEMR] 監視設定: adr=$%06x..$%06x pc絞り込み=有効($%08x..$%08x)\n",
-               (unsigned)lo, (unsigned)hi, (unsigned)pc_lo, (unsigned)pc_hi);
+        printf("[SCSI-MEMR] 監視設定: adr=$%06x..$%06x pc絞り込み=有効($%08x..$%08x) トリガ待ち=%s\n",
+               (unsigned)lo, (unsigned)hi, (unsigned)pc_lo, (unsigned)pc_hi,
+               require_trigger ? "有効" : "無効");
       else
-        printf("[SCSI-MEMR] 監視設定: adr=$%06x..$%06x pc絞り込み=無効(pc_lo=%d pc_hi=%d)\n",
-               (unsigned)lo, (unsigned)hi, pc_lo, pc_hi);
+        printf("[SCSI-MEMR] 監視設定: adr=$%06x..$%06x pc絞り込み=無効(pc_lo=%d pc_hi=%d) トリガ待ち=%s\n",
+               (unsigned)lo, (unsigned)hi, pc_lo, pc_hi, require_trigger ? "有効" : "無効");
     }
   }
 
@@ -1177,6 +1303,7 @@ void webx68k_mem_read_watch_refresh(void)
   webx68k_mem_read_watch_hi = hi;
   webx68k_mem_read_watch_pc_lo = pc_lo;
   webx68k_mem_read_watch_pc_hi = pc_hi;
+  webx68k_mem_read_watch_require_trigger = require_trigger;
 }
 
 
@@ -1197,6 +1324,12 @@ extern unsigned int SCSILastReadLogsec;
 extern unsigned int SCSIWriteCount;
 extern unsigned int SCSILastWriteUnit;
 extern unsigned int SCSILastWriteLogsec;
+/* 調査用(2026-09-04): PCトレース上の rts($190028/$190032)件数がreqTotalより
+ * 大幅に多く見える食い違いの裏取り用。x68k/scsi.c 側の
+ * SCSIStrategyCallCount/SCSIInterruptCallCount(いずれもlog_cbを経由しない
+ * 独立カウンタ)を、get_scsi_req_total()等と同じ流儀で素通しする。 */
+extern unsigned int SCSIStrategyCallCount;
+extern unsigned int SCSIInterruptCallCount;
 
 __attribute__((used))
 unsigned int get_scsi_req_total(void)
@@ -1244,4 +1377,58 @@ __attribute__((used))
 unsigned int get_scsi_last_write_logsec(void)
 {
   return SCSILastWriteLogsec;
+}
+
+__attribute__((used))
+unsigned int get_scsi_strategy_call_count(void)
+{
+  return SCSIStrategyCallCount;
+}
+
+__attribute__((used))
+unsigned int get_scsi_interrupt_call_count(void)
+{
+  return SCSIInterruptCallCount;
+}
+
+/*
+ * 調査用(2026-09-04、docs/STORAGE-SCSI.md参照): SASI(成功する側)の裏取り用カウンタ。
+ * x68k/sasi.c 側の SASIReqTotalCount(コマンド単位)・SASIReadCount/SASILastReadLba・
+ * SASIWriteCount/SASILastWriteLba(256バイトセクタ単位)を、SCSI用のget_scsi_*と
+ * 同じ流儀でJS側へ素通しする。挙動には一切影響しない読み取り専用。
+ */
+extern unsigned int SASIReqTotalCount;
+extern unsigned int SASIReadCount;
+extern unsigned int SASILastReadLba;
+extern unsigned int SASIWriteCount;
+extern unsigned int SASILastWriteLba;
+
+__attribute__((used))
+unsigned int get_sasi_req_total(void)
+{
+  return SASIReqTotalCount;
+}
+
+__attribute__((used))
+unsigned int get_sasi_read_count(void)
+{
+  return SASIReadCount;
+}
+
+__attribute__((used))
+unsigned int get_sasi_last_read_lba(void)
+{
+  return SASILastReadLba;
+}
+
+__attribute__((used))
+unsigned int get_sasi_write_count(void)
+{
+  return SASIWriteCount;
+}
+
+__attribute__((used))
+unsigned int get_sasi_last_write_lba(void)
+{
+  return SASILastWriteLba;
 }

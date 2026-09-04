@@ -189,6 +189,15 @@ export interface PX68KModule {
   _get_scsi_write_count?(): number;
   _get_scsi_last_write_unit?(): number;
   _get_scsi_last_write_logsec?(): number;
+  _get_scsi_strategy_call_count?(): number;
+  _get_scsi_interrupt_call_count?(): number;
+  // 調査用(2026-09-04、docs/STORAGE-SCSI.md参照): SASI(成功する側)の裏取り用カウンタ。
+  // SCSI用と同じ趣旨(log_cbを経由しない)。古いwasm(再ビルド前)でも落ちないよう任意プロパティ。
+  _get_sasi_req_total?(): number;
+  _get_sasi_read_count?(): number;
+  _get_sasi_last_read_lba?(): number;
+  _get_sasi_write_count?(): number;
+  _get_sasi_last_write_lba?(): number;
 }
 
 /**
@@ -421,6 +430,18 @@ export class LibretroHost {
     writeCount: number;
     lastWriteUnit: number;
     lastWriteLogsec: number;
+    // 調査用(2026-09-04): d2テーブルのストラテジ(+$00)/インタラプト(+$0a)呼び出し
+    // 回数(log_cbを経由しない独立カウンタ)。PCトレース上のrts件数(取りこぼしの
+    // 有無)の裏取り用。古いwasm(再ビルド前)では-1のまま。
+    strategyCallCount: number;
+    interruptCallCount: number;
+    // 調査用(2026-09-04、docs/STORAGE-SCSI.md参照): SASI(成功する側)の裏取り用カウンタ。
+    // 古いwasm(再ビルド前)では-1のまま(SCSI側と同じ作法)。
+    sasiReqTotal: number;
+    sasiReadCount: number;
+    sasiLastReadLba: number;
+    sasiWriteCount: number;
+    sasiLastWriteLba: number;
   } | null {
     if (!this.mod._get_scsi_req_total) return null;
     return {
@@ -432,6 +453,13 @@ export class LibretroHost {
       writeCount: this.mod._get_scsi_write_count?.() ?? -1,
       lastWriteUnit: this.mod._get_scsi_last_write_unit?.() ?? -1,
       lastWriteLogsec: this.mod._get_scsi_last_write_logsec?.() ?? -1,
+      strategyCallCount: this.mod._get_scsi_strategy_call_count?.() ?? -1,
+      interruptCallCount: this.mod._get_scsi_interrupt_call_count?.() ?? -1,
+      sasiReqTotal: this.mod._get_sasi_req_total?.() ?? -1,
+      sasiReadCount: this.mod._get_sasi_read_count?.() ?? -1,
+      sasiLastReadLba: this.mod._get_sasi_last_read_lba?.() ?? -1,
+      sasiWriteCount: this.mod._get_sasi_write_count?.() ?? -1,
+      sasiLastWriteLba: this.mod._get_sasi_last_write_lba?.() ?? -1,
     };
   }
 

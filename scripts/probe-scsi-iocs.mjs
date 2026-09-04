@@ -107,6 +107,68 @@ const REPLY_D0 = args['reply-d0'] === undefined ? null : Number(args['reply-d0']
 // x68k/scsi.c の SCSI_HandleRequestHeader 末尾を参照。未指定はコア側の既定(off=-1=無効)。
 const REQ_STATUS_OFF = args['req-status-off'] === undefined ? null : Number(args['req-status-off']);
 const REQ_STATUS_VAL = args['req-status-val'] === undefined ? null : Number(args['req-status-val']);
+// 【調査用・実験スイッチ】2026-09-04: 上のreq-status-off/valは全コマンド共通で効いてしまう
+// ため、「指定したコマンド番号の要求に対してだけ」書きたい場合の専用版。
+// 書式: --cmd-answer=CC:OFF:VAL (例: --cmd-answer=05:14:0x01 = コマンド$05の要求ヘッダ
+// +14へ$01を書く)。CC/OFF/VALはいずれも10進・0x接頭の16進のどちらでも可(Number()に渡す)。
+// 意味は core-shim.c の js_scsi_cmd_answer_cmd/off/val、x68k/scsi.c の
+// SCSI_HandleRequestHeader 末尾を参照。未指定はコア側の既定(cmd=-1=無効)。
+let CMD_ANSWER_CMD = null;
+let CMD_ANSWER_OFF = null;
+let CMD_ANSWER_VAL = null;
+if (args['cmd-answer'] !== undefined) {
+  const m = /^([^:]+):([^:]+):([^:]+)$/.exec(String(args['cmd-answer']));
+  if (!m) {
+    console.error(
+      `--cmd-answer の書式が不正: ${args['cmd-answer']} (CC:OFF:VAL の形で指定。例: 05:14:0x01)`,
+    );
+    process.exit(1);
+  }
+  CMD_ANSWER_CMD = Number(m[1]);
+  CMD_ANSWER_OFF = Number(m[2]);
+  CMD_ANSWER_VAL = Number(m[3]);
+  if (
+    !Number.isFinite(CMD_ANSWER_CMD) ||
+    !Number.isFinite(CMD_ANSWER_OFF) ||
+    !Number.isFinite(CMD_ANSWER_VAL)
+  ) {
+    console.error(`--cmd-answer の数値が不正: ${args['cmd-answer']}`);
+    process.exit(1);
+  }
+}
+// 【調査用・実験スイッチ】2026-09-04: cmd-answerは1箇所16bitしか埋められないため、
+// 「指定コマンドの要求ヘッダの指定範囲を、指定バイト値で一様に埋める」ための専用版。
+// 書式: --cmd-fill=CC:LO:HI:VAL (例: --cmd-fill=05:4:25:0x01 = コマンド$05の要求ヘッダ
+// +4〜+25を$01で埋める)。CC/LO/HI/VALはいずれも10進・0x接頭の16進のどちらでも可。
+// +3(結果コード)は範囲に含まれていてもコア側でskipする(既知の理由によりマウントが壊れるため)。
+// 意味は core-shim.c の js_scsi_cmd_fill_cmd/lo/hi/val、x68k/scsi.c の
+// SCSI_HandleRequestHeader 末尾を参照。未指定はコア側の既定(cmd=-1=無効)。
+let CMD_FILL_CMD = null;
+let CMD_FILL_LO = null;
+let CMD_FILL_HI = null;
+let CMD_FILL_VAL = null;
+if (args['cmd-fill'] !== undefined) {
+  const m = /^([^:]+):([^:]+):([^:]+):([^:]+)$/.exec(String(args['cmd-fill']));
+  if (!m) {
+    console.error(
+      `--cmd-fill の書式が不正: ${args['cmd-fill']} (CC:LO:HI:VAL の形で指定。例: 05:4:25:0x01)`,
+    );
+    process.exit(1);
+  }
+  CMD_FILL_CMD = Number(m[1]);
+  CMD_FILL_LO = Number(m[2]);
+  CMD_FILL_HI = Number(m[3]);
+  CMD_FILL_VAL = Number(m[4]);
+  if (
+    !Number.isFinite(CMD_FILL_CMD) ||
+    !Number.isFinite(CMD_FILL_LO) ||
+    !Number.isFinite(CMD_FILL_HI) ||
+    !Number.isFinite(CMD_FILL_VAL)
+  ) {
+    console.error(`--cmd-fill の数値が不正: ${args['cmd-fill']}`);
+    process.exit(1);
+  }
+}
 // デバイスドライバヘッダ +$00(次のヘッダ)。既定(未指定)はコア側の既定 $ffffffff に任せる。
 const DRV_NEXT = args['drv-next'] === undefined ? null : Number(args['drv-next']);
 const DRV_RAM = args['drv-ram'] === undefined ? null : Number(args['drv-ram']);
@@ -251,6 +313,10 @@ if (args['mem-read-watch-pc'] !== undefined) {
   MEM_READ_WATCH_PC_LO = parseRamWatchAddr(m[1]);
   MEM_READ_WATCH_PC_HI = parseRamWatchAddr(m[2]);
 }
+// --mem-read-watch-require-trigger: 記録を実行トレース(webx68k_trace_*、
+// x68k/scsi.c・x68k/sasi.c の端数セクタ完了トリガ)発火後だけに限定する。
+// 値を取らないフラグ(コア側の既定は0=従来通り無条件)。
+const MEM_READ_WATCH_REQUIRE_TRIGGER = args['mem-read-watch-require-trigger'] !== undefined;
 
 /**
  * 基準器イメージを Range 対応で配信する小さなサーバ。
@@ -488,6 +554,41 @@ try {
       window.__webx68kScsiReqStatusVal = v;
     }, REQ_STATUS_VAL);
   }
+  if (CMD_ANSWER_CMD !== null) {
+    await page.evaluateOnNewDocument((v) => {
+      window.__webx68kScsiCmdAnswerCmd = v;
+    }, CMD_ANSWER_CMD);
+  }
+  if (CMD_ANSWER_OFF !== null) {
+    await page.evaluateOnNewDocument((v) => {
+      window.__webx68kScsiCmdAnswerOff = v;
+    }, CMD_ANSWER_OFF);
+  }
+  if (CMD_ANSWER_VAL !== null) {
+    await page.evaluateOnNewDocument((v) => {
+      window.__webx68kScsiCmdAnswerVal = v;
+    }, CMD_ANSWER_VAL);
+  }
+  if (CMD_FILL_CMD !== null) {
+    await page.evaluateOnNewDocument((v) => {
+      window.__webx68kScsiCmdFillCmd = v;
+    }, CMD_FILL_CMD);
+  }
+  if (CMD_FILL_LO !== null) {
+    await page.evaluateOnNewDocument((v) => {
+      window.__webx68kScsiCmdFillLo = v;
+    }, CMD_FILL_LO);
+  }
+  if (CMD_FILL_HI !== null) {
+    await page.evaluateOnNewDocument((v) => {
+      window.__webx68kScsiCmdFillHi = v;
+    }, CMD_FILL_HI);
+  }
+  if (CMD_FILL_VAL !== null) {
+    await page.evaluateOnNewDocument((v) => {
+      window.__webx68kScsiCmdFillVal = v;
+    }, CMD_FILL_VAL);
+  }
   if (DRV_NEXT !== null) {
     await page.evaluateOnNewDocument((v) => {
       window.__webx68kScsiDrvNext = v;
@@ -617,6 +718,11 @@ try {
       window.__webx68kMemReadWatchPcHi = hi;
     }, MEM_READ_WATCH_PC_LO, MEM_READ_WATCH_PC_HI);
   }
+  if (MEM_READ_WATCH_REQUIRE_TRIGGER) {
+    await page.evaluateOnNewDocument(() => {
+      window.__webx68kMemReadWatchRequireTrigger = 1;
+    });
+  }
   if (ROM !== null) {
     const romBytes = Array.from(await readFile(ROM));
     console.error(`[probe] 本物のSCSI ROMイメージを読み込む: ${ROM} (${romBytes.length} バイト)`);
@@ -671,6 +777,17 @@ try {
   }
   // プロンプト到達後もしばらく観測する(常駐ドライバが後から叩く可能性)。
   await sleep(3000);
+
+  // 調査用(2026-09-04): 打鍵の「前」のカウンタも取る。scsiDebugSamples は打鍵後にしか
+  // 取っておらず、「打鍵前後でいくつ増えたか」を出すには基準点が要る
+  // (docs/STORAGE-SCSI.md「ログという容れ物と中身」/コンソールログ件数との突き合わせ用)。
+  let scsiDebugBaseline = null;
+  if (args['poll-scsi-debug'] !== undefined) {
+    await page.evaluate(() => window.__webx68kDebug?.keybufProbeEnable?.(true)).catch(() => {});
+    scsiDebugBaseline = await page
+      .evaluate(() => window.__webx68kDebug?.scsiDebug?.() ?? null)
+      .catch((err) => ({ error: String(err) }));
+  }
 
   // --type=<文字列> でゲストへ打鍵する(末尾に改行を付ける)。
   // ドライブが実際に見えているかは「誰かが触る」まで分からないため、
@@ -855,6 +972,7 @@ try {
         booted,
         typedScreen,
         typedMismatch,
+        scsiDebugBaseline,
         scsiDebugSamples,
         dumps,
         screenshot: shot,
