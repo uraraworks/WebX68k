@@ -25,7 +25,7 @@ See [docs/DESIGN.md](docs/DESIGN.md) for design and implementation details.
 | `fd1` / `fd2` | URL of a disk image to load into FDD0 / FDD1 | See below |
 | `hdd` | URL of a disk image to set into the HDD slot | See below |
 | `lib` | URL of a disk image to register in the Disk Library only (repeatable) | See below |
-| `cpu` | `10`/`16`/`25`/`33`/`66`/`100` to override the CPU clock (MHz) for this boot only | A one-off override for reproducing a recommended environment from a shared URL. Reflected in the settings UI but not persisted to `localStorage` (opening the link alone must not overwrite the user's saved default) |
+| `cpu` | An integer from `10` to `1000` to override the CPU clock (MHz), `auto` for ∞MHz (host-dependent), or `auto-max` for ∞MHz (max speed, coarse display), for this boot only | A one-off override for reproducing a recommended environment from a shared URL. Reflected in the settings UI but not persisted to `localStorage` (opening the link alone must not overwrite the user's saved default) |
 | `ram` | `1`–`12` to override the RAM size (MB) for this boot only | A one-off override for reproducing a recommended environment from a shared URL. Reflected in the settings UI but not persisted to `localStorage` (opening the link alone must not overwrite the user's saved default) |
 | `aspect` | `4:3` or `native` to override the display aspect ratio mode for this boot only | A one-off override for reproducing a recommended environment from a shared URL. Reflected in the toggle button state but not persisted to `localStorage` (opening the link alone must not overwrite the user's saved default) |
 | `run` | `1` to auto-boot without showing the start overlay | |
@@ -290,9 +290,67 @@ measured-speed display still works in Unlimited mode, so you can see the
 actual percentage you're getting.
 
 This is separate from the machine configuration's "CPU speed"
-(`px68k_cpuspeed`, 10-100MHz) setting: that one changes the emulated
-hardware's actual clock and needs a reset, while this one just changes the
-host's execution pace and applies immediately.
+(`px68k_cpuspeed`) setting: that one changes the emulated hardware's clock,
+while this one only changes the host's execution pace. **Raising the
+multiplier does not change any ratio measured inside the guest** — the CPU,
+the CRTC and the timers all speed up together, so ten guest seconds simply
+take less wall-clock time. If you want a benchmark number to go up, or want a
+machine faster than the real thing, change "CPU speed" instead.
+
+### CPU speed and ∞MHz (host-dependent)
+
+"CPU speed" offers 10/16/25/33/66/100MHz plus "∞MHz (host-dependent)" and
+"∞MHz (max speed, coarse display)". Changes now apply immediately, with no
+reset (they used to require one).
+
+Fixed clocks above 100MHz are **deliberately absent from the menu**. Measured
+here, even 100MHz runs the guest at 50% of real time (the ChaCha benchmark
+takes 23.0s instead of 11.4s), and 800MHz runs it at 10% (about ten times as
+long): the number goes up but the wait grows with it. "As fast as this machine
+can go" is what ∞MHz finds on its own, so a fixed high clock has little reason
+to exist. The capability is still there for experiments: a URL can request any
+value from 10 to 1000, e.g. `?cpu=200`.
+
+"∞MHz" does not fix a clock. It aims for **the highest clock that still keeps
+real time**: once a second it looks at how many frames actually ran and raises
+the clock while the emulator is keeping up, backing off as soon as it falls
+behind. It deliberately sits just under the limit, so the measured-speed
+display hovers a few percent either side of 100% rather than sitting exactly
+there. Where it settles depends on the device and its current load, so it
+differs from run to run even on the same machine. The current clock is shown
+next to the measured speed in the settings panel.
+
+Even while real time is being kept, core execution that eats the whole main
+thread would freeze the display and the UI, so the clock is never raised past
+the point where one frame of core execution takes 80% of one frame of real
+time.
+
+#### ∞MHz (max speed, coarse display)
+
+There is a second tier: "∞MHz (max speed, coarse display)". It **throttles
+presentation to roughly 30fps** and spends the freed time on core execution,
+and it raises the ceiling above from 80% to 95%. It trades a smooth picture
+for clock speed — useful for chasing benchmark numbers, or whenever
+throughput matters more than the display.
+
+Measured on one host, at the Human68k prompt:
+
+| Mode | Clock | Display (rAF) | `setTimeout(0)` p90 | ChaCha bench |
+|---|---|---|---|---|
+| ∞MHz | 53-61MHz | 46.3 fps | 34 ms | 0399 |
+| ∞MHz (max speed) | 75-84MHz | 23.3 fps | 50 ms | 0485 |
+
+Raising only the ceiling to 95%, while still presenting every frame, was also
+tried: it reached 67-70MHz but collapsed to 9.5fps with a 140ms
+`setTimeout(0)` p90. **Throttling presentation improves both the clock and the
+frame rate.**
+
+While ∞MHz is active the **speed-multiplier button is disabled**: both features
+compete for the same host time, so making both unlimited leaves neither
+meaningful.
+
+For benchmark numbers you can compare, pick a fixed clock — ∞MHz keeps moving
+the clock while the measurement is running.
 
 ### Virtual keyboard
 

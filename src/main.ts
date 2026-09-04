@@ -86,6 +86,11 @@ import { sliceKeyBufSnapshot } from './keybuf-probe';
 import { computeShouldAcceptGuestKeyInput, MainInputSnapshot } from './worker-input';
 import { MouseTracker } from './mouse-track';
 import {
+  AUTO_CPU_SPEED,
+  AUTO_CPU_SPEED_TURBO,
+  CPU_MHZ_MAX,
+  CPU_MHZ_MIN,
+  cpuSpeedOptionForMhz,
   parseAspectModeParam,
   parseCpuSpeedParam,
   parseRamSizeParam,
@@ -404,13 +409,15 @@ function loadMachineConfig(): { cpuSpeed: string; ramSize: string } {
 
 let { cpuSpeed, ramSize } = loadMachineConfig();
 
-// ?cpu=<10|16|25|33|66|100> : 起動時のみ CPU クロックを上書きする(共有URLで推奨環境を再現するため)。
+// ?cpu=<10..1000|auto|auto-max> : 起動時のみ CPU クロックを上書きする(共有URLで推奨環境を再現するため)。
 // 意図的に localStorage には保存しない。共有リンクを開いただけで利用者の既定設定が
 // 書き換わってしまうと、リンクを踏むたびに意図せず設定が上書きされる事故になるため。
 const cpuParamRaw = new URLSearchParams(location.search).get('cpu');
 const urlCpuSpeed = parseCpuSpeedParam(cpuParamRaw);
 if (cpuParamRaw !== null && urlCpuSpeed === null) {
-  console.warn('?cpu= の値が不正です(10/16/25/33/66/100 のいずれか、または "16Mhz" 形式で指定してください)');
+  console.warn(
+    '?cpu= の値が不正です(10〜1000 の整数、"16Mhz" 形式、auto、auto-max を指定してください)',
+  );
 } else if (urlCpuSpeed !== null) {
   cpuSpeed = urlCpuSpeed;
 }
@@ -438,12 +445,157 @@ if (workerParamRaw !== null && parsedWorkerMode === null) {
 }
 const urlWorkerMode = parsedWorkerMode ?? true;
 
-cfgCpuSpeed.value = cpuSpeed;
+// --- ∞MHz(ホスト次第): CPUクロックの自動調整 ---
+//
+// px68k_cpuspeed は「エミュレートされるX68000のCPUクロック」で、速度倍率(#btn-speed、
+// ホスト側のフレーム供給ペース)とは別物。倍率を上げてもゲスト内の比は変わらない
+// (マシンごと同率で速く回るだけ)ので、ベンチの数字を伸ばしたい・実機より速いX68000として
+// 使いたい場合に動かすのはこちら。
+//
+// 'auto' のときは、コア実行1フレームぶんの実時間を測り、実時間の AUTO_CLOCK_TARGET_DUTY に
+// 収まる範囲で最大のクロックへ寄せていく。落ち着く先は端末の性能と負荷で変わる=「ホスト次第」。
+//
+// 倍率と同時に無制限にすると同じホスト時間を奪い合って両方とも意味を失うため、
+// 'auto' のあいだは速度倍率ボタンを無効化して等速に固定する。
+/**
+ * コア実行がメインスレッドを占有してよい割合の上限。残りで画面提示・入力・UIをまかなう。
+ *
+ * 1tickあたりのフレーム数(budget)を絞るだけでは足りない。コアが実時間に追いつけない設定
+ * (高いCPUクロック、非力な端末)では**1フレームの実行そのもの**が実時間1フレームより長くなり、
+ * tick同士が隙間なく連続してブラウザにイベントを配る時間が残らない。実測では cpu=800Mhz に
+ * すると1秒間隔の setInterval すら発火しなくなり、キーもツールバーのボタンも効かなくなった。
+ *
+ * そこで実時間ベースの占有率ゲートを置く(無制限モードの UNLIMITED_MAX_DUTY と同じ考え方)。
+ * コア実行に C ミリ秒かかったら、次に走らせるのは C/FRAME_LOOP_MAX_DUTY ミリ秒後まで待つ。
+ * 追いつけない設定では「遅いが操作は生きている」状態に落ち着く。
+ * 追いついている通常時は C が小さいのでゲートは実質かからない。
+ */
+const FRAME_LOOP_MAX_DUTY = 0.85;
+let frameLoopNextAllowedAt = 0;
+/** host.runFrame() 1回の実時間(ms)の指数移動平均。追いつけているかの判定に使う。 */
+let frameCostMs = 0;
+const AUTO_CLOCK_ADJUST_INTERVAL_MS = 1000;
+/**
+ * 判定に使うのは「コア実行にどれだけかかりそうか」という見積もりではなく、
+ * **実際に実時間を維持できたか**(直近区間で走ったエミュフレーム数 ÷ 期待フレーム数。
+ * 設定パネルの実測%と同じ量)。
+ *
+ * 当初はコア実行1フレームの実時間が実時間の6割に収まる範囲、という見積もりで判定していた。
+ * それだと画面提示・音声・UIのコストを勘定に入れられず、常に4割の余力を残したまま止まる。
+ * 「ホストが許すかぎり」と言いながら限界の手前で頭打ちになるため、結果で判定する形にした。
+ *
+ * 限界を攻めるモードなので、実時間をわずかに割ったところで落ち着くことがある。
+ * 比較可能なベンチ値が要る場合は固定クロックを使うこと。
+ */
+const AUTO_CLOCK_UP_SPEED = 0.99;
+const AUTO_CLOCK_DOWN_SPEED = 0.97;
+/** ここを大きく割ったら小刻みに戻さず一気に下げる(明らかに過負荷)。 */
+const AUTO_CLOCK_PANIC_SPEED = 0.9;
+const AUTO_CLOCK_PANIC_RATIO = 0.7;
+/**
+ * 実時間を維持できていても、コア実行がメインスレッドを食い尽くすと画面提示もUI操作も
+ * 入らなくなる(速度無制限モードで実測した失敗と同じ)。結果だけを見て上げ続けないための天井。
+ * 画面提示の実測が約2.4ms/回なので、1フレーム18msのうち残り2割で提示とUIをまかなう。
+ */
+const AUTO_CLOCK_MAX_CORE_DUTY = 0.8;
+/**
+ * 「描画を捨てて最速」版の天井。実測(Human68kプロンプト・同一ホスト)では
+ *
+ *   天井0.8   53〜61MHz  rAF 46.3fps  setTimeout(0) p90 34ms
+ *   天井0.95  67〜70MHz  rAF  9.5fps  setTimeout(0) p90 140ms
+ *
+ * と、クロックの+15%と引き換えに画面更新が5分の1になる。通常版でこれをやると
+ * 「速いが操作できない」状態になるので、別モードとして明示的に選ばせる。
+ * 画面提示自体も間引くので、rAFが崩れるのではなく約30fpsで安定する。
+ */
+const AUTO_CLOCK_TURBO_CORE_DUTY = 0.95;
+/** 「描画を捨てて最速」版で画面を提示する最小間隔(ms)。33ms ≈ 30fps。 */
+const AUTO_CLOCK_TURBO_PRESENT_INTERVAL_MS = 33;
+let autoClockTurboLastPresentAt = 0;
+/** 一度も下げていない探索初期は粗く、限界に触れてからは細かく動かす。 */
+const AUTO_CLOCK_COARSE_UP_RATIO = 1.25;
+const AUTO_CLOCK_COARSE_DOWN_RATIO = 0.8;
+const AUTO_CLOCK_FINE_UP_RATIO = 1.05;
+const AUTO_CLOCK_FINE_DOWN_RATIO = 0.95;
+const AUTO_CLOCK_START_MHZ = 16;
+let autoClockMhz = AUTO_CLOCK_START_MHZ;
+/** host.runFrame() 1回の実時間(ms)の指数移動平均。天井の判定にだけ使う。 */
+let autoClockFrameCostMs = 0;
+let autoClockLastAdjustAt = 0;
+/** 直近の調整区間で実際に走ったエミュフレーム数。 */
+let autoClockFrames = 0;
+/** 一度でも下げたら true。以降は微調整幅で動かす。 */
+let autoClockFine = false;
+
+/** 現在の設定が ∞MHz モードか(通常版・描画を捨てる版のどちらでも true)。 */
+function isAutoClock(): boolean {
+  return cpuSpeed === AUTO_CPU_SPEED || cpuSpeed === AUTO_CPU_SPEED_TURBO;
+}
+
+/** ∞MHz のうち「描画を捨てて最速」版か。 */
+function isAutoClockTurbo(): boolean {
+  return cpuSpeed === AUTO_CPU_SPEED_TURBO;
+}
+
+/** 設定値(番兵 'auto' を含む)を、コアへ渡せる px68k_cpuspeed の文字列へ解決する。 */
+function resolveCpuSpeedOption(): string {
+  return isAutoClock() ? cpuSpeedOptionForMhz(autoClockMhz) : cpuSpeed;
+}
+
+/** ∞MHz のあいだは速度倍率を使わせない(等速固定)。 */
+function updateSpeedAvailability(): void {
+  const auto = isAutoClock();
+  btnSpeed.disabled = auto;
+  cfgSpeed.disabled = auto;
+  // 無効にした理由を出す。理由の無い disabled は不具合に見える(実際に問い合わせが来た)。
+  // ツールチップはタッチ環境で出ないので、実測表示の行にも併記する
+  // (updateSpeedActualDisplay)。
+  cfgSpeed.title = auto ? t('settingsSpeedLockedByAutoClock') : '';
+  if (auto && speedEnabled) {
+    speedEnabled = false;
+    recomputeSpeedMultiplier();
+    resetSpeedState();
+  }
+  updateSpeedButtonUi();
+}
+
+/**
+ * 設定UIに「実際に効いている値」を表示する。
+ *
+ * `?cpu=` は選択肢に無い値も受け付ける(200/400/800MHz は罠になるので選択肢から外したが、
+ * URLからは 10〜1000 を指定できる)。その値を select にそのまま入れても一致する option が
+ * 無いため value は空になり、**コアは200MHzで動いているのに設定欄は空白**という食い違いが出る。
+ * 一致する option が無いときは、その値の option を固定クロックの末尾へ足してから選ぶ。
+ */
+function syncCpuSpeedSelect(): void {
+  cfgCpuSpeed.value = cpuSpeed;
+  if (cfgCpuSpeed.value === cpuSpeed) return;
+  const option = document.createElement('option');
+  option.value = cpuSpeed;
+  option.textContent = cpuSpeed;
+  const autoOption = cfgCpuSpeed.querySelector(`option[value="${AUTO_CPU_SPEED}"]`);
+  cfgCpuSpeed.insertBefore(option, autoOption);
+  cfgCpuSpeed.value = cpuSpeed;
+}
+
+syncCpuSpeedSelect();
 cfgRamSize.value = ramSize;
 
 cfgCpuSpeed.addEventListener('change', () => {
   cpuSpeed = cfgCpuSpeed.value;
   localStorage.setItem(CPU_SPEED_KEY, cpuSpeed);
+  // px68k_cpuspeed は LIVE_UPDATABLE_CORE_OPTIONS に載せてあるので走行中に反映される。
+  // 'auto' へ切り替えたときは測り直しから始めるため、実測値と調整時刻を捨てる。
+  if (isAutoClock()) {
+    autoClockMhz = AUTO_CLOCK_START_MHZ;
+    autoClockFrameCostMs = 0;
+    autoClockLastAdjustAt = 0;
+    autoClockFrames = 0;
+    autoClockFine = false;
+    autoClockTurboLastPresentAt = 0;
+  }
+  host?.setCoreOption('px68k_cpuspeed', resolveCpuSpeedOption());
+  updateSpeedAvailability();
 });
 cfgRamSize.addEventListener('change', () => {
   ramSize = cfgRamSize.value;
@@ -495,6 +647,8 @@ function resetSpeedState(): void {
   // 提示タイミングだけは切り替え直後に必ず1回提示させるためリセットする。
   unlimitedLastPresentAt = 0;
   unlimitedNextAllowedAt = 0;
+  frameLoopNextAllowedAt = 0;
+  frameCostMs = 0;
 }
 
 /** #btn-speed の見た目(押し込み状態・バッジ・ツールチップ)を現在の状態から一括更新する。 */
@@ -555,11 +709,76 @@ btnSpeed.addEventListener('click', () => {
   updateSpeedButtonUi();
 });
 
+// 起動時の反映。?cpu=auto や localStorage から ∞MHz で始まる場合、ここを通さないと
+// 速度倍率ボタンが有効なまま残り、クロック自動調整と同じホスト時間を奪い合ってしまう。
+// speedEnabled 等の let 宣言より後で呼ぶ必要があるため、速度まわりの初期化の最後に置く。
+updateSpeedAvailability();
+
 // 実測速度表示(約500msごと): 直近区間で実際に走ったエミュフレーム数 ÷ (fps × 経過秒)。
 // 端末性能で頭打ちになったことが見えるように、設定した倍率どおりに出ていない場合に気づける。
 const SPEED_MEASURE_INTERVAL_MS = 500;
 let speedMeasureFrameCount = 0;
 let speedMeasureLastAt = 0;
+
+/**
+ * ∞MHz モードのクロック調整。**実時間を維持できているかどうか**で上げ下げする。
+ *
+ * 直近1秒で実際に走ったエミュフレーム数を期待フレーム数で割った値が
+ * AUTO_CLOCK_UP_SPEED 以上ならクロックを上げ、AUTO_CLOCK_DOWN_SPEED を割ったら下げる。
+ * 大きく割った場合(AUTO_CLOCK_PANIC_SPEED 未満)は小刻みに戻さず一気に下げる。
+ *
+ * 実時間を維持できていてもメインスレッドを食い尽くすと画面提示もUI操作も入らなくなるため、
+ * コア実行1フレームの実時間が AUTO_CLOCK_MAX_CORE_DUTY を超えたらそれ以上は上げない。
+ * 一度でも下げたら微調整幅へ切り替える(粗いまま往復すると±25%も振れるため)。
+ *
+ * 上げた結果として実時間を割り、下げて戻る、を繰り返して限界のすぐ下に居座る設計なので、
+ * 実測%は 100% ちょうどではなく数%下を行き来する。これは想定どおりで、
+ * 「比較可能なベンチ値が要るなら固定クロック」という但し書きとセットの挙動。
+ *
+ * @param now loop() の t(performance.now() 基準)
+ * @param frameIntervalSec エミュ1フレームぶんの目標間隔(秒)
+ */
+function stepAutoClock(now: number, frameIntervalSec: number): void {
+  if (!isAutoClock() || !host) return;
+  if (autoClockLastAdjustAt === 0) {
+    autoClockLastAdjustAt = now;
+    autoClockFrames = 0;
+    return;
+  }
+  const elapsedMs = now - autoClockLastAdjustAt;
+  if (elapsedMs < AUTO_CLOCK_ADJUST_INTERVAL_MS) return;
+  const frames = autoClockFrames;
+  autoClockLastAdjustAt = now;
+  autoClockFrames = 0;
+
+  // 期待フレーム数の基準は fps ではなく **loop() が実際に狙っている間隔**(frameInterval)。
+  // frameInterval には音声キューの滞留量による±2%補正が入っており、キューを吐かせたい局面では
+  // 意図的に fps より遅く供給する。fps を基準にすると achieved が構造的に 1 未満へ張り付き、
+  // 下げ判定が出続けてクロックが際限なく落ちる(実測: 61→39→10MHz へ落ち込んだ)。
+  const expected = elapsedMs / (frameIntervalSec * 1000);
+  if (expected <= 0) return;
+  const achieved = frames / expected;
+  const coreDutyCeiling = isAutoClockTurbo()
+    ? AUTO_CLOCK_TURBO_CORE_DUTY
+    : AUTO_CLOCK_MAX_CORE_DUTY;
+  const atCoreCeiling = autoClockFrameCostMs > frameIntervalSec * 1000 * coreDutyCeiling;
+
+  let next = autoClockMhz;
+  if (achieved < AUTO_CLOCK_PANIC_SPEED) {
+    next = autoClockMhz * AUTO_CLOCK_PANIC_RATIO;
+    autoClockFine = true;
+  } else if (achieved < AUTO_CLOCK_DOWN_SPEED || atCoreCeiling) {
+    next =
+      autoClockMhz * (autoClockFine ? AUTO_CLOCK_FINE_DOWN_RATIO : AUTO_CLOCK_COARSE_DOWN_RATIO);
+    autoClockFine = true;
+  } else if (achieved >= AUTO_CLOCK_UP_SPEED && !atCoreCeiling) {
+    next = autoClockMhz * (autoClockFine ? AUTO_CLOCK_FINE_UP_RATIO : AUTO_CLOCK_COARSE_UP_RATIO);
+  }
+  next = Math.max(CPU_MHZ_MIN, Math.min(CPU_MHZ_MAX, Math.round(next)));
+  if (next === autoClockMhz) return;
+  autoClockMhz = next;
+  host.setCoreOption('px68k_cpuspeed', cpuSpeedOptionForMhz(autoClockMhz));
+}
 
 function updateSpeedActualDisplay(now: number): void {
   if (!running) {
@@ -576,7 +795,10 @@ function updateSpeedActualDisplay(now: number): void {
   const fps = host?.avInfo?.fps ?? 60;
   const expectedFrames = fps * (elapsedMs / 1000);
   const pct = expectedFrames > 0 ? Math.round((speedMeasureFrameCount / expectedFrames) * 100) : 0;
-  speedActualEl.textContent = `${t('settingsSpeedActualPrefix')} ${pct}%`;
+  speedActualEl.textContent = isAutoClock()
+    ? `${t('settingsSpeedActualPrefix')} ${pct}% / CPU ${autoClockMhz}MHz` +
+      ` — ${t('settingsSpeedLockedByAutoClock')}`
+    : `${t('settingsSpeedActualPrefix')} ${pct}%`;
   speedMeasureFrameCount = 0;
   speedMeasureLastAt = now;
 }
@@ -3640,8 +3862,10 @@ async function bootWorkerCore(): Promise<void> {
   // WebX68k既定"16Mhz"が食い違っており、Worker経路は今まで10Mhzで走っていた実績がある)。
   // src/core-options.ts の buildCoreOptions() 1箇所から両経路が値を取るようにして、
   // 一致を構造的に保証する(test/core-options.test.ts が退行検知)。
+  // cpuSpeed は 'auto'/'auto-max' の番兵をそのまま渡さず、resolveCpuSpeedOption() で解決した
+  // 値を渡す(既定経路のbootCore()と同じ関数を使うことで∞MHzモードの食い違いを防ぐ)。
   const workerCoreOptions = buildCoreOptions({
-    cpuSpeed,
+    cpuSpeed: resolveCpuSpeedOption(),
     ramSize,
     joyType1CoreValue: PAD_TYPE_CORE_OPTION_VALUE[gamepadStore.joyType[0]],
     joyType2CoreValue: PAD_TYPE_CORE_OPTION_VALUE[gamepadStore.joyType[1]],
@@ -3740,8 +3964,11 @@ async function bootCore(): Promise<void> {
   // src/core-options.ts の buildCoreOptions() から両経路が値を取ることで、
   // 一致を構造的に保証する(test/core-options.test.ts が退行検知)。setCoreOption()を
   // 個別に呼ぶ順序・回数はそれぞれのコメントごと変えていない(既定経路の挙動は不変)。
+  // cpuSpeed は 'auto'/'auto-max' の番兵をそのまま渡さず、resolveCpuSpeedOption() で
+  // 実際にコアへ渡せるクロック文字列へ解決してから buildCoreOptions() に渡す
+  // (∞MHzモード対応。Worker経路のbootWorkerCore()も同じ関数を使うこと)。
   const defaultCoreOptions = buildCoreOptions({
-    cpuSpeed,
+    cpuSpeed: resolveCpuSpeedOption(),
     ramSize,
     joyType1CoreValue: PAD_TYPE_CORE_OPTION_VALUE[gamepadStore.joyType[0]],
     joyType2CoreValue: PAD_TYPE_CORE_OPTION_VALUE[gamepadStore.joyType[1]],
@@ -5989,10 +6216,60 @@ function loop(t: number): void {
   const budget = computeFrameBudget(dt, frameInterval, queued, speedMultiplier);
 
   let ran = 0;
-  while (accumulator >= frameInterval && ran < budget) {
-    host.runFrame();
-    accumulator -= frameInterval;
-    ran++;
+  // 1tickでコア実行に使ってよい実時間の上限。budget(フレーム数)だけでは守れない。
+  //
+  // コアが実時間に追いつけない設定(高いCPUクロック、非力な端末)では1フレームの実行自体が
+  // 実時間1フレームより長くなる。computeFrameBudget() は遅れを取り戻そうとフレーム数を
+  // 増やすため、1tickの拘束時間がさらに伸びて悪循環になる。実測では cpu=800Mhz にすると
+  // **1秒間隔の setInterval すら発火しなくなり**、キーもツールバーのボタンも効かなくなった
+  // (JSが動かないのでブラウザがイベントを配れない)。
+  //
+  // フレーム数ではなく実時間で打ち切る。1フレームは必ず走らせる(進まなくなるのを防ぐ)ので、
+  // 追いつけない設定では「1tickあたり1フレーム」に落ち着き、遅くはなるが操作は生きる。
+  // 基準は frameInterval ではなく実時間の1フレーム(1/fps)。frameInterval を基準にすると
+  // 速度倍率を上げるほど上限が縮み、倍速そのものを潰してしまう。
+  const tickStart = performance.now();
+  // ゲートを効かせるのは「1フレームの実行そのものが実時間1フレームより長い」ときだけ。
+  // つまり**どうやっても追いつけない**状態に限る。追いついている通常時・倍速時は
+  // この条件が偽なので、従来と完全に同じ経路を通る(倍速を潰さないための線引き)。
+  const realFrameMs = 1000 / fps;
+  const cantKeepUp = frameCostMs > realFrameMs;
+  const coreTickDeadline = tickStart + realFrameMs * FRAME_LOOP_MAX_DUTY;
+  const measureClock = isAutoClock();
+  // 「描画を捨てて最速」版は画面提示を約30fpsへ間引き、浮いた時間をコア実行に回す。
+  // 提示を毎フレーム行ったまま天井だけ上げると rAF が 9.5fps まで崩れる(実測)。
+  const turbo = isAutoClockTurbo();
+  try {
+    while (
+      accumulator >= frameInterval &&
+      ran < budget &&
+      // 占有率ゲート。前回のコア実行が長かったぶんだけ、次を始めるのを遅らせる。
+      (!cantKeepUp || performance.now() >= frameLoopNextAllowedAt)
+    ) {
+      if (turbo) {
+        const nowMs = performance.now();
+        const present = nowMs - autoClockTurboLastPresentAt >= AUTO_CLOCK_TURBO_PRESENT_INTERVAL_MS;
+        if (present) autoClockTurboLastPresentAt = nowMs;
+        host.setVideoSkip(!present);
+      }
+      const frameStart = performance.now();
+      host.runFrame();
+      const cost = performance.now() - frameStart;
+      frameCostMs = frameCostMs === 0 ? cost : frameCostMs * 0.9 + cost * 0.1;
+      if (measureClock) {
+        autoClockFrameCostMs =
+          autoClockFrameCostMs === 0 ? cost : autoClockFrameCostMs * 0.9 + cost * 0.1;
+      }
+      accumulator -= frameInterval;
+      ran++;
+      if (cantKeepUp && performance.now() >= coreTickDeadline) break;
+    }
+  } finally {
+    if (turbo) host.setVideoSkip(false);
+  }
+  if (cantKeepUp && ran > 0) {
+    const coreCostMs = performance.now() - tickStart;
+    frameLoopNextAllowedAt = tickStart + coreCostMs / FRAME_LOOP_MAX_DUTY;
   }
   if (ran > 0) {
     serialTransport.notifyReceiveCapacity();
@@ -6021,6 +6298,8 @@ function loop(t: number): void {
     stepTouchTrackpad();
   }
   speedMeasureFrameCount += ran;
+  autoClockFrames += ran;
+  stepAutoClock(t, frameInterval);
   updateSpeedActualDisplay(t);
   // 破綻(タブ非アクティブ復帰等)したら蓄積をリセット
   if (accumulator > frameInterval * 4) accumulator = 0;
@@ -6122,6 +6401,9 @@ async function startFromOverlay(withSystemDisk: boolean): Promise<void> {
     btnSpeed.disabled = false;
     btnFullscreen.disabled = false;
     btnVirtualKeyboard.disabled = false;
+    // 起動時に全ボタンを一括で有効化するので、∞MHz(速度倍率を使わせない)の判断は
+    // その後に上書きし直す。ここを通さないと btnSpeed だけ有効に戻ってしまう。
+    updateSpeedAvailability();
     updateMouseControls();
     updateFullscreenControl();
     canvas.focus();

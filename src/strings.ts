@@ -148,6 +148,8 @@ interface Dict {
   settingsSpeedLabel(): string;
   settingsSpeedUnlimited(): string;
   settingsSpeedActualPrefix(): string;
+  /** ∞MHz(CPUクロック自動調整)中は速度倍率が使えない理由。 */
+  settingsSpeedLockedByAutoClock(): string;
   settingsSerialTitle(): string;
   settingsSerialStatusLabel(): string;
   settingsSerialBaudLabel(): string;
@@ -615,6 +617,7 @@ const STRINGS: Record<Lang, Dict> = {
     settingsSpeedLabel: () => '速度ボタンON時の倍率',
     settingsSpeedUnlimited: () => '無制限',
     settingsSpeedActualPrefix: () => '実測',
+    settingsSpeedLockedByAutoClock: () => '∞MHz中は等速固定(同じ処理時間を奪い合うため)',
     settingsSerialTitle: () => 'シリアルポート',
     settingsSerialStatusLabel: () => '状態',
     settingsSerialBaudLabel: () => 'ボーレート',
@@ -988,6 +991,8 @@ const STRINGS: Record<Lang, Dict> = {
     settingsSpeedLabel: () => 'Multiplier when the speed button is on',
     settingsSpeedUnlimited: () => 'Unlimited',
     settingsSpeedActualPrefix: () => 'Actual',
+    settingsSpeedLockedByAutoClock: () =>
+      'Locked to 100% while ∞MHz is active (both would compete for the same time)',
     settingsSerialTitle: () => 'Serial Port',
     settingsSerialStatusLabel: () => 'Status',
     settingsSerialBaudLabel: () => 'Baud rate',
