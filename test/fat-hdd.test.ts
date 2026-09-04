@@ -100,6 +100,36 @@ describe('createFormattedHdd', () => {
     expect(vol.sectorsPerFat * vol.bytesPerSector).toBeGreaterThanOrEqual(fatBytesNeeded);
     expect(vol.totalClusters).toBeGreaterThan(4085);
   });
+
+  // createFormattedScsi()にあった欠陥(区画サイズによらず常にFAT16のブランクを作るため
+  // 小さい区画でFAT12判定と食い違う)がcreateFormattedHdd()(SASI)にも波及していないかを
+  // 確認する。createFormattedHdd()は40MB固定でtotalClusters>4085(上のテストで確認済み)
+  // なので常にFAT16域に収まり、型のずれが起きる余地がそもそも無い。実際にクラスタ2が
+  // 空きとして読めることを直接確認しておく(SASI側は健全と判断できる)。
+  it('健全性確認: 生成直後は全クラスタが空きとして読める(クラスタ2を含む)', () => {
+    const image = createFormattedHdd();
+    const vol = openDiskImage(image, 'blank.hdf');
+    const { free, total } = fatFreeSpace(vol);
+    expect(free).toBe(total);
+  });
+
+  it('健全性確認: 1クラスタに収まるファイルと2クラスタ以上必要なファイルの両方が往復一致する', () => {
+    const image = createFormattedHdd();
+    const vol = openDiskImage(image, 'blank.hdf');
+    const bytesPerCluster = vol.bytesPerCluster;
+
+    const small = new Uint8Array(Math.max(1, Math.floor(bytesPerCluster / 4)));
+    for (let i = 0; i < small.length; i++) small[i] = i & 0xff;
+    const big = new Uint8Array(bytesPerCluster * 2 + 123);
+    for (let i = 0; i < big.length; i++) big[i] = (i * 7) & 0xff;
+
+    fatWriteFile(vol, 'SMALL.BIN', small);
+    fatWriteFile(vol, 'BIG.BIN', big);
+
+    const reopened = openDiskImage(image, 'blank.hdf');
+    expect(Array.from(fatReadFile(reopened, 'SMALL.BIN'))).toEqual(Array.from(small));
+    expect(Array.from(fatReadFile(reopened, 'BIG.BIN'))).toEqual(Array.from(big));
+  });
 });
 
 describe('openDiskImage: 既存FDイメージのリグレッション確認', () => {

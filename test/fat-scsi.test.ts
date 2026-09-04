@@ -208,3 +208,92 @@ describe('createFormattedScsi', () => {
     expect(() => openDiskImage(bad, 'blank.hds')).toThrow();
   });
 });
+
+// createFormattedScsi()は区画サイズによらず常にFAT16のブランクを作っていたが、
+// openFat()(読み取り側)は総クラスタ数4085未満をFAT12と判定していたため、
+// 小さいSCSIブランクは自作のリーダに読ませても食い違う不正なイメージになっていた
+// (親セッションの実測: 1/2/4MiBはopenFat()がFAT12と判定するのに予約エントリは
+// FAT16の書式のままで、FAT12として読んだentry2が$0FF=空きでない、になっていた)。
+// このdescribeブロックはその欠陥そのものを射抜くための回帰テスト。
+describe('createFormattedScsi: FAT12/FAT16判定とブランクの整合性(回帰)', () => {
+  // 親セッションが実機で確認した「1MiB(FAT12だと実測)を境にクラスタ2から
+  // 確保できるかどうかが変わる」に対応する、判定の代表サイズ。
+  const knownFatType: Array<{ sizeMiB: number; fatType: 'FAT12' | 'FAT16' }> = [
+    { sizeMiB: 1, fatType: 'FAT12' },
+    { sizeMiB: 2, fatType: 'FAT12' },
+    { sizeMiB: 4, fatType: 'FAT12' },
+    { sizeMiB: 5, fatType: 'FAT16' },
+  ];
+
+  for (const { sizeMiB, fatType } of knownFatType) {
+    it(`${sizeMiB}MiBは${fatType}になる(親セッションの実測どおり)`, () => {
+      const image = createFormattedScsi(sizeMiB);
+      const vol = openDiskImage(image, 'blank.hds');
+      expect(vol.fatType).toBe(fatType);
+    });
+  }
+
+  // SCSI_BLANK_MIN_MIB(FAT12域)から上限近く(FAT16域)まで代表サイズを掃引する。
+  const sweepSizesMiB = [SCSI_BLANK_MIN_MIB, 2, 3, 4, 5, 8, 16, 100, 500];
+
+  for (const sizeMiB of sweepSizesMiB) {
+    it(`${sizeMiB}MiB: openFat(createFormattedScsi())が成功し、フォーマッタが選んだ型どおりに読め、` +
+      'クラスタ2が空きとして読める', () => {
+      const image = createFormattedScsi(sizeMiB);
+      // フォーマッタ自身が書き込んだBPBから「意図した型」を独立に読み取る
+      // (openFat()の判定結果と比較するため、openFat()自体を使わずBPBを直接見る)。
+      const partitionStartByte = 32 * 1024;
+      const totalSectors =
+        ((image[partitionStartByte + 0x1e] << 24) |
+          (image[partitionStartByte + 0x1f] << 16) |
+          (image[partitionStartByte + 0x20] << 8) |
+          image[partitionStartByte + 0x21]) >>>
+        0;
+      const sectorsPerCluster = image[partitionStartByte + 0x14];
+      const reservedSectors = (image[partitionStartByte + 0x16] << 8) | image[partitionStartByte + 0x17];
+      const numFats = image[partitionStartByte + 0x15];
+      const sectorsPerFat = image[partitionStartByte + 0x1d];
+      const rootEntries = (image[partitionStartByte + 0x18] << 8) | image[partitionStartByte + 0x19];
+      const rootDirSectors = Math.ceil((rootEntries * 32) / 1024);
+      const dataStartSector = reservedSectors + numFats * sectorsPerFat + rootDirSectors;
+      const intendedTotalClusters = Math.floor((totalSectors - dataStartSector) / sectorsPerCluster);
+      const intendedFatType: 'FAT12' | 'FAT16' = intendedTotalClusters < 4085 ? 'FAT12' : 'FAT16';
+
+      expect(() => openDiskImage(image, 'blank.hds')).not.toThrow();
+      const vol = openDiskImage(image, 'blank.hds');
+
+      expect(vol.fatType).toBe(intendedFatType);
+
+      // クラスタ2が「空き」として読めること = 全クラスタが空きのまま(新規ブランクなので)。
+      const { free, total } = fatFreeSpace(vol);
+      expect(total).toBeGreaterThan(0);
+      expect(free).toBe(total);
+    });
+  }
+});
+
+// 各代表サイズで書き込み→読み戻しがバイト一致すること。1クラスタで収まるものと、
+// 2クラスタ以上必要なもの(チェーンを張る経路)の両方を含める。
+describe('createFormattedScsi: 書き込み→読み戻しの往復一致(FAT12/FAT16の両方)', () => {
+  const roundTripSizesMiB = [SCSI_BLANK_MIN_MIB, 4, 5, 100];
+
+  for (const sizeMiB of roundTripSizesMiB) {
+    it(`${sizeMiB}MiB: 1クラスタに収まるファイルと2クラスタ以上必要なファイルの両方が往復一致する`, () => {
+      const image = createFormattedScsi(sizeMiB);
+      const vol = openDiskImage(image, 'blank.hds');
+      const bytesPerCluster = vol.bytesPerCluster;
+
+      const small = new Uint8Array(Math.max(1, Math.floor(bytesPerCluster / 4)));
+      for (let i = 0; i < small.length; i++) small[i] = i & 0xff;
+      const big = new Uint8Array(bytesPerCluster * 2 + 123); // 3クラスタにまたがる
+      for (let i = 0; i < big.length; i++) big[i] = (i * 7) & 0xff;
+
+      fatWriteFile(vol, 'SMALL.BIN', small);
+      fatWriteFile(vol, 'BIG.BIN', big);
+
+      const reopened = openDiskImage(image, 'blank.hds');
+      expect(Array.from(fatReadFile(reopened, 'SMALL.BIN'))).toEqual(Array.from(small));
+      expect(Array.from(fatReadFile(reopened, 'BIG.BIN'))).toEqual(Array.from(big));
+    });
+  }
+});

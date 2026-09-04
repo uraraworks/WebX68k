@@ -73,6 +73,20 @@ const ATTR_LFN = 0x0f;
 const DELETED_MARK = 0xe5;
 const FREE_MARK = 0x00;
 
+/**
+ * 総クラスタ数からFAT12/FAT16を判定する唯一の場所。
+ *
+ * openFat()(読み取り側)と createFormattedScsi()/computeScsiFatLayout()(生成側)の
+ * 両方がこの関数を経由すること。同じ「4085未満はFAT12」という規則を2箇所に書き写すと、
+ * 片方だけ直る/どちらかが後から変わって食い違う事故が起きる(実際に起きていた欠陥:
+ * createFormattedScsi()は区画サイズによらず常にFAT16のブランクを作っていたが、
+ * openFat()は総クラスタ数4085未満をFAT12と判定していたため、小さいSCSIブランクは
+ * 自作リーダーで読ませても食い違う不正なイメージになっていた)。
+ */
+function pickFatType(totalClusters: number): 'FAT12' | 'FAT16' {
+  return totalClusters < 4085 ? 'FAT12' : 'FAT16';
+}
+
 // --- 低レベルバイト操作(サブ配列でも安全に動くよう手動でLE演算する) -------
 
 function readU16(buf: Uint8Array, off: number): number {
@@ -159,7 +173,7 @@ export function openFat(image: Uint8Array, offset = 0): FatVolume {
   const dataStartSector = rootStartSector + rootDirSectors;
   const dataSectors = totalSectors - dataStartSector;
   const totalClusters = Math.floor(dataSectors / sectorsPerCluster);
-  const fatType: 'FAT12' | 'FAT16' = totalClusters < 4085 ? 'FAT12' : 'FAT16';
+  const fatType: 'FAT12' | 'FAT16' = pickFatType(totalClusters);
 
   const volumeEnd = o + totalSectors * bytesPerSector;
   if (dataSectors < 0 || volumeEnd > image.length) {
@@ -934,7 +948,7 @@ export function validateScsiBlankSizeMiB(input: string): ScsiBlankSizeValidation
 }
 
 /**
- * sectorsPerCluster(spc)・sectorsPerFatを決める。
+ * sectorsPerCluster(spc)・sectorsPerFat・fatTypeを決める。
  *
  * Human68kはBPBのspcを尊重せず自前でsectorsPerFatを計算するが、createFormattedHdd()の
  * コメントにある式(総セクタ数から `ceil((totalSectors+2)*2/bytesPerSector)`)は
@@ -945,26 +959,60 @@ export function validateScsiBlankSizeMiB(input: string): ScsiBlankSizeValidation
  * `ceil((50688+2)*2/1024) = 100` に一致する。すなわちspc=1の特殊解
  * (`ceil((totalSectors+2)*2/bytesPerSector)`、spc=1なのでtotalSectors=クラスタ数)を
  * 一般のspcへそのまま拡張した式であり、実データ領域を差し引く二段階計算にすると
- * (小さいサイズで顕著に)1ずれる。sectorsPerCluster もこの同じ近似クラスタ数
- * (`floor(totalSectors/spc)`)がFAT16の上限(65524)に収まる最小の2の冪を選ぶ
- * (docs/STORAGE-SCSI.md「BPBを基準器イメージから写した」節参照)。
+ * (小さいサイズで顕著に)1ずれる。**この近似式は実測と一致することが確認済みなので、
+ * FAT16になるときはこの式の値をそのまま使い、変更しない。**
+ *
+ * 一方、FAT12/FAT16のどちらにするかの判定(pickFatType())は openFat() と同じ「厳密な
+ * クラスタ数」(reserved/FAT×2/root分を実際に差し引いたデータ領域のクラスタ数)で
+ * 行う。型の判定に上の近似クラスタ数を使うと、境界付近で「作った型」(近似基準)と
+ * 「読まれる型」(openFat()の厳密基準)がずれ、今回の欠陥(createFormattedScsi()が
+ * 常にFAT16のブランクを作るのにopenFat()はFAT12と読む)と同種の食い違いが再発する。
+ *
+ * さらにFAT12を選んだ場合、FAT16向けの近似式(2バイト/エントリ前提)をそのまま流用すると
+ * sectorsPerFatが不足する(FAT12は1.5バイト/エントリ)。かつsectorsPerFatを変えると
+ * データ開始セクタが動き、それに応じてクラスタ数も動く……という循環があるため、
+ * 「sectorsPerFatを仮決め→厳密なクラスタ数を求める→型とsectorsPerFatを求め直す」を
+ * 収束するまで反復する(FAT12側は厳密なクラスタ数、FAT16側は上記の近似クラスタ数を
+ * 使うので、少ない反復回数で不動点に落ち着く)。
  */
 function computeScsiFatLayout(totalSectors: number): {
   sectorsPerCluster: number;
   sectorsPerFat: number;
   totalClusters: number;
+  fatType: 'FAT12' | 'FAT16';
 } {
+  const rootDirSectors = Math.ceil((SCSI_ROOT_ENTRIES * DIR_ENTRY_SIZE) / SCSI_BYTES_PER_SECTOR);
+
   for (let sectorsPerCluster = 1; sectorsPerCluster <= SCSI_MAX_SECTORS_PER_CLUSTER; sectorsPerCluster *= 2) {
-    const totalClusters = Math.floor(totalSectors / sectorsPerCluster);
-    if (totalClusters > 0 && totalClusters <= FAT16_MAX_CLUSTERS) {
-      const sectorsPerFat = Math.ceil(((totalClusters + 2) * 2) / SCSI_BYTES_PER_SECTOR);
-      if (sectorsPerFat > 255) {
-        // BPBのsectorsPerFatは1バイト。理論上ここに来る前にSCSI_BLANK_MAX_MIBで
-        // 弾かれているはずだが、定数を変えたときの安全策として残す。
-        throw new DiskError('scsiSizeInvalid', `sectorsPerFatが255を超えます(${sectorsPerFat})`);
-      }
-      return { sectorsPerCluster, sectorsPerFat, totalClusters };
+    const approxClusters = Math.floor(totalSectors / sectorsPerCluster);
+    if (!(approxClusters > 0 && approxClusters <= FAT16_MAX_CLUSTERS)) continue;
+
+    // 不動点反復。sectorsPerFatが増える→データ開始セクタが後ろへ動く→厳密クラスタ数が
+    // 減る→(型が変わらない限り)必要なsectorsPerFatが減るか同じになる、という向きに
+    // しか動かないため数回で収束する。安全策として反復回数に上限を設ける。
+    let sectorsPerFat = 1;
+    let exactClusters = 0;
+    let fatType: 'FAT12' | 'FAT16' = 'FAT12';
+    for (let iter = 0; iter < 16; iter++) {
+      const dataStartSector = SCSI_RESERVED_SECTORS + SCSI_NUM_FATS * sectorsPerFat + rootDirSectors;
+      const dataSectors = totalSectors - dataStartSector;
+      exactClusters = dataSectors > 0 ? Math.floor(dataSectors / sectorsPerCluster) : 0;
+      fatType = pickFatType(exactClusters);
+      const nextSectorsPerFat =
+        fatType === 'FAT16'
+          ? Math.ceil(((approxClusters + 2) * 2) / SCSI_BYTES_PER_SECTOR) // 実測と一致する既存の近似式(変更しない)
+          : Math.ceil(((exactClusters + 2) * 3) / 2 / SCSI_BYTES_PER_SECTOR); // FAT12: 1.5バイト/エントリ、厳密クラスタ数基準
+      if (nextSectorsPerFat === sectorsPerFat) break;
+      sectorsPerFat = nextSectorsPerFat;
     }
+
+    if (exactClusters <= 0) continue; // このspcではデータ領域が確保できない。次のspcへ。
+    if (sectorsPerFat > 255) {
+      // BPBのsectorsPerFatは1バイト。理論上ここに来る前にSCSI_BLANK_MAX_MIBで
+      // 弾かれているはずだが、定数を変えたときの安全策として残す。
+      throw new DiskError('scsiSizeInvalid', `sectorsPerFatが255を超えます(${sectorsPerFat})`);
+    }
+    return { sectorsPerCluster, sectorsPerFat, totalClusters: exactClusters, fatType };
   }
   throw new DiskError('scsiSizeInvalid', `sectorsPerClusterの上限(${SCSI_MAX_SECTORS_PER_CLUSTER})でもFAT16のクラスタ数上限に収まりません`);
 }
@@ -1024,7 +1072,7 @@ export function createFormattedScsi(sizeMiB: number): Uint8Array {
 
   // パーティション先頭のブートセクタ(Human68k形式BPB)。
   const totalSectors = partitionBytes / SCSI_BYTES_PER_SECTOR;
-  const { sectorsPerCluster, sectorsPerFat } = computeScsiFatLayout(totalSectors);
+  const { sectorsPerCluster, sectorsPerFat, fatType } = computeScsiFatLayout(totalSectors);
 
   const p = partitionStartByte;
   image[p] = 0x60; // isHuman68kBootSector()が判定に使う分岐命令(ダミー)
@@ -1046,21 +1094,35 @@ export function createFormattedScsi(sizeMiB: number): Uint8Array {
 
   // FAT先頭の予約エントリ(メディアバイト + EOC)。
   //
-  // createFormattedHdd()(SASI)は「Human68kはFAT16もBEで格納する」という前提で
-  // writeU16BE(base, 0xff00|media)(バイト列 [0xFF, media])を書いているが、
-  // 実測(twopart.HDS)のSCSI区画の予約エントリは [media, 0xFF] という逆順だった
-  // (chain本体(クラスタ2以降、entry+4以降)は 00 03/00 04/... と連番でBEそのものなので、
-  // BE/LEの解釈自体が違うのではなく、予約エントリ0の値そのものが `0xFF00|media` ではなく
-  // `(media<<8)|0xFF` になっている、という食い違い)。ここを直さずに実ブラウザでHuman68kへ
-  // copyすると「ディスクの管理領域が壊されています」で拒否されることを実測で確認した。
-  // 論理値の抽象化(writeU16BE)を介さず、実測したバイト列をそのまま書く。
+  // FAT16(実データ領域が大きい区画): createFormattedHdd()(SASI)は「Human68kはFAT16も
+  // BEで格納する」という前提で writeU16BE(base, 0xff00|media)(バイト列 [0xFF, media])を
+  // 書いているが、実測(twopart.HDS)のSCSI区画の予約エントリは [media, 0xFF] という
+  // 逆順だった(chain本体(クラスタ2以降、entry+4以降)は 00 03/00 04/... と連番でBEその
+  // ものなので、BE/LEの解釈自体が違うのではなく、予約エントリ0の値そのものが
+  // `0xFF00|media` ではなく `(media<<8)|0xFF` になっている、という食い違い)。ここを
+  // 直さずに実ブラウザでHuman68kへcopyすると「ディスクの管理領域が壊されています」で
+  // 拒否されることを実測で確認した。論理値の抽象化(writeU16BE)を介さず、実測した
+  // バイト列をそのまま書く。
+  //
+  // FAT12(小さいブランク): 実機での直接の実測は無いが、openFat()/readFatEntry()の
+  // 12bitパック規則から逆算すると、バイト列 [media, 0xFF, 0xFF] を書けば
+  // entry0=$F00|media(予約)・entry1=$FFF(EOC)・entry2=$000(空き、書かない=0のまま)に
+  // 正しく読める(test/fat-scsi.test.tsでreadFatEntry相当の読み出しを通して確認する)。
+  // FAT16用の4バイト・逆順パターンをそのまま流用すると、1.5バイト/エントリの
+  // FAT12としては値がずれるため、型ごとに書き分ける。
   const fatStartByte = p + SCSI_RESERVED_SECTORS * SCSI_BYTES_PER_SECTOR;
   for (let f = 0; f < SCSI_NUM_FATS; f++) {
     const base = fatStartByte + f * sectorsPerFat * SCSI_BYTES_PER_SECTOR;
-    image[base] = SCSI_MEDIA_BYTE;
-    image[base + 1] = 0xff;
-    image[base + 2] = 0xff;
-    image[base + 3] = 0xff;
+    if (fatType === 'FAT16') {
+      image[base] = SCSI_MEDIA_BYTE;
+      image[base + 1] = 0xff;
+      image[base + 2] = 0xff;
+      image[base + 3] = 0xff;
+    } else {
+      image[base] = SCSI_MEDIA_BYTE;
+      image[base + 1] = 0xff;
+      image[base + 2] = 0xff;
+    }
   }
 
   return image;
