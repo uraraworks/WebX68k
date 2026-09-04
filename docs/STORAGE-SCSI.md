@@ -8558,3 +8558,43 @@ node scripts/probe-scsi-iocs.mjs --worker=0 --scsi-ram-writes --scsi-oracle-repl
   （本ドキュメントに同型の記録がある）。ログを既定オフにしてから測り直すこと
 - **リロードをまたぐ永続化の検証**（`scripts/verify-disk-persistence.mjs` に相当するSCSI版が無い）
 - `$42` の意味。資料で裏を取れていない
+
+## OPFS（本命・Worker経路）でも通った（実測、2026-09-04）
+
+調査用ログを既定オフにした（`webx68k_scsi_verbose_log()`、既定0。プローブは既定ONで
+`--scsi-verbose-log=0` で切れる）。**これだけで Worker 経路の起動が
+「200秒でも終わらない」から 58 秒になった。** 詳細ログが postMessage を毎フレーム
+大量に越えていたためで、本ドキュメントの「観測コストはスレッド境界で片側だけ重くなる」と同型。
+
+```
+node scripts/probe-scsi-iocs.mjs --scsi-opfs --scsi-verbose-log=0 \
+  --image=_local/scsi/probes/opfs3.hds \
+  --type='copy c:\src2.dat c:\new2.dat;;dir c:' --type-wait=5000 \
+  --poll-scsi-debug=10000 --timeout=200000
+```
+
+判定は**ログ非依存カウンタ**で行った（詳細ログを切っているため）:
+
+| 指標 | 値 |
+|---|---|
+| `writeCount` | 5 |
+| `lastWriteLogsec` | **1（FAT）** |
+| `unsupported` | **0**（`$05`/`$01` が未対応分岐に落ちていない） |
+| `reqTotal` / `strategyCallCount` / `interruptCallCount` | 105 / 105 / 105（3系列一致） |
+
+画面も `dir c:` に `new2.dat 1500` が出て、使用量 4K → 6K。
+
+### 打鍵が化けた実行が1本ある（読み替えないこと）
+
+同条件の1回目は `copy c:\src2d.at c:\new2.dat` と打たれてコピー自体が失敗した
+（プローブの `typedMismatch` が検出）。**これは SCSI の失敗ではなく入力の失敗**で、
+`typedMismatch` を見ずに `writeCount=0` だけ読むと誤った結論になる。判定の前に必ず
+`typedMismatch` が `null` であることを確かめること。
+
+### 残っていること
+
+- **リロードをまたぐ永続化の検証**（`scripts/verify-disk-persistence.mjs` のSCSI版が無い）。
+  プローブはブラウザプロファイルを実行ごとに捨てるので、実行間では測れない。**同一実行内で
+  リロードして読み直す**ハーネスが要る
+- `$42` の意味（資料で裏を取れていない）
+- master への取り込み
