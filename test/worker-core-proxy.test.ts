@@ -376,6 +376,89 @@ describe('WorkerCoreProxy', () => {
     expect(worker.terminated).toBe(true);
   });
 
+  describe('起動中(initializeの応答が返るまで)は応答timeoutの時計を止める', () => {
+    // 実測(2026-09-04): まっさらなブラウザプロファイルではWorker初期化に約22秒かかり、
+    // 旧実装(応答timeoutが固定10秒)だとその最中に投げたcommandが「まだ初期化中なだけの
+    // Worker」を異常終了(WORKER_FAILURE)扱いにしてしまい、復帰手段が無いまま画面が
+    // 死んでいた(60秒に伸ばすと同条件で56.5秒で正常起動することを実測で確認済み)。
+    // src/core-proxy.ts の WorkerCoreProxy#startupSettled 参照。
+
+    it('起動中に投げたコマンドは、タイムアウト時間を過ぎてもWORKER_FAILUREにならない', async () => {
+      const worker = new FakeWorker();
+      worker.respond = () => []; // initializeを含め一切自動応答しない(=起動中のまま)
+      const proxy = new WorkerCoreProxy({ createWorker: () => worker, responseTimeoutMs: 20 });
+      const { biosIpl, biosCg } = makeBios();
+
+      const failures: string[] = [];
+      proxy.setFailureHandler((message) => failures.push(message));
+
+      const initPromise = proxy.init(biosIpl, biosCg);
+      // initializeの応答がまだ無い(=startupSettled===falseの)うちに別commandを投げる。
+      const p = proxy.fetchAvInfo();
+      let initSettled = false;
+      let pSettled = false;
+      void initPromise.then(
+        () => (initSettled = true),
+        () => (initSettled = true),
+      );
+      void p.then(
+        () => (pSettled = true),
+        () => (pSettled = true),
+      );
+
+      // responseTimeoutMs(20ms)を大きく超えて待っても、どちらも未解決のまま
+      // (=偽タイマならぬ実タイマでtimeout時間ぶん経過させても異常終了しない)。
+      await new Promise((resolve) => setTimeout(resolve, 60));
+
+      expect(initSettled).toBe(false);
+      expect(pSettled).toBe(false);
+      expect(worker.terminated).toBe(false);
+      expect(failures).toHaveLength(0);
+    });
+
+    it('陽性対照: 起動が終わったあとは従来どおり、応答が無いコマンドはタイムアウトでWORKER_FAILUREになる', async () => {
+      const worker = new FakeWorker();
+      worker.respond = (cmd) => (cmd.op === 'initialize' ? defaultAutoResponder(cmd) : []);
+      const proxy = new WorkerCoreProxy({ createWorker: () => worker, responseTimeoutMs: 20 });
+      const { biosIpl, biosCg } = makeBios();
+      await proxy.init(biosIpl, biosCg); // 起動完了(startupSettled=true)
+
+      const p = proxy.fetchAvInfo();
+      await expect(p).rejects.toMatchObject({ coreError: { code: 'WORKER_FAILURE' } });
+      expect(worker.terminated).toBe(true);
+    });
+
+    it('起動中に投げてまだ応答が無いコマンドは、起動完了時点からタイマが張られ、そこからタイムアウト時間が過ぎるとWORKER_FAILUREになる', async () => {
+      const worker = new FakeWorker();
+      // initializeだけ自動応答(=起動完了)し、以後は一切応答しない。
+      worker.respond = (cmd) => (cmd.op === 'initialize' ? defaultAutoResponder(cmd) : []);
+      const proxy = new WorkerCoreProxy({ createWorker: () => worker, responseTimeoutMs: 30 });
+      const { biosIpl, biosCg } = makeBios();
+
+      const initPromise = proxy.init(biosIpl, biosCg);
+      // initPromiseがまだawaitされていない(=startupSettled===falseの)うちに投げる。
+      // FakeWorker#postMessageはinitializeの応答も同期的に返すが、initPromiseの
+      // awaitが実際に解決してstartupSettled=trueになるのはマイクロタスク後なので、
+      // この行の時点ではまだ起動完了前(WorkerCoreProxy#dispatchCommandコメント参照)。
+      const p = proxy.fetchAvInfo();
+
+      await initPromise; // ここでstartupSettled=trueになり、pへタイマが張られる
+
+      // 起動完了直後(タイマが張られた直後)は、まだ余裕があるので生きている。
+      let pSettled = false;
+      void p.then(
+        () => (pSettled = true),
+        () => (pSettled = true),
+      );
+      await new Promise((resolve) => setTimeout(resolve, 15));
+      expect(pSettled).toBe(false);
+
+      // 起動完了時点から responseTimeoutMs(30ms) を過ぎるとWORKER_FAILUREになる。
+      await expect(p).rejects.toMatchObject({ coreError: { code: 'WORKER_FAILURE' } });
+      expect(worker.terminated).toBe(true);
+    });
+  });
+
   it('手順9: setFailureHandlerはpendingなcommandが無くても呼ばれる(error/messageerror/timeout/fatal)', async () => {
     // 「たまたま呼び出し中のcommandがあれば、そのcatch節でしか利用者に伝わらない」という
     // 抜けを塞いだ通知経路(docs/STORAGE-SCSI.md「ワーカー移行 手順9」参照)。

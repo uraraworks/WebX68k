@@ -456,7 +456,10 @@ function defaultCreateWorker(): WorkerLike {
 interface PendingRequest {
   resolve: (value: unknown) => void;
   reject: (reason: unknown) => void;
-  timeoutHandle: ReturnType<typeof setTimeout>;
+  /** 起動中(startupSettled===false)は張らないため未設定になりうる。起動完了時に
+   * armPendingTimeouts() が取り残した分へ後付けする(WorkerCoreProxyクラスの
+   * startupSettled コメント参照)。 */
+  timeoutHandle: ReturnType<typeof setTimeout> | undefined;
 }
 
 export class WorkerCoreProxy implements LibretroHostProxy {
@@ -487,6 +490,16 @@ export class WorkerCoreProxy implements LibretroHostProxy {
     resolve: (value: unknown) => void;
     reject: (reason: unknown) => void;
   }> = [];
+  /** 実測(2026-09-04): まっさらなブラウザプロファイル(冷えた初回アクセス相当)では
+   * Worker初期化(≒initializeコマンドの応答が返るまで)に約22秒かかる
+   * (workerStats().frameNoが+20sまで0のまま、+22sで初めて2になる)。この最中に
+   * readTextScreen等を投げると、応答timeoutが従来の10秒固定だったため「まだ初期化中」
+   * なだけのWorkerを異常終了扱いにしてしまい、画面に「Workerコアが異常終了しました」と
+   * 出たきり復帰手段が無かった(60_000msに伸ばすと同条件で56.5秒で正常起動することを
+   * 実測済み)。応答timeoutの目的はWorkerの死活監視であって、初期化中のWorkerは死んで
+   * いないため、起動(initializeの応答が返るまで)の間だけ時計を止める。起動後の挙動は
+   * 一切変えない。 */
+  private startupSettled = false;
 
   constructor(opts?: WorkerCoreProxyOptions) {
     this.responseTimeoutMs = opts?.responseTimeoutMs ?? DEFAULT_RESPONSE_TIMEOUT_MS;
@@ -644,11 +657,31 @@ export class WorkerCoreProxy implements LibretroHostProxy {
     resolve: (value: unknown) => void,
     reject: (reason: unknown) => void,
   ): void {
-    const timeoutHandle = setTimeout(() => {
-      this.handleWorkerFailure(`応答timeout(${this.responseTimeoutMs}ms): ${command.op}`, undefined);
-    }, this.responseTimeoutMs);
+    // startupSettled===false(起動中、initializeの応答がまだ返っていない)の間は
+    // setTimeoutを張らない。initializeコマンド自身もこの分岐を通るため、意図せず
+    // 起動時間そのものにtimeoutが張られることもない(これも意図。クラス冒頭の
+    // startupSettledコメント参照)。pendingへの登録とpostMessageは従来どおり行う。
+    const timeoutHandle = this.startupSettled
+      ? setTimeout(() => {
+          this.handleWorkerFailure(`応答timeout(${this.responseTimeoutMs}ms): ${command.op}`, undefined);
+        }, this.responseTimeoutMs)
+      : undefined;
     this.pending.set(command.requestId, { resolve, reject, timeoutHandle });
     this.worker.postMessage(command, collectTransferables(command));
+  }
+
+  /** 起動完了(initializeの応答が返った瞬間、成功・失敗どちらでも)に呼ぶ。それまでの間に
+   * dispatchCommand()されてtimeoutHandleが未設定のまま取り残されているpendingへ、
+   * この時点を起点としてtimeoutを張り直す。これをしないと、起動中に投げられて
+   * まだ応答が返っていないコマンドが永久に応答timeoutで死活監視されないままになる。 */
+  private armPendingTimeouts(): void {
+    for (const [requestId, req] of this.pending.entries()) {
+      if (req.timeoutHandle !== undefined) continue;
+      req.timeoutHandle = setTimeout(() => {
+        this.handleWorkerFailure(`応答timeout(${this.responseTimeoutMs}ms): (起動完了後に計時開始)`, undefined);
+      }, this.responseTimeoutMs);
+      this.pending.set(requestId, req);
+    }
   }
 
   private issue<T>(op: CoreCommand['op'], payload: unknown): Promise<T> {
@@ -726,18 +759,26 @@ export class WorkerCoreProxy implements LibretroHostProxy {
     // ゲストで「ドライブ名が無効です」)。initialize時に1回だけWorkerのglobalThisへ写す。
     hostGlobals?: Record<string, HostGlobalValue>,
   ): Promise<void> {
-    await this.issue<unknown>('initialize', {
-      biosIpl: copyArrayBuffer(biosIpl),
-      biosCg: copyArrayBuffer(biosCg),
-      sram: sram ? copyArrayBuffer(sram) : undefined,
-      initialDisks: initialDisks?.map((d) => ({
-        slot: d.slot,
-        name: d.name,
-        bytes: copyArrayBuffer(d.bytes),
-      })),
-      options,
-      hostGlobals,
-    });
+    try {
+      await this.issue<unknown>('initialize', {
+        biosIpl: copyArrayBuffer(biosIpl),
+        biosCg: copyArrayBuffer(biosCg),
+        sram: sram ? copyArrayBuffer(sram) : undefined,
+        initialDisks: initialDisks?.map((d) => ({
+          slot: d.slot,
+          name: d.name,
+          bytes: copyArrayBuffer(d.bytes),
+        })),
+        options,
+        hostGlobals,
+      });
+    } finally {
+      // initializeの応答が返った時点(成功・失敗どちらでも)で起動完了とみなす。
+      // startupSettledコメント参照: ここから先はdispatchCommand()が通常どおり
+      // timeoutを張るようになる。起動中に取り残されたpendingにもここで計時を開始する。
+      this.startupSettled = true;
+      this.armPendingTimeouts();
+    }
   }
 
   async setCoreOption(_key: string, _value: string): Promise<void> {
