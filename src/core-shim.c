@@ -772,18 +772,39 @@ int webx68k_scsi_cmd_fill_val(void)
   return js_scsi_cmd_fill_val();
 }
 
-/* 【調査用・実験スイッチ】2026-09-04: SASI(内蔵HARDDSKドライバ)を同時
- * マウントして実測した $05/$01 への応答をSCSIドライバ側にも適用するか。
- * 既定 0(無効)=従来どおり未対応コマンド分岐へ落ちる。1で有効化。 */
+/* SASI(内蔵HARDDSKドライバ)を同時マウントして実測した $05/$01 への応答を
+ * SCSIドライバ側にも適用するか。2026-09-04、この組み合わせで端数セクタ/FAT
+ * の書き戻しが実測できたため解決済みとし、既定 1(有効)に変更した。
+ * globalThis.__webx68kScsiOracleReply に 0 を渡したときだけ無効化され、
+ * 従来どおり未対応コマンド分岐へ落ちる(A/B比較を続けられるように残す)。 */
 EM_JS(int, js_scsi_oracle_reply, (), {
   var v = globalThis.__webx68kScsiOracleReply;
-  return (typeof v === 'number') ? (v | 0) : 0;
+  return (typeof v === 'number') ? (v | 0) : 1;
 });
 
 __attribute__((used))
 int webx68k_scsi_oracle_reply(void)
 {
   return js_scsi_oracle_reply();
+}
+
+/* 【ホスト設定】2026-09-04: [SCSI-REQ]/[SCSI-DESC]/[SCSI-READ]/[SCSI-WRITE]等の
+ * 要求ごと・セクタごとの調査用ログをまとめてオンオフする1本のスイッチ。
+ * 既定 0(出さない)。Worker経由ではlog_cbがpostMessageを介するため、
+ * これらを常時出すと起動が終わらなくなる(実測: 200秒経っても終わらない)。
+ * globalThis.__webx68kScsiVerboseLog に 1 を渡すとON。
+ * 構成確認系(起動時1回だけのログ)とエラーログはこのスイッチと無関係に
+ * 常に出る。log_cbを介さない独立カウンタ(SCSIReqTotalCount等)にも
+ * 一切影響しない。 */
+EM_JS(int, js_scsi_verbose_log, (), {
+  var v = globalThis.__webx68kScsiVerboseLog;
+  return (typeof v === 'number') ? (v | 0) : 0;
+});
+
+__attribute__((used))
+int webx68k_scsi_verbose_log(void)
+{
+  return js_scsi_verbose_log();
 }
 
 /* デバイスドライバヘッダ +$00(次のヘッダ)。既定 $ffffffff(従来と同じ)。 */

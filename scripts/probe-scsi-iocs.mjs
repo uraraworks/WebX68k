@@ -99,10 +99,20 @@ const REPLY_BPB = args['reply-bpb'] === undefined ? null : Number(args['reply-bp
 const REPLY_STATUS = args['reply-status'] === undefined ? null : Number(args['reply-status']);
 // 2回目以降の初期化コマンドに「ドライバ無し」で返答するかどうか。値を取らないフラグ。
 const REPLY_INIT_ONCE = args['reply-init-once'] !== undefined;
-// 2026-09-04: SASI(内蔵HARDDSKドライバ)を同時マウントした1回の起動で実測した
-// $05/$01への応答を有効化するかどうか。値を取らないフラグ。意味は core-shim.c の
-// js_scsi_oracle_reply、x68k/scsi.c の SCSI_HandleRequestHeader を参照。
-const SCSI_ORACLE_REPLY = args['scsi-oracle-reply'] !== undefined;
+// SASI(内蔵HARDDSKドライバ)を同時マウントした1回の起動で実測した $05/$01への応答。
+// 2026-09-04、解決済みとしてコア側の既定が1(有効)に変わったため、このプローブでは
+// 未指定(null)ならコアの既定に任せる。--scsi-oracle-reply(値なし、または=1)で明示的に
+// 有効化、--scsi-oracle-reply=0 で明示的に無効化(A/B比較を続けたいとき用)。
+// 意味は core-shim.c の js_scsi_oracle_reply、x68k/scsi.c の SCSI_HandleRequestHeader を参照。
+const SCSI_ORACLE_REPLY =
+  args['scsi-oracle-reply'] === undefined ? null : args['scsi-oracle-reply'] === '0' ? 0 : 1;
+// 2026-09-04: [SCSI-REQ]/[SCSI-DESC]/[SCSI-READ]/[SCSI-WRITE]等、要求ごと・セクタごとの
+// 調査用ログ。コア側の既定は0(出さない、2026-09-04に既定オフ化。Worker経路ではlog_cbが
+// postMessageを介するため、これらを常時出すと起動が終わらないことが実測されている)。
+// このプローブは調査用の道具なので、既定でON(=1)にする。--scsi-verbose-log=0を
+// 指定したときだけ差さず、コアの既定(オフ)のままにする。
+// 意味は core-shim.c の js_scsi_verbose_log を参照。
+const SCSI_VERBOSE_LOG = args['scsi-verbose-log'] === '0' ? 0 : 1;
 // ストラテジ/インタラプトから戻る d0。既定(未指定)はコア側の既定 -1(何もしない)に任せる。
 const REPLY_D0 = args['reply-d0'] === undefined ? null : Number(args['reply-d0']);
 // 【調査用・実験スイッチ】2026-09-04: 成功したSCSI要求の処理直後に、要求ヘッダの
@@ -556,9 +566,14 @@ try {
       window.__webx68kScsiReplyInitOnce = 1;
     });
   }
-  if (SCSI_ORACLE_REPLY) {
+  if (SCSI_ORACLE_REPLY !== null) {
+    await page.evaluateOnNewDocument((v) => {
+      window.__webx68kScsiOracleReply = v;
+    }, SCSI_ORACLE_REPLY);
+  }
+  if (SCSI_VERBOSE_LOG) {
     await page.evaluateOnNewDocument(() => {
-      window.__webx68kScsiOracleReply = 1;
+      window.__webx68kScsiVerboseLog = 1;
     });
   }
   if (REPLY_D0 !== null) {
