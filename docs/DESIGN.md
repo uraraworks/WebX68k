@@ -1419,6 +1419,23 @@ px68k-libretro は `retro_run()` の先頭で `RETRO_ENVIRONMENT_GET_VARIABLE_UP
 1フレームが実時間1フレームの `AUTO_CLOCK_MAX_CORE_DUTY`(0.8)を超えたらそれ以上は上げない。
 画面提示は実測 約2.4ms/回なので、18msのうち残り2割で提示とUIをまかなう勘定。
 
+#### ∞MHz(描画を捨てて最速)
+
+もう1段の `auto-max` は、**画面提示を約30fps(`AUTO_CLOCK_TURBO_PRESENT_INTERVAL_MS`)へ
+間引き**(`host.setVideoSkip()`)、天井も `AUTO_CLOCK_TURBO_CORE_DUTY`(0.95)へ上げる。
+
+同一ホスト・Human68kプロンプトでの実測:
+
+| 設定 | クロック | rAF | `setTimeout(0)` 中央値/p90 | チャチャベンチ |
+|---|---|---|---|---|
+| 天井0.8・毎フレーム提示(通常の∞) | 53〜61MHz | 46.3 fps | 5.5 / 34.1 ms | 0399往復 |
+| 天井0.95・毎フレーム提示 | 67〜70MHz | **9.5 fps** | 15.8 / 140.1 ms | — |
+| 天井0.95・約30fpsへ間引き(auto-max) | **75〜84MHz** | 23.3 fps | 16.1 / 49.8 ms | 0485往復 |
+
+**天井だけ上げるのは筋が悪い。** 提示を毎フレーム行ったまま天井を上げると、コア実行が
+rAF の隙間を食い潰して画面更新が 9.5fps まで落ちる。提示を先に間引いて時間を作ってから
+天井を上げると、**クロックも画面更新も同時に良くなる**(84MHz / 23.3fps)。
+
 #### 期待フレーム数の基準は fps ではなく frameInterval
 
 `achieved` の分母は **`loop()` が実際に狙っている間隔**(`frameInterval`)から出す。

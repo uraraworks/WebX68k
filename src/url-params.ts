@@ -44,6 +44,13 @@ export const CPU_SPEED_OPTIONS = [
 export const AUTO_CPU_SPEED = 'auto';
 
 /**
+ * ∞MHz の「描画を捨てて最速」版を表す番兵値。
+ * 制御ループは AUTO_CPU_SPEED と同じだが、画面提示を約30fpsへ間引き、コア実行に許す
+ * メインスレッド占有の上限も引き上げる。画面の滑らかさと引き換えにクロックを稼ぐモード。
+ */
+export const AUTO_CPU_SPEED_TURBO = 'auto-max';
+
+/**
  * 受理する CPU クロック(MHz)の範囲。px68k-libretro 側の
  * PX68K_CLOCK_MHZ_MIN / PX68K_CLOCK_MHZ_MAX と揃えること。
  * コアは選択肢に無い値でも先頭の10進数を MHz として読むので、選択肢の外の値も渡せる。
@@ -66,7 +73,8 @@ export function cpuSpeedOptionForMhz(mhz: number): string {
  * 受理形式: '16' / '16Mhz' / '16MHz' / 前後空白あり(trim + 大小文字無視)。
  * '(OC)' の有無は問わず、CPU_MHZ_MIN〜CPU_MHZ_MAX の整数ならそのまま正規化して返す
  * (コアが選択肢外の値も受け付けるため、選択肢の6段+3段に限定していない)。
- * 'auto' / 'max' / 'inf' / '∞' は AUTO_CPU_SPEED(ホスト次第の自動調整)を返す。
+ * 'auto' / 'max' / 'inf' / '∞' は AUTO_CPU_SPEED(ホスト次第の自動調整)を、
+ * 'auto-max' / 'automax' は AUTO_CPU_SPEED_TURBO(描画を捨てて最速)を返す。
  * 範囲外・非数値・小数などは無効値として null を返す。
  */
 export function parseCpuSpeedParam(raw: string | null): string | null {
@@ -74,6 +82,8 @@ export function parseCpuSpeedParam(raw: string | null): string | null {
   const trimmed = raw.trim();
   if (trimmed === '') return null;
   const lower = trimmed.toLowerCase();
+  if (lower === 'auto-max' || lower === 'automax' || lower === 'auto_max')
+    return AUTO_CPU_SPEED_TURBO;
   if (lower === 'auto' || lower === 'max' || lower === 'inf' || trimmed === '∞')
     return AUTO_CPU_SPEED;
   const match = /^(\d+)\s*mhz(?:\s*\(oc\))?$/i.exec(trimmed) ?? /^(\d+)$/.exec(trimmed);

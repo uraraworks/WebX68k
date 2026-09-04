@@ -1248,11 +1248,14 @@
             </div>
             <p>
               マシン構成として、CPU速度(10 / 16 / 25 / 33(OC) / 66(OC) / 100(OC) /
-              200(OC) / 400(OC) / 800(OC) MHz、および「∞MHz(ホスト次第)」)と
+              200(OC) / 400(OC) / 800(OC) MHz、および「∞MHz(ホスト次第)」
+              「∞MHz(描画を捨てて最速)」)と
               RAM容量(1〜12MB)も設定できます。CPU速度はリセット不要で即時反映されます。
               「∞MHz」は端末が実時間に追いつける範囲で最大のクロックへ自動調整するモードで、
-              落ち着く先は端末の性能とそのときの負荷で変わります。ベンチマークなど
-              比較できる数字が要る場合は固定クロックを選んでください。
+              落ち着く先は端末の性能とそのときの負荷で変わります。「∞MHz(描画を捨てて最速)」は
+              画面の更新を約30fpsへ間引いて、浮いた時間をコア実行へ回す一段上のモードです
+              (実測で 53〜61MHz → 75〜84MHz)。ベンチマークなど比較できる数字が要る場合は
+              固定クロックを選んでください。
             </p>
           </div>
           <div class="lang-en">
@@ -1268,11 +1271,15 @@
             </div>
             <p>
               You can also configure CPU speed (10 / 16 / 25 / 33(OC) / 66(OC) / 100(OC) /
-              200(OC) / 400(OC) / 800(OC) MHz, plus "∞MHz (host-dependent)") and
+              200(OC) / 400(OC) / 800(OC) MHz, plus "∞MHz (host-dependent)" and
+              "∞MHz (max speed, coarse display)") and
               RAM size (1–12MB) as part of the machine configuration. CPU speed applies
               immediately, with no reset. "∞MHz" keeps the clock as high as the device can
               sustain in real time, so where it settles depends on the device and its current
-              load; pick a fixed clock when you need comparable benchmark numbers.
+              load. "∞MHz (max speed, coarse display)" goes one step further: it throttles the
+              display to about 30fps and spends the freed time on emulation (measured:
+              53-61MHz to 75-84MHz). Pick a fixed clock when you need comparable benchmark
+              numbers.
             </p>
           </div>
         </section>

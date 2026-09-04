@@ -52,6 +52,7 @@ import { RETROK, charToKey, codeToRetrok } from './keyboard';
 import { LibretroHost } from './libretro-host';
 import {
   AUTO_CPU_SPEED,
+  AUTO_CPU_SPEED_TURBO,
   CPU_MHZ_MAX,
   CPU_MHZ_MIN,
   cpuSpeedOptionForMhz,
@@ -329,14 +330,14 @@ function loadMachineConfig(): { cpuSpeed: string; ramSize: string } {
 
 let { cpuSpeed, ramSize } = loadMachineConfig();
 
-// ?cpu=<10..1000|auto> : 起動時のみ CPU クロックを上書きする(共有URLで推奨環境を再現するため)。
+// ?cpu=<10..1000|auto|auto-max> : 起動時のみ CPU クロックを上書きする(共有URLで推奨環境を再現するため)。
 // 意図的に localStorage には保存しない。共有リンクを開いただけで利用者の既定設定が
 // 書き換わってしまうと、リンクを踏むたびに意図せず設定が上書きされる事故になるため。
 const cpuParamRaw = new URLSearchParams(location.search).get('cpu');
 const urlCpuSpeed = parseCpuSpeedParam(cpuParamRaw);
 if (cpuParamRaw !== null && urlCpuSpeed === null) {
   console.warn(
-    '?cpu= の値が不正です(10〜1000 の整数、"16Mhz" 形式、または auto を指定してください)',
+    '?cpu= の値が不正です(10〜1000 の整数、"16Mhz" 形式、auto、auto-max を指定してください)',
   );
 } else if (urlCpuSpeed !== null) {
   cpuSpeed = urlCpuSpeed;
@@ -389,6 +390,20 @@ const AUTO_CLOCK_PANIC_RATIO = 0.7;
  * 画面提示の実測が約2.4ms/回なので、1フレーム18msのうち残り2割で提示とUIをまかなう。
  */
 const AUTO_CLOCK_MAX_CORE_DUTY = 0.8;
+/**
+ * 「描画を捨てて最速」版の天井。実測(Human68kプロンプト・同一ホスト)では
+ *
+ *   天井0.8   53〜61MHz  rAF 46.3fps  setTimeout(0) p90 34ms
+ *   天井0.95  67〜70MHz  rAF  9.5fps  setTimeout(0) p90 140ms
+ *
+ * と、クロックの+15%と引き換えに画面更新が5分の1になる。通常版でこれをやると
+ * 「速いが操作できない」状態になるので、別モードとして明示的に選ばせる。
+ * 画面提示自体も間引くので、rAFが崩れるのではなく約30fpsで安定する。
+ */
+const AUTO_CLOCK_TURBO_CORE_DUTY = 0.95;
+/** 「描画を捨てて最速」版で画面を提示する最小間隔(ms)。33ms ≈ 30fps。 */
+const AUTO_CLOCK_TURBO_PRESENT_INTERVAL_MS = 33;
+let autoClockTurboLastPresentAt = 0;
 /** 一度も下げていない探索初期は粗く、限界に触れてからは細かく動かす。 */
 const AUTO_CLOCK_COARSE_UP_RATIO = 1.25;
 const AUTO_CLOCK_COARSE_DOWN_RATIO = 0.8;
@@ -404,9 +419,14 @@ let autoClockFrames = 0;
 /** 一度でも下げたら true。以降は微調整幅で動かす。 */
 let autoClockFine = false;
 
-/** 現在の設定が ∞MHz モードか。 */
+/** 現在の設定が ∞MHz モードか(通常版・描画を捨てる版のどちらでも true)。 */
 function isAutoClock(): boolean {
-  return cpuSpeed === AUTO_CPU_SPEED;
+  return cpuSpeed === AUTO_CPU_SPEED || cpuSpeed === AUTO_CPU_SPEED_TURBO;
+}
+
+/** ∞MHz のうち「描画を捨てて最速」版か。 */
+function isAutoClockTurbo(): boolean {
+  return cpuSpeed === AUTO_CPU_SPEED_TURBO;
 }
 
 /** 設定値(番兵 'auto' を含む)を、コアへ渡せる px68k_cpuspeed の文字列へ解決する。 */
@@ -441,6 +461,7 @@ cfgCpuSpeed.addEventListener('change', () => {
     autoClockLastAdjustAt = 0;
     autoClockFrames = 0;
     autoClockFine = false;
+    autoClockTurboLastPresentAt = 0;
   }
   host?.setCoreOption('px68k_cpuspeed', resolveCpuSpeedOption());
   updateSpeedAvailability();
@@ -587,8 +608,10 @@ function stepAutoClock(now: number, frameIntervalSec: number): void {
   const expected = elapsedMs / (frameIntervalSec * 1000);
   if (expected <= 0) return;
   const achieved = frames / expected;
-  const atCoreCeiling =
-    autoClockFrameCostMs > frameIntervalSec * 1000 * AUTO_CLOCK_MAX_CORE_DUTY;
+  const coreDutyCeiling = isAutoClockTurbo()
+    ? AUTO_CLOCK_TURBO_CORE_DUTY
+    : AUTO_CLOCK_MAX_CORE_DUTY;
+  const atCoreCeiling = autoClockFrameCostMs > frameIntervalSec * 1000 * coreDutyCeiling;
 
   let next = autoClockMhz;
   if (achieved < AUTO_CLOCK_PANIC_SPEED) {
@@ -4554,18 +4577,31 @@ function loop(t: number): void {
 
   let ran = 0;
   const measureClock = isAutoClock();
-  while (accumulator >= frameInterval && ran < budget) {
-    if (measureClock) {
-      const frameStart = performance.now();
-      host.runFrame();
-      const cost = performance.now() - frameStart;
-      autoClockFrameCostMs =
-        autoClockFrameCostMs === 0 ? cost : autoClockFrameCostMs * 0.9 + cost * 0.1;
-    } else {
-      host.runFrame();
+  // 「描画を捨てて最速」版は画面提示を約30fpsへ間引き、浮いた時間をコア実行に回す。
+  // 提示を毎フレーム行ったまま天井だけ上げると rAF が 9.5fps まで崩れる(実測)。
+  const turbo = isAutoClockTurbo();
+  try {
+    while (accumulator >= frameInterval && ran < budget) {
+      if (turbo) {
+        const nowMs = performance.now();
+        const present = nowMs - autoClockTurboLastPresentAt >= AUTO_CLOCK_TURBO_PRESENT_INTERVAL_MS;
+        if (present) autoClockTurboLastPresentAt = nowMs;
+        host.setVideoSkip(!present);
+      }
+      if (measureClock) {
+        const frameStart = performance.now();
+        host.runFrame();
+        const cost = performance.now() - frameStart;
+        autoClockFrameCostMs =
+          autoClockFrameCostMs === 0 ? cost : autoClockFrameCostMs * 0.9 + cost * 0.1;
+      } else {
+        host.runFrame();
+      }
+      accumulator -= frameInterval;
+      ran++;
     }
-    accumulator -= frameInterval;
-    ran++;
+  } finally {
+    if (turbo) host.setVideoSkip(false);
   }
   if (ran > 0) {
     serialTransport.notifyReceiveCapacity();

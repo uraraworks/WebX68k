@@ -25,7 +25,7 @@ See [docs/DESIGN.md](docs/DESIGN.md) for design and implementation details.
 | `fd1` / `fd2` | URL of a disk image to load into FDD0 / FDD1 | See below |
 | `hdd` | URL of a disk image to set into the HDD slot | See below |
 | `lib` | URL of a disk image to register in the Disk Library only (repeatable) | See below |
-| `cpu` | An integer from `10` to `1000` to override the CPU clock (MHz), or `auto` for ∞MHz (host-dependent), for this boot only | A one-off override for reproducing a recommended environment from a shared URL. Reflected in the settings UI but not persisted to `localStorage` (opening the link alone must not overwrite the user's saved default) |
+| `cpu` | An integer from `10` to `1000` to override the CPU clock (MHz), `auto` for ∞MHz (host-dependent), or `auto-max` for ∞MHz (max speed, coarse display), for this boot only | A one-off override for reproducing a recommended environment from a shared URL. Reflected in the settings UI but not persisted to `localStorage` (opening the link alone must not overwrite the user's saved default) |
 | `ram` | `1`–`12` to override the RAM size (MB) for this boot only | A one-off override for reproducing a recommended environment from a shared URL. Reflected in the settings UI but not persisted to `localStorage` (opening the link alone must not overwrite the user's saved default) |
 | `aspect` | `4:3` or `native` to override the display aspect ratio mode for this boot only | A one-off override for reproducing a recommended environment from a shared URL. Reflected in the toggle button state but not persisted to `localStorage` (opening the link alone must not overwrite the user's saved default) |
 | `run` | `1` to auto-boot without showing the start overlay | |
@@ -316,6 +316,26 @@ Even while real time is being kept, core execution that eats the whole main
 thread would freeze the display and the UI, so the clock is never raised past
 the point where one frame of core execution takes 80% of one frame of real
 time.
+
+#### ∞MHz (max speed, coarse display)
+
+There is a second tier: "∞MHz (max speed, coarse display)". It **throttles
+presentation to roughly 30fps** and spends the freed time on core execution,
+and it raises the ceiling above from 80% to 95%. It trades a smooth picture
+for clock speed — useful for chasing benchmark numbers, or whenever
+throughput matters more than the display.
+
+Measured on one host, at the Human68k prompt:
+
+| Mode | Clock | Display (rAF) | `setTimeout(0)` p90 | ChaCha bench |
+|---|---|---|---|---|
+| ∞MHz | 53-61MHz | 46.3 fps | 34 ms | 0399 |
+| ∞MHz (max speed) | 75-84MHz | 23.3 fps | 50 ms | 0485 |
+
+Raising only the ceiling to 95%, while still presenting every frame, was also
+tried: it reached 67-70MHz but collapsed to 9.5fps with a 140ms
+`setTimeout(0)` p90. **Throttling presentation improves both the clock and the
+frame rate.**
 
 While ∞MHz is active the **speed-multiplier button is disabled**: both features
 compete for the same host time, so making both unlimited leaves neither

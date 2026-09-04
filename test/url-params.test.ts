@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
   AUTO_CPU_SPEED,
+  AUTO_CPU_SPEED_TURBO,
   CPU_SPEED_OPTIONS,
   cpuSpeedOptionForMhz,
   parseAspectModeParam,
@@ -42,6 +43,11 @@ describe('parseCpuSpeedParam', () => {
 
   it.each(['auto', 'AUTO', ' max ', 'inf', '∞'])('%s -> auto', (input) => {
     expect(parseCpuSpeedParam(input)).toBe(AUTO_CPU_SPEED);
+  });
+
+  // 'auto-max' は 'auto' の前に判定しないと 'auto' 側へ吸われる。
+  it.each(['auto-max', 'AUTO-MAX', ' automax ', 'auto_max'])('%s -> auto-max', (input) => {
+    expect(parseCpuSpeedParam(input)).toBe(AUTO_CPU_SPEED_TURBO);
   });
 
   // 範囲外は無効値。下限は実機の10MHz、上限はコア側 PX68K_CLOCK_MHZ_MAX と揃えた1000。
