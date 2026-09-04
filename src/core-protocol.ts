@@ -157,8 +157,13 @@ export const SPEED_UPDATE_KIND = 'speedUpdate' as const;
 
 export interface SpeedUpdateMessage {
   kind: typeof SPEED_UPDATE_KIND;
-  /** 実効速度倍率。1が等倍(ボタンOFF相当)。0以下や非有限値は受信側で1に丸める。 */
+  /** 実効速度倍率。1が等倍(ボタンOFF相当)。0以下や非有限値は受信側で1に丸める。
+   * unlimitedがtrueのときはWorker側では使わない(main側のUI表示計算にのみ使われる)。 */
   multiplier: number;
+  /** 無制限速度モード(手順9追加分の是正、docs/STORAGE-SCSI.md参照)。trueのときWorker側は
+   * multiplierを無視し、src/worker-drive-loop.tsのrunUnlimitedTick()経路を使う。
+   * 未指定はfalse扱い(既存メッセージ・既存呼び出しとの後方互換)。 */
+  unlimited?: boolean;
 }
 
 export function isSpeedUpdateMessage(message: unknown): message is SpeedUpdateMessage {

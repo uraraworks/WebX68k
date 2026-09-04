@@ -50,6 +50,28 @@ export const UNLIMITED_PRESENT_INTERVAL_MS = 33;
 export const UNLIMITED_MAX_DUTY = 0.7;
 
 /**
+ * Worker経路(?worker=1)の無制限速度モードで、1tickあたりretro_run()に使ってよいmsの割合。
+ *
+ * master(既定経路)の UNLIMITED_TICK_BUDGET_MS(=12ms)はここでは使わない。あの値は
+ * 「コア実行と画面提示が同じスレッドに乗り、そこにUIも同居している」前提から逆算した値
+ * (実測: コア実行12.37ms+画面提示6.56ms=19.74msで占有率95.9%、ページが固まった)。
+ * Worker経路ではコアはWorker、画面提示はメインと別スレッドに分かれるため、この前提が
+ * 成り立たない。Worker側が守るべき制約は「毎tick必ずイベントループへ戻り、入力更新や
+ * コマンドのpostMessageを取りこぼさないこと」であり、画面提示の固定費は別スレッド
+ * (メイン)の勘定なのでWorker側の予算には含めない。よってWorker側の上限は絶対時間(ms)
+ * ではなく「tick間隔に対する占有率」で決める。
+ */
+export const WORKER_UNLIMITED_MAX_DUTY = 0.7;
+
+/**
+ * WORKER_UNLIMITED_MAX_DUTY から、tick間隔(ms)に対する実際の予算(ms)を求める。
+ * 「12msのような由来不明の定数」を直接置かないためのヘルパ。
+ */
+export function workerUnlimitedBudgetMs(tickMs: number): number {
+  return tickMs * WORKER_UNLIMITED_MAX_DUTY;
+}
+
+/**
  * @param dt 前フレームからの経過時間(秒)
  * @param frameInterval エミュレーション1フレームぶんの目標間隔(秒)。fps・speedMultiplier・
  *   音声キューによる±2%補正込みで呼び出し側が計算済みのもの。

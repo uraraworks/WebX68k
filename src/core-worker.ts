@@ -89,8 +89,8 @@ import {
 } from './core-protocol';
 import { LocalCoreProxy, toOwnedArrayBuffer } from './core-proxy';
 import { LibretroHost } from './libretro-host';
-import { computeFrameBudget } from './frameBudget';
-import { FrameBufferPool, runTick } from './worker-drive-loop';
+import { computeFrameBudget, workerUnlimitedBudgetMs } from './frameBudget';
+import { FrameBufferPool, runTick, runUnlimitedTick, type DiskAccessFlags } from './worker-drive-loop';
 import { WorkerInputState } from './worker-input';
 import { MouseTracker } from './mouse-track';
 import { initialTrackerState, trackKeyBufWrite, type KeyBufWriteTrackerState } from './keybuf-attribution';
@@ -404,6 +404,13 @@ let frameNo = 0;
 /** 手順9で追加。main側(src/main.ts)からSPEED_UPDATE_KINDで送られる実効速度倍率。
  * 1が等倍。ファイル冒頭コメント「速度倍率」参照。 */
 let speedMultiplier = 1;
+/** この穴の是正で追加(docs/STORAGE-SCSI.md参照)。無制限速度モードが有効か。trueのとき
+ * tick()はrunTick()ではなくrunUnlimitedTick()経路を使う(speedMultiplierは無視する)。 */
+let unlimitedActive = false;
+/** runUnlimitedTick()の1フレームあたりコスト推定(ms、指数移動平均)。tickをまたいで
+ * 持ち越す(src/worker-drive-loop.tsのUnlimitedTickResult.frameCostMs参照)。初期値は
+ * 実測が無い最初のtick用の目安(母数はmain.tsのunlimitedFrameCostMs初期値と揃えた)。 */
+let workerUnlimitedFrameCostMs = 3;
 
 function stopDriveLoop(): void {
   if (driveIntervalId !== undefined) {
@@ -448,14 +455,34 @@ function tick(): void {
   const fps = host.avInfo?.fps ?? 60;
   const currentHost = host;
   let runTotalMs = 0;
-  const result = runTick(dt, fps, accumulator, speedMultiplier, () => {
+  const runFrameOnce = (): DiskAccessFlags => {
     const runStart = probing ? ctx.performance.now() : 0;
     currentHost.runFrame();
     if (probing) runTotalMs += ctx.performance.now() - runStart;
     frameNo++;
     // runFrame() 直後でないとコア側がクリアしてしまう(LibretroHost#readDiskAccessのコメント参照)。
     return currentHost.readDiskAccess();
-  });
+  };
+
+  let result: { ranFrames: number; accumulator: number; access: DiskAccessFlags };
+  if (unlimitedActive) {
+    // 無制限速度モード(この穴の是正、docs/STORAGE-SCSI.md参照)。fps/accumulator/
+    // computeFrameBudget()は使わず、tick間隔に対する占有率上限(src/frameBudget.tsの
+    // workerUnlimitedBudgetMs())いっぱいまでretro_run()を回す別経路。
+    // speedMultiplierはここでは使わない(無制限モードには「目標倍率」が無いため)。
+    const budgetMs = workerUnlimitedBudgetMs(TICK_MS);
+    const unlimitedResult = runUnlimitedTick(
+      () => ctx.performance.now(),
+      budgetMs,
+      workerUnlimitedFrameCostMs,
+      runFrameOnce,
+      (skip) => currentHost.setVideoSkip(skip),
+    );
+    workerUnlimitedFrameCostMs = unlimitedResult.frameCostMs;
+    result = unlimitedResult;
+  } else {
+    result = runTick(dt, fps, accumulator, speedMultiplier, runFrameOnce);
+  }
   accumulator = result.accumulator;
 
   // マウス閉ループ追従(手順6後半)。既定経路(src/main.ts の loop())が「実際にコアを1フレーム
@@ -941,6 +968,9 @@ ctx.onmessage = (ev) => {
   // 正の値しか持たないが、防御的に受信側でも丸める)。
   if (isSpeedUpdateMessage(data)) {
     speedMultiplier = Number.isFinite(data.multiplier) && data.multiplier > 0 ? data.multiplier : 1;
+    // この穴の是正(docs/STORAGE-SCSI.md参照): 未指定はfalse扱い(SpeedUpdateMessage.unlimited
+    // のコメント参照)。
+    unlimitedActive = data.unlimited === true;
     return;
   }
   // SCSI(OPFS)の明示flush依頼(取りこぼしの窓の是正)。同じく低頻度の専用メッセージ。

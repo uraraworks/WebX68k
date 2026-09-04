@@ -8,7 +8,7 @@
 // 「取り戻しで複数フレーム走ること」のテストが実際に red になることを確認してから元に戻した
 // (2026-08-28、実装時に確認済み)。
 import { describe, expect, it } from 'vitest';
-import { FrameBufferPool, runTick } from '../src/worker-drive-loop';
+import { FrameBufferPool, runTick, runUnlimitedTick } from '../src/worker-drive-loop';
 
 const FPS_60 = 60;
 const FRAME_INTERVAL_60 = 1 / FPS_60;
@@ -95,6 +95,144 @@ describe('runTick: 速度倍率(手順9で追加。以前はspeedMultiplier=1固
     expect(atHalf.ranFrames).toBeLessThan(at1x.ranFrames);
   });
 
+});
+
+describe('runUnlimitedTick(無制限速度モードのWorker側1tick駆動、この穴の是正で追加)', () => {
+  // now()は「時間はretro_run()の実行中にだけ進む」擬似クロック(フレーム実行1回につき
+  // frameCostMsぶん進める)。now()呼び出し自体は瞬時とみなし、budgetMs・frameCostMsだけで
+  // ranFramesが決定的に求まるようにするため。
+  function makeClock(frameCostMs: number): { now: () => number; runFrameOnce: () => ReturnType<typeof noAccess> } {
+    let value = 0;
+    return {
+      now: () => value,
+      runFrameOnce: () => {
+        value += frameCostMs;
+        return noAccess();
+      },
+    };
+  }
+  function noAccess() {
+    return { fddReading: false, fddDrive: -1, hddAccessing: false };
+  }
+
+  it('予算いっぱいまで中間フレームを回し、最後に必ず1フレーム映像提示ぶんを追加する', () => {
+    const FRAME_COST = 2;
+    const clock = makeClock(FRAME_COST);
+    let calls = 0;
+    const skipStates: boolean[] = [];
+    let currentSkip = false;
+    const result = runUnlimitedTick(
+      clock.now,
+      20, // budgetMs
+      FRAME_COST, // frameCostMsIn(実測と一致させ、EMAのドリフトを無くして決定的にする)
+      () => {
+        calls++;
+        skipStates.push(currentSkip);
+        return clock.runFrameOnce();
+      },
+      (skip) => {
+        currentSkip = skip;
+      },
+    );
+    // 手計算: nowValue+frameCostMs*2<=20 を満たす間だけ中間フレームを回す(0,2,...,16で通過、
+    // 18で不通過)ため中間9回+最後の映像提示1回=10回。
+    expect(result.ranFrames).toBe(10);
+    expect(calls).toBe(10);
+  });
+
+  it('中間フレームはsetVideoSkip(true)、最後の1フレームだけfalseで回る', () => {
+    const FRAME_COST = 2;
+    const clock = makeClock(FRAME_COST);
+    const skipStates: boolean[] = [];
+    let currentSkip = false;
+    runUnlimitedTick(
+      clock.now,
+      20,
+      FRAME_COST,
+      () => {
+        skipStates.push(currentSkip);
+        return clock.runFrameOnce();
+      },
+      (skip) => {
+        currentSkip = skip;
+      },
+    );
+    expect(skipStates.length).toBeGreaterThan(1);
+    // 最後の1回だけfalse、それ以外は全てtrue。
+    expect(skipStates.slice(0, -1).every((s) => s === true)).toBe(true);
+    expect(skipStates[skipStates.length - 1]).toBe(false);
+  });
+
+  it('runFrameOnceが例外を投げても、finallyでsetVideoSkip(false)に戻る', () => {
+    const clock = makeClock(2);
+    let currentSkip = false;
+    let call = 0;
+    expect(() =>
+      runUnlimitedTick(
+        clock.now,
+        20,
+        2,
+        () => {
+          call++;
+          if (call === 2) throw new Error('故障注入');
+          return clock.runFrameOnce();
+        },
+        (skip) => {
+          currentSkip = skip;
+        },
+      ),
+    ).toThrow('故障注入');
+    expect(currentSkip).toBe(false);
+  });
+
+  it('予算が極端に小さくても(0以下)最低1フレームは回る', () => {
+    const clock = makeClock(2);
+    let calls = 0;
+    const result = runUnlimitedTick(
+      clock.now,
+      0, // budgetMs
+      2,
+      () => {
+        calls++;
+        return clock.runFrameOnce();
+      },
+      () => {},
+    );
+    expect(result.ranFrames).toBe(1);
+    expect(calls).toBe(1);
+  });
+
+  it('accumulatorは常に0を返す(無制限モードでは使わない)', () => {
+    const clock = makeClock(2);
+    const result = runUnlimitedTick(clock.now, 20, 2, () => clock.runFrameOnce(), () => {});
+    expect(result.accumulator).toBe(0);
+  });
+
+  it('tick内の複数フレームのいずれかでアクセスがあればORで合成する', () => {
+    const clock = makeClock(2);
+    let call = 0;
+    const result = runUnlimitedTick(
+      clock.now,
+      20,
+      2,
+      () => {
+        call++;
+        clock.runFrameOnce();
+        // 3フレーム目だけFDD0にアクセスがあったことにする。
+        if (call === 3) return { fddReading: true, fddDrive: 0, hddAccessing: false };
+        return noAccess();
+      },
+      () => {},
+    );
+    expect(result.access).toEqual({ fddReading: true, fddDrive: 0, hddAccessing: false });
+  });
+
+  it('frameCostMsは実測に応じて更新され呼び出し側へ返る(次tickへ持ち越すため)', () => {
+    const clock = makeClock(5); // 実測は5msだが、初期推定は1msとずれさせる
+    const result = runUnlimitedTick(clock.now, 20, 1, () => clock.runFrameOnce(), () => {});
+    // EMAが実測(5ms)方向へ動くこと(初期値1から増えていること)。
+    expect(result.frameCostMs).toBeGreaterThan(1);
+  });
 });
 
 describe('FrameBufferPool', () => {

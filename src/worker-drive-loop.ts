@@ -84,6 +84,98 @@ export function runTick(
   };
 }
 
+/** runUnlimitedTick() の戻り値。runTick()のTickResultと同じ流儀だが、無制限モードは
+ * accumulatorを使わない(常に0)ため意味を持たない値として返す。 */
+export interface UnlimitedTickResult {
+  /** このtickで実際に進めたフレーム数(映像提示用の最後の1フレームを含む)。 */
+  ranFrames: number;
+  /** 無制限モードでは使わないため常に0(呼び出し側は捨ててよい)。 */
+  accumulator: number;
+  /** runTickと同じ、tick内の複数フレームのORで合成したディスクアクセス状態。 */
+  access: DiskAccessFlags;
+  /** 更新後の1フレームあたりコスト推定(ms、指数移動平均)。次回呼び出し時に
+   * frameCostMsIn としてそのまま渡すこと(呼び出し側=core-worker.tsがモジュールスコープの
+   * 変数として持ち越す)。 */
+  frameCostMs: number;
+}
+
+/**
+ * 無制限速度モード用のWorker側1tickぶんの駆動ロジック(純粋関数)。runTick()と対になる
+ * 別経路: 「目標倍率」が無いため fps/accumulator/computeFrameBudget() は一切使わず、
+ * 時間予算(budgetMs、src/frameBudget.ts の workerUnlimitedBudgetMs() で算出したもの)
+ * いっぱいまで retro_run() を回し切る。
+ *
+ * 画面提示のthrottleは入れない(master(メインスレッド専用実装)の
+ * UNLIMITED_PRESENT_INTERVAL_MSはここには持ち込まない): frame event は音声サンプルも
+ * 相乗りさせて運ぶため、tickごとに出す頻度を落とすと音声が枯れる。ここで省くのは
+ * 「中間フレームの映像変換(RGB565→RGBA)」だけであり、setVideoSkip(true)で
+ * host側の変換・描画そのものをスキップさせる(src/libretro-host.ts参照)。
+ *
+ * 「入らないフレームは始めない」(master と同じ考え方): 次の中間フレームを回した場合の
+ * 見込みコストと、最後に必ず回す映像提示フレームぶんのコストの両方が予算内に収まる
+ * 場合だけ中間フレームを続ける。1フレームあたりの実測コストは指数移動平均
+ * (frameCostMs = frameCostMs*0.8 + measured*0.2)で持ち越す。
+ *
+ * @param now 時刻取得(ms)。呼び出し側がWorkerグローバル(performance.now())等を注入する。
+ * @param budgetMs このtickでretro_run()に使ってよい時間(ms)の総量。
+ * @param frameCostMsIn 1フレームあたりコストの実測移動平均の持ち越し値(ms)。
+ * @param runFrameOnce 1フレーム進め、ディスクアクセス状態を返すコールバック(runTickと同じ)。
+ * @param setVideoSkip 中間フレームの映像変換・描画をスキップするかを切り替えるコールバック
+ *   (host.setVideoSkip をそのまま注入する想定)。
+ */
+export function runUnlimitedTick(
+  now: () => number,
+  budgetMs: number,
+  frameCostMsIn: number,
+  runFrameOnce: () => DiskAccessFlags,
+  setVideoSkip: (skip: boolean) => void,
+): UnlimitedTickResult {
+  const deadline = now() + budgetMs;
+  let frameCostMs = frameCostMsIn;
+  let ranFrames = 0;
+  let fddReading = false;
+  let fddDrive = -1;
+  let hddAccessing = false;
+
+  const merge = (access: DiskAccessFlags): void => {
+    if (access.fddReading) {
+      fddReading = true;
+      fddDrive = access.fddDrive;
+    }
+    if (access.hddAccessing) hddAccessing = true;
+  };
+
+  try {
+    setVideoSkip(true);
+    // 中間フレーム: 「次の1フレーム + 最後の映像提示フレーム」ぶんの見込みコストが
+    // 予算内に収まる間だけ続ける(踏み越え防止。最後の映像提示フレームは常に別枠で回す
+    // ためここでは数えない)。
+    while (now() + frameCostMs * 2 <= deadline) {
+      const frameStart = now();
+      merge(runFrameOnce());
+      frameCostMs = frameCostMs * 0.8 + (now() - frameStart) * 0.2;
+      ranFrames++;
+    }
+  } finally {
+    // 例外が起きても中間フレームのスキップ状態を必ず解除する。
+    setVideoSkip(false);
+  }
+
+  // 最後の1フレームは必ず映像を作る(setVideoSkipは既にfalse)。
+  // これにより予算が極端に小さい/尽きていても最低1フレームは進む。
+  const presentStart = now();
+  merge(runFrameOnce());
+  frameCostMs = frameCostMs * 0.8 + (now() - presentStart) * 0.2;
+  ranFrames++;
+
+  return {
+    ranFrames,
+    accumulator: 0,
+    access: ranFrames > 0 ? { fddReading, fddDrive, hddAccessing } : NO_ACCESS,
+    frameCostMs,
+  };
+}
+
 /**
  * frame event で main へ転送する ArrayBuffer のプール(手順5「バッファ返却あり」)。
  * byteLength をキーにしたスタック。main が putImageData() し終えたバッファを release() で

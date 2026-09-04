@@ -863,10 +863,18 @@ export class WorkerCoreProxy implements LibretroHostProxy {
 
   /** 速度倍率の更新(手順9でWorker対応。docs/STORAGE-SCSI.md「ワーカー移行 手順9」参照)。
    * sendMouseTrack と同じ扱いのfire-and-forget。ユーザー操作契機(速度ボタン/設定モーダル)の
-   * 低頻度メッセージ。 */
-  setSpeedMultiplier(multiplier: number): void {
+   * 低頻度メッセージ。
+   * @param unlimited 無制限速度モード(既定false)。trueのときWorker側は
+   *   runUnlimitedTick()経路を使う(multiplierは無視される)。既存呼び出し(unlimited省略)
+   *   の送信メッセージ形は変えない(unlimitedキー自体を付けない)ため、既存テストの
+   *   完全一致アサーションを壊さない。 */
+  setSpeedMultiplier(multiplier: number, unlimited = false): void {
     if (this.disposed || this.failed) return;
-    this.worker.postMessage({ kind: SPEED_UPDATE_KIND, multiplier });
+    if (unlimited) {
+      this.worker.postMessage({ kind: SPEED_UPDATE_KIND, multiplier, unlimited: true });
+    } else {
+      this.worker.postMessage({ kind: SPEED_UPDATE_KIND, multiplier });
+    }
   }
 
   /** SCSI(OPFS)の明示flush依頼(取りこぼしの窓の是正)。sendMouseTrackResyncと同じ扱いの
