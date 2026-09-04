@@ -366,6 +366,23 @@ if (ramParamRaw !== null && urlRamSize === null) {
 //
 // 倍率と同時に無制限にすると同じホスト時間を奪い合って両方とも意味を失うため、
 // 'auto' のあいだは速度倍率ボタンを無効化して等速に固定する。
+/**
+ * コア実行がメインスレッドを占有してよい割合の上限。残りで画面提示・入力・UIをまかなう。
+ *
+ * 1tickあたりのフレーム数(budget)を絞るだけでは足りない。コアが実時間に追いつけない設定
+ * (高いCPUクロック、非力な端末)では**1フレームの実行そのもの**が実時間1フレームより長くなり、
+ * tick同士が隙間なく連続してブラウザにイベントを配る時間が残らない。実測では cpu=800Mhz に
+ * すると1秒間隔の setInterval すら発火しなくなり、キーもツールバーのボタンも効かなくなった。
+ *
+ * そこで実時間ベースの占有率ゲートを置く(無制限モードの UNLIMITED_MAX_DUTY と同じ考え方)。
+ * コア実行に C ミリ秒かかったら、次に走らせるのは C/FRAME_LOOP_MAX_DUTY ミリ秒後まで待つ。
+ * 追いつけない設定では「遅いが操作は生きている」状態に落ち着く。
+ * 追いついている通常時は C が小さいのでゲートは実質かからない。
+ */
+const FRAME_LOOP_MAX_DUTY = 0.85;
+let frameLoopNextAllowedAt = 0;
+/** host.runFrame() 1回の実時間(ms)の指数移動平均。追いつけているかの判定に使う。 */
+let frameCostMs = 0;
 const AUTO_CLOCK_ADJUST_INTERVAL_MS = 1000;
 /**
  * 判定に使うのは「コア実行にどれだけかかりそうか」という見積もりではなく、
@@ -516,6 +533,8 @@ function resetSpeedState(): void {
   // 提示タイミングだけは切り替え直後に必ず1回提示させるためリセットする。
   unlimitedLastPresentAt = 0;
   unlimitedNextAllowedAt = 0;
+  frameLoopNextAllowedAt = 0;
+  frameCostMs = 0;
 }
 
 /** #btn-speed の見た目(押し込み状態・バッジ・ツールチップ)を現在の状態から一括更新する。 */
@@ -4576,32 +4595,60 @@ function loop(t: number): void {
   const budget = computeFrameBudget(dt, frameInterval, queued, speedMultiplier);
 
   let ran = 0;
+  // 1tickでコア実行に使ってよい実時間の上限。budget(フレーム数)だけでは守れない。
+  //
+  // コアが実時間に追いつけない設定(高いCPUクロック、非力な端末)では1フレームの実行自体が
+  // 実時間1フレームより長くなる。computeFrameBudget() は遅れを取り戻そうとフレーム数を
+  // 増やすため、1tickの拘束時間がさらに伸びて悪循環になる。実測では cpu=800Mhz にすると
+  // **1秒間隔の setInterval すら発火しなくなり**、キーもツールバーのボタンも効かなくなった
+  // (JSが動かないのでブラウザがイベントを配れない)。
+  //
+  // フレーム数ではなく実時間で打ち切る。1フレームは必ず走らせる(進まなくなるのを防ぐ)ので、
+  // 追いつけない設定では「1tickあたり1フレーム」に落ち着き、遅くはなるが操作は生きる。
+  // 基準は frameInterval ではなく実時間の1フレーム(1/fps)。frameInterval を基準にすると
+  // 速度倍率を上げるほど上限が縮み、倍速そのものを潰してしまう。
+  const tickStart = performance.now();
+  // ゲートを効かせるのは「1フレームの実行そのものが実時間1フレームより長い」ときだけ。
+  // つまり**どうやっても追いつけない**状態に限る。追いついている通常時・倍速時は
+  // この条件が偽なので、従来と完全に同じ経路を通る(倍速を潰さないための線引き)。
+  const realFrameMs = 1000 / fps;
+  const cantKeepUp = frameCostMs > realFrameMs;
+  const coreTickDeadline = tickStart + realFrameMs * FRAME_LOOP_MAX_DUTY;
   const measureClock = isAutoClock();
   // 「描画を捨てて最速」版は画面提示を約30fpsへ間引き、浮いた時間をコア実行に回す。
   // 提示を毎フレーム行ったまま天井だけ上げると rAF が 9.5fps まで崩れる(実測)。
   const turbo = isAutoClockTurbo();
   try {
-    while (accumulator >= frameInterval && ran < budget) {
+    while (
+      accumulator >= frameInterval &&
+      ran < budget &&
+      // 占有率ゲート。前回のコア実行が長かったぶんだけ、次を始めるのを遅らせる。
+      (!cantKeepUp || performance.now() >= frameLoopNextAllowedAt)
+    ) {
       if (turbo) {
         const nowMs = performance.now();
         const present = nowMs - autoClockTurboLastPresentAt >= AUTO_CLOCK_TURBO_PRESENT_INTERVAL_MS;
         if (present) autoClockTurboLastPresentAt = nowMs;
         host.setVideoSkip(!present);
       }
+      const frameStart = performance.now();
+      host.runFrame();
+      const cost = performance.now() - frameStart;
+      frameCostMs = frameCostMs === 0 ? cost : frameCostMs * 0.9 + cost * 0.1;
       if (measureClock) {
-        const frameStart = performance.now();
-        host.runFrame();
-        const cost = performance.now() - frameStart;
         autoClockFrameCostMs =
           autoClockFrameCostMs === 0 ? cost : autoClockFrameCostMs * 0.9 + cost * 0.1;
-      } else {
-        host.runFrame();
       }
       accumulator -= frameInterval;
       ran++;
+      if (cantKeepUp && performance.now() >= coreTickDeadline) break;
     }
   } finally {
     if (turbo) host.setVideoSkip(false);
+  }
+  if (cantKeepUp && ran > 0) {
+    const coreCostMs = performance.now() - tickStart;
+    frameLoopNextAllowedAt = tickStart + coreCostMs / FRAME_LOOP_MAX_DUTY;
   }
   if (ran > 0) {
     serialTransport.notifyReceiveCapacity();
