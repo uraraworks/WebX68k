@@ -8,6 +8,25 @@ export interface ArchiveEntry {
   mtime?: Date;
 }
 
+/**
+ * OS付随のメタデータエントリ(実データではない)かどうかを判定する。
+ * macOS標準の「圧縮」機能で作ったZIPには __MACOSX/._<元ファイル名> という
+ * AppleDouble形式の付随ファイルが必ず入る。拡張子が元ファイルと同じ(例: FD1.XDF に対して
+ * __MACOSX/._FD1.XDF)ため、ディスクイメージの拡張子でエントリを数える処理に混入すると
+ * 「1枚のつもりのアーカイブが複数枚と誤判定される」バグを引き起こす
+ * (2026-08-13、共有URL機能の実運用で実際に踏んだ)。
+ * ZIP/LZHどちらの展開結果にも同じ基準で効くよう、両方から呼ばれる共通関数として定義する。
+ */
+export function isMetadataEntry(name: string): boolean {
+  const normalized = name.replace(/\\/g, '/');
+  if (normalized.startsWith('__MACOSX/') || normalized.includes('/__MACOSX/')) return true;
+  const baseName = normalized.slice(normalized.lastIndexOf('/') + 1);
+  if (baseName.startsWith('._')) return true; // AppleDouble本体(ZIP以外の経路で単体で入ることもある)
+  const lowerBase = baseName.toLowerCase();
+  if (lowerBase === '.ds_store' || lowerBase === 'thumbs.db' || lowerBase === 'desktop.ini') return true;
+  return false;
+}
+
 export function readU16(buf: Uint8Array, off: number): number {
   return buf[off] | (buf[off + 1] << 8);
 }

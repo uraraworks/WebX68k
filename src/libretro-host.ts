@@ -6,6 +6,7 @@ import {
   keyRepeatIntervalMsFromSramValue,
 } from './key-repeat';
 import { RETROK_TO_SCANCODE } from './keyboard';
+import { buildRgb565Lut } from './rgb565';
 import {
   extractTextScreenFromCore,
   MINIMUM_ANK_CGROM_SIZE,
@@ -65,6 +66,13 @@ function probedMemfsWrite(
     verify: verifyBytes(data, readBack),
   });
 }
+
+// 実行環境のバイト順。ImageData は [R,G,B,A] のバイト列なので、Uint32Array で
+// まとめ書きするときの詰め方がバイト順で変わる。
+const LITTLE_ENDIAN = new Uint8Array(new Uint32Array([1]).buffer)[0] === 1;
+// RGB565→RGBA の変換表。65536*4=256KBあるため、最初に必要になった時に1回だけ生成する
+// (起動時に無条件で作らない)。
+let rgb565Lut: Uint32Array | null = null;
 
 // ---- RETRO_ENVIRONMENT_* (libretro.h より) ----
 const RETRO_ENVIRONMENT_GET_CAN_DUPE = 3;
@@ -166,6 +174,13 @@ export interface PX68KModule {
   // FDD ホットマウント用(core-shim.c 経由で px68k の FDD_SetFD/FDD_EjectFD を公開)
   _webx68k_fdd_insert(drive: number, pathPtr: number): void;
   _webx68k_fdd_eject(drive: number): void;
+  _webx68k_serial_rx?(dataPtr: number, length: number): number;
+  _webx68k_serial_tx_available?(): number;
+  _webx68k_serial_tx_drain?(dataPtr: number, maxLength: number): number;
+  _webx68k_serial_reset?(): void;
+  _webx68k_serial_set_connected?(connected: number): void;
+  _webx68k_serial_set_tx_writable?(writable: number): void;
+  _webx68k_serial_guest_baud_rate?(): number;
   _webx68k_tvram_data?: () => number;
   _webx68k_text_dot_x?: () => number;
   _webx68k_text_dot_y?: () => number;
@@ -264,6 +279,54 @@ function mallocString(mod: PX68KModule, str: string): number {
   return ptr;
 }
 
+type StateSerializationModule = Pick<
+  PX68KModule,
+  'HEAPU8' | '_malloc' | '_free' | '_retro_serialize_size' | '_retro_serialize' | '_retro_unserialize'
+>;
+
+function serializeCoreState(mod: StateSerializationModule): Uint8Array | null {
+  const size = mod._retro_serialize_size();
+  if (size <= 0) return null;
+  const ptr = mod._malloc(size);
+  try {
+    if (mod._retro_serialize(ptr, size) === 0) return null;
+    return new Uint8Array(mod.HEAPU8.subarray(ptr, ptr + size));
+  } finally {
+    mod._free(ptr);
+  }
+}
+
+/** 失敗時に直前の状態へ戻す、テスト可能なステート復元処理。 */
+export function unserializeCoreState(mod: StateSerializationModule, bytes: Uint8Array): boolean {
+  if (bytes.length === 0) return false;
+  const rollback = serializeCoreState(mod);
+  if (!rollback) {
+    console.warn(
+      '[WebX68k] ロールバック用スナップショットを作成できなかったため、ステートロードを中止しました。',
+    );
+    return false;
+  }
+  const ptr = mod._malloc(bytes.length);
+  try {
+    mod.HEAPU8.set(bytes, ptr);
+    const restored = mod._retro_unserialize(ptr, bytes.length) !== 0;
+    if (!restored) {
+      const rollbackPtr = mod._malloc(rollback.length);
+      try {
+        mod.HEAPU8.set(rollback, rollbackPtr);
+        if (mod._retro_unserialize(rollbackPtr, rollback.length) === 0) {
+          console.warn('[WebX68k] ステートロード失敗後のロールバックにも失敗しました。');
+        }
+      } finally {
+        mod._free(rollbackPtr);
+      }
+    }
+    return restored;
+  } finally {
+    mod._free(ptr);
+  }
+}
+
 export class LibretroHost {
   private mod!: PX68KModule;
   private canvas: HTMLCanvasElement;
@@ -306,6 +369,7 @@ export class LibretroHost {
   private joyState: [number, number] = [0, 0];
 
   private imageData: ImageData | null = null;
+  private imageData32: Uint32Array | null = null;
   private lastWidth = 0;
   private lastHeight = 0;
 
@@ -314,10 +378,21 @@ export class LibretroHost {
   // SRAM定期保存用。setInterval のIDと直近保存したバイト列(差分検出用)を持つ。
   private sramAutosaveTimer: ReturnType<typeof setInterval> | null = null;
   private lastSavedSram: Uint8Array | null = null;
+  private serialBridgePtr = 0;
+  private readonly serialBridgeCapacity = 4096;
 
   private _avInfo: AvInfo | null = null;
   // FS へ書いたものと逆引き用を必ず同じバイト列にするための唯一の CGROM 保持先。
   private coreCgrom: Uint8Array | null = null;
+
+  /**
+   * true の間、handleVideoRefresh() は変換も描画も行わず即 return する。
+   *
+   * 無制限速度モードでは1tickに何十フレームも retro_run() を回すため、毎フレーム
+   * RGB565→RGBA変換+putImageDataをすると描画コストがボトルネックになり、フレーム数を
+   * 稼げなくなる。中間フレームは変換ごと捨て、tick末尾の1フレームだけ画面に出す。
+   */
+  private videoSkip = false;
 
   /**
    * X68000 は画面モード変更で実行中に canvas.width/height(実解像度)が変わる。
@@ -628,15 +703,21 @@ export class LibretroHost {
    * ままIPLに既定値を書かせたほうが安全なため)。
    */
   async init(biosIpl: Uint8Array, biosCg: Uint8Array, sram?: Uint8Array): Promise<void> {
-    // locateFile: emscripten glue は既定で自身のスクリプトの所在(scriptDirectory、
-    // メインスレッドでは document.currentScript.src、Workerでは self.location.href)から
-    // wasm の相対パスを推測する。Worker内では core-worker.ts が glue を
-    // `<script src="/core/px68k_libretro.js">` 経由ではなく fetch+eval で読み込むため、
-    // scriptDirectory が worker自身のURL(/src/core-worker.ts?...)になってしまい、
-    // wasm を誤って `/src/px68k_libretro.wasm` から取得しようとして失敗する(実測)。
-    // メインスレッドの `<script>` タグと同じ絶対パス `/core/` を明示することで、
-    // メインスレッド・Worker どちらでも scriptDirectory 推測に依存しないようにする。
-    const mod = await getPX68KFactory()({ locateFile: (path: string) => `/core/${path}` });
+    // locateFile: 絶対パス `/core/` を明示する理由と、.wasm にビルドIDを付ける理由の
+    // 2つが同居する。
+    //   - 絶対パス: emscripten glue は既定で自身のスクリプトの所在(scriptDirectory、
+    //     メインスレッドでは document.currentScript.src、Workerでは self.location.href)から
+    //     wasm の相対パスを推測する。Worker内では core-worker.ts が glue を
+    //     `<script src="/core/px68k_libretro.js">` 経由ではなく fetch+eval で読み込むため、
+    //     scriptDirectory が worker自身のURL(/src/core-worker.ts?...)になってしまい、
+    //     wasm を誤って `/src/px68k_libretro.wasm` から取得しようとして失敗する(実測)。
+    //     メインスレッドの `<script>` タグと同じ絶対パス `/core/` を明示することで、
+    //     メインスレッド・Worker どちらでも scriptDirectory 推測に依存しないようにする。
+    //   - ビルドID: .wasm 本体にビルドID(コミットハッシュ)をクエリとして付け、
+    //     グルーJS更新時に古いキャッシュのwasmを読ませないようにする。
+    const mod = await getPX68KFactory()({
+      locateFile: (path: string) => (path.endsWith('.wasm') ? `/core/${path}?v=${__BUILD_ID__}` : `/core/${path}`),
+    });
     this.mod = mod;
 
     this.mkdirSafe('/system');
@@ -826,7 +907,14 @@ export class LibretroHost {
     }
   }
 
+  /** 無制限速度モード用: 中間フレームの描画をスキップするか切り替える。 */
+  setVideoSkip(skip: boolean): void {
+    this.videoSkip = skip;
+  }
+
   private handleVideoRefresh(data: number, width: number, height: number, pitch: number): void {
+    if (this.videoSkip) return; // 無制限モードの中間フレーム: 変換・描画とも省略する
+
     const probing = import.meta.env.DEV && frameProbe.enabled;
     // frameCounterはrunFrame()側で既にインクリメント済みなので、対応する直近フレームは-1。
     const frameIndex = probing ? Math.max(0, frameProbe.frameCounter - 1) : 0;
@@ -853,6 +941,10 @@ export class LibretroHost {
       this.canvas.width = width;
       this.canvas.height = height;
       this.imageData = this.ctx2d.createImageData(width, height);
+      // imageData を作り直したら、Uint32Array のビューも必ず同時に作り直す。
+      // 忘れると解像度変化後も古いバッファへ書き続け、putImageDataでも新しいimg.dataは
+      // 更新されないまま画面が固まる。
+      this.imageData32 = new Uint32Array(this.imageData.data.buffer);
       this.lastWidth = width;
       this.lastHeight = height;
       // 実解像度が変わった直後だけ通知する(このコールバックは毎フレーム発生するhandleVideoRefresh
@@ -862,29 +954,22 @@ export class LibretroHost {
 
     const mod = this.mod;
     const img = this.imageData;
-    if (!img) return;
+    const out32 = this.imageData32;
+    if (!img || !out32) return;
+
+    if (!rgb565Lut) rgb565Lut = buildRgb565Lut(LITTLE_ENDIAN);
+    const lut = rgb565Lut;
 
     const convertStartAtMs = probing ? performance.now() : 0;
 
     const src16 = mod.HEAPU16;
     const strideSamples = pitch >> 1; // pitch はバイト単位、RGB565は1pixel=2byte
     const base = data >> 1;
-    const out = img.data;
-
     for (let y = 0; y < height; y++) {
       let srcIdx = base + y * strideSamples;
-      let dstIdx = y * width * 4;
+      let dstIdx = y * width; // 32bit単位のインデックス(y*width*4 ではない)
       for (let x = 0; x < width; x++) {
-        const px = src16[srcIdx];
-        const r5 = (px >> 11) & 0x1f;
-        const g6 = (px >> 5) & 0x3f;
-        const b5 = px & 0x1f;
-        out[dstIdx] = (r5 << 3) | (r5 >> 2);
-        out[dstIdx + 1] = (g6 << 2) | (g6 >> 4);
-        out[dstIdx + 2] = (b5 << 3) | (b5 >> 2);
-        out[dstIdx + 3] = 255;
-        srcIdx++;
-        dstIdx += 4;
+        out32[dstIdx++] = lut[src16[srcIdx++]];
       }
     }
 
@@ -1089,29 +1174,14 @@ export class LibretroHost {
    * 挿さっている前提になるため、呼び出し側でスロット構成を別途記録して照合すること。
    */
   serialize(): Uint8Array | null {
-    const mod = this.mod;
-    const size = mod._retro_serialize_size();
-    if (size <= 0) return null;
-    const ptr = mod._malloc(size);
-    try {
-      if (mod._retro_serialize(ptr, size) === 0) return null;
-      // HEAPU8 のビューをそのまま返すと後続の malloc/メモリ拡張で無効化されるため複製する
-      return new Uint8Array(mod.HEAPU8.subarray(ptr, ptr + size));
-    } finally {
-      mod._free(ptr);
-    }
+    return serializeCoreState(this.mod);
   }
 
   /** シリアライズ済みの状態を復元する(ステートロード)。成功したら true。 */
   unserialize(bytes: Uint8Array): boolean {
     const mod = this.mod;
-    const ptr = mod._malloc(bytes.length);
-    try {
-      mod.HEAPU8.set(bytes, ptr);
-      return mod._retro_unserialize(ptr, bytes.length) !== 0;
-    } finally {
-      mod._free(ptr);
-    }
+    if (!mod || bytes.length === 0) return false;
+    return unserializeCoreState(mod, bytes);
   }
 
   runFrame(): void {
@@ -1157,6 +1227,80 @@ export class LibretroHost {
     this.mod._retro_run();
   }
 
+  /** コアモジュールの初期化が完了しているか。 */
+  isInitialized(): boolean {
+    return this.mod !== undefined;
+  }
+
+  hasSerialBridge(): boolean {
+    const mod = this.mod;
+    return Boolean(
+      mod?._webx68k_serial_rx && mod._webx68k_serial_tx_available &&
+      mod._webx68k_serial_tx_drain && mod._webx68k_serial_reset &&
+      mod._webx68k_serial_set_connected && mod._webx68k_serial_set_tx_writable &&
+      mod._webx68k_serial_guest_baud_rate,
+    );
+  }
+
+  /** ホストから受け取ったバイト列を SCC チャネルAの受信FIFOへ渡す。戻り値は受理したバイト数。 */
+  serialReceive(bytes: Uint8Array): number {
+    if (bytes.length === 0) return 0;
+    const mod = this.mod;
+    if (!mod) return 0;
+    const receive = mod._webx68k_serial_rx;
+    if (!receive) return 0;
+    const ptr = this.ensureSerialBridgeBuffer();
+    if (!ptr) return 0;
+    let accepted = 0;
+    while (accepted < bytes.length) {
+      const length = Math.min(this.serialBridgeCapacity, bytes.length - accepted);
+      mod.HEAPU8.set(bytes.subarray(accepted, accepted + length), ptr);
+      const count = receive(ptr, length);
+      if (count <= 0) break;
+      accepted += count;
+      if (count < length) break;
+    }
+    return accepted;
+  }
+
+  /** エミュレートされた SCC の送信FIFOから、最大 maxBytes バイトを取り出す。 */
+  drainSerialTx(maxBytes = this.serialBridgeCapacity): Uint8Array {
+    const mod = this.mod;
+    if (!mod) return new Uint8Array(0);
+    const available = mod._webx68k_serial_tx_available;
+    const drain = mod._webx68k_serial_tx_drain;
+    if (!available || !drain) return new Uint8Array(0);
+    const count = Math.min(Math.max(0, maxBytes), this.serialBridgeCapacity, Math.max(0, available()));
+    if (count === 0) return new Uint8Array(0);
+    const ptr = this.ensureSerialBridgeBuffer();
+    if (!ptr) return new Uint8Array(0);
+    const written = drain(ptr, count);
+    if (written <= 0) return new Uint8Array(0);
+    // WebSerialTransport.write() が完了まで保持するため、wasm メモリから独立したコピーを返す。
+    return new Uint8Array(mod.HEAPU8.subarray(ptr, ptr + Math.min(written, count)));
+  }
+
+  resetSerialBridge(): void {
+    this.mod?._webx68k_serial_reset?.();
+  }
+
+  setSerialConnected(connected: boolean): void {
+    this.mod?._webx68k_serial_set_connected?.(connected ? 1 : 0);
+  }
+
+  setSerialTxWritable(writable: boolean): void {
+    this.mod?._webx68k_serial_set_tx_writable?.(writable ? 1 : 0);
+  }
+
+  serialGuestBaudRate(): number {
+    return this.mod?._webx68k_serial_guest_baud_rate?.() ?? 0;
+  }
+
+  private ensureSerialBridgeBuffer(): number {
+    if (!this.serialBridgePtr) this.serialBridgePtr = this.mod._malloc(this.serialBridgeCapacity);
+    return this.serialBridgePtr;
+  }
+
   /**
    * 直近の runFrame() でディスクアクセスがあったかを取得する(アクセスランプ用)。
    * fdd.c 側は FDD_IsReading/FDD_AccessDrive を retro_run() の毎フレーム先頭で0クリアするため、
@@ -1194,6 +1338,11 @@ export class LibretroHost {
   /** コールバック用関数テーブルエントリを解放する */
   dispose(): void {
     this.stopSramAutosave();
+    this.setSerialConnected(false);
+    if (this.serialBridgePtr) {
+      this.mod._free(this.serialBridgePtr);
+      this.serialBridgePtr = 0;
+    }
     for (const ptr of this.callbackPtrs) {
       this.mod.removeFunction(ptr);
     }

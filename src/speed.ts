@@ -25,6 +25,23 @@ export function parseSpeedStep(raw: string): SpeedStep {
 }
 
 /**
+ * cfg-speed が取りうる値。数値倍率(SpeedStep)に加えて 'unlimited' を持つ。
+ *
+ * 無制限モードは「目標倍率 × frameInterval」という既存の供給ペース方式に乗らない
+ * (目標が無いので待つ理由が無い)別経路のモードであり、数値ではないため意図的に
+ * SPEED_STEPS の外に置いている。SPEED_STEPS に混ぜると「倍率として演算できる値」という
+ * 前提が崩れ、speedMultiplier を使う箇所(frameInterval計算・resampleSpeed等)全てに
+ * 無制限の特別扱いが漏れ出してしまう。
+ */
+export type SpeedSetting = SpeedStep | 'unlimited';
+
+/** cfg-speed の value(文字列)を SpeedSetting へ検証つきで変換する。不正値は既定倍率へ倒す。 */
+export function parseSpeedSetting(raw: string): SpeedSetting {
+  if (raw === 'unlimited') return 'unlimited';
+  return parseSpeedStep(raw);
+}
+
+/**
  * 可変レートリサンプラの内部状態。
  *
  * コアは1エミュフレームぶんの音声サンプルを必ず一定量吐くため、速度倍率 k のときは

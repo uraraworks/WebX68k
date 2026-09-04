@@ -32,5 +32,13 @@ echo "== 検証用ディスクを作成 =="
 cp "$SYSTEM_DISK" "$OUT_DISK"
 python3 "$REPO_DIR/tools/x68/fatput.py" "$OUT_DISK" "MOUSETST.X" "$BUILD_DIR/MOUSETST.X"
 
+# 起動しただけで MOUSETST が走るように AUTOEXEC.BAT を差し替える。
+# スマホでの確認ではソフトキーボードでコマンドを打つのが煩雑なため。
+# 元の AUTOEXEC.BAT にある FASTIO/FASTSEEK/FASTOPEN(ディスクキャッシュ)は
+# このテストには不要なので落としてある。差し替え先は _local のコピーだけで、
+# 同梱のシステムディスクは無改変のまま。
+printf 'ECHO OFF\r\nPATH A:\\;A:\\SYS;A:\\BIN;A:\\ETC;\r\nMOUSETST\r\n\032' > "$BUILD_DIR/AUTOEXEC.BAT"
+python3 "$REPO_DIR/tools/x68/fatput.py" "$OUT_DISK" "AUTOEXEC.BAT" "$BUILD_DIR/AUTOEXEC.BAT"
+
 echo "== 完了 =="
-echo "FDD0 に $OUT_DISK を入れて起動し、A> で MOUSETST と入力してください。"
+echo "FDD0 に $OUT_DISK を入れて起動すると MOUSETST が自動で走ります。"

@@ -22,6 +22,12 @@ interface Dict {
   overlayNote1(): string;
   overlayNote2(): string;
   toolbarReset(): string;
+  /** ツールバーのポーズボタン(実行中)。 */
+  toolbarPause(): string;
+  /** ツールバーのポーズボタン(ポーズ中、再開させるとき)。 */
+  toolbarResume(): string;
+  /** ポーズ中オーバーレイの「ポーズ中」ラベル。 */
+  pauseOverlayLabel(): string;
   toolbarHelp(): string;
   toolbarSettings(): string;
   toolbarSaveState(): string;
@@ -108,6 +114,8 @@ interface Dict {
   scsiBlankSizeInvalidTooLarge(args: { max: number }): string;
   /** ブランクSCSIディスクの作成が完了したときのトースト。 */
   statusScsiBlankCreated(args: { name: string; sizeMiB: number }): string;
+  /** 実行中にFDを排出しようとしたときの確認(誤タップでゲストがフリーズする事故の防止)。 */
+  slotEjectConfirmRunning(): string;
   /** ドライブアクセスランプのスクリーンリーダー向けラベル。 */
   diskLampLabel(args: { drive: string }): string;
   /** スロットの「ライブラリから挿入」ボタン(ツールチップ)。 */
@@ -138,7 +146,21 @@ interface Dict {
   settingsSpeedTitle(): string;
   settingsSpeedNote(): string;
   settingsSpeedLabel(): string;
+  settingsSpeedUnlimited(): string;
   settingsSpeedActualPrefix(): string;
+  settingsSerialTitle(): string;
+  settingsSerialStatusLabel(): string;
+  settingsSerialBaudLabel(): string;
+  settingsSerialBaudNote(): string;
+  settingsSerialBaudMismatch(args: { guestBaudRate: number; selectedBaudRate: number }): string;
+  settingsSerialConnect(): string;
+  settingsSerialDisconnect(): string;
+  settingsSerialConnected(): string;
+  settingsSerialDisconnected(): string;
+  settingsSerialConnecting(): string;
+  settingsSerialError(): string;
+  settingsSerialUnsupported(): string;
+  settingsSerialCoreUnsupported(): string;
   settingsClose(): string;
   biosStatusUser(): string;
   biosStatusBundled(): string;
@@ -228,10 +250,31 @@ interface Dict {
   urlFetchFailedNetwork(args: { url: string }): string;
   /** fetchはできたがHTTPステータスが失敗を示す場合のエラーメッセージ本文。 */
   urlFetchFailedHttp(args: { url: string; status: number }): string;
+  /** 配信元がOneDrive(1drv.ms/onedrive.live.com/sharepoint.com)だった場合の案内(中継しても取得できないため即座に案内する)。 */
+  urlFetchFailedOneDrive(args: { url: string }): string;
+  /** 配信元がGoogle Drive/Dropboxで、かつ中継(VITE_DISK_PROXY)が未設定だった場合の案内。 */
+  urlFetchFailedNeedsProxy(args: { url: string }): string;
+  /** 中継サーバ経由の取得が失敗した場合のエラーメッセージ本文(中継側のエラーコードを反映)。 */
+  urlFetchFailedProxy(args: { url: string; reason: string }): string;
+  /** 取得結果がディスクイメージではなくHTMLページ(共有リンクの閲覧ページ等)だった場合の案内。 */
+  urlFetchFailedHtmlPage(args: { url: string }): string;
+  // --- 中継サーバ(VITE_DISK_PROXY)のエラーコード別の理由文言(urlFetchFailedProxy の reason に渡す) ---
+  urlProxyReasonBadUrl(): string;
+  urlProxyReasonOriginNotAllowed(): string;
+  urlProxyReasonHostNotAllowed(): string;
+  urlProxyReasonTooLarge(): string;
+  urlProxyReasonRateLimited(): string;
+  urlProxyReasonUpstreamFailed(): string;
+  urlProxyReasonRedirectNotAllowed(): string;
+  urlProxyReasonUnknown(args: { status: number }): string;
   /** スロット単位の取得失敗を伝えるトースト(他スロットの読み込み/起動は継続する)。 */
   urlLoadFailedToast(args: { label: string; message: string }): string;
   /** 同梱システムディスク(?system=1)の取得に失敗したときのトースト。 */
   urlSystemFetchFailed(): string;
+  /** Sprout68k の共有リンク(#p1=)から作品を読み込んだときのトースト。tags は空のこともある。 */
+  sproutShareLoaded(args: { tags: string }): string;
+  /** Sprout68k の共有リンクを開けなかったときのトースト。 */
+  sproutShareFailed(args: { message: string }): string;
   /** URLパラメータの取得結果がZIP/LZHで、前回展開済みのグループがライブラリにあり再ダウンロードせず復帰したときのトースト。 */
   urlArchiveResumed(args: { label: string; count: number }): string;
   /** URLパラメータで取得したアーカイブにディスクイメージが1つも見つからなかった場合のエラー。 */
@@ -376,6 +419,8 @@ interface Dict {
   inputPanelSwitchKeyboard(): string;
   /** stage右上の切り替えチップ、バーチャルパッド側ボタンのaria-label。 */
   inputPanelSwitchPad(): string;
+  /** stage右上の切り替えチップ、バーチャルトラックパッド側ボタンのaria-label。 */
+  inputPanelSwitchTrackpad(): string;
   /** バーチャルパッドの組み込みプロファイル表示名。 */
   vpadProfileJoy2Button(): string;
   vpadProfileCursorSpace(): string;
@@ -462,6 +507,9 @@ const STRINGS: Record<Lang, Dict> = {
     overlayNote1: () => '音声再生の制限上、クリック操作で起動します。',
     overlayNote2: () => 'ディスクはツールバーのライブラリ、下のドライブ行、または画面へのドラッグ&ドロップから追加できます。',
     toolbarReset: () => 'リセット',
+    toolbarPause: () => 'ポーズ',
+    toolbarResume: () => '再開',
+    pauseOverlayLabel: () => 'ポーズ中',
     toolbarHelp: () => 'ヘルプ',
     toolbarSettings: () => '設定(BIOS / マシン構成)',
     toolbarSaveState: () => 'ステート保存',
@@ -535,6 +583,8 @@ const STRINGS: Record<Lang, Dict> = {
       `${max}MBまでです(SCSI HLEがイメージサイズを32bit符号あり整数で扱うため、これを超えると壊れます)`,
     statusScsiBlankCreated: ({ name, sizeMiB }) =>
       `ブランクSCSIディスク「${name}」(${sizeMiB}MB)を作成しました。次回の起動から使えます`,
+    slotEjectConfirmRunning: () =>
+      '実行中のディスクを取り出しますか？ソフトがディスクを読んでいる場合、フリーズすることがあります。\n(ディスク交換は、取り出さずにそのまま次のディスクを挿入すればできます)',
     diskLampLabel: ({ drive }) => `${drive} アクセスランプ`,
     slotInsertFromLibrary: () => 'ライブラリから挿入',
     slotInsertFromLibraryTitle: ({ drive }) => `${drive} へ挿入`,
@@ -552,7 +602,7 @@ const STRINGS: Record<Lang, Dict> = {
     alertDownloadNoImage: () => 'このドライブにはディスクが挿入されていません。',
     settingsTitle: () => '設定',
     settingsDescription: () =>
-      'BIOS ファイル(IPLROM.DAT / CGROM.DAT)とマシン構成を設定します。設定はブラウザに保存され、次回起動時から反映されます。',
+      'BIOS ファイル(IPLROM.DAT / CGROM.DAT)、マシン構成、シリアルポートを設定します。設定はブラウザに保存されます。',
     settingsBiosSectionTitle: () => 'BIOS 設定',
     settingsMachineSectionTitle: () => 'マシン構成',
     settingsMachineSectionNote: () => '(既定: X68000 XVI 相当 = 16MHz / 2MB)',
@@ -560,9 +610,27 @@ const STRINGS: Record<Lang, Dict> = {
     settingsCpuSpeedLabel: () => 'CPU速度',
     settingsRamSizeLabel: () => 'RAM',
     settingsSpeedTitle: () => 'エミュレーション速度',
-    settingsSpeedNote: () => 'ツールバーの速度ボタンをONにしたときの倍率です。リセット不要で即時反映し、設定は保存されません。',
+    settingsSpeedNote: () =>
+      'ツールバーの速度ボタンをONにしたときの倍率です。リセット不要で即時反映し、設定は保存されません。無制限モードでは音は出ません。',
     settingsSpeedLabel: () => '速度ボタンON時の倍率',
+    settingsSpeedUnlimited: () => '無制限',
     settingsSpeedActualPrefix: () => '実測',
+    settingsSerialTitle: () => 'シリアルポート',
+    settingsSerialStatusLabel: () => '状態',
+    settingsSerialBaudLabel: () => 'ボーレート',
+    settingsSerialBaudNote: () => 'X68000（ゲスト）側と同じボーレートを選択してください。',
+    settingsSerialBaudMismatch: ({ guestBaudRate, selectedBaudRate }) =>
+      `X68000（ゲスト）側は約 ${guestBaudRate} bps、ブラウザー側は ${selectedBaudRate} bps です。設定が一致しないため通信できない可能性があります。`,
+    settingsSerialConnect: () => '接続',
+    settingsSerialDisconnect: () => '切断',
+    settingsSerialConnected: () => '接続済み',
+    settingsSerialDisconnected: () => '未接続',
+    settingsSerialConnecting: () => '接続中…',
+    settingsSerialError: () => '接続エラー',
+    settingsSerialUnsupported: () =>
+      'このブラウザでは Web Serial API を利用できません。対応するデスクトップブラウザを使用してください。',
+    settingsSerialCoreUnsupported: () =>
+      '読み込まれたエミュレーターコアはシリアルブリッジに対応していません。ページを再読み込みしてください。',
     settingsClose: () => '閉じる',
     biosStatusUser: () => '設定済み',
     biosStatusBundled: () => '同梱ROM使用中(差し替え可)',
@@ -643,8 +711,26 @@ const STRINGS: Record<Lang, Dict> = {
     urlFetchFailedNetwork: ({ url }) =>
       `ディスクイメージの取得に失敗しました: ${url}\n(取得先がCORSに対応していない可能性があります)`,
     urlFetchFailedHttp: ({ url, status }) => `ディスクイメージの取得に失敗しました: ${url} (HTTP ${status})`,
+    urlFetchFailedOneDrive: ({ url }) =>
+      `ディスクイメージの取得に失敗しました: ${url}\nOneDriveの共有リンクは仕様上ご利用いただけません。Google DriveかDropboxをお使いください。`,
+    urlFetchFailedNeedsProxy: ({ url }) =>
+      `ディスクイメージの取得に失敗しました: ${url}\nこの配信元は中継サーバ経由でのみ取得できますが、このビルドでは中継(VITE_DISK_PROXY)が設定されていません。自分でホストしている場合は VITE_DISK_PROXY を設定してください(詳細はREADME)。`,
+    urlFetchFailedProxy: ({ url, reason }) => `ディスクイメージの取得に失敗しました: ${url}\n${reason}`,
+    urlFetchFailedHtmlPage: ({ url }) =>
+      `ディスクイメージの取得に失敗しました: ${url}\n取得結果がディスクイメージではなくWebページでした。共有リンクの公開設定(リンクを知っている全員が閲覧可)を確認するか、ダウンロードしたファイルを画面へドラッグ&ドロップしてください。`,
+    urlProxyReasonBadUrl: () => '中継サーバがURLを解釈できませんでした。',
+    urlProxyReasonOriginNotAllowed: () => '中継サーバがこのサイトからのリクエストを許可していません。',
+    urlProxyReasonHostNotAllowed: () => '中継サーバがこの配信元への転送を許可していません。',
+    urlProxyReasonTooLarge: () => 'ファイルサイズが中継サーバの上限を超えています。',
+    urlProxyReasonRateLimited: () => '中継サーバのリクエスト数が上限に達しています。しばらく待って再度お試しください。',
+    urlProxyReasonUpstreamFailed: () => '中継サーバから配信元への取得に失敗しました。',
+    urlProxyReasonRedirectNotAllowed: () =>
+      '配信元が別のサイト(ログイン画面など)へ転送しようとしたため中断しました。共有設定が「リンクを知っている全員が閲覧可」になっているか、共有リンクを省略せず全部コピーしているかご確認ください。',
+    urlProxyReasonUnknown: ({ status }) => `中継サーバでエラーが発生しました (HTTP ${status})。`,
     urlLoadFailedToast: ({ label, message }) => `${label}の読み込みに失敗しました: ${message}`,
     urlSystemFetchFailed: () => '同梱システムディスクの取得に失敗しました。',
+    sproutShareLoaded: ({ tags }) => `Sprout68k で作られた作品を読み込みました${tags}。`,
+    sproutShareFailed: ({ message }) => `共有リンクを開けませんでした: ${message}`,
     urlArchiveResumed: ({ label, count }) =>
       `${label}: 前回展開した${count}件のディスクイメージをライブラリから復元しました(再ダウンロードなし)。`,
     urlArchiveNoDiskImage: ({ label }) => `${label}: アーカイブ内にディスクイメージが見つかりませんでした。`,
@@ -731,6 +817,7 @@ const STRINGS: Record<Lang, Dict> = {
     toolbarInputPanelHide: () => '入力パネルを隠す',
     inputPanelSwitchKeyboard: () => '仮想キーボードに切替',
     inputPanelSwitchPad: () => 'バーチャルパッドに切替',
+    inputPanelSwitchTrackpad: () => 'バーチャルトラックパッドに切替',
     vpadProfileJoy2Button: () => 'ジョイスティック(2ボタン)',
     vpadProfileCursorSpace: () => 'カーソルキー + スペース',
     vpadProfileTenkey: () => 'テンキー',
@@ -794,6 +881,9 @@ const STRINGS: Record<Lang, Dict> = {
     overlayNote1: () => 'Audio requires a user gesture, so click to start.',
     overlayNote2: () => 'You can add disks from the toolbar library, the drive rows below, or by dragging & dropping onto the screen.',
     toolbarReset: () => 'Reset',
+    toolbarPause: () => 'Pause',
+    toolbarResume: () => 'Resume',
+    pauseOverlayLabel: () => 'Paused',
     toolbarHelp: () => 'Help',
     toolbarSettings: () => 'Settings (BIOS / Machine Config)',
     toolbarSaveState: () => 'Save State',
@@ -866,6 +956,8 @@ const STRINGS: Record<Lang, Dict> = {
       `The limit is ${max}MB (the SCSI HLE stores the image size as a signed 32-bit integer; larger sizes get corrupted)`,
     statusScsiBlankCreated: ({ name, sizeMiB }) =>
       `Created blank SCSI disk "${name}" (${sizeMiB}MB). It will be used from the next boot.`,
+    slotEjectConfirmRunning: () =>
+      'Eject the disk while the machine is running? Software reading the disk may freeze.\n(To swap disks, just insert the next disk without ejecting.)',
     diskLampLabel: ({ drive }) => `${drive} access lamp`,
     slotInsertFromLibrary: () => 'Insert from library',
     slotInsertFromLibraryTitle: ({ drive }) => `Insert into ${drive}`,
@@ -883,7 +975,7 @@ const STRINGS: Record<Lang, Dict> = {
     alertDownloadNoImage: () => 'No disk is inserted in this drive.',
     settingsTitle: () => 'Settings',
     settingsDescription: () =>
-      'Configure the BIOS files (IPLROM.DAT / CGROM.DAT) and machine settings. Settings are saved in your browser and applied from the next start.',
+      'Configure the BIOS files (IPLROM.DAT / CGROM.DAT), machine settings, and serial port. Settings are saved in your browser.',
     settingsBiosSectionTitle: () => 'BIOS Settings',
     settingsMachineSectionTitle: () => 'Machine Configuration',
     settingsMachineSectionNote: () => '(default: X68000 XVI equivalent = 16MHz / 2MB)',
@@ -892,9 +984,26 @@ const STRINGS: Record<Lang, Dict> = {
     settingsRamSizeLabel: () => 'RAM',
     settingsSpeedTitle: () => 'Emulation Speed',
     settingsSpeedNote: () =>
-      'The multiplier used when the toolbar speed button is turned on. Applied instantly, no reset needed, and not saved.',
+      'The multiplier used when the toolbar speed button is turned on. Applied instantly, no reset needed, and not saved. Unlimited mode has no audio.',
     settingsSpeedLabel: () => 'Multiplier when the speed button is on',
+    settingsSpeedUnlimited: () => 'Unlimited',
     settingsSpeedActualPrefix: () => 'Actual',
+    settingsSerialTitle: () => 'Serial Port',
+    settingsSerialStatusLabel: () => 'Status',
+    settingsSerialBaudLabel: () => 'Baud rate',
+    settingsSerialBaudNote: () => 'Select the same baud rate as the X68000 guest.',
+    settingsSerialBaudMismatch: ({ guestBaudRate, selectedBaudRate }) =>
+      `The X68000 guest is configured for approximately ${guestBaudRate} bps, but the browser port uses ${selectedBaudRate} bps. Communication may fail.`,
+    settingsSerialConnect: () => 'Connect',
+    settingsSerialDisconnect: () => 'Disconnect',
+    settingsSerialConnected: () => 'Connected',
+    settingsSerialDisconnected: () => 'Disconnected',
+    settingsSerialConnecting: () => 'Connecting…',
+    settingsSerialError: () => 'Connection error',
+    settingsSerialUnsupported: () =>
+      'Web Serial API is not available in this browser. Use a supported desktop browser.',
+    settingsSerialCoreUnsupported: () =>
+      'The loaded emulator core does not support the serial bridge. Reload the page.',
     settingsClose: () => 'Close',
     biosStatusUser: () => 'Configured',
     biosStatusBundled: () => 'Using bundled ROM (replaceable)',
@@ -975,8 +1084,26 @@ const STRINGS: Record<Lang, Dict> = {
     urlFetchFailedNetwork: ({ url }) =>
       `Failed to fetch the disk image: ${url}\n(the origin may not support CORS)`,
     urlFetchFailedHttp: ({ url, status }) => `Failed to fetch the disk image: ${url} (HTTP ${status})`,
+    urlFetchFailedOneDrive: ({ url }) =>
+      `Failed to fetch the disk image: ${url}\nOneDrive share links can't be used due to OneDrive's own restrictions. Please use Google Drive or Dropbox instead.`,
+    urlFetchFailedNeedsProxy: ({ url }) =>
+      `Failed to fetch the disk image: ${url}\nThis source can only be fetched through the relay server, but this build has no relay (VITE_DISK_PROXY) configured. If you're hosting this yourself, set VITE_DISK_PROXY (see the README for details).`,
+    urlFetchFailedProxy: ({ url, reason }) => `Failed to fetch the disk image: ${url}\n${reason}`,
+    urlFetchFailedHtmlPage: ({ url }) =>
+      `Failed to fetch the disk image: ${url}\nThe fetch returned a web page instead of a disk image. Check that the share link is public ("Anyone with the link"), or drag and drop the downloaded file onto the screen instead.`,
+    urlProxyReasonBadUrl: () => 'The relay server could not parse the URL.',
+    urlProxyReasonOriginNotAllowed: () => 'The relay server does not allow requests from this site.',
+    urlProxyReasonHostNotAllowed: () => 'The relay server does not allow forwarding to this source.',
+    urlProxyReasonTooLarge: () => 'The file exceeds the relay server\'s size limit.',
+    urlProxyReasonRateLimited: () => 'The relay server rate limit was reached. Please try again later.',
+    urlProxyReasonUpstreamFailed: () => 'The relay server failed to fetch from the source.',
+    urlProxyReasonRedirectNotAllowed: () =>
+      'The source tried to redirect to another site (e.g. a login page), so the request was blocked. Check that sharing is set to "Anyone with the link" and that you copied the full share link.',
+    urlProxyReasonUnknown: ({ status }) => `The relay server returned an error (HTTP ${status}).`,
     urlLoadFailedToast: ({ label, message }) => `Failed to load ${label}: ${message}`,
     urlSystemFetchFailed: () => 'Failed to fetch the bundled system disk.',
+    sproutShareLoaded: ({ tags }) => `Loaded a program made with Sprout68k${tags}.`,
+    sproutShareFailed: ({ message }) => `Could not open the shared link: ${message}`,
     urlArchiveResumed: ({ label, count }) =>
       `${label}: Restored ${count} previously extracted disk image(s) from the library (no re-download).`,
     urlArchiveNoDiskImage: ({ label }) => `${label}: No disk image was found inside the archive.`,
@@ -1063,6 +1190,7 @@ const STRINGS: Record<Lang, Dict> = {
     toolbarInputPanelHide: () => 'Hide input panel',
     inputPanelSwitchKeyboard: () => 'Switch to virtual keyboard',
     inputPanelSwitchPad: () => 'Switch to virtual pad',
+    inputPanelSwitchTrackpad: () => 'Switch to virtual trackpad',
     vpadProfileJoy2Button: () => 'Joystick (2 buttons)',
     vpadProfileCursorSpace: () => 'Cursor keys + Space',
     vpadProfileTenkey: () => 'Tenkey',

@@ -1,7 +1,12 @@
 import './style.css';
 import { AudioEngine } from './audio';
 import { buildCoreOptions } from './core-options';
-import { computeFrameBudget } from './frameBudget';
+import {
+  computeFrameBudget,
+  UNLIMITED_TICK_BUDGET_MS,
+  UNLIMITED_PRESENT_INTERVAL_MS,
+  UNLIMITED_MAX_DUTY,
+} from './frameBudget';
 import {
   createFormattedFd,
   createFormattedHdd,
@@ -56,6 +61,8 @@ import {
   type LibraryNode,
 } from './api/library';
 import { buildFileManagerDialog, type FmTarget } from './filemanager';
+import type { TouchMouseButton } from './touch-mouse';
+import { createDiskPersistence } from './disk-persist';
 import { Bridge, resolveBridgeUrl, type BridgeHost } from './bridge';
 import { RETROK, charToKey, codeToRetrok } from './keyboard';
 import { LibretroHost, type AvInfo } from './libretro-host';
@@ -85,11 +92,21 @@ import {
   parseWorkerModeParam,
 } from './url-params';
 import {
+  hostMatches,
+  looksLikeHtml,
+  PROXY_CAPABLE_HOSTS,
+  rewriteDropboxUrl,
+  rewriteGithubBlobUrl,
+  shouldPreferProxy,
+  urlHostname,
+} from './disk-fetch';
+import {
   createResampleState,
   DEFAULT_SPEED_STEP,
-  parseSpeedStep,
+  parseSpeedSetting,
   resampleSpeed,
   resetResampleState,
+  type SpeedSetting,
   type SpeedStep,
 } from './speed';
 import {
@@ -111,7 +128,21 @@ import { buildInputProfileEditor, type InputSourceDef } from './input-profile-ui
 import { buildHostKeyDialog } from './hostkey-ui';
 import { createVirtualKeyboard, SharedKeyInput } from './virtual-keyboard';
 import { isRepeatableKey, KeyRepeater } from './key-repeat';
-import { createVirtualPad, type VpadPlacement, type VpadSideBoxes } from './virtual-pad';
+import {
+  createVirtualPad,
+  readSafeAreaInsets,
+  resolveLandscapeInsets,
+  screenAngle,
+  vpadSideBoxesFor,
+  type VpadPlacement,
+  type VpadSideBoxes,
+} from './virtual-pad';
+import { createVirtualTrackpad, type VirtualTrackpad } from './virtual-trackpad';
+// Sprout68k の共有リンク(#p1=)を開くための復号と .xdf 組み立て。
+// **送信側(Sprout68k)とまったく同じ正典**を tools/fetch-sprout-runtime.mjs が持ってくる。
+import {
+  DEFAULT_DISK, assembleXdf, decodeShareFragment, packUserPayload, tagLabel, unpackUserPayload,
+} from './sprout-share.mts';
 import {
   activeProfile,
   BUILTIN_CURSOR_SPACE_ID,
@@ -149,14 +180,27 @@ import {
   type StateDiskConfig,
 } from './state-store';
 import { describeError, getLang, langSelfName, setLang, t } from './strings';
-import { getTargetSize, resolveAspectMode, type AspectMode } from './aspect';
+import { fitDeviceScale, getTargetSize, resolveAspectMode, type AspectMode } from './aspect';
 import { isIOS } from './platform';
+import {
+  isSerialBaudRateMismatch,
+  loadSerialBaudRate,
+  normalizeGuestSerialBaudRate,
+  saveSerialBaudRate,
+  type SerialConnectionState,
+  WebSerialTransport,
+} from './serial';
 
 const canvas = document.getElementById('screen') as HTMLCanvasElement;
 const bootOverlay = document.getElementById('boot-overlay') as HTMLDivElement;
 const btnBootPlain = document.getElementById('btn-boot-plain') as HTMLButtonElement;
 const btnBootSystem = document.getElementById('btn-boot-system') as HTMLButtonElement;
 const btnReset = document.getElementById('btn-reset') as HTMLButtonElement;
+const btnPause = document.getElementById('btn-pause') as HTMLButtonElement;
+const btnPauseIcon = document.getElementById('btn-pause-icon') as unknown as SVGPathElement;
+const pauseOverlay = document.getElementById('pause-overlay') as HTMLDivElement;
+const btnPauseOverlayResume = document.getElementById('btn-pause-overlay-resume') as HTMLButtonElement;
+const pauseOverlayLabelEl = document.getElementById('pause-overlay-label') as HTMLDivElement;
 const btnScreenshot = document.getElementById('btn-screenshot') as HTMLButtonElement;
 const btnSpeed = document.getElementById('btn-speed') as HTMLButtonElement;
 const btnSpeedBadge = document.getElementById('btn-speed-badge') as HTMLSpanElement;
@@ -168,9 +212,11 @@ const btnAspect = document.getElementById('btn-aspect') as HTMLButtonElement;
 const btnToolbarOverflow = document.getElementById('btn-toolbar-overflow') as HTMLButtonElement;
 const virtualKeyboardPanel = document.getElementById('virtual-keyboard') as HTMLDivElement;
 const virtualPadPanel = document.getElementById('virtual-pad') as HTMLDivElement;
+const virtualTrackpadPanel = document.getElementById('virtual-trackpad') as HTMLDivElement;
 const inputPanelSwitchEl = document.getElementById('input-panel-switch') as HTMLDivElement;
 const btnPanelKeyboard = document.getElementById('btn-panel-keyboard') as HTMLButtonElement;
 const btnPanelPad = document.getElementById('btn-panel-pad') as HTMLButtonElement;
+const btnPanelTrackpad = document.getElementById('btn-panel-trackpad') as HTMLButtonElement;
 const stageEl = document.querySelector('.stage') as HTMLDivElement;
 // .stage を囲む領域確保用ラッパ(style.css の .stage-frame 参照)。4:3切替でレイアウトが
 // 動かないよう、rescale() が常に「4:3時のサイズ」をここへインラインで指定する。
@@ -220,6 +266,12 @@ const cfgCpuSpeed = document.getElementById('cfg-cpuspeed') as HTMLSelectElement
 const cfgRamSize = document.getElementById('cfg-ramsize') as HTMLSelectElement;
 const cfgSpeed = document.getElementById('cfg-speed') as HTMLSelectElement;
 const speedActualEl = document.getElementById('speed-actual') as HTMLSpanElement;
+const serialControlsEl = document.getElementById('settings-serial-controls') as HTMLDivElement;
+const serialUnsupportedEl = document.getElementById('settings-serial-unsupported') as HTMLParagraphElement;
+const serialStatusEl = document.getElementById('settings-serial-status') as HTMLSpanElement;
+const serialToggleBtn = document.getElementById('settings-serial-toggle') as HTMLButtonElement;
+const cfgSerialBaud = document.getElementById('cfg-serial-baud') as HTMLSelectElement;
+const serialBaudNoteEl = document.getElementById('settings-serial-baud-note') as HTMLParagraphElement;
 
 // WebNP2 のドライブ行に合わせた FDD0 / FDD1 / HDD の3スロット構成(実機のFDD呼称
 // FDD0/FDD1に合わせ、表示ラベルもコア内部のドライブindex 0/1 と一致させている。
@@ -408,18 +460,30 @@ cfgRamSize.addEventListener('change', () => {
 // 速度ボタンのON/OFF)の2つだけにし、実効倍率(speedMultiplier)は必ずこの2つから導出する。
 // 実効値を書き込む場所を複数に増やすと、片方だけ更新し忘れてボタン表示と実際の速度が
 // 食い違う事故につながる。
-let selectedSpeed: SpeedStep = DEFAULT_SPEED_STEP;
+let selectedSpeed: SpeedSetting = DEFAULT_SPEED_STEP;
 let speedEnabled = false;
 // 実効倍率は「ボタンOFF時の1」を含むため SpeedStep(=SPEED_STEPS の要素型、1を含まない)とは
 // 別の型になる。
 let speedMultiplier: SpeedStep | 1 = 1;
+// selectedSpeed === 'unlimited' かつ speedEnabled のときだけ true。無制限モードは
+// speedMultiplier(数値倍率)では表現できない別経路のため、専用フラグで持つ。
+let unlimitedActive = false;
+// 無制限モードの時間配分に使う実測移動平均(ms)。初期値は実測の中央値から取った目安で、
+// 数tickで実測値へ収束する(EMA: x = x*0.8 + measured*0.2)。速度ボタンのOFF/ON・
+// resetSpeedState() ではリセットしない(ホスト性能の実測値なので持ち越してよい)。
+let unlimitedPresentCostMs = 6.5; // 画面提示1回ぶん(コア1フレーム+RGB565→RGBA変換+putImageData)
+let unlimitedFrameCostMs = 3; // コア1フレームぶん(描画スキップ時)
+let unlimitedLastPresentAt = 0;
+/** 無制限モードで次のtickを走らせてよい最短時刻(performance.now基準)。占有率の上限を守るために使う。 */
+let unlimitedNextAllowedAt = 0;
 // コアの音声出力(1エミュフレームぶんのサンプル)を速度倍率に合わせて可変レートリサンプルする
 // ための状態。チャンクをまたいで位相を持ち越す必要があるためモジュールスコープに置く。
 const audioResampleState = createResampleState();
 
-/** selectedSpeed/speedEnabled から実効倍率(speedMultiplier)を再計算する唯一の場所。 */
+/** selectedSpeed/speedEnabled から実効倍率(speedMultiplier)とunlimitedActiveを再計算する唯一の場所。 */
 function recomputeSpeedMultiplier(): void {
-  speedMultiplier = speedEnabled ? selectedSpeed : 1;
+  unlimitedActive = speedEnabled && selectedSpeed === 'unlimited';
+  speedMultiplier = speedEnabled && !unlimitedActive ? (selectedSpeed as SpeedStep) : 1;
 }
 
 /** 速度・状態の切り替わりでフレーム供給と音声リサンプラの持ち越し状態をリセットする。 */
@@ -427,14 +491,24 @@ function resetSpeedState(): void {
   accumulator = 0;
   resetResampleState(audioResampleState);
   audio?.flush();
+  // unlimitedPresentCostMs/unlimitedFrameCostMsはホスト性能の実測値なので持ち越すが、
+  // 提示タイミングだけは切り替え直後に必ず1回提示させるためリセットする。
+  unlimitedLastPresentAt = 0;
+  unlimitedNextAllowedAt = 0;
 }
 
 /** #btn-speed の見た目(押し込み状態・バッジ・ツールチップ)を現在の状態から一括更新する。 */
 function updateSpeedButtonUi(): void {
   btnSpeed.classList.toggle('active', speedEnabled);
   btnSpeed.setAttribute('aria-pressed', String(speedEnabled));
-  if (speedEnabled) {
-    const pct = `${Math.round(selectedSpeed * 100)}%`;
+  if (speedEnabled && unlimitedActive) {
+    btnSpeedBadge.textContent = '∞';
+    btnSpeedBadge.hidden = false;
+    const label = `${t('toolbarSpeedLabel')} (${t('settingsSpeedUnlimited')})`;
+    btnSpeed.title = label;
+    btnSpeed.setAttribute('aria-label', label);
+  } else if (speedEnabled) {
+    const pct = `${Math.round((selectedSpeed as SpeedStep) * 100)}%`;
     btnSpeedBadge.textContent = pct;
     btnSpeedBadge.hidden = false;
     const label = `${t('toolbarSpeedLabel')} (${pct})`;
@@ -460,7 +534,7 @@ function applySpeedChangeToWorker(): void {
 
 cfgSpeed.value = String(selectedSpeed);
 cfgSpeed.addEventListener('change', () => {
-  selectedSpeed = parseSpeedStep(cfgSpeed.value);
+  selectedSpeed = parseSpeedSetting(cfgSpeed.value);
   if (speedEnabled) {
     recomputeSpeedMultiplier();
     if (urlWorkerMode) applySpeedChangeToWorker();
@@ -557,6 +631,32 @@ let workerLastMouseTrackProbe: MouseTrackFrameProbe | null = null;
 // 調査用(2026-09-04、docs/STORAGE-SCSI.md参照): SCSI要求カウンタ。
 // mouseTrackProbeと同じ相乗り方式(workerKeyBufProbeWanted)。
 let workerLastScsiDebugProbe: ScsiDebugFrameProbe | null = null;
+
+const serialTransport = new WebSerialTransport();
+function resetSerialBridge(): void {
+  serialTransport.discardPendingReceive();
+  host?.resetSerialBridge();
+}
+function syncSerialConnectionToCore(): void {
+  if (host?.isInitialized() && !host.hasSerialBridge()) {
+    if (serialTransport.state === 'connected') void serialTransport.disconnect();
+    return;
+  }
+  const connected = serialTransport.state === 'connected';
+  host?.setSerialConnected(connected);
+  host?.setSerialTxWritable(connected && serialTransport.canWrite);
+}
+serialTransport.onData = (bytes) => {
+  // Web Serialの非同期コールバックと同期的なretro_run()は同じJSイベントループ上で直列実行される。
+  return host?.serialReceive(bytes) ?? 0;
+};
+serialTransport.onStateChange = (state) => {
+  const connected = state === 'connected';
+  syncSerialConnectionToCore();
+  if (!connected) resetSerialBridge();
+  updateSerialUi();
+};
+cfgSerialBaud.value = String(loadSerialBaudRate());
 let running = false;
 let bootStarted = false;
 
@@ -959,8 +1059,8 @@ let vpadPlacement: VpadPlacement = 'overlay';
  * 毎回 virtualPad.setPlacement() へ渡し直す(ビューポートサイズの変化に追従するため。
  * virtual-pad.ts の setPlacement() 側がボックスだけの更新を安全に処理する)。
  * かつてはネイティブフルスクリーン中に強制的に overlay へ倒していたが、フルスクリーン
- * 対象が .stage から .console-card(パッドを内包する)に変わったため、パッドが画面から
- * 消える事態が起きなくなり不要になった。通常どおり呼び出し側の判定(余り高さ・左右余白)に従う。
+ * 対象がページ全体(documentElement)になり、body 直下へ出しても描画対象の中に留まる
+ * ようになったため不要になった。通常どおり呼び出し側の判定(余り高さ・左右余白)に従う。
  */
 function applyVpadPlacement(next: VpadPlacement, panelHeight: number, sidesBoxes: VpadSideBoxes): void {
   virtualPadPanel.style.height = next === 'panel' ? `${Math.round(panelHeight)}px` : '';
@@ -986,7 +1086,7 @@ function applyVpadPlacement(next: VpadPlacement, panelHeight: number, sidesBoxes
 }
 
 const INPUT_PANEL_STORAGE_KEY = 'webx68k.inputPanel';
-type InputPanelKind = 'keyboard' | 'pad';
+type InputPanelKind = 'keyboard' | 'pad' | 'trackpad';
 
 /** 保存が無い初回だけ、粗いポインタ(タッチ主体の端末)ならパッド優先で始める。 */
 function defaultInputPanelKind(): InputPanelKind {
@@ -995,7 +1095,7 @@ function defaultInputPanelKind(): InputPanelKind {
 
 function loadInputPanelPref(): InputPanelKind {
   const v = localStorage.getItem(INPUT_PANEL_STORAGE_KEY);
-  return v === 'keyboard' || v === 'pad' ? v : defaultInputPanelKind();
+  return v === 'keyboard' || v === 'pad' || v === 'trackpad' ? v : defaultInputPanelKind();
 }
 
 function saveInputPanelPref(kind: InputPanelKind): void {
@@ -1105,9 +1205,9 @@ const hostKeyDialog = buildHostKeyDialog(
 );
 btnHostKey.addEventListener('click', () => hostKeyDialog.open());
 
-/** ツールバーボタンの見た目・チップの表示/非表示をまとめて同期する(両パネル共通の唯一の情報源)。 */
+/** ツールバーボタンの見た目・チップの表示/非表示をまとめて同期する(3パネル共通の唯一の情報源)。 */
 function syncInputPanelUi(): void {
-  const anyVisible = virtualKeyboard.isVisible() || virtualPad.isVisible();
+  const anyVisible = virtualKeyboard.isVisible() || virtualPad.isVisible() || virtualTrackpad.isVisible();
   btnVirtualKeyboard.classList.toggle('active', anyVisible);
   btnVirtualKeyboard.setAttribute('aria-pressed', anyVisible ? 'true' : 'false');
   btnVirtualKeyboard.title = anyVisible ? t('toolbarInputPanelHide') : t('toolbarInputPanel');
@@ -1116,9 +1216,10 @@ function syncInputPanelUi(): void {
   inputPanelSwitchEl.classList.toggle('hidden', !anyVisible);
   btnPanelKeyboard.setAttribute('aria-pressed', virtualKeyboard.isVisible() ? 'true' : 'false');
   btnPanelPad.setAttribute('aria-pressed', virtualPad.isVisible() ? 'true' : 'false');
+  btnPanelTrackpad.setAttribute('aria-pressed', virtualTrackpad.isVisible() ? 'true' : 'false');
 }
 
-/** 両パネルを閉じる。閉じる側は必ず releaseAll() を呼び、押しっぱなしの固着を防ぐ。 */
+/** 3パネルすべてを閉じる。閉じる側は必ず releaseAll() を呼び、押しっぱなしの固着を防ぐ。 */
 function closeInputPanels(): void {
   if (virtualKeyboard.isVisible()) {
     virtualKeyboard.setVisible(false);
@@ -1127,22 +1228,26 @@ function closeInputPanels(): void {
   if (virtualPad.isVisible()) {
     virtualPad.setVisible(false); // 内部で releaseAllInternal() を呼ぶ(virtual-pad.ts 参照)。
   }
+  if (virtualTrackpad.isVisible()) {
+    virtualTrackpad.setVisible(false); // 内部で reset()+strokeEnd() を呼ぶ(virtual-trackpad.ts 参照)。
+  }
   syncInputPanelUi();
   rescale();
 }
 
-/** 指定した側だけを開く(もう片方は必ず閉じて releaseAll() する)。選んだ側を既定として保存する。 */
+/** 指定した1種類だけを開く(残り2種は必ず閉じて releaseAll() する)。選んだ種類を既定として保存する。 */
 function openInputPanel(kind: InputPanelKind): void {
-  if (kind === 'keyboard') {
-    if (virtualPad.isVisible()) virtualPad.setVisible(false);
-    virtualKeyboard.setVisible(true);
-  } else {
-    if (virtualKeyboard.isVisible()) {
-      virtualKeyboard.setVisible(false);
-      virtualKeyboard.releaseAll();
-    }
-    virtualPad.setVisible(true);
+  if (virtualKeyboard.isVisible() && kind !== 'keyboard') {
+    virtualKeyboard.setVisible(false);
+    virtualKeyboard.releaseAll();
   }
+  if (virtualPad.isVisible() && kind !== 'pad') virtualPad.setVisible(false);
+  if (virtualTrackpad.isVisible() && kind !== 'trackpad') virtualTrackpad.setVisible(false);
+
+  if (kind === 'keyboard') virtualKeyboard.setVisible(true);
+  else if (kind === 'pad') virtualPad.setVisible(true);
+  else virtualTrackpad.setVisible(true);
+
   inputPanelPref = kind;
   saveInputPanelPref(kind);
   syncInputPanelUi();
@@ -1150,11 +1255,11 @@ function openInputPanel(kind: InputPanelKind): void {
 }
 
 btnVirtualKeyboard.addEventListener('click', () => {
-  if (virtualKeyboard.isVisible() || virtualPad.isVisible()) closeInputPanels();
+  if (virtualKeyboard.isVisible() || virtualPad.isVisible() || virtualTrackpad.isVisible()) closeInputPanels();
   else openInputPanel(inputPanelPref);
 });
 btnPanelKeyboard.addEventListener('click', () => openInputPanel('keyboard'));
-// 🎮 は状態で役割が変わる: 仮想キーボード表示中はパッドへの即切替(ゲーム中に素早く出す用途を
+// 🎮 は状態で役割が変わる: 他のパネル表示中はパッドへの即切替(ゲーム中に素早く出す用途を
 // 優先しメニューは出さない)、バーチャルパッドが既に表示中ならプロファイル選択メニューを開く。
 btnPanelPad.addEventListener('click', (e) => {
   if (virtualPad.isVisible()) {
@@ -1168,13 +1273,17 @@ btnPanelPad.addEventListener('click', (e) => {
     openInputPanel('pad');
   }
 });
+btnPanelTrackpad.addEventListener('click', () => openInputPanel('trackpad'));
 
 // 同梱ROM/ディスク(public/system/)のパス。ユーザーが独自ファイルを設定した場合はそちらを優先する。
 // GitHub Pages のプロジェクトページ(https://<user>.github.io/WebX68k/)配下でも解決できるよう、
 // ルート絶対パスではなくドキュメント相対で指定すること(絶対パスだと /system/... を見に行き404になる)。
-const BUNDLED_IPL_URL = './system/iplrom.dat';
-const BUNDLED_CG_URL = './system/cgrom.dat';
-const BUNDLED_DISK_URL = './system/human302.xdf';
+// ?v=<buildId> はキャッシュバスティング用。BUNDLED_DISK_NAME/BUNDLED_DISK_SOURCE_KEY は
+// 別定数(このURLをそのまま使っていない)なので、クエリを足してもディスクライブラリの
+// 表示名やIndexedDBのキーには混ざらない(fetchBytes() で取得する時にだけ使われる)。
+const BUNDLED_IPL_URL = `./system/iplrom.dat?v=${__BUILD_ID__}`;
+const BUNDLED_CG_URL = `./system/cgrom.dat?v=${__BUILD_ID__}`;
+const BUNDLED_DISK_URL = `./system/human302.xdf?v=${__BUILD_ID__}`;
 const BUNDLED_DISK_NAME = 'human302.xdf';
 // 同梱ディスクはIndexedDBには保存せず、ディスクライブラリの先頭に固定表示する(削除不可)。
 const BUNDLED_DISK_SOURCE_KEY = 'bundled:human302';
@@ -1255,24 +1364,43 @@ async function fetchBytes(url: string): Promise<Uint8Array | null> {
   }
 }
 
-/**
- * 進捗コールバック付きでURLからバイト列を取得する(WebNP2 の fetchWithProgress に準拠)。
- * fetch自体が失敗した場合(典型的にはCORS未対応オリジン)とHTTPステータスが失敗の場合とで
- * メッセージを分け、CORSが原因である可能性を利用者に伝える。
- */
-async function fetchBytesWithProgress(
-  url: string,
+// 中継サービスのベースURL(空文字なら中継しない=直接fetchのみ)。ビルド時に環境変数
+// VITE_DISK_PROXY から注入される(リポジトリ内の既定は空。詳細は .github/workflows/deploy.yml 参照)。
+const DISK_PROXY_BASE = (import.meta.env.VITE_DISK_PROXY ?? '').trim().replace(/\/+$/, '');
+
+// OneDriveの共有リンクは実測で中継しても取得できないことが判明しているため、中継を試さず
+// 即座に案内を出すためのホスト一覧。
+const ONEDRIVE_HOSTS = ['1drv.ms', 'onedrive.live.com', 'sharepoint.com'];
+// PROXY_CAPABLE_HOSTS / urlHostname / hostMatches / looksLikeHtml / shouldPreferProxy は
+// ./disk-fetch (単体テスト可能な純粋関数) からimportする。
+
+/** 中継サーバのエラーJSON(`{"error":"host_not_allowed"}` 等)をHTTPステータスとあわせて利用者向け理由文言に変換する。 */
+function describeProxyError(status: number, code: string | undefined): string {
+  switch (code) {
+    case 'bad_url':
+      return t('urlProxyReasonBadUrl');
+    case 'origin_not_allowed':
+      return t('urlProxyReasonOriginNotAllowed');
+    case 'host_not_allowed':
+      return t('urlProxyReasonHostNotAllowed');
+    case 'too_large':
+      return t('urlProxyReasonTooLarge');
+    case 'rate_limited':
+      return t('urlProxyReasonRateLimited');
+    case 'upstream_failed':
+      return t('urlProxyReasonUpstreamFailed');
+    case 'redirect_not_allowed':
+      return t('urlProxyReasonRedirectNotAllowed');
+    default:
+      return t('urlProxyReasonUnknown', { status });
+  }
+}
+
+/** fetch結果(成功時のResponse)をストリームで読み進め、進捗コールバックを呼びながらバイト列に組み立てる。 */
+async function readResponseWithProgress(
+  response: Response,
   onProgress: (loaded: number, total: number | null) => void,
 ): Promise<Uint8Array> {
-  let response: Response;
-  try {
-    response = await fetch(url);
-  } catch {
-    throw new Error(t('urlFetchFailedNetwork', { url }));
-  }
-  if (!response.ok) {
-    throw new Error(t('urlFetchFailedHttp', { url, status: response.status }));
-  }
   const totalHeader = response.headers.get('content-length');
   const total = totalHeader ? Number(totalHeader) : null;
 
@@ -1301,6 +1429,105 @@ async function fetchBytesWithProgress(
     offset += chunk.byteLength;
   }
   return result;
+}
+
+/**
+ * 進捗コールバック付きでURLからバイト列を取得する(WebNP2 の fetchWithProgress に準拠)。
+ *
+ * 通常はまず指定URLへ直接fetchする(GitHub raw のようにCORS対応済みのURLに無駄な中継を挟まない
+ * ため)。ただし Google Drive の共有URLは、直接fetchしても生のファイルは絶対に返らず
+ * 共有ページのHTMLが(CORSエラーにもならず)200で返ってくることが実測で判明している
+ * (2026-08-13 curl実測: Googleが Origin をechoした access-control-allow-origin を付けて返す)。
+ * そのため中継(VITE_DISK_PROXY)が設定されている場合、このホスト(`PROXY_ONLY_HOSTS`)は
+ * 直接fetchを試さず最初から中継を使う(`shouldPreferProxy`)。
+ * Dropboxは中継優先(skipDirect)対象から外れ、`rewriteDropboxUrl` でホスト名を
+ * `dl.dropboxusercontent.com` に置換したうえで直接取得を試みる(2026-08-18、FMSoundでの
+ * ブラウザ実測の移植。WebX68kのディスクイメージURLでの実リンク実測は未実施)。中継に渡すURLは
+ * 利用者が入力した元のURL(`fetchUrl`、置換前)のままにする(中継はサーバ側から取得するため
+ * 置換不要で、元の共有URLで実績があるため)。
+ *
+ * 直接fetchを試した場合でも、取得結果が `looksLikeHtml` でHTMLに見えるときはディスクイメージ
+ * ではないとみなし、中継が設定されていればそちらで再取得を試みる(対象外ホストにも効く保険)。
+ * 中継経由でもHTMLだった場合、あるいは中継が未設定の場合は専用のエラーで案内する。
+ *
+ * それ以外の失敗(直接取得の失敗)は、中継が設定されていればそちらで再取得を試みる。
+ * ただしOneDriveの共有リンクは実測で中継しても取得できないため中継を試さず即座に専用の
+ * 案内を出し、中継が未設定の場合はGoogle Drive/Dropboxのみ「直接取得できません」と案内する
+ * (それ以外は従来どおりCORS未対応の可能性を伝える)。
+ */
+async function fetchBytesWithProgress(
+  url: string,
+  onProgress: (loaded: number, total: number | null) => void,
+): Promise<Uint8Array> {
+  const hostname = urlHostname(url);
+  if (hostMatches(hostname, ONEDRIVE_HOSTS)) {
+    throw new Error(t('urlFetchFailedOneDrive', { url }));
+  }
+
+  // raw.githubusercontent.com は CORS 対応なので、中継を通さず直接取得できる。
+  // github.com の 302 には ACAO が無いためブラウザの直fetchが失敗する。2026-08-14
+  // (Release asset の URL は rewriteGithubBlobUrl 内で除外され書き換わらない)
+  const fetchUrl = rewriteGithubBlobUrl(url);
+
+  const hasProxy = DISK_PROXY_BASE !== '';
+  const preferProxy = shouldPreferProxy(url, hasProxy);
+
+  let directError: Error | null = null;
+  let directWasHtml = false;
+  if (!preferProxy) {
+    // Dropboxの共有URLはホスト名だけ置換して直接取得を試みる(中継に渡すfetchUrlは
+    // 元のまま)。Dropbox以外のホストは何も変わらない。
+    const directUrl = rewriteDropboxUrl(fetchUrl);
+    try {
+      const response = await fetch(directUrl);
+      if (!response.ok) {
+        throw new Error(t('urlFetchFailedHttp', { url, status: response.status }));
+      }
+      const contentType = response.headers.get('content-type');
+      const bytes = await readResponseWithProgress(response, onProgress);
+      if (!looksLikeHtml(bytes, contentType)) {
+        return bytes;
+      }
+      directWasHtml = true;
+    } catch (err) {
+      directError = err instanceof Error && err.message ? err : new Error(t('urlFetchFailedNetwork', { url }));
+    }
+  }
+
+  if (!hasProxy) {
+    if (directWasHtml) {
+      throw new Error(t('urlFetchFailedHtmlPage', { url }));
+    }
+    if (hostMatches(hostname, PROXY_CAPABLE_HOSTS)) {
+      throw new Error(t('urlFetchFailedNeedsProxy', { url }));
+    }
+    throw directError ?? new Error(t('urlFetchFailedNetwork', { url }));
+  }
+
+  const proxyUrl = `${DISK_PROXY_BASE}/fetch?url=${encodeURIComponent(fetchUrl)}`;
+  let proxyResponse: Response;
+  try {
+    proxyResponse = await fetch(proxyUrl);
+  } catch {
+    if (directWasHtml) throw new Error(t('urlFetchFailedHtmlPage', { url }));
+    throw directError ?? new Error(t('urlFetchFailedNetwork', { url }));
+  }
+  if (!proxyResponse.ok) {
+    let code: string | undefined;
+    try {
+      const body = (await proxyResponse.clone().json()) as { error?: string };
+      code = body.error;
+    } catch {
+      // 中継側がJSONを返さなかった場合はステータスのみで案内する。
+    }
+    throw new Error(t('urlFetchFailedProxy', { url, reason: describeProxyError(proxyResponse.status, code) }));
+  }
+  const proxyContentType = proxyResponse.headers.get('content-type');
+  const proxyBytes = await readResponseWithProgress(proxyResponse, onProgress);
+  if (looksLikeHtml(proxyBytes, proxyContentType)) {
+    throw new Error(t('urlFetchFailedHtmlPage', { url }));
+  }
+  return proxyBytes;
 }
 
 /** URLの末尾ファイル名を、クエリ/フラグメントを除いた部分から取り出す(配布URLの拡張子判定に使う)。 */
@@ -1348,9 +1575,11 @@ async function resolveUrlToLibrary(url: string, label: string): Promise<UrlLibra
   const groupId = `arcurl:${url}`;
 
   // 展開済みのアーカイブ由来グループ(前回このURLを展開済み)があれば再ダウンロードせず復帰する。
+  // ただしバグ(HTML閲覧ページをディスクイメージとして誤保存してしまう不具合)を踏んで保存された
+  // 壊れたレコードは復帰の対象にしない(復帰させると修正後も壊れたHTMLが永久に復帰し続けるため)。
   const stored = await listDisks();
   const resumedDisks = stored
-    .filter((d) => d.sourceKey.startsWith(`${groupId}/`))
+    .filter((d) => d.sourceKey.startsWith(`${groupId}/`) && !looksLikeHtml(d.bytes))
     .map((d): RegisteredDisk => ({ name: d.name, sourceKey: d.sourceKey, data: d.bytes, kind: classifyDiskKind(d.name) ?? 'fd' }));
   if (resumedDisks.length > 0) {
     showToast(t('urlArchiveResumed', { label, count: resumedDisks.length }));
@@ -1360,8 +1589,10 @@ async function resolveUrlToLibrary(url: string, label: string): Promise<UrlLibra
   // 非アーカイブの単体ディスクとして既に保存済みなら(従来どおり sourceKey===url)、そちらを使う。
   // urlDebugForceUrlRefetchは検証ハーネス専用の故障注入(dev限定・既定off)。この分岐を
   // 無効化し、常にネットワークから再取得させる(docs/STORAGE-SCSI.md「末端の永続化検証」参照)。
+  // 加えて、HTMLに見える壊れたレコードは復帰させず、下の再取得処理へフォールスルーする
+  // (再取得に成功すれば同じsourceKeyへ上書き保存され、壊れたレコードは自然に修復される)。
   const plainStored = urlDebugForceUrlRefetch ? undefined : await getDisk(url);
-  if (plainStored) {
+  if (plainStored && !looksLikeHtml(plainStored.bytes)) {
     showToast(t('urlDiskResumed', { label, name: plainStored.name }));
     return {
       disks: [{ name: plainStored.name, sourceKey: url, data: plainStored.bytes, kind: classifyDiskKind(plainStored.name) ?? 'fd' }],
@@ -1389,6 +1620,10 @@ async function resolveUrlToLibrary(url: string, label: string): Promise<UrlLibra
     showToast(t('urlLoadFailedToast', { label, message: describeError(err) }), 8000);
     return { kind: 'error' };
   }
+
+  // 取得完了後は最後の進捗表示を0.5秒だけ残して消す(持続表示のままだと、以降トーストが
+  // 出ない経路(単体ディスクをスロットへ入れて起動するだけ)で画面に固着してしまう)。
+  scheduleToastHide(500);
 
   // 拡張子で判定できない配布URL(拡張子無し)向けに、バイト列のシグネチャでもアーカイブかどうかを見る。
   const archiveName = resolveArchiveFileName(name, bytes);
@@ -1969,7 +2204,7 @@ async function insertDiskBytes(
   }
 }
 
-function ejectSlot(slot: SlotId): void {
+function ejectSlot(slot: SlotId, confirmIfRunning = true): void {
   if (isSlotLocked(slot)) {
     alert(t('slotLockedWhileRunning'));
     return;
@@ -1985,6 +2220,13 @@ function ejectSlot(slot: SlotId): void {
     slots[slot] = null;
     updateSlotDisplay(slot, null);
     void workerHotSwapFdd(slot, drive, null, previousSlot);
+    return;
+  }
+  // 実行中の排出は、ディスクを読んでいるゲストがそのままフリーズする事故に直結する
+  // (特にタッチ操作ではドライブ行の誤タップが起きやすい)。ディスク交換は排出を経ずに
+  // 挿入(ホットスワップ)でできるため、実行中にこのボタンが必要な場面は稀 — 確認を挟む。
+  // MCPブリッジ経由(明示的な操作)は confirmIfRunning=false で従来どおり即排出する。
+  if (confirmIfRunning && host && running && slots[slot] && !confirm(t('slotEjectConfirmRunning'))) {
     return;
   }
   // 抜く前にゲストの書き込みを回収する(吸い出しは同期なので、ここを抜ける時点で取得済み)。
@@ -2928,7 +3170,16 @@ function overflowActionRow(btn: HTMLButtonElement): HTMLElement {
  * 左右反転を重ねてもタップしづらいだけなので分岐する)。
  */
 function isWideOverflowMenu(): boolean {
-  return !window.matchMedia('(width < 640px)').matches;
+  return !isNarrowToolbar();
+}
+
+/**
+ * ツールバーが「スマホ幅」ブレークポイント未満かどうか。style.css の `@media (width < 640px)`
+ * (#btn-speed を非表示にする条件)と必ず同じ 640px を使う共有ヘルパ。JS側で数値をここ以外に
+ * 書かないこと(CSSとJSで条件がずれると「ボタンは消えたがメニューにも出ない」穴が空くため)。
+ */
+function isNarrowToolbar(): boolean {
+  return window.matchMedia('(width < 640px)').matches;
 }
 
 /** 第1階層: グループ4種 + グループ無しの直置き項目(設定/ヘルプ/言語切替)。 */
@@ -2939,6 +3190,12 @@ function renderOverflowMenu(anchorEl: HTMLButtonElement): void {
   // (第2階層 renderOverflowGroupMenu() は親メニューが消えて階層が分からなくなるので見出しを残す)。
 
   const wide = isWideOverflowMenu();
+  if (!wide) {
+    // 狭い画面(#btn-speed が常設から外れる)では速度切替をメニュー先頭に単独行で出す。
+    // 表示/入力/ディスク/状態のどのグループにも意味的に合わないため、グループより前に置く
+    // (常設から降りてきた頻用トグルなので埋もれさせない)。
+    slotPopupMenu.append(overflowActionRow(btnSpeed));
+  }
   for (const groupId of OVERFLOW_GROUP_ORDER) {
     const group = OVERFLOW_GROUPS[groupId];
     const row = menuRow(group.title(), undefined, 'group', { iconSlot: true });
@@ -3033,6 +3290,12 @@ btnToolbarOverflow.addEventListener('click', (e) => {
     return;
   }
   renderOverflowMenu(btnToolbarOverflow);
+});
+
+// メニューを開いたまま画面幅が変わると、#btn-speed 行の有無(isNarrowToolbar())が
+// 実際の配置と食い違いうるため、開いていれば閉じる(再度開けば作り直される)。
+window.addEventListener('resize', () => {
+  if (!slotPopupMenu.classList.contains('hidden')) closeSlotPopupMenu();
 });
 
 /*
@@ -3450,6 +3713,12 @@ async function bootCore(): Promise<void> {
   // 例外になり、フレームループごと巻き込んで画面が真っ黒のまま止まる。
   // 音の行き先が無いときはサンプルを捨てるだけでよい。
   host = new LibretroHost(canvas, (samples) => {
+    // 無制限モードは実時間の何倍もの速さでサンプルを吐くため、そのままpushするとキューが
+    // 即座に溢れ、computeFrameBudget() の「queued > MAX_LATENCY_SEC*0.8 ならbudget=0」という
+    // ブレーキが効いてフレーム供給が止まってしまう(無制限モードはそのゲートを通らない別経路
+    // だが、pushしたサンプル自体はキューに残るため次にゲートを使う通常モードへ戻った時に
+    // 影響する)。無制限中は実時間で消費しきれない音を最初から捨てる(=無音)。
+    if (unlimitedActive) return;
     // k===1 はバイパスして元の配列をそのまま渡す(従来と同一の経路)。
     // それ以外は速度倍率ぶん可変レートでリサンプルし、テープ早送りのようにピッチを変える。
     const out =
@@ -3517,6 +3786,9 @@ async function bootCore(): Promise<void> {
   coreProxy = new LocalCoreProxy(host, { initialized: true });
   // `?worker=1` はこの関数の先頭(bootCore()冒頭のurlWorkerMode分岐)で bootWorkerCore() へ
   // 完全に分岐済みなので、ここへは来ない(既定経路のみがここに到達する)。
+  syncSerialConnectionToCore();
+  serialTransport.notifyReceiveCapacity();
+  updateSerialUi();
   host.startSramAutosave((bytes) => {
     saveSramFile(bytes).catch((err) => console.warn('SRAMの保存に失敗しました', err));
   });
@@ -3621,10 +3893,17 @@ async function restartCore(): Promise<void> {
   }
   running = false;
   cancelScheduled();
+  resetSerialBridge();
   host?.dispose();
   host = null;
   coreProxy = null;
-  await bootCore();
+  try {
+    await bootCore();
+  } catch (error) {
+    await serialTransport.disconnect();
+    updateSerialUi();
+    throw error;
+  }
 }
 
 // ドライブ行の挿入ボタン・ライブラリ/ブランクボタン・D&D配線(WebNP2 の FDスロット行と同じ流儀)。
@@ -3731,6 +4010,109 @@ document.addEventListener('dragover', (e) => e.preventDefault());
 document.addEventListener('drop', (e) => e.preventDefault());
 
 // 設定ダイアログ(BIOS登録 + マシン構成)。WebNP2 の ROM登録ダイアログと同じ開閉の仕組み。
+function serialStateLabel(state: SerialConnectionState): string {
+  switch (state) {
+    case 'connected':
+      return t('settingsSerialConnected');
+    case 'connecting':
+      return t('settingsSerialConnecting');
+    case 'error':
+      return t('settingsSerialError');
+    default:
+      return t('settingsSerialDisconnected');
+  }
+}
+
+const SERIAL_BAUD_POLL_INTERVAL_MS = 250;
+let nextSerialBaudPollAt = 0;
+let lastSerialBaudNoteKey = '';
+let lastSerialBaudWarningKey = '';
+function updateSerialBaudNote(force = false): void {
+  const now = performance.now();
+  if (!force && now < nextSerialBaudPollAt) return;
+  nextSerialBaudPollAt = now + SERIAL_BAUD_POLL_INTERVAL_MS;
+
+  const selectedBaudRate = Number(cfgSerialBaud.value);
+  const guestBaudRate = host?.serialGuestBaudRate() ?? 0;
+  const normalizedGuestBaudRate = normalizeGuestSerialBaudRate(guestBaudRate);
+  const mismatch = serialTransport.state === 'connected' &&
+    isSerialBaudRateMismatch(selectedBaudRate, guestBaudRate);
+  const noteText = mismatch && normalizedGuestBaudRate !== null
+    ? t('settingsSerialBaudMismatch', { guestBaudRate: normalizedGuestBaudRate, selectedBaudRate })
+    : t('settingsSerialBaudNote');
+  const noteKey = `${serialTransport.state}:${selectedBaudRate}:${normalizedGuestBaudRate ?? 'unknown'}:${mismatch}:${noteText}`;
+  if (noteKey === lastSerialBaudNoteKey) return;
+  lastSerialBaudNoteKey = noteKey;
+
+  serialBaudNoteEl.textContent = noteText;
+  serialBaudNoteEl.classList.toggle('status-ng', mismatch);
+
+  const warningKey = mismatch ? `${normalizedGuestBaudRate}:${selectedBaudRate}` : '';
+  if (warningKey && warningKey !== lastSerialBaudWarningKey)
+    showToast(serialBaudNoteEl.textContent, 8000);
+  lastSerialBaudWarningKey = warningKey;
+}
+
+function updateSerialUi(): void {
+  const browserSupported = serialTransport.isSupported();
+  const coreSupported = !host || !host.isInitialized() || host.hasSerialBridge();
+  const supported = browserSupported && coreSupported;
+  const state = serialTransport.state;
+  serialUnsupportedEl.textContent = browserSupported
+    ? t('settingsSerialCoreUnsupported')
+    : t('settingsSerialUnsupported');
+  serialUnsupportedEl.hidden = supported;
+  serialControlsEl.hidden = !supported;
+  serialStatusEl.textContent = serialStateLabel(state);
+  serialStatusEl.className = state === 'connected' ? 'status-ok' : state === 'connecting' ? 'status-bundled' : 'status-ng';
+  serialToggleBtn.textContent = state === 'connected' ? t('settingsSerialDisconnect') : t('settingsSerialConnect');
+  serialToggleBtn.disabled = state === 'connecting' || !supported;
+  serialToggleBtn.setAttribute('aria-disabled', String(state === 'connecting' || !supported));
+  serialToggleBtn.setAttribute('aria-busy', String(state === 'connecting'));
+  // 接続中のポート設定は Web Serial API から変更できないため、再接続まで固定する。
+  cfgSerialBaud.disabled = state === 'connecting' || state === 'connected';
+  updateSerialBaudNote(true);
+}
+
+async function toggleSerialConnection(): Promise<void> {
+  if (serialTransport.state === 'connecting') return;
+  if (serialTransport.state === 'connected') {
+    host?.setSerialConnected(false);
+    await serialTransport.disconnect();
+    resetSerialBridge();
+    return;
+  }
+  if (host?.isInitialized() && !host.hasSerialBridge()) {
+    showToast(t('settingsSerialCoreUnsupported'), 8000);
+    updateSerialUi();
+    return;
+  }
+  const baudRate = Number(cfgSerialBaud.value);
+  saveSerialBaudRate(baudRate);
+  try {
+    resetSerialBridge();
+    await serialTransport.connect({ baudRate });
+    syncSerialConnectionToCore();
+  } catch (error) {
+    console.error('Web Serial connection failed', error);
+    showToast(`${t('settingsSerialError')}: ${describeError(error)}`, 8000);
+  }
+}
+
+cfgSerialBaud.addEventListener('change', () => {
+  saveSerialBaudRate(Number(cfgSerialBaud.value));
+  updateSerialBaudNote();
+});
+serialToggleBtn.addEventListener('click', () => void toggleSerialConnection());
+window.addEventListener('pagehide', (event) => {
+  // bfcacheへ退避する場合は同じページへ復帰するため、接続と読み取りタスクを維持する。
+  if (event.persisted) return;
+  // pagehide では非同期切断を待てないため、先にコア側の接続状態を解除する。
+  host?.setSerialConnected(false);
+  resetSerialBridge();
+  void serialTransport.disconnect();
+});
+
 function openSettingsDialog(): void {
   settingsBackdrop.classList.remove('hidden');
 }
@@ -3758,6 +4140,12 @@ function applyDocumentStrings(): void {
 
   btnReset.title = t('toolbarReset');
   btnReset.setAttribute('aria-label', t('toolbarReset'));
+  {
+    const pauseLabel = t(pausedByUser ? 'toolbarResume' : 'toolbarPause');
+    btnPause.title = pauseLabel;
+    btnPause.setAttribute('aria-label', pauseLabel);
+  }
+  pauseOverlayLabelEl.textContent = t('pauseOverlayLabel');
   btnScreenshot.title = t('toolbarScreenshot');
   btnScreenshot.setAttribute('aria-label', t('toolbarScreenshot'));
   updateSpeedButtonUi();
@@ -3766,8 +4154,12 @@ function applyDocumentStrings(): void {
   updateMouseControls();
   updateFullscreenControl();
   syncInputPanelUi();
+  btnPanelKeyboard.title = t('inputPanelSwitchKeyboard');
   btnPanelKeyboard.setAttribute('aria-label', t('inputPanelSwitchKeyboard'));
+  btnPanelPad.title = t('inputPanelSwitchPad');
   btnPanelPad.setAttribute('aria-label', t('inputPanelSwitchPad'));
+  btnPanelTrackpad.title = t('inputPanelSwitchTrackpad');
+  btnPanelTrackpad.setAttribute('aria-label', t('inputPanelSwitchTrackpad'));
   updateAspectControl();
   btnSaveState.title = t('toolbarSaveState');
   btnSaveState.setAttribute('aria-label', t('toolbarSaveState'));
@@ -3847,6 +4239,12 @@ function applyDocumentStrings(): void {
   document.getElementById('settings-speed-title')!.textContent = t('settingsSpeedTitle');
   document.getElementById('settings-speed-note')!.textContent = t('settingsSpeedNote');
   document.getElementById('settings-speed-label')!.textContent = t('settingsSpeedLabel');
+  document.getElementById('speed-opt-unlimited')!.textContent = t('settingsSpeedUnlimited');
+  document.getElementById('settings-serial-title')!.textContent = t('settingsSerialTitle');
+  document.getElementById('settings-serial-status-label')!.textContent = t('settingsSerialStatusLabel');
+  document.getElementById('settings-serial-baud-label')!.textContent = t('settingsSerialBaudLabel');
+  serialUnsupportedEl.textContent = t('settingsSerialUnsupported');
+  updateSerialUi();
   settingsCloseBtn.textContent = t('settingsClose');
   setBiosStatus(biosIplStatus, biosIplState);
   setBiosStatus(biosCgStatus, biosCgState);
@@ -3974,6 +4372,60 @@ const ENABLE_MOUSE_TRACKING = true;
 // mirrorMouseTrackTargetForDebug 呼び出し箇所のコメント参照)。
 const mouseTracker = new MouseTracker();
 
+/**
+ * IOCS のマウス加速テーブル(実測値)。[送信量, 実際に動くドット数]。
+ *
+ * IOCS は移動量に加速をかけるため、誤差をそのまま送ると**最大7.5倍に増幅されて行き過ぎ**、
+ * 画面端から端へ発振する。3以下は加速がかからず 1:1 で、16 を境に急に倍率が上がる。
+ * 逆引きして「予測移動量が誤差を超えない範囲で最大の送信量」を選べば必ず不足側に倒れるので、
+ * 行き過ぎが原理的に起きない。残りは次フレーム以降の閉ループが詰め、最後は 1:1 の領域に
+ * 入るのでぴたりと止まる。
+ *
+ * 加速の効き方は IOCS の設定で変わり得るが、この表は「行き過ぎないための上限見積もり」
+ * としてしか使わないので、多少ずれても収束する。
+ *
+ * (mouse-track.ts の MouseTracker が内部に同じ表を持つが非公開のため、トラックパッド側の
+ * 残差送出用にここでも同じ値を持つ。docs/STORAGE-SCSI.md「境界の原則」参照)。
+ */
+const MOUSE_ACCEL_TABLE: Array<[send: number, move: number]> = [
+  [1, 1],
+  [2, 2],
+  [3, 3],
+  [4, 5],
+  [5, 6],
+  [6, 7],
+  [7, 8],
+  [8, 10],
+  [10, 12],
+  [12, 15],
+  [14, 17],
+  [16, 40],
+  [20, 50],
+  [24, 90],
+  [32, 160],
+  [48, 360],
+];
+
+/** 目標移動量(絶対値)に対して、行き過ぎない範囲で最大の送信量を返す。トラックパッドの残差送出で使う。 */
+function sendAmountFor(distance: number): number {
+  const abs = Math.abs(distance);
+  let send = 0;
+  for (const [candidate, move] of MOUSE_ACCEL_TABLE) {
+    if (move <= abs) send = candidate;
+    else break;
+  }
+  return distance < 0 ? -send : send;
+}
+
+/** sendAmountFor() が返した送信量が実際に動かす見込みのドット数(加速テーブルの逆方向)。 */
+function predictedMoveFor(send: number): number {
+  const abs = Math.abs(send);
+  for (const [candidate, move] of MOUSE_ACCEL_TABLE) {
+    if (candidate === abs) return send < 0 ? -move : move;
+  }
+  return 0;
+}
+
 function isMouseCaptured(): boolean {
   return document.pointerLockElement === canvas;
 }
@@ -4093,6 +4545,85 @@ window.addEventListener('mouseup', (e) => {
   else if (e.button === 2) applyMouseButton('right', false);
 });
 
+// --- バーチャルトラックパッド --------------------------------------------------
+// iOS Safari は Pointer Lock 非対応でキャプチャモードが成立しない。バーチャルトラックパッド
+// (入力パネルの第3の種類、virtual-trackpad.ts)はその代替として、専用の操作面での指の
+// 相対移動をマウス移動量へ変換する。ジェスチャの解釈(タップ/2本指タップ/長押しドラッグ)は
+// touch-mouse.ts の純ロジックが受け持ち、ここは CSSピクセル→ゲストのドット数への換算
+// (加速テーブルの逆引き含む)と、クリックパルスのタイミング制御だけを行う。
+/** クリックパルスの押下時間(ms)。コアは retro_run() 中に1回しかボタンを読まないため、数フレームぶん保持する。 */
+const TOUCH_CLICK_PULSE_MS = 100;
+/** 連続タップ(ダブルクリック)の押下間隔(ms)。間隔ゼロだと押しっぱなしと区別できない。 */
+const TOUCH_CLICK_GAP_MS = 60;
+/** クリック待ち行列。tap が来たら積み、フレームループ(stepTouchTrackpad)からパルスにして流す。 */
+const touchClickQueue: TouchMouseButton[] = [];
+let touchClickBusy = false;
+/**
+ * 指のCSSピクセル移動量→ゲストのドット数への換算倍率。canvas の表示倍率
+ * (canvas.width / canvas.clientWidth)は使わない。トラックパッドは canvas と無関係な
+ * 専用の操作面であり、モバイルでは canvas の表示倍率が2倍を超えることがあって、これを
+ * そのまま使うと1イベントぶんの移動量が IOCS の加速域(16以上で最大7.5倍)に入って
+ * カーソルが飛ぶ(stepMouseTrackingのコメント参照)。固定倍率にすることでこの問題を
+ * 構造的に避ける。
+ */
+const TRACKPAD_SCALE = 1.5;
+/** トラックパッド操作中の加速逆補正で生じる送信残差(ドット)。指を離したら捨てる。 */
+let touchPadResidX = 0;
+let touchPadResidY = 0;
+
+function pumpTouchClickQueue(): void {
+  if (touchClickBusy) return;
+  const button = touchClickQueue.shift();
+  if (button === undefined) return;
+  touchClickBusy = true;
+  host?.setMouseButton(button, true);
+  window.setTimeout(() => {
+    host?.setMouseButton(button, false);
+    window.setTimeout(() => {
+      touchClickBusy = false;
+      pumpTouchClickQueue();
+    }, TOUCH_CLICK_GAP_MS);
+  }, TOUCH_CLICK_PULSE_MS);
+}
+
+/** virtual-trackpad.ts からの相対移動(CSSピクセル)をゲストのドット数へ換算して送る。 */
+function trackpadMoveBy(dx: number, dy: number): void {
+  if (!host) return;
+  // キャプチャモードの mousemove と同じ考え方(感度倍率)だが、換算倍率は canvas 表示倍率
+  // ではなく TRACKPAD_SCALE 固定(上記コメント参照)。
+  touchPadResidX += dx * TRACKPAD_SCALE * mouseSensitivity;
+  touchPadResidY += dy * TRACKPAD_SCALE * mouseSensitivity;
+  const sendX = sendAmountFor(touchPadResidX);
+  const sendY = sendAmountFor(touchPadResidY);
+  // 古い絶対位置の目標(マウスの追従モード側)が残っていると閉ループが相対移動と
+  // 綱引きするので捨てる。
+  mouseTracker.clearDesiredRatio();
+  if (sendX === 0 && sendY === 0) return;
+  touchPadResidX -= predictedMoveFor(sendX);
+  touchPadResidY -= predictedMoveFor(sendY);
+  host.addMouseDelta(sendX, sendY);
+}
+
+/** ストローク終了(全指離れた/キャンセル/パネルを閉じた)の通知。次のストロークへ残差を持ち越さない。 */
+function trackpadStrokeEnd(): void {
+  touchPadResidX = 0;
+  touchPadResidY = 0;
+}
+
+const virtualTrackpad: VirtualTrackpad = createVirtualTrackpad(virtualTrackpadPanel, {
+  moveBy: trackpadMoveBy,
+  buttonDown: (button) => host?.setMouseButton(button, true),
+  buttonUp: (button) => host?.setMouseButton(button, false),
+  tap: (button) => touchClickQueue.push(button),
+  strokeEnd: trackpadStrokeEnd,
+});
+
+/** フレームループから毎フレーム呼ぶ(長押し判定はvirtual-trackpad.tsのstep()、クリックパルスはここ)。 */
+function stepTouchTrackpad(): void {
+  virtualTrackpad.step(performance.now());
+  if (touchClickQueue.length > 0) pumpTouchClickQueue();
+}
+
 /** マウス関連ボタンの活性・表示状態を現在のモードに合わせる。 */
 function updateMouseControls(): void {
   const captured = isMouseCaptured();
@@ -4118,14 +4649,25 @@ btnMouseResync.addEventListener('click', () => {
 });
 
 /**
- * フルスクリーン化の対象は .stage ではなく .console-card(ツールバーを内包するカード全体)。
- * .stage だけを全画面化するとツールバー(⌨/🎮切り替え・プロファイルメニュー等)が
- * 描画対象外になり操作できなくなるため、疑似フルスクリーン(ツールバーを残す方式)に
- * 合わせて一本化した。アスペクト比の維持・サイズ決定は rescale() (JS側)が
- * getTargetSize() 経由で行う(旧 object-fit:contain の CSS 任せはやめた)。
+ * フルスクリーン化の対象はページ全体(document.documentElement)。
+ *
+ * ネイティブ全画面はその部分木の外にある要素を一切描画しない。かつては .stage を
+ * 対象にしていてツールバーが消え、次に .console-card へ移してツールバーは残ったが、
+ * バーチャルパッドは sides配置のとき document.body 直下へ出す(左右のデッドスペースへ
+ * またがるため)ので、カード対象では必ず対象の外に出てパッドが消えていた
+ * (WebNP2 の Android 実機で発覚、2026-08-20。iPhone は Fullscreen API 自体が無く
+ * 疑似フルスクリーンへ倒れるのでこの経路を踏まない)。
+ * ページ全体を対象にすれば、どこへ reparent しても消えない。
+ * アスペクト比の維持・サイズ決定は rescale() (JS側)が getTargetSize() 経由で行う
+ * (旧 object-fit:contain の CSS 任せはやめた)。
  */
-function isCardFullscreen(): boolean {
-  return document.fullscreenElement === consoleCardEl || (document as any).webkitFullscreenElement === consoleCardEl;
+const fullscreenRootEl = document.documentElement;
+
+function isNativeFullscreen(): boolean {
+  return (
+    document.fullscreenElement === fullscreenRootEl ||
+    (document as any).webkitFullscreenElement === fullscreenRootEl
+  );
 }
 
 /**
@@ -4172,10 +4714,10 @@ const FULLSCREEN_FALLBACK_MS = 400;
 
 function setFullscreen(makeFullscreen: boolean): void {
   if (makeFullscreen) {
-    if (isCardFullscreen()) return;
+    if (isNativeFullscreen()) return;
     const req =
-      consoleCardEl.requestFullscreen?.bind(consoleCardEl) ??
-      (consoleCardEl as any).webkitRequestFullscreen?.bind(consoleCardEl);
+      fullscreenRootEl.requestFullscreen?.bind(fullscreenRootEl) ??
+      (fullscreenRootEl as any).webkitRequestFullscreen?.bind(fullscreenRootEl);
     // requestFullscreen は「メソッドが生えていて document.fullscreenEnabled も true」でも
     // 実行時に通らないことがある(埋め込み webview 等)。nativeFullscreenSupported() のような
     // 静的な能力判定だけでは足りない。以前はここで失敗を黙って無視していたため、
@@ -4197,10 +4739,10 @@ function setFullscreen(makeFullscreen: boolean): void {
       },
     );
     window.setTimeout(() => {
-      if (settled || isCardFullscreen() || isPseudoFullscreen()) return;
+      if (settled || isNativeFullscreen() || isPseudoFullscreen()) return;
       togglePseudoFullscreen(true);
     }, FULLSCREEN_FALLBACK_MS);
-  } else if (isCardFullscreen()) {
+  } else if (isNativeFullscreen()) {
     const exit = document.exitFullscreen?.bind(document) ?? (document as any).webkitExitFullscreen?.bind(document);
     void Promise.resolve(exit?.());
   }
@@ -4208,7 +4750,7 @@ function setFullscreen(makeFullscreen: boolean): void {
 
 /** フルスクリーンボタンの見た目(トグル状態)を実際の全画面状態に追従させる。マウスキャプチャボタンと同じ流儀。 */
 function updateFullscreenControl(): void {
-  const nativeFs = isCardFullscreen();
+  const nativeFs = isNativeFullscreen();
   const pseudoFs = isPseudoFullscreen();
   btnFullscreen.classList.toggle('active', nativeFs || pseudoFs);
   // 疑似フルスクリーンは Esc では抜けられない(nativeFullscreenSupported() の
@@ -4231,7 +4773,7 @@ function updateFullscreenControl(): void {
  */
 function togglePseudoFullscreen(on?: boolean): void {
   document.body.classList.toggle('pseudo-fullscreen', on);
-  document.body.classList.toggle('immersive', isPseudoFullscreen() || isCardFullscreen());
+  document.body.classList.toggle('immersive', isPseudoFullscreen() || isNativeFullscreen());
   updateFullscreenControl();
   rescale();
 }
@@ -4243,8 +4785,8 @@ btnFullscreen.addEventListener('click', () => {
     togglePseudoFullscreen(false);
     return;
   }
-  if (nativeFullscreenSupported(consoleCardEl)) {
-    setFullscreen(!isCardFullscreen());
+  if (nativeFullscreenSupported(fullscreenRootEl)) {
+    setFullscreen(!isNativeFullscreen());
     return;
   }
   // iPhone の WebKit は <video> 以外の Fullscreen API を持たないため、ネイティブ版は
@@ -4393,11 +4935,21 @@ function rescale(): void {
   // (下限 0.3 は維持)。ネイティブ全画面も疑似フルスクリーンも同じ「画面を最大限使う」
   // 見え方に揃えるのが狙いで、フルスクリーン対象が .console-card になった今はどちらも
   // このJS計算がサイズを決める(旧 object-fit:contain へ丸投げする経路は無くなった)。
-  const scale = isImmersive()
+  const rawScale = isImmersive()
     ? Math.max(0.3, fit)
     : fit >= 1
       ? Math.min(MAX_SCALE, Math.floor(fit))
       : Math.max(0.3, Math.min(1, fit));
+  // 端数倍のときは物理ピクセル整数倍へ寄せる(寄せられなければ補間へ落とす)。
+  // 非没入かつ fit>=1 の経路は既にCSS整数倍なので触らない(DPRが整数の環境では物理も整数倍)。
+  // 没入モードは fit をそのまま使う設計なので、1倍以上でも端数倍になるのが常態であり、
+  // ここを通さないと最近傍のまま端数倍になって1ドット幅の線が周期的に間引かれる。
+  const fractional = isImmersive() || fit < 1;
+  const fitted = fractional ? fitDeviceScale(rawScale, window.devicePixelRatio) : { scale: rawScale, smooth: false };
+  const scale = fitted.scale;
+  // 補間へ落とす指定。4:3モード側は .stage.aspect-4-3 #screen で常に auto にしてあるので、
+  // このクラスが効くのはドット等倍モードのときだけ。
+  canvas.classList.toggle('smooth-scaled', fitted.smooth);
 
   const w = Math.round(target.width * scale);
   const h = Math.round(target.height * scale);
@@ -4451,26 +5003,30 @@ function rescale(): void {
   //    横持ちで4:3維持のため画面が縦に制限されると、画面の左右に余白が生まれる。
   //
   //    基準は **.stage** の矩形にすること(.console-card ではない)。
-  //    ネイティブ全画面では .console-card:fullscreen が 100vw/100vh に広げられるため、
+  //    ネイティブ全画面では .console-card が 100vw/100vh に広げられるため、
   //    カード基準で測ると左右の余白が常に 0 になり、**sides 配置が絶対に発動しなくなる**
   //    (Android の横持ち全画面という一番効かせたい場面で効かない、という状態だった)。
   //    .stage 基準なら、ウィンドウ表示でも全画面でも「画面の横に空いている幅」を同じ式で測れる。
   //    左右で幅が違う場合は狭い方で判定する(狭い側に部品がはみ出すのを避けるため)。
   const stageRect = stageEl.getBoundingClientRect();
-  const leftMargin = stageRect.left;
-  const rightMargin = window.innerWidth - stageRect.right;
-  const sidesMargin = Math.min(leftMargin, rightMargin);
   // ボックスの縦範囲は .stage の上端〜下端に合わせる(画面と同じ高さの帯にすると
-  // 指の位置が自然になるため)。
-  const sidesBoxes: VpadSideBoxes = {
-    left: { x: 0, y: stageRect.top, w: Math.max(0, leftMargin), h: stageRect.height },
-    right: { x: stageRect.right, y: stageRect.top, w: Math.max(0, rightMargin), h: stageRect.height },
-  };
+  // 指の位置が自然になるため)。ただし切り欠き/ホームインジケータの下は使わない:
+  // index.html の viewport は viewport-fit=cover なので、スタンドアロン表示や
+  // Android の全画面ではビューポートが切り欠きの下まで広がり、x:0〜innerWidth の
+  // ままボックスを取ると外縁の部品(左のスティック/右端のボタン)が隠れる。
+  const sidesBoxes: VpadSideBoxes = vpadSideBoxesFor(
+    { x: stageRect.left, y: stageRect.top, w: stageRect.width, h: stageRect.height },
+    { width: window.innerWidth, height: window.innerHeight },
+    resolveLandscapeInsets(readSafeAreaInsets(), screenAngle()),
+  );
   // 4. 判定順は panel → sides → overlay。
   //    - 縦の余り >= VPAD_PANEL_MIN_HEIGHT ならパネルモード(帯の高さは余りと
   //      VPAD_PANEL_MAX_HEIGHT の小さい方)。
   //    - そうでなくても左右の余白が両方とも VPAD_SIDES_MIN_WIDTH 以上あればサイドモード。
   //    - どちらでもなければ従来通りオーバーレイモード。
+  // sides にするかどうかは、セーフエリアを引いた後の実際のボックス幅で決める
+  // (切り欠きに食われて狭くなった側で判定しないと、部品が縮みすぎたまま sides になる)。
+  const sidesMargin = Math.min(sidesBoxes.left.w, sidesBoxes.right.w);
   const nextVpadPlacement: VpadPlacement =
     leftover >= VPAD_PANEL_MIN_HEIGHT ? 'panel' : sidesMargin >= VPAD_SIDES_MIN_WIDTH ? 'sides' : 'overlay';
   const vpadPanelHeight = Math.min(Math.max(leftover, 0), VPAD_PANEL_MAX_HEIGHT);
@@ -4491,8 +5047,8 @@ window.addEventListener('orientationchange', rescale);
 function onNativeFullscreenChange(): void {
   // ネイティブが遅れて通った場合(タイムアウトで疑似へ倒した後に fullscreenchange が来る)、
   // 疑似との二重掛けを解いてネイティブ側に一本化する。
-  if (isCardFullscreen() && isPseudoFullscreen()) document.body.classList.remove('pseudo-fullscreen');
-  document.body.classList.toggle('immersive', isCardFullscreen() || isPseudoFullscreen());
+  if (isNativeFullscreen() && isPseudoFullscreen()) document.body.classList.remove('pseudo-fullscreen');
+  document.body.classList.toggle('immersive', isNativeFullscreen() || isPseudoFullscreen());
   rescale();
 }
 document.addEventListener('fullscreenchange', onNativeFullscreenChange);
@@ -4548,6 +5104,20 @@ let accumulator = 0;
 let rafId = 0;
 let timerId: ReturnType<typeof setTimeout> | undefined;
 
+// ユーザーがツールバーのポーズボタンで止めているか。WebNP2 はコア(SDL2)が内部で
+// メインループを持つためコア側にポーズフラグが必要だったが、WebX68k は libretro で
+// メインループが JS 側(この下の loop())にあるため、コアの再ビルドは不要で
+// host.runFrame() を呼ばないだけでポーズになる。
+//
+// 意図的に localStorage へは保存しない。ポーズしたままリロードすると、次回起動時に
+// コアはポーズされていない(コアの状態はページ再読み込みで消える)のにこのフラグだけ
+// 「ポーズ中」を覚えていて画面が理由もわからず止まって見える、という事故を避けるため。
+let pausedByUser = false;
+
+// ポーズ中に rAF を使わず待機する間隔。60Hz で空回りさせないための CPU 削減用で、
+// あくまで「次に enterLoop を呼ぶまでの待ち時間」であり精度は要らない。
+const PAUSE_SLEEP_MS = 200;
+
 // rAF と setTimeout の両方でスケジュールし、先に発火した方が他方を取り消す。
 // rAF が抑制される環境(非アクティブタブ・ヘッドレス)でもエミュレーションを止めないため。
 // さらに AudioWorklet の tick (タブ非表示でも止まらない) からも enterLoop が呼ばれる。
@@ -4563,9 +5133,49 @@ function enterLoop(): void {
 }
 
 function scheduleNext(): void {
+  // ポーズ中は rAF を張らず setTimeout だけにする。AudioWorklet の tick からも
+  // enterLoop() が呼ばれ続けるが、loop() 冒頭の pausedByUser 早期 return が受けるので
+  // 二重駆動にはならない。
+  if (pausedByUser) {
+    timerId = setTimeout(() => enterLoop(), PAUSE_SLEEP_MS);
+    return;
+  }
   rafId = requestAnimationFrame(() => enterLoop());
   timerId = setTimeout(() => enterLoop(), 32);
 }
+
+// ポーズ状態の唯一の更新経路。pausedByUser の書き換えとUI反映(ボタンのアイコン/
+// title/aria-label/active クラス、オーバーレイの表示)を1か所に集約する。
+//
+// WebNP2 では4Hzのポーリングから毎回無条件にボタンの子要素を replaceChildren して
+// いたため、mousedown〜mouseup の間に要素が差し替わって click が発火しない不具合が
+// あった(WebNP2 src/ui/pause-ui.ts 冒頭のコメント参照)。WebX68k はポーズ状態が
+// コアでなく JS 側のこの pausedByUser 一つだけにあるためポーリングが要らない。
+// 状態が変わったときだけ DOM を触る設計にし、定期ポーリングは足さないこと。
+// またアイコンは <svg> ごと作り直さず <path> の d 属性だけを setAttribute で
+// 差し替える(クリック対象の要素そのものを DOM から外さないため)。
+function setPaused(next: boolean): void {
+  pausedByUser = next;
+  btnPause.classList.toggle('active', pausedByUser);
+  btnPauseIcon.setAttribute('d', pausedByUser ? 'M7 4l13 8-13 8z' : 'M8 5v14 M16 5v14');
+  const label = t(pausedByUser ? 'toolbarResume' : 'toolbarPause');
+  btnPause.title = label;
+  btnPause.setAttribute('aria-label', label);
+  pauseOverlay.classList.toggle('hidden', !pausedByUser);
+  if (!pausedByUser) {
+    // 200ms の setTimeout を待たせず即座にループを再開させる。
+    cancelScheduled();
+    enterLoop();
+  }
+}
+
+btnPause.addEventListener('click', () => {
+  if (btnPause.disabled) return;
+  setPaused(!pausedByUser);
+});
+// 再開はこのボタンからのみ行う(オーバーレイの余白クリックでは再開しない。誤操作防止。
+// WebNP2 6d7dbe7 と同じ判断)。
+btnPauseOverlayResume.addEventListener('click', () => setPaused(false));
 
 // アクセスランプ: コアが実際にディスクを読み書きしたフレームだけ点灯させる。
 // 単純にそのフレームだけだと視認しづらいため、直近アクセスから ACCESS_GLOW_MS の間は
@@ -4624,65 +5234,50 @@ function isFileManagerOpen(): boolean {
   return fileManagerRoot.querySelector('.fm-modal-backdrop:not(.hidden)') !== null;
 }
 
+// ディスクの吸い出しロジック本体は src/disk-persist.ts へ切り出した(DOM/wasm非依存。
+// restartCore() が flushAll → teardown+boot の「順序」を壊さないことを vitest で検証するため)。
+// ここでの各依存は main.ts 側の実体(host/slots等)への薄いアダプタ。
+const diskPersistence = createDiskPersistence(
+  {
+    getSlot: (slot) => slots[slot],
+    setSlot: (slot, entry) => {
+      slots[slot] = entry;
+    },
+    isLive: () => host !== null && running,
+    clearDirty: (slot) => {
+      const drive = fddDriveOf(slot);
+      host!.clearDirty(drive === null ? { hdd: true } : { fddDrive: drive });
+    },
+    readLiveImage: (slot) => readLiveSlotImage(slot),
+    saveDisk: (args, probeContext) => saveDisk(args, probeContext),
+    readDirtyState: () => host!.readDirtyState(),
+    fddDriveOf: (slot) => fddDriveOf(slot),
+    onSaved: () => {
+      if (!libraryBackdrop.classList.contains('hidden')) void refreshLibraryList();
+    },
+    now: () => Date.now(),
+    // 目的B「IndexedDBへのディスク全量書出し」の計測(src/storage-probe.ts / src/disk-store.ts
+    // が使う)。旧 persistSlotToLibrary() の bytesReadyAtMs と同じ条件・タイミングで作る。
+    buildProbeContext: (slot) =>
+      import.meta.env.DEV ? { slot, bytesReadyAtMs: performance.now() } : undefined,
+  },
+  SLOT_IDS,
+);
+
 /**
  * スロットの現在の内容(ゲストの書き込み反映後)をディスクライブラリへ書き戻す。
- *
- * 同梱ディスクはライブラリ先頭の固定エントリで差し替えできないため対象外。
- * ダーティフラグのクリアは吸い出しの「前」に行う(後にすると、吸い出し中に発生した
- * 書き込みまで一緒に消えて、その分が二度と保存されなくなる)。
+ * 本体は src/disk-persist.ts。ここは既存呼び出し元(ejectSlot/pollAutoSave等)向けの薄いラッパ。
  */
 async function persistSlotToLibrary(slot: SlotId): Promise<boolean> {
-  const pending = slots[slot];
-  if (!host || !running || !pending) return false;
-  const { sourceKey } = pending;
-  if (!sourceKey || sourceKey === BUNDLED_DISK_SOURCE_KEY) return false;
-
-  const drive = fddDriveOf(slot);
-  host.clearDirty(drive === null ? { hdd: true } : { fddDrive: drive });
-
-  let live: Uint8Array | null = null;
-  try {
-    live = readLiveSlotImage(slot);
-  } catch (err) {
-    console.error('ディスクの吸い出しに失敗しました。', err);
-    return false;
-  }
-  if (!live) return false;
-  const data = live.slice();
-  // 目的B「IndexedDBへのディスク全量書出し」の始点(MEMFSから末尾まで取得・検査できた地点)。
-  // import.meta.env.DEV && storageProbe.enabled のときだけ disk-store.ts 側で使われる。
-  const bytesReadyAtMs = import.meta.env.DEV ? performance.now() : 0;
-
-  try {
-    await saveDisk(
-      { sourceKey, name: pending.name, bytes: data, savedAt: Date.now() },
-      import.meta.env.DEV ? { slot, bytesReadyAtMs } : undefined,
-    );
-  } catch (err) {
-    console.error('ディスクライブラリへの書き戻しに失敗しました。', err);
-    return false;
-  }
-
-  // 待っている間に排出・差し替えが起きているかもしれないので、同じディスクのままの
-  // ときだけスロット側も更新する(そうしないと排出済みスロットを復活させてしまう)。
-  if (slots[slot]?.sourceKey === sourceKey) slots[slot] = { ...slots[slot]!, data };
-  if (!libraryBackdrop.classList.contains('hidden')) void refreshLibraryList();
-  return true;
+  return diskPersistence.persistSlot(slot);
 }
 
 /**
  * 全スロットを即座に書き戻す(排出・コア再起動・ページ離脱の直前用)。
- * readLiveSlotImage() による吸い出しは同期なので、await しなくてもバイト列の取得だけは
- * この関数を抜ける前に終わっている。IndexedDB への書き込みだけが非同期で後を追う。
+ * 本体は src/disk-persist.ts。
  */
 function flushAllSlots(): void {
-  if (!host || !running) return;
-  const dirty = host.readDirtyState();
-  for (const slot of SLOT_IDS) {
-    const drive = fddDriveOf(slot);
-    const isDirty = drive === null ? dirty.hdd : (dirty.fddMask & (1 << drive)) !== 0;
-    if (isDirty) void persistSlotToLibrary(slot);
-  }
+  diskPersistence.flushAll();
 }
 
 function pollAutoSave(now: number): void {
@@ -5218,6 +5813,25 @@ if (import.meta.env.DEV) {
           }
         }, 2000);
       }),
+    // 無制限モードの時間配分を外から観測するためのフック。占有率(duty)が高すぎると
+    // ページが操作不能になるため、実測できる窓口を残しておく(2026-09-03に占有率95.9%で
+    // 操作不能になった回帰の検出用)。
+    unlimitedTiming: () => ({
+      active: unlimitedActive,
+      presentCostMs: unlimitedPresentCostMs,
+      frameCostMs: unlimitedFrameCostMs,
+      budgetMs: UNLIMITED_TICK_BUDGET_MS,
+      presentIntervalMs: UNLIMITED_PRESENT_INTERVAL_MS,
+      maxDuty: UNLIMITED_MAX_DUTY,
+      nextAllowedInMs: unlimitedNextAllowedAt - performance.now(),
+    }),
+    // ポーズ状態の取得/設定。ヘッドレスでの自動検証用(実ブラウザで rAF が回るとは
+    // 限らないため、フレーム進行の判定は canvas 内容のハッシュ等の末端の値で行うこと)。
+    // 引数省略時は現在の状態を返すだけ(副作用なし)。
+    pause: (v?: boolean) => {
+      if (v !== undefined) setPaused(v);
+      return pausedByUser;
+    },
   };
 }
 
@@ -5270,9 +5884,84 @@ function setFrameProbeEnabled(enabled: boolean): void {
 function loop(t: number): void {
   if (!running || !host) return;
 
+  // ポーズ中は host.runFrame() を呼ばずに抜ける。lastFrameTime/accumulator を
+  // 0 に戻しておかないと、再開直後の dt が「ポーズしていた時間ぶん」の巨大な値になり、
+  // computeFrameBudget() がその巨大な dt を一気に消化しようとして大量のフレームを
+  // まとめて回す(早送りになる)。scheduleNext() 側でポーズ中は rAF を張らず
+  // setTimeout(PAUSE_SLEEP_MS) だけにして 60Hz の空回りを避ける。
+  if (pausedByUser) {
+    lastFrameTime = 0;
+    accumulator = 0;
+    scheduleNext();
+    return;
+  }
+
   if (lastFrameTime === 0) lastFrameTime = t;
   const dt = (t - lastFrameTime) / 1000;
   lastFrameTime = t;
+
+  // 無制限速度モード: 「目標倍率」が無いため、fps/queued/frameInterval/accumulator/
+  // computeFrameBudget() を一切使わず、時間予算(UNLIMITED_TICK_BUDGET_MS)いっぱいまで
+  // retro_run() を回し切る別経路。中間フレームは描画をスキップ(host.setVideoSkip)し、
+  // tick末尾の1フレームだけ画面に出す。
+  //
+  // UNLIMITED_TICK_BUDGET_MS はコア実行だけでなく画面提示のコストも含む「総予算」
+  // (詳細は frameBudget.ts のコメント参照)。画面提示は固定費が大きい(実測6.56ms)ため
+  // 毎tick行うと予算がそれだけで尽きてしまう。UNLIMITED_PRESENT_INTERVAL_MS(30fps相当)
+  // まで頻度を落として固定費を分散させ、コア実行に予算を残す。
+  if (unlimitedActive) {
+    const tickStart = performance.now();
+    // 呼び出し元(rAF / setTimeout(32) / AudioWorklet の tick)が何であれ、無制限モードは
+    // 1回呼ばれるごとに予算を使い切る。呼ばれた回数がそのまま占有率になるため、実時間で
+    // 次に走ってよい時刻を決めて上限を掛ける。ここが無いと占有率99.8%でページが固まる。
+    if (tickStart < unlimitedNextAllowedAt) {
+      scheduleNext();
+      return;
+    }
+    // このtickで画面を提示するか。提示は固定費(約6.5ms)なので毎tickやると
+    // コア実行に回せる時間がほとんど残らない。30fpsまで落として固定費を分散させる。
+    const present = tickStart - unlimitedLastPresentAt >= UNLIMITED_PRESENT_INTERVAL_MS;
+    // 総予算から、このtickで払う提示コストの見込みを先に引く。
+    const coreBudget = UNLIMITED_TICK_BUDGET_MS - (present ? unlimitedPresentCostMs : 0);
+    // 「入らないフレームは始めない」。deadlineを1フレームぶん手前に置くことで
+    // 予算の踏み越えを防ぐ(旧実装はこれが無く2.4ms超過していた)。
+    const deadline = tickStart + coreBudget - unlimitedFrameCostMs;
+
+    let ran = 0;
+    try {
+      host.setVideoSkip(true);
+      do {
+        const frameStart = performance.now();
+        host.runFrame();
+        unlimitedFrameCostMs = unlimitedFrameCostMs * 0.8 + (performance.now() - frameStart) * 0.2;
+        ran++;
+      } while (performance.now() < deadline);
+    } finally {
+      host.setVideoSkip(false);
+    }
+
+    if (present) {
+      const presentStart = performance.now();
+      host.runFrame(); // このフレームだけ画面に出す
+      ran++;
+      unlimitedPresentCostMs = unlimitedPresentCostMs * 0.8 + (performance.now() - presentStart) * 0.2;
+      unlimitedLastPresentAt = presentStart;
+    }
+
+    pollDiskAccess(t);
+    pollAutoSave(t);
+    stepMouseTracking();
+    stepTouchTrackpad();
+    speedMeasureFrameCount += ran;
+    updateSpeedActualDisplay(t);
+    accumulator = 0;
+    // 実際にかかった時間から、占有率が UNLIMITED_MAX_DUTY を超えないだけの間隔を空ける。
+    // 予算値ではなく実コストを使うので、遅いホストでは自動的に間隔が広がる。
+    const costMs = performance.now() - tickStart;
+    unlimitedNextAllowedAt = tickStart + costMs / UNLIMITED_MAX_DUTY;
+    scheduleNext();
+    return;
+  }
 
   // fps は画面モード(15kHz/31kHz)切り替えでコアから再通知される(SET_SYSTEM_AV_INFO)。
   // 毎回 avInfo から読み直すことで、コアの1フレーム音声サンプル数(44100/fps)と
@@ -5302,9 +5991,30 @@ function loop(t: number): void {
     ran++;
   }
   if (ran > 0) {
+    serialTransport.notifyReceiveCapacity();
+    updateSerialBaudNote();
+    if (serialTransport.canWrite) {
+      const serialHost = host;
+      serialHost.setSerialTxWritable(false);
+      const serialBytes = serialHost.drainSerialTx(serialTransport.recommendedWriteSize());
+      if (serialBytes.length > 0) {
+        // 失敗時の再送は順序の重複を招くため行わない。
+        void serialTransport.write(serialBytes)
+          .catch((error) => {
+            console.warn('Web Serial write failed; bytes were not retried', error);
+          })
+          .finally(() => {
+            if (host === serialHost)
+              serialHost.setSerialTxWritable(serialTransport.canWrite);
+          });
+      } else {
+        serialHost.setSerialTxWritable(true);
+      }
+    }
     pollDiskAccess(t);
     pollAutoSave(t);
     stepMouseTracking();
+    stepTouchTrackpad();
   }
   speedMeasureFrameCount += ran;
   updateSpeedActualDisplay(t);
@@ -5400,6 +6110,8 @@ async function startFromOverlay(withSystemDisk: boolean): Promise<void> {
     rescale();
 
     btnReset.disabled = false;
+    btnPause.disabled = false;
+    setPaused(false);
     btnSaveState.disabled = false;
     btnLoadState.disabled = false;
     btnScreenshot.disabled = false;
@@ -5439,12 +6151,16 @@ btnReset.addEventListener('click', () => {
   restartCore()
     .then(() => {
       btnReset.disabled = false;
+      setPaused(false);
       hideToast();
     })
     .catch((err) => {
       console.error(err);
       alert(t('alertResetFailed', { message: describeError(err) }));
       // host が null のまま(コア破棄後に再構築失敗)なので、操作不能を隠さずボタンは無効のままにする。
+      // ただしポーズ中オーバーレイだけは解除する(コアが無い=止まっているのが正しい状態で、
+      // 「ポーズ中」の表示のまま残るのは事実と食い違うため)。
+      setPaused(false);
     });
 });
 
@@ -5517,6 +6233,12 @@ function hideToast(): void {
     clearTimeout(toastTimer);
     toastTimer = undefined;
   }
+}
+
+/** 現在表示中のトーストを指定ミリ秒後に消す(持続表示で出したものを、後から時間で閉じたいとき用)。 */
+function scheduleToastHide(delayMs: number): void {
+  if (toastTimer !== undefined) clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => toastEl.classList.add('hidden'), delayMs);
 }
 
 /**
@@ -5625,6 +6347,7 @@ async function handleLoadState(): Promise<void> {
     showToast(t('stateLoadFailed'));
     return;
   }
+  resetSerialBridge();
   // 復元直後は旧状態の音がキューに残っているので捨て、フレーム供給の蓄積もリセットする。
   // unserialize の応答(ok)を待ってから行う(docs/STORAGE-SCSI.md
   // 「unserialize中は駆動を止め、成功応答後に音声flushと基準状態を更新する」)。
@@ -5732,16 +6455,15 @@ async function fmListTargets(): Promise<FmTarget[]> {
     targets.push({ kind: 'slot', ref: slot, label, mounted: !!pending, editable });
   }
 
-  const stored = await listDisks();
-  for (const item of stored) {
-    const kind = classifyDiskKind(item.name);
-    if (kind === null) continue;
-    const editable = kind === 'hdd' || (kind === 'fd' && isFmEditableFdName(item.name));
+  // ライブラリ側はライブラリ一覧/スロットメニューと同じ並び(グループごとにまとまり、表示名の自然順)にする。
+  // ここは平坦なセレクトなので、グループのディスクはそのグループの位置に連続して並べる。
+  const nodes = buildLibraryNodes(await listDisks(), classifyDiskKind);
+  for (const entry of nodes.flatMap((n) => (n.kind === 'group' ? n.group.entries : [n.entry]))) {
+    const editable = entry.kind === 'hdd' || (entry.kind === 'fd' && isFmEditableFdName(entry.name));
     const note = editable ? '' : t('fmNotEditableNote');
-    const mountedSlot = SLOT_IDS.find((s) => slots[s]?.sourceKey === item.sourceKey);
-    const displayName = item.displayName ?? item.name;
-    const label = `${displayName}${mountedSlot ? ` [${t('fmMountedBadge')}]` : ''}${note ? ` (${note})` : ''}`;
-    targets.push({ kind: 'library', ref: item.sourceKey, label, mounted: !!mountedSlot, editable });
+    const mountedSlot = SLOT_IDS.find((s) => slots[s]?.sourceKey === entry.sourceKey);
+    const label = `${entry.displayName}${mountedSlot ? ` [${t('fmMountedBadge')}]` : ''}${note ? ` (${note})` : ''}`;
+    targets.push({ kind: 'library', ref: entry.sourceKey, label, mounted: !!mountedSlot, editable });
   }
   return targets;
 }
@@ -5821,7 +6543,66 @@ btnHelp.addEventListener('click', () => window.open(`./help.html?lang=${getLang(
  * fd1/fd2/hdd と異なりスロットへの自動挿入は行わず、必ずライブラリダイアログを開く。
  * fd1/fd2/hdd と併用された場合は、それらのスロット処理を先に行ってから lib を処理する。
  */
+/**
+ * Sprout68k の共有リンク `#p1=` を開く。
+ *
+ * URL に載っているのは**利用者コードだけ**（数百バイト〜数KB）。ライブラリは
+ * この配布物が持っているランタイム(public/sprout-runtime/v1)側にあり、固定番地の
+ * ジャンプテーブル越しに呼ばれる。ここで両者を合体させて .xdf にする。
+ *
+ * 復号と組み立ては src/sprout-share.mts（Sprout68k の送信側とまったく同じ正典を
+ * tools/fetch-sprout-runtime.mjs が持ってきたもの）を通す。自前で書くと、
+ * 送信側と静かに食い違う。
+ *
+ * `#` より後ろはサーバへ送られないので、この作品はどこにもアップロードされていない。
+ */
+async function applySprout68kShare(): Promise<boolean> {
+  const fragment = location.hash;
+  if (!/(?:^|[#&])p1=/.test(fragment)) return false;
+  try {
+    const inflate = async (bytes: Uint8Array): Promise<Uint8Array> => {
+      // Uint8Array をそのまま Blob へ渡すと SharedArrayBuffer の可能性で型が通らないため、
+      // 実体の範囲だけを ArrayBuffer に切り出して渡す。
+      const buffer = bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength) as ArrayBuffer;
+      const stream = new Blob([buffer]).stream().pipeThrough(new DecompressionStream('deflate-raw'));
+      return new Uint8Array(await new Response(stream).arrayBuffer());
+    };
+    const { bytes, tags } = await decodeShareFragment(fragment, inflate);
+
+    const base = './sprout-runtime/v1/';
+    const manifestResponse = await fetch(`${base}manifest.json`);
+    if (!manifestResponse.ok) throw new Error(`ランタイムを読み込めません (HTTP ${manifestResponse.status})`);
+    const manifest = await manifestResponse.json();
+    const fetchBin = async (name: string): Promise<Uint8Array> => {
+      const response = await fetch(`${base}${name}`);
+      if (!response.ok) throw new Error(`${name} を読み込めません (HTTP ${response.status})`);
+      return new Uint8Array(await response.arrayBuffer());
+    };
+    const [runtime, boot] = await Promise.all([fetchBin('runtime.bin'), fetchBin('boot.bin')]);
+    const layout = { ...manifest.layout, ...DEFAULT_DISK };
+
+    // ヘッダ検査をここで通す（版違いや壊れたURLをエミュレータへ渡さない）。
+    const user = unpackUserPayload(bytes, layout);
+    const { image } = assembleXdf(boot, runtime, packUserPayload(user, layout), layout);
+
+    const labels = tags.map((code) => tagLabel(code)).filter(Boolean);
+    const tagText = labels.length > 0 ? `(${labels.join(' / ')})` : '';
+    await insertDiskBytes('fdd0', 'sprout68k-share.xdf', image, undefined, 'sprout68k:share');
+    showToast(t('sproutShareLoaded', { tags: tagText }), 6000);
+    await startFromOverlay(false);
+    return true;
+  } catch (error) {
+    console.error('Sprout68k の共有リンクを開けませんでした', error);
+    showToast(t('sproutShareFailed', { message: (error as Error).message }), 8000);
+    return false;
+  }
+}
+
 async function applyUrlParams(): Promise<void> {
+  // Sprout68k の共有リンクが来ていたら、それだけを処理して終わる
+  // （他のURLパラメータと混ざると、どのディスクで起動するのか分からなくなる）。
+  if (await applySprout68kShare()) return;
+
   // system=1: fd1 の明示指定が無いときだけ、同梱システムディスクをFDD0として使う
   // (WebNP2 の freedos=1 相当。fd1 が指定されていればそちらを優先する)。
   const wantsBundledSystem = urlSystem && !urlFd1;
@@ -5927,7 +6708,11 @@ const bridgeHost: BridgeHost = {
     return Promise.resolve(h);
   },
   reset: async () => {
+    // UIのリセットボタン(restartCore)と同じく、リセット後に旧セッションのシリアルデータが
+    // 流入しないようJS側の受信残りとコア側FIFOを破棄する。_retro_reset()自体もコア側FIFOを
+    // 消すが、WebSerialTransportが保持している受信チャンクの残りには手が届かない。
     host?.reset();
+    resetSerialBridge();
   },
   setKey: (retrok, down) => down
     ? sharedKeyInput.press('bridge:key', retrok)
@@ -5963,7 +6748,7 @@ const bridgeHost: BridgeHost = {
   insertDisk: async (slot, name, bytes) => {
     await insertDiskBytes(toSlotId(slot), name, bytes);
   },
-  ejectDisk: (slot) => ejectSlot(toSlotId(slot)),
+  ejectDisk: (slot) => ejectSlot(toSlotId(slot), false),
   diskListFiles: async (slot, path) => {
     const { entries } = await fmListDir({ kind: 'slot', ref: toSlotId(slot), label: slot, mounted: true, editable: true }, path);
     return entries.map((e) => ({ name: e.name, size: e.size, isDir: e.isDir, mtime: e.mtime }));

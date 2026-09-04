@@ -281,14 +281,24 @@ main {
  * 代わりのルールは下の .console-card:fullscreen を参照。
  */
 
-/* フルスクリーン化の対象は .console-card(ツールバーを内包するカード全体)。 */
-.console-card:fullscreen,
-.console-card:-webkit-full-screen {
+/* フルスクリーン化の対象はページ全体(main.ts の fullscreenRootEl = documentElement)。
+   カード対象だと sides配置のバーチャルパッド(document.body 直下へ出す)が
+   描画対象の外に出て消えるため。カード自身は :fullscreen にならなくなったので、
+   全画面時に画面いっぱいへ広げる指定はルート側の :fullscreen から掛ける。 */
+:root:fullscreen .console-card,
+:root:-webkit-full-screen .console-card {
   width: 100vw;
   height: 100vh;
   max-width: none;
   max-height: none;
   background: #000;
+}
+
+/* 物理ピクセル整数倍に乗せられなかったときだけ補間へ落とす(main.ts の rescale() が付与)。
+   最近傍のまま端数倍にすると、1ドット幅の線や市松が周期的に間引かれてモアレになる。
+   4:3モードは下のルールで常に auto なので、これが効くのはドット等倍モードのとき。 */
+#screen.smooth-scaled {
+  image-rendering: auto;
 }
 
 /*
@@ -404,6 +414,50 @@ main {
 
 .virtual-pad.hidden {
   display: none !important;
+}
+
+/*
+ * バーチャルトラックパッド(仮想キーボード/バーチャルパッドに次ぐ「入力パネル」の第3の種類。
+ * src/virtual-trackpad.ts 参照)。バーチャルパッドのオーバーレイモード(.vpad-overlay)と
+ * 同じく .stage に重ねて置く: トラックパッドはバーチャルパッドと違いパネル/サイド等の
+ * 置き場所切り替えを持たず常にこの1種類だけなので、専用の帯を新設せず画面下部に重ねるだけで
+ * 足りる。幅は .stage いっぱい、高さは aspect-ratio で決め、縦長画面で伸びすぎないよう
+ * max-height で頭打ちにする。
+ */
+.virtual-trackpad {
+  /* 仮想キーボードと同じ「画面とツールバーの間の帯」に置く。.stage へ重ねない理由は、
+     操作中の指がゲスト画面を隠さないようにすることがこの機能の目的そのものだから
+     (canvas を直接タッチの受け口にしていた旧実装の難点がまさにそれだった)。 */
+  position: relative;
+  box-sizing: border-box;
+  height: min(34vh, 240px);
+  padding: 8px;
+  background: linear-gradient(var(--footer-bg-top), var(--footer-bg-bottom));
+  border-top: 1px solid var(--footer-border);
+  touch-action: none;
+  user-select: none;
+  -webkit-user-select: none;
+  -webkit-touch-callout: none;
+  overscroll-behavior: contain;
+}
+
+/* 操作面であることが一目で分かるよう、内側をわずかに明るくしたうえで一段凹ませる
+   (左上を影・右下をハイライトにする定番の陰影)。実機のトラックパッドと同じく
+   「ここを触る」と説明なしで伝わる形にするための装飾で、当たり判定は親要素が持つ。 */
+.virtual-trackpad::before {
+  content: '';
+  position: absolute;
+  inset: 8px;
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.07);
+  box-shadow:
+    inset 2px 2px 3px rgba(0, 0, 0, 0.55),
+    inset -2px -2px 3px rgba(255, 255, 255, 0.11);
+  pointer-events: none;
+}
+
+.virtual-trackpad.hidden {
+  display: none;
 }
 
 /*
@@ -579,13 +633,42 @@ main {
   border-top: 1px solid var(--footer-border);
 }
 
+/* WebNP2 f9b4daa と同じ3列(gap:0)構成。中央グループ(toolbar-center)とリセットの
+ * 右端グループ(toolbar-end)を分離し、中央グループを真に中央寄せする。
+ *
+ * gap:8px の3列対称(旧案)は、1列目が0まで潰れてもその後ろの列間gapが幽霊のように
+ * 残り続けるため、狭い画面(375x812+バーチャルパッド)で中央列がgap分だけ足りず
+ * 3段/72pxに折り返した(WebNP2実測)。column-gap:0にして隙間を.toolbar-endの
+ * margin-leftへ移すことで、1列目が0まで潰れても幽霊のgapが残らないようにする。
+ * 3列目は minmax(max-content, 1fr) にし、最小をautoでなく中身幅に固定して
+ * リセットボタンより縮んで中央グループと重なるのを防ぐ。
+ */
 .toolbar {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto minmax(max-content, 1fr);
+  align-items: center;
+  column-gap: 0;
+  row-gap: 8px;
+  width: 100%;
+}
+
+.toolbar-center {
+  grid-column: 2;
   display: flex;
   flex-wrap: wrap;
   gap: 8px;
   align-items: center;
   justify-content: center;
-  width: 100%;
+  min-width: 0;
+}
+
+.toolbar-end {
+  grid-column: 3;
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  justify-content: end;
+  margin-left: 8px;
 }
 
 .toolbar button {
@@ -943,6 +1026,67 @@ main {
   display: none;
 }
 
+/* ポーズ中オーバーレイ。#boot-overlay(z-index:10)とは別要素で、下の画面がうっすら
+   見える程度の薄い黒(0.82より薄い0.55)にする。ページのライト/ダークどちらのテーマでも
+   下は常に黒いエミュ画面なので、#boot-overlay と同じく白系の文字色で固定して成立させる。
+   両者が同時に出ることは無い(ポーズは起動後のみ)が、念のため #boot-overlay より下の
+   z-index にする(#virtual-pad=5 より上、#boot-overlay=10 より下の 9)。 */
+.pause-overlay {
+  position: absolute;
+  inset: 0;
+  z-index: 9;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 12px;
+  background: rgba(0, 0, 0, 0.55);
+}
+
+.pause-overlay.hidden {
+  display: none;
+}
+
+/* 再開はこのボタンからのみ(オーバーレイの余白クリックでは再開しない)。
+   本体は下の要素へクリックを通さず自分で受け止めるだけ。 */
+.pause-overlay-resume {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 72px;
+  height: 72px;
+  border-radius: 50%;
+  border: 2px solid #ffffff;
+  background: rgba(255, 255, 255, 0.12);
+  color: #ffffff;
+  cursor: pointer;
+  padding: 0;
+}
+
+.pause-overlay-resume:hover {
+  background: rgba(255, 255, 255, 0.24);
+}
+
+/* .btn-icon の16px固定と衝突しないよう専用クラスで48px表示にする。 */
+/* 再開ボタンの三角。SVG の既定は fill:black のため、指定が無いと黒背景の実行画面に
+   重なった暗いオーバーレイの上で黒い三角になり、ほとんど見えない。WebNP2 と同じく
+   .btn-icon 相当の「塗りなし + currentColor(白)の輪郭線」で描く。 */
+.pause-overlay-icon {
+  width: 48px;
+  height: 48px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 2;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+.pause-overlay-label {
+  color: #ffffff;
+  font-size: 14px;
+  letter-spacing: 0.05em;
+}
+
 .overlay-choices {
   display: flex;
   flex-direction: row;
@@ -1087,6 +1231,34 @@ main {
   flex: 0 0 auto;
   font-size: 12px;
   white-space: nowrap;
+}
+
+.serial-unsupported {
+  margin: 0;
+  line-height: 1.6;
+}
+
+#settings-serial-toggle {
+  margin-left: auto;
+}
+
+.settings-serial-heading {
+  margin-top: 18px;
+}
+
+.field-row .serial-baud-note {
+  flex: 1 1 100%;
+  min-width: 0;
+  margin: 4px 0 0;
+  color: var(--text-dim);
+  font-size: 11px;
+  line-height: 1.45;
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+
+.field-row .serial-baud-note.status-ng {
+  color: var(--danger);
 }
 
 .status-ok {
@@ -1339,12 +1511,31 @@ footer.app-footer a {
   color: var(--page-footer-text);
 }
 
+/* ビルド版表記(コミット日時+ハッシュ)。狭幅端末で他行を押し広げないよう小さめにし、
+   折り返し可能にしておく(長いURLではないが念のため overflow-wrap で保険をかける)。 */
+.footer-version {
+  display: inline-block;
+  margin-top: 2px;
+  font-size: 10px;
+  color: var(--page-footer-text);
+  opacity: 0.7;
+  overflow-wrap: anywhere;
+  word-break: break-word;
+}
+
 
 
 /* スマホ幅 */
 @media (width < 640px) {
+  /* WebX68k は WebNP2 に無い #btn-speed(62px固定幅)がある分だけ横幅が足りず、
+     375x812+バーチャルパッド表示でツールバーが2段に折り返す。狭幅では常設から外し、
+     「…」オーバーフローメニュー先頭の単独行(renderOverflowMenu())へ移す。
+     JS側は isNarrowToolbar() が同じ 640px を参照する(条件がずれると
+     「ボタンは消えたがメニューにも出ない」穴が空くため、数値を二重管理しない)。 */
+  #btn-speed { display: none; }
   main { padding: 8px 4px; gap: 8px; }
   header.app-header { padding: 6px 10px; }
+  .footer-version { font-size: 9px; }
   header.app-header .app-tagline { display: none; }
   .console-footer { padding: 8px 6px; }
   .virtual-keyboard { gap: 3px; padding: 4px 2px; }
@@ -1686,9 +1877,32 @@ body.immersive .fd-slots {
   display: none;
 }
 
+/* 全画面では余白を捨てて実行画面へ面積を渡すが、上のセーフエリアだけは残す。
+   丸ごと0にすると、縦向きで切り欠き/パンチホールが実行画面に重なる(WebNP2 の Android
+   実機で発覚)。横向きは上インセットが0なので実質これまでと同じ(iPhone実測: top 0)。
+   下と左右は入れない。下を空けると横向きで実行画面が縮み、左右は sides配置の
+   バーチャルパッドが vpadSideBoxesFor() 側で別途セーフエリアを扱っているため。
+   rescale() は main のパディングを実測して高さ計算に算入するので、この余白は
+   自動的に実行画面のサイズへ反映される。 */
 body.immersive main {
-  padding: 0;
+  padding: env(safe-area-inset-top, 0px) 0 0;
   gap: 0;
+}
+
+/* env(safe-area-inset-*) をJSから読むための測定用要素(virtual-pad.ts の readSafeAreaInsets)。
+   カスタムプロパティ経由では env() が解決されない環境があるため実プロパティへ入れる。 */
+.safe-area-probe {
+  position: fixed;
+  top: 0;
+  left: 0;
+  width: 0;
+  height: 0;
+  visibility: hidden;
+  pointer-events: none;
+  padding-left: env(safe-area-inset-left, 0px);
+  padding-right: env(safe-area-inset-right, 0px);
+  padding-top: env(safe-area-inset-top, 0px);
+  padding-bottom: env(safe-area-inset-bottom, 0px);
 }
 
 body.immersive .console-card {

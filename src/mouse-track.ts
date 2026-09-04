@@ -131,6 +131,15 @@ export class MouseTracker {
   }
 
   /**
+   * 保持している目標比率を捨てる。トラックパッドの相対移動のように、追従モードとは別経路で
+   * host.addMouseDelta() を呼ぶ入力がある場合、目標が残ったままだと step() が古い目標へ向けて
+   * 綱引きしてしまう(main.ts の trackpadMoveBy() 参照)。
+   */
+  clearDesiredRatio(): void {
+    this.hasDesiredRatio = false;
+  }
+
+  /**
    * 追従モードの1フレーム分の追い込み(閉ループ)。呼び出し側(main.ts の loop()、
    * core-worker.ts の tick())は、実際にコアを1フレーム以上進めた回だけこれを呼ぶこと。
    *

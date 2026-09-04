@@ -61,3 +61,34 @@ export function getTargetSize(
   }
   return { width: nativeWidth, height: nativeHeight };
 }
+
+/**
+ * 物理ピクセル整数倍へ切り下げるときに許容するロス率。これ以内なら切り下げて pixelated を保つ。
+ */
+export const DEVICE_SNAP_TOLERANCE = 0.08;
+
+/**
+ * 端数倍のスケールを、可能なら「物理ピクセルで整数倍」へ寄せる(WebNP2 の fitSubScale() 移植)。
+ *
+ * CSSピクセル基準の端数倍 × image-rendering:pixelated は、最近傍で「物理2pxになる列」と
+ * 「1pxになる列」が周期的に混ざる。結果、1ドット市松や1ドット幅の縦線(テキスト画面の文字)が
+ * モアレになって間引かれて見える(WebNP2 の iPhone 疑似フルスクリーンで実測)。
+ * DPR を掛けた物理倍率が整数に近いなら、切り下げて乗せればドットが均等になる。
+ *
+ * ただし物理倍率の1段は目標サイズ1枚ぶんと大きく、常に切り下げると画面を大きく捨てる。
+ * ロスが DEVICE_SNAP_TOLERANCE を超えるときは面積を優先して端数のまま使い、代わりに
+ * 補間(smooth)へ切り替えてモアレを消す(縮小方向のディザは補間したほうが実機CRTの滲みに近い。
+ * 4:3モードで既に採っている方針と同じ)。
+ *
+ * WebX68k では 1倍未満だけでなく没入モード(全画面)にも効かせる。没入モードは fit を
+ * そのまま使う設計なので、1倍以上でも端数倍になるのが常態のため。
+ */
+export function fitDeviceScale(rawScale: number, dpr: number): { scale: number; smooth: boolean } {
+  const ratio = Number.isFinite(dpr) && dpr > 0 ? dpr : 1;
+  const deviceScale = rawScale * ratio;
+  const snapped = Math.floor(deviceScale + 1e-6);
+  if (snapped >= 1 && (deviceScale - snapped) / deviceScale <= DEVICE_SNAP_TOLERANCE) {
+    return { scale: snapped / ratio, smooth: false };
+  }
+  return { scale: rawScale, smooth: true };
+}

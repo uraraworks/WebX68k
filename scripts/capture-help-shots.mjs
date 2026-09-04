@@ -104,7 +104,7 @@ async function shoot(page, selector, file) {
  * 四辺を広げる。ただしページ範囲の外へはみ出すと puppeteer の screenshot がエラーになる
  * ため、ページの実サイズ(document.documentElement.scrollWidth/Height)でクランプする。
  */
-async function shootUnion(page, selectors, file, padding = 12) {
+async function shootUnion(page, selectors, file, padding = 12, options = {}) {
   const clip = await page.evaluate(
     (sels, pad) => {
       let left = Infinity;
@@ -136,7 +136,10 @@ async function shootUnion(page, selectors, file, padding = 12) {
     selectors,
     padding,
   );
-  await page.screenshot({ path: join(OUT_DIR, file), clip });
+  // clip は getBoundingClientRect()(ビューポート座標)から作っている。captureBeyondViewport の
+  // 既定(true)はページ全体を描き直すため、position:fixed のモーダルを撮ると位置がずれ、
+  // 下に隠れていた別のダイアログが写る。モーダルを撮るときは false を渡すこと。
+  await page.screenshot({ path: join(OUT_DIR, file), clip, ...options });
   console.log(`  wrote ${file}`);
 }
 
@@ -333,6 +336,43 @@ async function run() {
       if (!fmModal) throw new Error('file manager modal not found');
       await fmModal.screenshot({ path: join(OUT_DIR, `filemanager${suffix}.png`) });
       console.log(`  wrote filemanager${suffix}.png`);
+      // ファイル転送ダイアログは Escape で閉じない(src/filemanager.ts に Escape ハンドラが無く、
+      // 閉じるのはフッタのボタンかバックドロップのクリックだけ)。開いたままだと次に開く
+      // 設定ダイアログを覆い、シリアル節の代わりにこのダイアログが写る。明示的に閉じる。
+      await page.evaluate(() => {
+        const btn = document.querySelector('#file-manager-root .fm-modal .rom-close-btn');
+        if (!btn) throw new Error('file manager close button not found');
+        btn.click();
+      });
+      await sleep(400);
+
+      // --- serial: 設定ダイアログ最下部のシリアルポート節 ---
+      await clickToolbarButton(page, 'btn-settings');
+      await sleep(800);
+      await page.evaluate(() => {
+        const el = document.getElementById('settings-serial-controls');
+        if (!el) throw new Error('settings-serial-controls not found');
+        el.scrollIntoView();
+      });
+      // 撮る前に、シリアル節が本当に最前面に出ているかを確かめる。別のダイアログが
+      // 覆っていても clip の座標だけは計算できてしまい、中身が違う画像が「成功」として
+      // 保存されるため(実際に一度それでファイル転送ダイアログを撮っていた)。
+      await page.evaluate(() => {
+        const el = document.getElementById('settings-serial-controls');
+        const rect = el.getBoundingClientRect();
+        if (rect.height === 0) throw new Error('serial section is not visible');
+        const topEl = document.elementFromPoint(rect.left + rect.width / 2, rect.top + rect.height / 2);
+        if (!topEl || !topEl.closest('#settings-backdrop')) {
+          throw new Error('serial section is covered by another dialog');
+        }
+      });
+      await shootUnion(
+        page,
+        ['.settings-serial-heading', '#settings-serial-controls'],
+        `serial${suffix}.png`,
+        12,
+        { captureBeyondViewport: false },
+      );
       await page.keyboard.press('Escape');
       await sleep(400);
 
@@ -374,6 +414,10 @@ async function run() {
       // 本文と矛盾しないよう、このショットの撮影中だけビューポートを広げて標準の
       // 右開き挙動を撮る(keyboard ショットが縦だけ一時的に広げる前例に倣う)。
       await page.setViewport({ ...VIEWPORT, width: 1280 });
+      // main.ts の resize ハンドラは「開いているメニューを閉じる」。setViewport の resize が
+      // 遅れて届くと、直後に開いたメニューがその場で閉じられ、グループ行が見つからず落ちる
+      // (実行ごとに再現したりしなかったりする)。リサイズが落ち着いてから開く。
+      await sleep(600);
       await clickToolbarButton(page, 'btn-toolbar-overflow');
       await sleep(300);
       await page.evaluate(() => {
@@ -404,6 +448,10 @@ async function run() {
         page,
         ['.console-card', '#slot-popup-menu', '#overflow-submenu'],
         `menu${suffix}.png`,
+        12,
+        // メニューは position: fixed。captureBeyondViewport の既定(true)だと描き直しの際に
+        // 消えてしまい、メニューの写っていない画面だけが保存される(ガードは通ってしまう)。
+        { captureBeyondViewport: false },
       );
       // メニューを閉じてから次のショット(keyboard)へ進む。
       await page.keyboard.press('Escape');
@@ -467,6 +515,9 @@ async function run() {
       await clickToolbarButton(page, 'btn-fullscreen'); // 疑似フルスクリーンを解除
       await sleep(300);
       await page.setViewport(VIEWPORT);
+      // menu ショットと同じ理由(resize ハンドラが開いているメニューを閉じる)で、
+      // 幅を戻した直後にメニューを開くと閉じられてしまう。落ち着くまで待つ。
+      await sleep(600);
 
       // --- vpad-editor: バーチャルパッドの割当編集ダイアログ ---
       // パッドは virtualpad ショットからずっと表示中(閉じていない)ので、🎮チップを押すと
@@ -487,7 +538,25 @@ async function run() {
       console.log(`  wrote vpad-editor${suffix}.png`);
       await page.keyboard.press('Escape');
       await sleep(300);
+
+      // --- trackpad: バーチャルトラックパッド(入力パネル第3の種類) ---
+      // バーチャルパッドがまだ表示中なので、🖱チップを押してトラックパッドへ切り替える。
+      // 🖱チップは⌨/🎮と違って状態依存の役割を持たない(main.ts の btnPanelTrackpad ハンドラ
+      // 参照: 常に openInputPanel('trackpad') を呼ぶだけ)が、念のため virtualpad ショットと
+      // 同じ「実際に表示されているかをDOMで見てから必要な場合だけ押す」方式に揃える。
+      await page.setViewport({ width: 375, height: 812, deviceScaleFactor: 2 });
+      const trackpadAlreadyShown = await page.evaluate(() => {
+        const el = document.getElementById('virtual-trackpad');
+        return !!el && !el.classList.contains('hidden');
+      });
+      if (!trackpadAlreadyShown) {
+        await clickToolbarButton(page, 'btn-panel-trackpad'); // 🖱側へ切替
+      }
+      await sleep(300);
+      await shoot(page, '.console-card', `trackpad${suffix}.png`);
+
       await clickToolbarButton(page, 'btn-virtual-keyboard'); // 入力パネルを閉じる(後続に影響させない)
+      await page.setViewport(VIEWPORT); // 後続(hostkeyショット等)へ影響させない
 
       // --- hostkey: 物理キーボード→ジョイスティック割当ダイアログ ---
       await clickToolbarButton(page, 'btn-hostkey');

@@ -33,7 +33,40 @@ See [docs/DESIGN.md](docs/DESIGN.md) for design and implementation details.
 
 Notes on `fd1`/`fd2`/`hdd`:
 
-- The URL must be served from a **CORS-enabled origin**, or the fetch will fail.
+- The URL must be served from a **CORS-enabled origin**. GitHub raw, GitHub
+  Pages, and your own CORS-enabled server work directly (plain fetch).
+- GitHub **blob URLs** (`https://github.com/<owner>/<repo>/blob/<ref>/<path>`)
+  and **raw URLs** (`.../raw/<ref>/<path>`) are automatically rewritten to
+  `https://raw.githubusercontent.com/<owner>/<repo>/<ref>/<path>` before
+  fetching, so they are fetched directly without going through the relay
+  service (`raw.githubusercontent.com` is CORS-enabled; the plain `github.com`
+  URL redirects there without CORS headers, so a direct fetch would fail).
+  You can paste a `blob` URL copied straight from the GitHub UI. **Release
+  asset URLs** (`.../releases/download/<tag>/<asset>` and
+  `.../releases/latest/download/<asset>`) are not rewritten, since
+  `raw.githubusercontent.com` cannot serve release assets — these still go
+  through the relay service as before (or direct fetch if `VITE_DISK_PROXY`
+  is unset).
+- Google Drive share links return an HTML viewer page instead of the raw file
+  when fetched directly (no CORS error, just the wrong content), so the
+  public page **fetches this host through a relay service from the start**.
+  If you fork and host this yourself, you need to set `VITE_DISK_PROXY` (see
+  below) to use this — without it, this host is reported as unfetchable.
+- Dropbox share links are fetched **directly**: the app automatically
+  rewrites just the hostname before fetching, so you can paste the URL
+  exactly as copied ("Copy link", with `dl=0` left as-is — no need to change
+  it to `dl=1`). This works even without a relay service configured. Only
+  file-level share links (`/scl/fi/...`) have been verified; folder shares
+  and password-protected links are untested. If direct fetch fails, it falls
+  back to the relay service as before (when one is configured).
+- **OneDrive share links (`1drv.ms` / `onedrive.live.com` / `sharepoint.com`)
+  are not supported** — they don't work even through the relay (confirmed by
+  testing). Please use Google Drive or Dropbox instead.
+- If you use Google Drive, sharing must be set to **"Anyone with the link"**
+  (leaving it "Restricted" redirects to a login page and fetching fails).
+  Also make sure you copy the **full share link without truncating it** —
+  links issued before 2021 carry a `resourcekey` query parameter, and
+  dropping it causes the same login-page redirect.
 - Revisiting the same URL does **not** re-download it — the image already saved
   in the browser (including any edits made from the guest side) is reused.
 - If the URL points to a **ZIP or LZH archive**, it is fetched and extracted the
@@ -69,15 +102,33 @@ Notes on `lib` (for sharing links to multi-disk collections):
 
 ### Toolbar
 
-Five buttons stay directly on the toolbar: Reset, Fullscreen, Virtual
-Keyboard, Screenshot, and Speed. Everything else lives behind the "..." (More)
-button as a two-level menu: Display (4:3 display toggle), Input (mouse
-capture/resync, gamepad settings), Disk (Disk Library, file transfer), and
-State (save/load state) groups, plus Settings, Help, and the language toggle
-listed directly below the groups. At 640px and wider, opening a group keeps
-the menu open and shows the submenu cascading to the right of it (flipping
-to the left near the screen edge); narrower screens replace the menu in
-place with a "← Back" row instead.
+Six buttons stay directly on the toolbar: Pause, Fullscreen, Virtual
+Keyboard, Screenshot, Speed, and Reset. Everything else lives behind the
+"..." (More) button as a two-level menu: Display (4:3 display toggle), Input
+(mouse capture/resync, gamepad settings), Disk (Disk Library, file transfer),
+and State (save/load state) groups, plus Settings, Help, and the language
+toggle listed directly below the groups. At 640px and wider, opening a group
+keeps the menu open and shows the submenu cascading to the right of it
+(flipping to the left near the screen edge); narrower screens replace the
+menu in place with a "← Back" row instead.
+
+Below 640px (phone width), Speed also moves off the toolbar into a
+standalone row at the top of the "..." menu (this keeps the toolbar from
+wrapping to two rows when it doesn't have room for both Speed and the
+virtual pad). Speed doesn't fit any of the four groups, so it isn't grouped
+with the others; the row's label shows the current multiplier and gets a
+checkmark while enabled.
+
+Reset sits apart at the toolbar's right edge, a finger's width from the
+frequently-pressed buttons, since a misclick there is costlier than on the
+others.
+
+**Pause stops emulation and shows a translucent "Paused" overlay** on the
+screen. Resume only from the play button in the center of that overlay —
+clicking elsewhere on it does nothing, to avoid accidental resumes. Audio
+keeps running while paused; once the frame supply stops it fades out
+naturally to silence and fades back in on resume. Pause state is not
+preserved across a reload (reloading the page always resumes).
 
 **Reset performs a full core restart**, not just a CPU reset: it flushes any
 pending disk writes back to storage, then tears down and rebuilds the whole
@@ -107,6 +158,15 @@ elsewhere on the overlay does nothing.
 192.168.x.x:port/`) leaves it unavailable. In that case WebX68k now boots
 silently instead of failing to boot at all — audio simply has nowhere to
 go.
+
+### Web Serial / RS-232C
+
+The Settings dialog can connect X68000 SCC channel A to a host serial port in a
+desktop browser that supports Web Serial, such as Chrome, Edge, or Firefox.
+Web Serial requires HTTPS. Firefox for Android, browsers on iOS/iPadOS, and
+Safari on macOS do not currently expose this API.
+Setup, platform notes, and a Windows com0com loopback procedure are documented
+in [docs/WEB_SERIAL.md](docs/WEB_SERIAL.md).
 
 ### Drag & drop
 
@@ -207,17 +267,27 @@ the resolution currently being displayed, with no letterboxing to crop.
 
 The toolbar's "Speed" button is an ON/OFF toggle. OFF (the default) runs at
 100% (normal) speed; ON runs at whatever multiplier is chosen in the
-settings panel (25% / 50% / 75% / 150% / 200% / 300% / 400%, default 200%).
-While ON, the button shows a badge with the current multiplier. The change
-takes effect immediately from the toggle itself — no reset needed — and
-audio pitch shifts along with it, like a tape running fast or slow (BGM
-speeds up too). The setting is not saved, so playback always starts at OFF
-(100%) on boot and after a reset.
+settings panel (25% / 50% / 75% / 150% / 200% / 300% / 400% / Unlimited,
+default 200%). While ON, the button shows a badge with the current
+multiplier (`∞` for Unlimited). The change takes effect immediately from
+the toggle itself — no reset needed — and audio pitch shifts along with
+it, like a tape running fast or slow (BGM speeds up too). The setting is
+not saved, so playback always starts at OFF (100%) on boot and after a
+reset.
 
 How fast it can actually go depends on your device's processing power. 400%
 is a selectable ceiling, not a guaranteed speed — the settings panel shows
 the measured speed you're actually getting, so you can see where it tops
 out.
+
+"Unlimited" is a separate mode with no target multiplier — it runs as fast
+as your device's processing power allows. It comes with two trade-offs:
+audio is silent, because samples are produced many times faster than real
+time and the existing pitch-shifting resampler can't keep up; and the
+screen updates at roughly 20-30fps instead, since paying the rendering cost
+every tick would leave no time for core execution. The settings panel's
+measured-speed display still works in Unlimited mode, so you can see the
+actual percentage you're getting.
 
 This is separate from the machine configuration's "CPU speed"
 (`px68k_cpuspeed`, 10-100MHz) setting: that one changes the emulated
@@ -248,8 +318,9 @@ size always follows the settings dialog rather than SWITCH.X.
 ### Virtual pad (on-screen pad)
 
 For playing games on a phone, the "Show Input Panel" toolbar button (also
-toggled by the ⌨/🎮 chip once a panel is open) can show a touch virtual pad
-instead of the virtual keyboard — they're mutually exclusive. Directional
+toggled by the keyboard/pad/mouse chip once a panel is open) can show a touch virtual pad
+instead of the virtual keyboard or virtual trackpad — they're mutually
+exclusive. Directional
 input is an analog-stick-style control (a fixed base with a knob, snapping to
 8 directions), so a light tap near the edge of the circle is enough to get a
 direction out.
@@ -274,11 +345,11 @@ placements:
 - **Overlay** — when neither kind of margin is big enough, the pad is drawn
   semi-transparently on top of the screen.
 
-Pressing 🎮 while the pad is showing opens the profile-select menu.
+Pressing the pad chip while the pad is showing opens the profile-select menu.
 
 #### Editing the pad's assignments
 
-"Edit assignments…" at the end of the 🎮 profile menu opens an editor for
+"Edit assignments…" at the end of the pad chip's profile menu opens an editor for
 the pad's 12 input sources (stick up/down/left/right, A/B/C, X/Y/Z, and
 Aux 1/2). Each row can be bound to either a keyboard key or a joystick
 button.
@@ -312,6 +383,23 @@ relative mouse movement to the guest. Press **Esc** (or the same menu item
 again) to release. The "Mouse Resync" entry in the same group re-anchors
 absolute-position tracking if the guest cursor and host cursor ever drift
 apart.
+
+On touch devices (where the Pointer Lock API is unavailable — e.g. iOS
+Safari), open the **virtual trackpad** instead, via the mouse option on the
+keyboard/pad/mouse input-panel chip (or the "Show Input Panel" toolbar button). It's
+the third kind of input panel alongside the virtual keyboard and virtual
+pad, and it sits in the same strip between the screen and the toolbar
+rather than over the screen — so your finger never covers the guest
+display while you operate it.
+
+Operation is laptop-trackpad style: drag with one finger to move the
+cursor by the finger's motion (with the mouse sensitivity setting
+applied), tap for a left click at the current cursor position, two-finger
+tap for a right click, and long-press (450ms) to hold the left button
+down, then drag to drag. Because the cursor moves independently of the
+finger, it is never hidden under your fingertip. Two-finger drag (the
+usual trackpad gesture for scrolling/wheel) is not supported — the X68000
+mouse only has left/right buttons, with no wheel concept to map it to.
 
 ### Display mode (dot-for-dot / 4:3)
 
@@ -402,6 +490,29 @@ the bundled files on future visits.
   running. Blank HDDs are FAT16 data drives only (no IPL).
 - **FDD0/FDD1**: hot-swappable at any time.
 
+## Sprout68k shared runtime
+
+Opening a `#p1=` link (a program shared from
+[Sprout68k](https://github.com/uraraworks/Sprout68k)) needs a 5 KB runtime, bundled
+under `public/sprout-runtime/v1/`. It is **fetched at build time and served by this
+site at runtime**, so shared links keep working offline and do not depend on GitHub
+being reachable.
+
+To update it to a newer ABI version:
+
+```sh
+node tools/fetch-sprout-runtime.mjs
+```
+
+This pulls from the pinned release tag (`runtime-v1`), verifies every file against the
+manifest, and writes `public/sprout-runtime/v1/` and `src/sprout-share.mts`. Then update
+`EXPECTED_MANIFEST_SHA256` in `test/sprout-share.test.ts` to the new manifest hash —
+that constant is what proves the bundled copy really is the published release, so the
+test fails until you do.
+
+**Older runtime versions must never be deleted.** Code in a shared URL calls the jump
+table of the version it was built against.
+
 ## MCP support (control WebX68k from AI agents)
 
 Open the page with `?bridge=1` to have it connect to a local MCP server
@@ -433,6 +544,16 @@ npm install
 npm run dev     # dev server
 npm run build   # type-check + production build (dist/)
 ```
+
+To enable relay fetching for Google Drive, set the `VITE_DISK_PROXY`
+environment variable at build time to the URL of your own relay service (no
+trailing `/`). If unset (the default), no relay is used and sources that the
+direct fetch fails for will simply error out. See the comment in
+[.github/workflows/deploy.yml](.github/workflows/deploy.yml) for how this is
+configured for the public GitHub Pages build. Dropbox does not need this
+setting — it is fetched directly via an automatic hostname rewrite (falling
+back to the relay, when configured, only if direct fetch fails for an
+unverified share format).
 
 Building the emulator core itself (px68k-libretro → WebAssembly) is done via
 `scripts/build-core.sh`; see [docs/DESIGN.md](docs/DESIGN.md) for the full

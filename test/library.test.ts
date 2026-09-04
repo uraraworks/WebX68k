@@ -12,7 +12,7 @@ function disk(partial: Partial<StoredDisk> & { sourceKey: string; name: string }
 }
 
 describe('buildLibraryNodes', () => {
-  it('グループ無しのレコードは単体ノードとして保存時刻の降順に並ぶ', () => {
+  it('グループ無しのレコードは単体ノードとして表示名の昇順に並ぶ(保存時刻には依らない)', () => {
     const nodes = buildLibraryNodes(
       [
         disk({ sourceKey: 'k1', name: 'old.d88', savedAt: 100 }),
@@ -22,16 +22,38 @@ describe('buildLibraryNodes', () => {
       classifyDiskKind,
     );
     expect(nodes.map((n) => (n.kind === 'item' ? n.entry.name : '?'))).toEqual([
-      'new.hdf',
       'mid.xdf',
+      'new.hdf',
       'old.d88',
     ]);
     expect(nodes.every((n) => n.kind === 'item')).toBe(true);
-    const first = nodes[0];
-    expect(first.kind === 'item' && first.entry.kind).toBe('hdd');
+    const hdd = nodes[1];
+    expect(hdd.kind === 'item' && hdd.entry.kind).toBe('hdd');
   });
 
-  it('同一グループのレコードを1つのフォルダにまとめ、groupIndex順に並べる', () => {
+  it('数字は数値として比較する(Disk 2 が Disk 10 より前)', () => {
+    const names = ['GAME (Disk 10).d88', 'GAME (Disk 2).d88', 'GAME (Disk 1).d88'];
+    const nodes = buildLibraryNodes(
+      names.map((name, i) => disk({ sourceKey: `k${i}`, name, savedAt: 100 })),
+      classifyDiskKind,
+    );
+    expect(nodes.map((n) => (n.kind === 'item' ? n.entry.name : '?'))).toEqual([
+      'GAME (Disk 1).d88',
+      'GAME (Disk 2).d88',
+      'GAME (Disk 10).d88',
+    ]);
+  });
+
+  it('表示名が同一でも sourceKey で決着し、入力順が変わっても結果は同じ', () => {
+    const a = disk({ sourceKey: 'kA', name: 'same.d88', savedAt: 100 });
+    const b = disk({ sourceKey: 'kB', name: 'same.d88', savedAt: 300 });
+    const keys = (list: typeof a[]) =>
+      buildLibraryNodes(list, classifyDiskKind).map((n) => (n.kind === 'item' ? n.entry.sourceKey : '?'));
+    expect(keys([a, b])).toEqual(['kA', 'kB']);
+    expect(keys([b, a])).toEqual(['kA', 'kB']);
+  });
+
+  it('同一グループのレコードを1つのフォルダにまとめ、groupIndexではなく表示名順に並べる', () => {
     const nodes = buildLibraryNodes(
       [
         disk({
@@ -56,13 +78,32 @@ describe('buildLibraryNodes', () => {
     );
     expect(nodes).toHaveLength(2);
     const [first, second] = nodes;
-    // フォルダの並び順は中の最新保存時刻(150)なので単体(120)より前に来る。
+    // トップレベルはフォルダ名 "g.zip" と単体 "solo.d88" の表示名比較で決まる。
     expect(first.kind).toBe('group');
     if (first.kind !== 'group') throw new Error('expected group');
     expect(first.group.id).toBe('arc:g.zip:9');
     expect(first.group.name).toBe('g.zip');
+    // groupIndex は A=0,B=1 だが、並びの根拠は表示名(A→B)であることを別ケースで確かめる。
     expect(first.group.entries.map((e) => e.name)).toEqual(['A.d88', 'B.d88']);
     expect(second.kind).toBe('item');
+  });
+
+  it('groupIndex がアーカイブ内の並び(ディスク番号と逆)でも表示名順に直る', () => {
+    const nodes = buildLibraryNodes(
+      [
+        disk({ sourceKey: 'g/3', name: 'GAME (Disk 3).d88', group: 'g', groupName: 'g.lzh', groupIndex: 0 }),
+        disk({ sourceKey: 'g/1', name: 'GAME (Disk 1).d88', group: 'g', groupName: 'g.lzh', groupIndex: 1 }),
+        disk({ sourceKey: 'g/2', name: 'GAME (Disk 2).d88', group: 'g', groupName: 'g.lzh', groupIndex: 2 }),
+      ],
+      classifyDiskKind,
+    );
+    const node = nodes[0];
+    if (node.kind !== 'group') throw new Error('expected group');
+    expect(node.group.entries.map((e) => e.name)).toEqual([
+      'GAME (Disk 1).d88',
+      'GAME (Disk 2).d88',
+      'GAME (Disk 3).d88',
+    ]);
   });
 
   it('displayName があれば表示名に使い、無ければ元のファイル名を使う', () => {
@@ -73,8 +114,9 @@ describe('buildLibraryNodes', () => {
       ],
       classifyDiskKind,
     );
+    // 並びは元のファイル名ではなく表示名で決まる(GAME_B < ゲームA)。
     const names = nodes.map((n) => (n.kind === 'item' ? n.entry.displayName : '?'));
-    expect(names).toEqual(['ゲームA 1枚目', 'GAME_B.d88']);
+    expect(names).toEqual(['GAME_B.d88', 'ゲームA 1枚目']);
   });
 
   it('groupName が一部欠けていてもグループ名を復元する', () => {

@@ -8,6 +8,9 @@
 #include <stdio.h>
 #include <emscripten.h>
 
+#include "x68k/scc.h"
+#include "x68k/irqh.h"
+
 EM_JS(void, js_retro_log, (int level, const char *msg), {
   var s = UTF8ToString(msg);
   if (level >= 3) console.error('[px68k]', s);
@@ -1515,3 +1518,84 @@ unsigned int get_sasi_last_write_lba(void)
 {
   return SASILastWriteLba;
 }
+
+/* SCC チャネルA(X68000 RS-232C)のホスト接続用シム。 */
+__attribute__((used))
+int webx68k_serial_rx(const uint8_t *data, int length)
+{
+  return SCC_SerialReceive(data, length);
+}
+
+__attribute__((used))
+int webx68k_serial_tx_available(void)
+{
+  return SCC_SerialTxAvailable();
+}
+
+__attribute__((used))
+int webx68k_serial_tx_drain(uint8_t *data, int max_length)
+{
+  int count = 0;
+  int value;
+  if (!data || max_length <= 0) return 0;
+  while (count < max_length && (value = SCC_SerialReadTxByte()) >= 0)
+    data[count++] = (uint8_t)value;
+  return count;
+}
+
+__attribute__((used))
+void webx68k_serial_reset(void)
+{
+  SCC_SerialHostReset();
+}
+
+__attribute__((used))
+void webx68k_serial_set_connected(int connected)
+{
+  SCC_SerialSetConnected(connected);
+}
+
+__attribute__((used))
+void webx68k_serial_set_tx_writable(int writable)
+{
+  SCC_SerialSetTxWritable(writable);
+}
+
+__attribute__((used))
+int webx68k_serial_guest_baud_rate(void)
+{
+  return SCC_SerialGetGuestBaudRate();
+}
+
+#ifdef WEBX68K_CORE_TEST_EXPORTS
+/* SCCチャネルAのレジスタ、FIFO、割り込み状態を実コア結合テストで観測するためのシム。 */
+__attribute__((used))
+int webx68k_scc_read(unsigned int address)
+{
+  return SCC_Read(address);
+}
+
+__attribute__((used))
+void webx68k_scc_write(unsigned int address, int value)
+{
+  SCC_Write(address, (uint8_t)value);
+}
+
+__attribute__((used))
+int webx68k_scc_test_acknowledge_irq(void)
+{
+  return (int)SCC_TestAcknowledgeInterrupt();
+}
+
+__attribute__((used))
+int webx68k_scc_test_interrupt_cause(void)
+{
+  return (int)SCC_TestCurrentInterruptCause();
+}
+
+__attribute__((used))
+int webx68k_scc_test_irq_pending(void)
+{
+  return IRQH_IsPending(5);
+}
+#endif
