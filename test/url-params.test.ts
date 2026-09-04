@@ -1,5 +1,12 @@
 import { describe, expect, it } from 'vitest';
-import { parseAspectModeParam, parseCpuSpeedParam, parseRamSizeParam } from '../src/url-params';
+import {
+  AUTO_CPU_SPEED,
+  CPU_SPEED_OPTIONS,
+  cpuSpeedOptionForMhz,
+  parseAspectModeParam,
+  parseCpuSpeedParam,
+  parseRamSizeParam,
+} from '../src/url-params';
 
 describe('parseRamSizeParam', () => {
   it.each([
@@ -24,12 +31,47 @@ describe('parseCpuSpeedParam', () => {
     ['33', '33Mhz (OC)'],
     ['66Mhz', '66Mhz (OC)'],
     ['100Mhz (OC)', '100Mhz (OC)'],
+    // 選択肢に無い値もコアが受け付けるので、範囲内なら正規化して通す。
+    ['20', '20Mhz'],
+    ['200', '200Mhz (OC)'],
+    ['777Mhz', '777Mhz (OC)'],
+    ['1000', '1000Mhz (OC)'],
   ])('%s -> %s', (input, expected) => {
     expect(parseCpuSpeedParam(input)).toBe(expected);
   });
 
-  it.each([null, '', '20', '0', 'abc', '16.5'])('%s -> null', (input) => {
+  it.each(['auto', 'AUTO', ' max ', 'inf', '∞'])('%s -> auto', (input) => {
+    expect(parseCpuSpeedParam(input)).toBe(AUTO_CPU_SPEED);
+  });
+
+  // 範囲外は無効値。下限は実機の10MHz、上限はコア側 PX68K_CLOCK_MHZ_MAX と揃えた1000。
+  it.each([null, '', '0', '9', '1001', 'abc', '16.5'])('%s -> null', (input) => {
     expect(parseCpuSpeedParam(input)).toBeNull();
+  });
+});
+
+describe('CPU_SPEED_OPTIONS', () => {
+  // 選択肢の表記と正規化規則がずれると、UIで選んだ値がコアに別物として渡る。
+  it.each(CPU_SPEED_OPTIONS)('%s はそのまま正規化される', (option) => {
+    expect(parseCpuSpeedParam(option)).toBe(option);
+  });
+});
+
+describe('cpuSpeedOptionForMhz', () => {
+  it.each([
+    [10, '10Mhz'],
+    [16, '16Mhz'],
+    [25, '25Mhz'],
+    [26, '26Mhz (OC)'],
+    [100, '100Mhz (OC)'],
+    [1000, '1000Mhz (OC)'],
+  ])('%s -> %s', (mhz, expected) => {
+    expect(cpuSpeedOptionForMhz(mhz)).toBe(expected);
+  });
+
+  it('範囲外は端に丸める', () => {
+    expect(cpuSpeedOptionForMhz(1)).toBe('10Mhz');
+    expect(cpuSpeedOptionForMhz(99999)).toBe('1000Mhz (OC)');
   });
 });
 

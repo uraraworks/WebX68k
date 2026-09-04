@@ -25,7 +25,7 @@ See [docs/DESIGN.md](docs/DESIGN.md) for design and implementation details.
 | `fd1` / `fd2` | URL of a disk image to load into FDD0 / FDD1 | See below |
 | `hdd` | URL of a disk image to set into the HDD slot | See below |
 | `lib` | URL of a disk image to register in the Disk Library only (repeatable) | See below |
-| `cpu` | `10`/`16`/`25`/`33`/`66`/`100` to override the CPU clock (MHz) for this boot only | A one-off override for reproducing a recommended environment from a shared URL. Reflected in the settings UI but not persisted to `localStorage` (opening the link alone must not overwrite the user's saved default) |
+| `cpu` | An integer from `10` to `1000` to override the CPU clock (MHz), or `auto` for ∞MHz (host-dependent), for this boot only | A one-off override for reproducing a recommended environment from a shared URL. Reflected in the settings UI but not persisted to `localStorage` (opening the link alone must not overwrite the user's saved default) |
 | `ram` | `1`–`12` to override the RAM size (MB) for this boot only | A one-off override for reproducing a recommended environment from a shared URL. Reflected in the settings UI but not persisted to `localStorage` (opening the link alone must not overwrite the user's saved default) |
 | `aspect` | `4:3` or `native` to override the display aspect ratio mode for this boot only | A one-off override for reproducing a recommended environment from a shared URL. Reflected in the toggle button state but not persisted to `localStorage` (opening the link alone must not overwrite the user's saved default) |
 | `run` | `1` to auto-boot without showing the start overlay | |
@@ -290,9 +290,31 @@ measured-speed display still works in Unlimited mode, so you can see the
 actual percentage you're getting.
 
 This is separate from the machine configuration's "CPU speed"
-(`px68k_cpuspeed`, 10-100MHz) setting: that one changes the emulated
-hardware's actual clock and needs a reset, while this one just changes the
-host's execution pace and applies immediately.
+(`px68k_cpuspeed`) setting: that one changes the emulated hardware's clock,
+while this one only changes the host's execution pace. **Raising the
+multiplier does not change any ratio measured inside the guest** — the CPU,
+the CRTC and the timers all speed up together, so ten guest seconds simply
+take less wall-clock time. If you want a benchmark number to go up, or want a
+machine faster than the real thing, change "CPU speed" instead.
+
+### CPU speed and ∞MHz (host-dependent)
+
+"CPU speed" offers 10/16/25/33/66/100/200/400/800MHz plus "∞MHz
+(host-dependent)". Changes now apply immediately, with no reset (they used to
+require one).
+
+"∞MHz" does not fix a clock. It keeps raising the clock as long as one frame
+of core execution fits within 60% of one frame of real time, and backs off
+when it does not. Where it settles depends on the device and its current load,
+so it differs from run to run even on the same machine. The current clock is
+shown next to the measured speed in the settings panel.
+
+While ∞MHz is active the **speed-multiplier button is disabled**: both features
+compete for the same host time, so making both unlimited leaves neither
+meaningful.
+
+For benchmark numbers you can compare, pick a fixed clock — ∞MHz keeps moving
+the clock while the measurement is running.
 
 ### Virtual keyboard
 

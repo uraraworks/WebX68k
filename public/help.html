@@ -1247,8 +1247,12 @@
               ものであり、実機のCGROMとは字形が異なります。
             </div>
             <p>
-              マシン構成として、CPU速度(10 / 16 / 25 / 33(OC) / 66(OC) / 100(OC) MHz)と
-              RAM容量(1〜12MB)も設定できます。
+              マシン構成として、CPU速度(10 / 16 / 25 / 33(OC) / 66(OC) / 100(OC) /
+              200(OC) / 400(OC) / 800(OC) MHz、および「∞MHz(ホスト次第)」)と
+              RAM容量(1〜12MB)も設定できます。CPU速度はリセット不要で即時反映されます。
+              「∞MHz」は端末が実時間に追いつける範囲で最大のクロックへ自動調整するモードで、
+              落ち着く先は端末の性能とそのときの負荷で変わります。ベンチマークなど
+              比較できる数字が要る場合は固定クロックを選んでください。
             </p>
           </div>
           <div class="lang-en">
@@ -1263,8 +1267,12 @@
               and its glyphs differ from the real hardware's CGROM.
             </div>
             <p>
-              You can also configure CPU speed (10 / 16 / 25 / 33(OC) / 66(OC) / 100(OC) MHz) and
-              RAM size (1–12MB) as part of the machine configuration.
+              You can also configure CPU speed (10 / 16 / 25 / 33(OC) / 66(OC) / 100(OC) /
+              200(OC) / 400(OC) / 800(OC) MHz, plus "∞MHz (host-dependent)") and
+              RAM size (1–12MB) as part of the machine configuration. CPU speed applies
+              immediately, with no reset. "∞MHz" keeps the clock as high as the device can
+              sustain in real time, so where it settles depends on the device and its current
+              load; pick a fixed clock when you need comparable benchmark numbers.
             </p>
           </div>
         </section>
@@ -1549,7 +1557,9 @@
               'ようにピッチが変わります(BGMも含めて速度に追従します)。設定は保存されず、' +
               '起動時・リセット時は必ずOFF(100%)から始まります。実際に出せる速度は端末の' +
               '処理能力次第で、設定パネルには実測の速度が表示されます。マシン構成の「CPU速度」' +
-              '(実機のクロックを変える設定でリセットが必要)とは別物です。「無制限」を選ぶと' +
+              '(エミュレートされるX68000のクロックを変える設定)とは別物で、倍率を上げても' +
+              'ゲスト内で測った比は変わりません(マシンごと同率で速くなるだけ)。ベンチの数字を' +
+              '伸ばしたいときは「CPU速度」のほうを上げてください。「無制限」を選ぶと' +
               '端末の性能が許すかぎり速く動きます。そのかわり音は出ず、画面の更新も少し粗く' +
               '(約20〜30fps)なります。画面幅640px未満(スマホ幅)では常設から外れ、「…」メニュー' +
               '先頭の単独行に移ります(バーチャルパッド表示時にツールバーが2段折り返すのを' +
@@ -1564,7 +1574,9 @@
               ' at OFF (100%) on boot and after a reset. How fast it can actually go depends on your' +
               ' device, and the settings panel shows the measured speed you\'re actually getting. This' +
               ' is separate from the machine configuration\'s "CPU speed" setting, which changes the' +
-              ' emulated clock and needs a reset. Choosing "Unlimited" runs the emulator as fast as' +
+              ' emulated machine\'s clock; raising this multiplier does not change any ratio measured' +
+              ' inside the guest (the whole machine speeds up together), so raise "CPU speed" instead' +
+              ' if you want a benchmark number to go up. Choosing "Unlimited" runs the emulator as fast as' +
               ' your device allows — but with no audio, and the screen updates a bit more coarsely' +
               ' (roughly 20-30fps). Below 640px (phone width), this button moves off the toolbar' +
               ' into a standalone row at the top of the "..." menu, to keep the toolbar from' +

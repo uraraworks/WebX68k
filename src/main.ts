@@ -50,7 +50,15 @@ import { createDiskPersistence } from './disk-persist';
 import { Bridge, resolveBridgeUrl, type BridgeHost } from './bridge';
 import { RETROK, charToKey, codeToRetrok } from './keyboard';
 import { LibretroHost } from './libretro-host';
-import { parseAspectModeParam, parseCpuSpeedParam, parseRamSizeParam } from './url-params';
+import {
+  AUTO_CPU_SPEED,
+  CPU_MHZ_MAX,
+  CPU_MHZ_MIN,
+  cpuSpeedOptionForMhz,
+  parseAspectModeParam,
+  parseCpuSpeedParam,
+  parseRamSizeParam,
+} from './url-params';
 import {
   hostMatches,
   looksLikeHtml,
@@ -321,13 +329,15 @@ function loadMachineConfig(): { cpuSpeed: string; ramSize: string } {
 
 let { cpuSpeed, ramSize } = loadMachineConfig();
 
-// ?cpu=<10|16|25|33|66|100> : 起動時のみ CPU クロックを上書きする(共有URLで推奨環境を再現するため)。
+// ?cpu=<10..1000|auto> : 起動時のみ CPU クロックを上書きする(共有URLで推奨環境を再現するため)。
 // 意図的に localStorage には保存しない。共有リンクを開いただけで利用者の既定設定が
 // 書き換わってしまうと、リンクを踏むたびに意図せず設定が上書きされる事故になるため。
 const cpuParamRaw = new URLSearchParams(location.search).get('cpu');
 const urlCpuSpeed = parseCpuSpeedParam(cpuParamRaw);
 if (cpuParamRaw !== null && urlCpuSpeed === null) {
-  console.warn('?cpu= の値が不正です(10/16/25/33/66/100 のいずれか、または "16Mhz" 形式で指定してください)');
+  console.warn(
+    '?cpu= の値が不正です(10〜1000 の整数、"16Mhz" 形式、または auto を指定してください)',
+  );
 } else if (urlCpuSpeed !== null) {
   cpuSpeed = urlCpuSpeed;
 }
@@ -343,12 +353,68 @@ if (ramParamRaw !== null && urlRamSize === null) {
   ramSize = urlRamSize;
 }
 
+// --- ∞MHz(ホスト次第): CPUクロックの自動調整 ---
+//
+// px68k_cpuspeed は「エミュレートされるX68000のCPUクロック」で、速度倍率(#btn-speed、
+// ホスト側のフレーム供給ペース)とは別物。倍率を上げてもゲスト内の比は変わらない
+// (マシンごと同率で速く回るだけ)ので、ベンチの数字を伸ばしたい・実機より速いX68000として
+// 使いたい場合に動かすのはこちら。
+//
+// 'auto' のときは、コア実行1フレームぶんの実時間を測り、実時間の AUTO_CLOCK_TARGET_DUTY に
+// 収まる範囲で最大のクロックへ寄せていく。落ち着く先は端末の性能と負荷で変わる=「ホスト次第」。
+//
+// 倍率と同時に無制限にすると同じホスト時間を奪い合って両方とも意味を失うため、
+// 'auto' のあいだは速度倍率ボタンを無効化して等速に固定する。
+const AUTO_CLOCK_TARGET_DUTY = 0.6;
+const AUTO_CLOCK_ADJUST_INTERVAL_MS = 1000;
+const AUTO_CLOCK_UP_RATIO = 1.25;
+const AUTO_CLOCK_DOWN_RATIO = 0.8;
+/** 上げ側は「予算の7割未満なら上げる」。境界で上下に往復しないための余裕。 */
+const AUTO_CLOCK_UP_THRESHOLD = 0.7;
+const AUTO_CLOCK_START_MHZ = 16;
+let autoClockMhz = AUTO_CLOCK_START_MHZ;
+/** host.runFrame() 1回の実時間(ms)の指数移動平均。 */
+let autoClockFrameCostMs = 0;
+let autoClockLastAdjustAt = 0;
+
+/** 現在の設定が ∞MHz モードか。 */
+function isAutoClock(): boolean {
+  return cpuSpeed === AUTO_CPU_SPEED;
+}
+
+/** 設定値(番兵 'auto' を含む)を、コアへ渡せる px68k_cpuspeed の文字列へ解決する。 */
+function resolveCpuSpeedOption(): string {
+  return isAutoClock() ? cpuSpeedOptionForMhz(autoClockMhz) : cpuSpeed;
+}
+
+/** ∞MHz のあいだは速度倍率を使わせない(等速固定)。 */
+function updateSpeedAvailability(): void {
+  const auto = isAutoClock();
+  btnSpeed.disabled = auto;
+  cfgSpeed.disabled = auto;
+  if (auto && speedEnabled) {
+    speedEnabled = false;
+    recomputeSpeedMultiplier();
+    resetSpeedState();
+  }
+  updateSpeedButtonUi();
+}
+
 cfgCpuSpeed.value = cpuSpeed;
 cfgRamSize.value = ramSize;
 
 cfgCpuSpeed.addEventListener('change', () => {
   cpuSpeed = cfgCpuSpeed.value;
   localStorage.setItem(CPU_SPEED_KEY, cpuSpeed);
+  // px68k_cpuspeed は LIVE_UPDATABLE_CORE_OPTIONS に載せてあるので走行中に反映される。
+  // 'auto' へ切り替えたときは測り直しから始めるため、実測値と調整時刻を捨てる。
+  if (isAutoClock()) {
+    autoClockMhz = AUTO_CLOCK_START_MHZ;
+    autoClockFrameCostMs = 0;
+    autoClockLastAdjustAt = 0;
+  }
+  host?.setCoreOption('px68k_cpuspeed', resolveCpuSpeedOption());
+  updateSpeedAvailability();
 });
 cfgRamSize.addEventListener('change', () => {
   ramSize = cfgRamSize.value;
@@ -443,11 +509,47 @@ btnSpeed.addEventListener('click', () => {
   updateSpeedButtonUi();
 });
 
+// 起動時の反映。?cpu=auto や localStorage から ∞MHz で始まる場合、ここを通さないと
+// 速度倍率ボタンが有効なまま残り、クロック自動調整と同じホスト時間を奪い合ってしまう。
+// speedEnabled 等の let 宣言より後で呼ぶ必要があるため、速度まわりの初期化の最後に置く。
+updateSpeedAvailability();
+
 // 実測速度表示(約500msごと): 直近区間で実際に走ったエミュフレーム数 ÷ (fps × 経過秒)。
 // 端末性能で頭打ちになったことが見えるように、設定した倍率どおりに出ていない場合に気づける。
 const SPEED_MEASURE_INTERVAL_MS = 500;
 let speedMeasureFrameCount = 0;
 let speedMeasureLastAt = 0;
+
+/**
+ * ∞MHz モードのクロック調整。コア実行1フレームぶんの実時間が、実時間1フレームぶんの
+ * AUTO_CLOCK_TARGET_DUTY を超えないところまでクロックを上げ、超えたら下げる。
+ *
+ * 予算を「実時間の一部」に切ってあるのは、コア実行がメインスレッドを使い切ると
+ * 画面提示もUI操作も入らなくなるため(速度無制限モードで実測した失敗と同じ)。
+ * 上げ側だけ閾値を 0.7 倍に寄せてあるのは、境界で上下に往復し続けないようにするため。
+ *
+ * @param now loop() の t(performance.now() 基準)
+ * @param frameIntervalSec エミュ1フレームぶんの目標間隔(秒)
+ */
+function stepAutoClock(now: number, frameIntervalSec: number): void {
+  if (!isAutoClock() || !host) return;
+  if (autoClockLastAdjustAt === 0) {
+    autoClockLastAdjustAt = now;
+    return;
+  }
+  if (now - autoClockLastAdjustAt < AUTO_CLOCK_ADJUST_INTERVAL_MS) return;
+  autoClockLastAdjustAt = now;
+  if (autoClockFrameCostMs <= 0) return;
+  const budgetMs = frameIntervalSec * 1000 * AUTO_CLOCK_TARGET_DUTY;
+  let next = autoClockMhz;
+  if (autoClockFrameCostMs > budgetMs) next = autoClockMhz * AUTO_CLOCK_DOWN_RATIO;
+  else if (autoClockFrameCostMs < budgetMs * AUTO_CLOCK_UP_THRESHOLD)
+    next = autoClockMhz * AUTO_CLOCK_UP_RATIO;
+  next = Math.max(CPU_MHZ_MIN, Math.min(CPU_MHZ_MAX, Math.round(next)));
+  if (next === autoClockMhz) return;
+  autoClockMhz = next;
+  host.setCoreOption('px68k_cpuspeed', cpuSpeedOptionForMhz(autoClockMhz));
+}
 
 function updateSpeedActualDisplay(now: number): void {
   if (!running) {
@@ -464,7 +566,9 @@ function updateSpeedActualDisplay(now: number): void {
   const fps = host?.avInfo?.fps ?? 60;
   const expectedFrames = fps * (elapsedMs / 1000);
   const pct = expectedFrames > 0 ? Math.round((speedMeasureFrameCount / expectedFrames) * 100) : 0;
-  speedActualEl.textContent = `${t('settingsSpeedActualPrefix')} ${pct}%`;
+  speedActualEl.textContent = isAutoClock()
+    ? `${t('settingsSpeedActualPrefix')} ${pct}% / CPU ${autoClockMhz}MHz`
+    : `${t('settingsSpeedActualPrefix')} ${pct}%`;
   speedMeasureFrameCount = 0;
   speedMeasureLastAt = now;
 }
@@ -2641,7 +2745,7 @@ async function bootCore(): Promise<void> {
   // X68000 は画面モード変更で実行中に canvas の実解像度(width/height)が変わる。
   // ウィンドウ表示のリスケールは実解像度基準で倍率を決めるため、変わった直後に再計算させる。
   host.onResolutionChanged = () => rescale();
-  host.setCoreOption('px68k_cpuspeed', cpuSpeed);
+  host.setCoreOption('px68k_cpuspeed', resolveCpuSpeedOption());
   host.setCoreOption('px68k_ramsize', ramSize);
   // HDD0 の永続化(config読込)を有効化。これでLoadConfig()が /system/keropi/config の
   // HDD0= を読み、cmdファイル(FDD0/FDD1指定)と共存できる。
@@ -4393,8 +4497,17 @@ function loop(t: number): void {
   const budget = computeFrameBudget(dt, frameInterval, queued, speedMultiplier);
 
   let ran = 0;
+  const measureClock = isAutoClock();
   while (accumulator >= frameInterval && ran < budget) {
-    host.runFrame();
+    if (measureClock) {
+      const frameStart = performance.now();
+      host.runFrame();
+      const cost = performance.now() - frameStart;
+      autoClockFrameCostMs =
+        autoClockFrameCostMs === 0 ? cost : autoClockFrameCostMs * 0.9 + cost * 0.1;
+    } else {
+      host.runFrame();
+    }
     accumulator -= frameInterval;
     ran++;
   }
@@ -4425,6 +4538,7 @@ function loop(t: number): void {
     stepTouchTrackpad();
   }
   speedMeasureFrameCount += ran;
+  stepAutoClock(t, frameInterval);
   updateSpeedActualDisplay(t);
   // 破綻(タブ非アクティブ復帰等)したら蓄積をリセット
   if (accumulator > frameInterval * 4) accumulator = 0;
@@ -4526,6 +4640,9 @@ async function startFromOverlay(withSystemDisk: boolean): Promise<void> {
     btnSpeed.disabled = false;
     btnFullscreen.disabled = false;
     btnVirtualKeyboard.disabled = false;
+    // 起動時に全ボタンを一括で有効化するので、∞MHz(速度倍率を使わせない)の判断は
+    // その後に上書きし直す。ここを通さないと btnSpeed だけ有効に戻ってしまう。
+    updateSpeedAvailability();
     updateMouseControls();
     updateFullscreenControl();
     canvas.focus();

@@ -29,6 +29,19 @@ const RETRO_ENVIRONMENT_SET_INPUT_DESCRIPTORS = 11;
 const RETRO_ENVIRONMENT_SET_KEYBOARD_CALLBACK = 12;
 const RETRO_ENVIRONMENT_SET_DISK_CONTROL_INTERFACE = 13;
 const RETRO_ENVIRONMENT_GET_VARIABLE = 15;
+const RETRO_ENVIRONMENT_GET_VARIABLE_UPDATE = 17;
+
+/**
+ * 実行中に変更してよいコアオプションのキー。
+ *
+ * px68k-libretro は retro_run() の先頭で GET_VARIABLE_UPDATE を毎フレーム問い合わせ、
+ * 真のときだけ update_variables() を呼んでオプションを読み直す。ここに載せたキーが
+ * 変わったときだけ「変わった」と申告するので、走行中に変えると壊れるもの
+ * (px68k_ramsize のようにマシン構成に属し、リセットが要るもの)は載せないこと。
+ *
+ * px68k_cpuspeed は Config.clockmhz を毎フレーム参照するだけなので走行中に変えてよい。
+ */
+const LIVE_UPDATABLE_CORE_OPTIONS = new Set(['px68k_cpuspeed']);
 const RETRO_ENVIRONMENT_GET_LOG_INTERFACE = 27;
 const RETRO_ENVIRONMENT_SET_VARIABLES = 16;
 const RETRO_ENVIRONMENT_SET_SUPPORT_NO_GAME = 18;
@@ -245,6 +258,8 @@ export class LibretroHost {
   private saveDirPtr = 0;
   private coreOptions = new Map<string, string>();
   private coreOptionPtrs = new Map<string, number>();
+  /** LIVE_UPDATABLE_CORE_OPTIONS のキーが変わったら立てる。GET_VARIABLE_UPDATE で降ろす。 */
+  private coreOptionsDirty = false;
 
   private keyState = new Set<number>();
 
@@ -518,6 +533,8 @@ export class LibretroHost {
    * (キャッシュを残すと古い文字列ポインタを返し続けてしまうため)。
    */
   setCoreOption(key: string, value: string): void {
+    if (this.coreOptions.get(key) !== value && LIVE_UPDATABLE_CORE_OPTIONS.has(key))
+      this.coreOptionsDirty = true;
     this.coreOptions.set(key, value);
     const oldPtr = this.coreOptionPtrs.get(key);
     if (oldPtr !== undefined) {
@@ -698,6 +715,13 @@ export class LibretroHost {
         // 可変長引数のため C シム(core-shim.c)の関数ポインタを渡す
         mod.HEAP32[data >> 2] = mod._get_retro_log_shim();
         return 1;
+
+      case RETRO_ENVIRONMENT_GET_VARIABLE_UPDATE: {
+        // ここで真を返さない限り、コアは起動時に読んだオプションを二度と読み直さない。
+        mod.HEAPU8[data] = this.coreOptionsDirty ? 1 : 0;
+        this.coreOptionsDirty = false;
+        return 1;
+      }
 
       case RETRO_ENVIRONMENT_GET_VARIABLE: {
         const keyPtr = mod.HEAP32[data >> 2];
