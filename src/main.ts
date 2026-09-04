@@ -456,6 +456,10 @@ function updateSpeedAvailability(): void {
   const auto = isAutoClock();
   btnSpeed.disabled = auto;
   cfgSpeed.disabled = auto;
+  // 無効にした理由を出す。理由の無い disabled は不具合に見える(実際に問い合わせが来た)。
+  // ツールチップはタッチ環境で出ないので、実測表示の行にも併記する
+  // (updateSpeedActualDisplay)。
+  cfgSpeed.title = auto ? t('settingsSpeedLockedByAutoClock') : '';
   if (auto && speedEnabled) {
     speedEnabled = false;
     recomputeSpeedMultiplier();
@@ -684,7 +688,8 @@ function updateSpeedActualDisplay(now: number): void {
   const expectedFrames = fps * (elapsedMs / 1000);
   const pct = expectedFrames > 0 ? Math.round((speedMeasureFrameCount / expectedFrames) * 100) : 0;
   speedActualEl.textContent = isAutoClock()
-    ? `${t('settingsSpeedActualPrefix')} ${pct}% / CPU ${autoClockMhz}MHz`
+    ? `${t('settingsSpeedActualPrefix')} ${pct}% / CPU ${autoClockMhz}MHz` +
+      ` — ${t('settingsSpeedLockedByAutoClock')}`
     : `${t('settingsSpeedActualPrefix')} ${pct}%`;
   speedMeasureFrameCount = 0;
   speedMeasureLastAt = now;
