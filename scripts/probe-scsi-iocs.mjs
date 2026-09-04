@@ -62,16 +62,34 @@ const SCSI_RAM_WRITES = args['scsi-ram-writes'] !== undefined;
 // Worker経路(2026-09-03から既定)では届かない(関数は構造化クローンできず、
 // InitPayload.hostGlobals は number/string/boolean だけを写す)。
 // 使うなら --worker=0 を併用すること。書き込みの検証は --scsi-opfs のほうが本筋。
+// 2026-09-04: 従来は警告止まりで、警告を見落として書き込み経路がどちらも
+// 死んだ組み合わせのまま実行→比較が丸ごと無効になった実測がある
+// (--worker=0 --scsi-opfs で走らせ、[SCSI-WRITE]成功行が0件のまま
+// 「1クラスタ割り当てのバグ」を調査していた)。警告ではなく起動時エラーにする。
 if (SCSI_RAM_WRITES && String(args.worker ?? '') !== '0') {
-  console.error(
-    '[probe] 警告: --scsi-ram-writes は Worker 経路(既定)では効きません。' +
-      '--worker=0 を併用するか、--scsi-opfs を使ってください。',
+  throw new Error(
+    '--scsi-ram-writes は Worker 経路(既定)では効きません(関数はhostGlobalsで転写できない)。' +
+      ' 代わりに --worker=0 を併用してください(--scsi-ram-writes --worker=0)。',
   );
 }
 // 本命の書き戻し経路(OPFS、src/scsi-opfs.ts)を有効にする。値を取らないフラグ。
 // --scsi-ram-writes とは排他ではないが、両方指定した場合は評価順(下記)により
 // SCSI_RAM_WRITES側のwindow.__webx68kScsiRead/Writeが後勝ちで上書きする点に注意。
 const SCSI_OPFS = args['scsi-opfs'] !== undefined;
+// 2026-09-04: --scsi-opfs は createSyncAccessHandle() を使うためWorker専用
+// (src/scsi-opfs.ts冒頭のコメント参照)。--worker=0(メインスレッド経路)と
+// 組み合わせると書き込み経路がどちらも成立しない、成立しない組み合わせに
+// なる。実際にこの組み合わせで実行し、[SCSI-WRITE]成功行が0件のまま
+// 「複数クラスタ割り当てのバグ」を調べていた(Human68kは単に書き込みを
+// 断られて止まっていただけだった)。起動時に拒否し、代替経路を示す。
+if (SCSI_OPFS && String(args.worker ?? '') === '0') {
+  throw new Error(
+    '--scsi-opfs は Worker専用(createSyncAccessHandle()はWorker内からしか呼べない)なので' +
+      ' --worker=0 と同時指定できません。' +
+      ' メインスレッド(--worker=0)で書き込み経路を測るなら --scsi-ram-writes を使ってください' +
+      '(--scsi-ram-writes --worker=0)。OPFSへの本当の書き戻しを測るなら --worker=0 を外してください。',
+  );
+}
 // 初期化コマンド($00)への返答値。どの欄が Human68k の判断に効くかを切り分けるための
 // 実験用スイッチ。意味は core-shim.c の js_scsi_reply_* を参照。未指定はコア側の既定に任せる。
 const REPLY_ERR = args['reply-err'] === undefined ? null : Number(args['reply-err']);
@@ -83,6 +101,12 @@ const REPLY_STATUS = args['reply-status'] === undefined ? null : Number(args['re
 const REPLY_INIT_ONCE = args['reply-init-once'] !== undefined;
 // ストラテジ/インタラプトから戻る d0。既定(未指定)はコア側の既定 -1(何もしない)に任せる。
 const REPLY_D0 = args['reply-d0'] === undefined ? null : Number(args['reply-d0']);
+// 【調査用・実験スイッチ】2026-09-04: 成功したSCSI要求の処理直後に、要求ヘッダの
+// 任意オフセットへ任意16bit値を書く。Human68kが要求ヘッダのどの欄を実際に読んでいるかを
+// 故障注入で確認するための道具。意味は core-shim.c の js_scsi_req_status_off/val、
+// x68k/scsi.c の SCSI_HandleRequestHeader 末尾を参照。未指定はコア側の既定(off=-1=無効)。
+const REQ_STATUS_OFF = args['req-status-off'] === undefined ? null : Number(args['req-status-off']);
+const REQ_STATUS_VAL = args['req-status-val'] === undefined ? null : Number(args['req-status-val']);
 // デバイスドライバヘッダ +$00(次のヘッダ)。既定(未指定)はコア側の既定 $ffffffff に任せる。
 const DRV_NEXT = args['drv-next'] === undefined ? null : Number(args['drv-next']);
 const DRV_RAM = args['drv-ram'] === undefined ? null : Number(args['drv-ram']);
@@ -454,6 +478,16 @@ try {
       window.__webx68kScsiReplyD0 = v;
     }, REPLY_D0);
   }
+  if (REQ_STATUS_OFF !== null) {
+    await page.evaluateOnNewDocument((v) => {
+      window.__webx68kScsiReqStatusOff = v;
+    }, REQ_STATUS_OFF);
+  }
+  if (REQ_STATUS_VAL !== null) {
+    await page.evaluateOnNewDocument((v) => {
+      window.__webx68kScsiReqStatusVal = v;
+    }, REQ_STATUS_VAL);
+  }
   if (DRV_NEXT !== null) {
     await page.evaluateOnNewDocument((v) => {
       window.__webx68kScsiDrvNext = v;
@@ -599,6 +633,10 @@ try {
     // (実測: [SCSI-WINREAD]/[SCSI-WRITE] が '[SCSI]' に含まれず全て捨てられていた)。
     // 前方一致にして、SCSI 系のログは全て拾う。
     if (text.includes('[SCSI')) raw.push(text);
+    // 調査用(2026-09-04、docs/STORAGE-SCSI.md参照): x68k/sasi.cに足した
+    // [SASI-READ]/[SASI-WRITE]も同じ作法で拾う(SASIが成功する場面で
+    // 実際にどのセクタを読み書きしているかをSCSIと突き合わせるため)。
+    if (text.includes('[SASI')) raw.push(text);
   });
   const fd1Query =
     (FD1 !== null ? `&fd1=${encodeURIComponent(FD1)}` : '') +
@@ -789,6 +827,23 @@ try {
   const entries = raw.map(parseLine).filter(Boolean);
   const byCmd = {};
   for (const e of entries) byCmd[e.cmd] = (byCmd[e.cmd] ?? 0) + 1;
+  // 2026-09-04: 「画面が変わった/止まった」だけでは、書き込み経路が生きているのか
+  // 断られて止まっただけなのかを見分けられず、直近2回の比較を無効にした実測がある
+  // (x68k/scsi.c の当該ログ文言参照)。生ログを機械的に数えて結果へ残す。
+  const writeRefused = raw.some((l) => l.includes('書き込みコマンド($08) を断った'));
+  const writeSucceededCount = raw.filter((l) => l.includes('[SCSI-WRITE] ユニット=')).length;
+  if (writeRefused) {
+    console.error(
+      '\n' +
+        '########################################################################\n' +
+        '# [probe] 無効な実行: 書き込みコマンド($08)がHuman68k側から断られています。\n' +
+        '#   この実行では書き込み経路そのものが動いておらず、以後の観測(止まった/\n' +
+        '#   壊れた等)は書き込みの成否とは無関係です。--scsi-opfs はWorker専用、\n' +
+        '#   --scsi-ram-writesはメインスレッド専用(--worker=0併用必須)。組み合わせを\n' +
+        '#   見直してから実行し直してください。\n' +
+        '########################################################################\n',
+    );
+  }
   console.log(
     JSON.stringify(
       {
@@ -810,6 +865,8 @@ try {
         elapsedMs: Date.now() - started,
         totalLogged: entries.length,
         note: entries.length >= 64 ? 'コア側のログ上限(64件)に達している可能性がある' : null,
+        writeRefused,
+        writeSucceededCount,
         byCmd,
         entries,
         rawUnparsed: raw.filter((l) => !parseLine(l)),
