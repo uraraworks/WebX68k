@@ -303,11 +303,19 @@ machine faster than the real thing, change "CPU speed" instead.
 (host-dependent)". Changes now apply immediately, with no reset (they used to
 require one).
 
-"∞MHz" does not fix a clock. It keeps raising the clock as long as one frame
-of core execution fits within 60% of one frame of real time, and backs off
-when it does not. Where it settles depends on the device and its current load,
-so it differs from run to run even on the same machine. The current clock is
-shown next to the measured speed in the settings panel.
+"∞MHz" does not fix a clock. It aims for **the highest clock that still keeps
+real time**: once a second it looks at how many frames actually ran and raises
+the clock while the emulator is keeping up, backing off as soon as it falls
+behind. It deliberately sits just under the limit, so the measured-speed
+display hovers a few percent either side of 100% rather than sitting exactly
+there. Where it settles depends on the device and its current load, so it
+differs from run to run even on the same machine. The current clock is shown
+next to the measured speed in the settings panel.
+
+Even while real time is being kept, core execution that eats the whole main
+thread would freeze the display and the UI, so the clock is never raised past
+the point where one frame of core execution takes 80% of one frame of real
+time.
 
 While ∞MHz is active the **speed-multiplier button is disabled**: both features
 compete for the same host time, so making both unlimited leaves neither

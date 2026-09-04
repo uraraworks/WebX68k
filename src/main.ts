@@ -365,17 +365,44 @@ if (ramParamRaw !== null && urlRamSize === null) {
 //
 // 倍率と同時に無制限にすると同じホスト時間を奪い合って両方とも意味を失うため、
 // 'auto' のあいだは速度倍率ボタンを無効化して等速に固定する。
-const AUTO_CLOCK_TARGET_DUTY = 0.6;
 const AUTO_CLOCK_ADJUST_INTERVAL_MS = 1000;
-const AUTO_CLOCK_UP_RATIO = 1.25;
-const AUTO_CLOCK_DOWN_RATIO = 0.8;
-/** 上げ側は「予算の7割未満なら上げる」。境界で上下に往復しないための余裕。 */
-const AUTO_CLOCK_UP_THRESHOLD = 0.7;
+/**
+ * 判定に使うのは「コア実行にどれだけかかりそうか」という見積もりではなく、
+ * **実際に実時間を維持できたか**(直近区間で走ったエミュフレーム数 ÷ 期待フレーム数。
+ * 設定パネルの実測%と同じ量)。
+ *
+ * 当初はコア実行1フレームの実時間が実時間の6割に収まる範囲、という見積もりで判定していた。
+ * それだと画面提示・音声・UIのコストを勘定に入れられず、常に4割の余力を残したまま止まる。
+ * 「ホストが許すかぎり」と言いながら限界の手前で頭打ちになるため、結果で判定する形にした。
+ *
+ * 限界を攻めるモードなので、実時間をわずかに割ったところで落ち着くことがある。
+ * 比較可能なベンチ値が要る場合は固定クロックを使うこと。
+ */
+const AUTO_CLOCK_UP_SPEED = 0.99;
+const AUTO_CLOCK_DOWN_SPEED = 0.97;
+/** ここを大きく割ったら小刻みに戻さず一気に下げる(明らかに過負荷)。 */
+const AUTO_CLOCK_PANIC_SPEED = 0.9;
+const AUTO_CLOCK_PANIC_RATIO = 0.7;
+/**
+ * 実時間を維持できていても、コア実行がメインスレッドを食い尽くすと画面提示もUI操作も
+ * 入らなくなる(速度無制限モードで実測した失敗と同じ)。結果だけを見て上げ続けないための天井。
+ * 画面提示の実測が約2.4ms/回なので、1フレーム18msのうち残り2割で提示とUIをまかなう。
+ */
+const AUTO_CLOCK_MAX_CORE_DUTY = 0.8;
+/** 一度も下げていない探索初期は粗く、限界に触れてからは細かく動かす。 */
+const AUTO_CLOCK_COARSE_UP_RATIO = 1.25;
+const AUTO_CLOCK_COARSE_DOWN_RATIO = 0.8;
+const AUTO_CLOCK_FINE_UP_RATIO = 1.05;
+const AUTO_CLOCK_FINE_DOWN_RATIO = 0.95;
 const AUTO_CLOCK_START_MHZ = 16;
 let autoClockMhz = AUTO_CLOCK_START_MHZ;
-/** host.runFrame() 1回の実時間(ms)の指数移動平均。 */
+/** host.runFrame() 1回の実時間(ms)の指数移動平均。天井の判定にだけ使う。 */
 let autoClockFrameCostMs = 0;
 let autoClockLastAdjustAt = 0;
+/** 直近の調整区間で実際に走ったエミュフレーム数。 */
+let autoClockFrames = 0;
+/** 一度でも下げたら true。以降は微調整幅で動かす。 */
+let autoClockFine = false;
 
 /** 現在の設定が ∞MHz モードか。 */
 function isAutoClock(): boolean {
@@ -412,6 +439,8 @@ cfgCpuSpeed.addEventListener('change', () => {
     autoClockMhz = AUTO_CLOCK_START_MHZ;
     autoClockFrameCostMs = 0;
     autoClockLastAdjustAt = 0;
+    autoClockFrames = 0;
+    autoClockFine = false;
   }
   host?.setCoreOption('px68k_cpuspeed', resolveCpuSpeedOption());
   updateSpeedAvailability();
@@ -521,12 +550,19 @@ let speedMeasureFrameCount = 0;
 let speedMeasureLastAt = 0;
 
 /**
- * ∞MHz モードのクロック調整。コア実行1フレームぶんの実時間が、実時間1フレームぶんの
- * AUTO_CLOCK_TARGET_DUTY を超えないところまでクロックを上げ、超えたら下げる。
+ * ∞MHz モードのクロック調整。**実時間を維持できているかどうか**で上げ下げする。
  *
- * 予算を「実時間の一部」に切ってあるのは、コア実行がメインスレッドを使い切ると
- * 画面提示もUI操作も入らなくなるため(速度無制限モードで実測した失敗と同じ)。
- * 上げ側だけ閾値を 0.7 倍に寄せてあるのは、境界で上下に往復し続けないようにするため。
+ * 直近1秒で実際に走ったエミュフレーム数を期待フレーム数で割った値が
+ * AUTO_CLOCK_UP_SPEED 以上ならクロックを上げ、AUTO_CLOCK_DOWN_SPEED を割ったら下げる。
+ * 大きく割った場合(AUTO_CLOCK_PANIC_SPEED 未満)は小刻みに戻さず一気に下げる。
+ *
+ * 実時間を維持できていてもメインスレッドを食い尽くすと画面提示もUI操作も入らなくなるため、
+ * コア実行1フレームの実時間が AUTO_CLOCK_MAX_CORE_DUTY を超えたらそれ以上は上げない。
+ * 一度でも下げたら微調整幅へ切り替える(粗いまま往復すると±25%も振れるため)。
+ *
+ * 上げた結果として実時間を割り、下げて戻る、を繰り返して限界のすぐ下に居座る設計なので、
+ * 実測%は 100% ちょうどではなく数%下を行き来する。これは想定どおりで、
+ * 「比較可能なベンチ値が要るなら固定クロック」という但し書きとセットの挙動。
  *
  * @param now loop() の t(performance.now() 基準)
  * @param frameIntervalSec エミュ1フレームぶんの目標間隔(秒)
@@ -535,16 +571,36 @@ function stepAutoClock(now: number, frameIntervalSec: number): void {
   if (!isAutoClock() || !host) return;
   if (autoClockLastAdjustAt === 0) {
     autoClockLastAdjustAt = now;
+    autoClockFrames = 0;
     return;
   }
-  if (now - autoClockLastAdjustAt < AUTO_CLOCK_ADJUST_INTERVAL_MS) return;
+  const elapsedMs = now - autoClockLastAdjustAt;
+  if (elapsedMs < AUTO_CLOCK_ADJUST_INTERVAL_MS) return;
+  const frames = autoClockFrames;
   autoClockLastAdjustAt = now;
-  if (autoClockFrameCostMs <= 0) return;
-  const budgetMs = frameIntervalSec * 1000 * AUTO_CLOCK_TARGET_DUTY;
+  autoClockFrames = 0;
+
+  // 期待フレーム数の基準は fps ではなく **loop() が実際に狙っている間隔**(frameInterval)。
+  // frameInterval には音声キューの滞留量による±2%補正が入っており、キューを吐かせたい局面では
+  // 意図的に fps より遅く供給する。fps を基準にすると achieved が構造的に 1 未満へ張り付き、
+  // 下げ判定が出続けてクロックが際限なく落ちる(実測: 61→39→10MHz へ落ち込んだ)。
+  const expected = elapsedMs / (frameIntervalSec * 1000);
+  if (expected <= 0) return;
+  const achieved = frames / expected;
+  const atCoreCeiling =
+    autoClockFrameCostMs > frameIntervalSec * 1000 * AUTO_CLOCK_MAX_CORE_DUTY;
+
   let next = autoClockMhz;
-  if (autoClockFrameCostMs > budgetMs) next = autoClockMhz * AUTO_CLOCK_DOWN_RATIO;
-  else if (autoClockFrameCostMs < budgetMs * AUTO_CLOCK_UP_THRESHOLD)
-    next = autoClockMhz * AUTO_CLOCK_UP_RATIO;
+  if (achieved < AUTO_CLOCK_PANIC_SPEED) {
+    next = autoClockMhz * AUTO_CLOCK_PANIC_RATIO;
+    autoClockFine = true;
+  } else if (achieved < AUTO_CLOCK_DOWN_SPEED || atCoreCeiling) {
+    next =
+      autoClockMhz * (autoClockFine ? AUTO_CLOCK_FINE_DOWN_RATIO : AUTO_CLOCK_COARSE_DOWN_RATIO);
+    autoClockFine = true;
+  } else if (achieved >= AUTO_CLOCK_UP_SPEED && !atCoreCeiling) {
+    next = autoClockMhz * (autoClockFine ? AUTO_CLOCK_FINE_UP_RATIO : AUTO_CLOCK_COARSE_UP_RATIO);
+  }
   next = Math.max(CPU_MHZ_MIN, Math.min(CPU_MHZ_MAX, Math.round(next)));
   if (next === autoClockMhz) return;
   autoClockMhz = next;
@@ -4538,6 +4594,7 @@ function loop(t: number): void {
     stepTouchTrackpad();
   }
   speedMeasureFrameCount += ran;
+  autoClockFrames += ran;
   stepAutoClock(t, frameInterval);
   updateSpeedActualDisplay(t);
   // 破綻(タブ非アクティブ復帰等)したら蓄積をリセット
