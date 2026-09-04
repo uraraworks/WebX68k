@@ -79,6 +79,9 @@ import {
   isMouseTrackResyncMessage,
   isMouseTrackUpdateMessage,
   isReturnFrameBufferMessage,
+  isSerialResetMessage,
+  isSerialRxMessage,
+  isSerialStateMessage,
   isSpeedUpdateMessage,
   WORKER_BOOT_ACK_KIND,
   type CoreCommand,
@@ -105,6 +108,7 @@ import {
   type DiskAccessFlags,
 } from './worker-drive-loop';
 import { WorkerInputState } from './worker-input';
+import { SerialRxQueue } from './serial-worker-bridge';
 import { MouseTracker } from './mouse-track';
 import { initialTrackerState, trackKeyBufWrite, type KeyBufWriteTrackerState } from './keybuf-attribution';
 import { WorkerMediaState, type DiskSlotId } from './worker-dirty-capture';
@@ -385,6 +389,25 @@ function applyMouseTrackUpdate(update: { enabled: boolean; ratioX: number; ratio
   mouseTracker.setDesiredRatio(update.ratioX, update.ratioY);
 }
 
+// --- シリアル(SCCチャネルA / Web Serial、master取り込み後のWorker配線の穴の是正) --------
+//
+// 搬送層(WebSerialTransport)はmain側にしか無いため、ここで持つのは「main→Workerで届いた
+// バイト列を順序を保って蓄積する受信キュー」と「main側から伝えられた接続状態・書き込み
+// 可否・drain上限」だけ。純粋ロジック(SerialRxQueue)はsrc/serial-worker-bridge.tsに
+// 切り出し、単体テスト対象にしてある(前例: 上記のWorkerInputState/WorkerMediaStateと
+// 同じ作法)。ここでは実host(LibretroHost)への結線だけを持つ。
+const serialRxQueue = new SerialRxQueue();
+/** main側(WebSerialTransport.state==='connected')から伝えられた接続状態。 */
+let serialConnected = false;
+/** main側(serialTransport.canWrite、かつ直近のTX書き込みが完了しているか)から伝えられた
+ * TX書き込み可否。trueのtickでだけ host.drainSerialTx() する(既定経路の
+ * serialTransport.canWriteチェックに相当)。 */
+let serialTxWritable = false;
+/** main側(serialTransport.recommendedWriteSize())から伝えられた、1回のdrainで
+ * 取り出してよい上限バイト数。Workerはボーレートを知らないため、mainが計算した値を
+ * そのまま上限として使う。 */
+let serialMaxWriteBytes = 4096;
+
 function applyMouseTrackResync(): void {
   if (!host) return;
   const avInfo = host.avInfo;
@@ -474,6 +497,13 @@ function tick(): void {
   if (lastTickAtMs === 0) lastTickAtMs = now;
   const dt = (now - lastTickAtMs) / 1000;
   lastTickAtMs = now;
+
+  // シリアル受信(SCCチャネルA): 毎tick、キューの先頭から host.serialReceive() へ流し込む。
+  // ran>0(実際にコアが1フレーム以上進んだ)かどうかに関係なく、tickが回っている間は
+  // 毎回試す(既定経路のonData→host.serialReceive()と同じく「届いたら即座に」に近づけるため。
+  // コアがFIFO満杯で受理できなければ0が返り、drain()内でそこ以上は進まないだけなので、
+  // 無条件に呼んでも無駄打ちのコストは小さい)。
+  serialRxQueue.drain((bytes) => host!.serialReceive(bytes));
 
   // DEVかつ有効時のみ計測コストを払う(import.meta.env.DEVはビルド時定数なのでprodでは
   // この分岐ごと消える。frameProbe/storageProbeと同じ作法。ファイル冒頭のコメント参照)。
@@ -645,6 +675,16 @@ function sendFrame(
   new Uint8ClampedArray(buffer).set(imageData.data);
   const convertEnd = onProbe ? ctx.performance.now() : 0;
 
+  // シリアル送信(SCCチャネルA): host.drainSerialTx()はコア側TX FIFOからバイト列を
+  // 取り除く副作用を持つため、実際にframe eventを送ると決まったこの場所でだけ呼ぶ
+  // (呼んだのに送らないtickがあると、取り除いたぶんがmainへ届かず消える)。
+  // 既定経路(src/main.tsのloop()、ran>0のとき)の
+  // `serialTransport.canWrite`(=connected && 直前の書き込みが完了)チェックに相当する
+  // ゲートを、main側から伝えられたserialConnected/serialTxWritableで再現する。
+  const serialTxBytes = serialConnected && serialTxWritable
+    ? host.drainSerialTx(serialMaxWriteBytes)
+    : new Uint8Array(0);
+
   const avInfo = host.avInfo;
   const snapshot: FrameSnapshot = {
     frameNo,
@@ -658,6 +698,14 @@ function sendFrame(
     // 前回のsendFrame()以降に貯まった生サンプルをそのまま運ぶ(リサンプルはmain側)。
     // 所有権はここでtransferするため、直後にpendingをリセットする。
     audio: { chunks: pendingAudioChunks, sampleFrames: pendingAudioSampleFrames },
+    // シリアル(SCCチャネルA、master取り込み後のWorker配線の穴の是正)。txBytesは
+    // 音声chunkと同じ「frame eventへの相乗り」方式でtransferする。rxQueueLengthは
+    // main側の受信キュー長ミラーの更新と背圧解除(notifyReceiveCapacity())の判定に使う。
+    serial: {
+      txBytes: serialTxBytes.buffer as ArrayBuffer,
+      rxQueueLength: serialRxQueue.queueLength,
+      guestBaudRate: host.serialGuestBaudRate(),
+    },
     disk: {
       access,
       // 手順8: コア本体のダーティフラグ(host.readDirtyState())とJS側の影のフラグ
@@ -1055,6 +1103,31 @@ ctx.onmessage = (ev) => {
   }
   if (isMouseTrackResyncMessage(data)) {
     applyMouseTrackResync();
+    return;
+  }
+  // シリアル(SCCチャネルA)の受信バイト列。毎接続中は高頻度になりうる片道メッセージなので、
+  // 通常のcommand分岐より先に見る(INPUT_UPDATE_KINDと同じ扱い)。部分受理はしない設計
+  // (main.ts の routeSerialReceive 参照)なので、届いた分をそのままキューへ積む。
+  if (isSerialRxMessage(data)) {
+    serialRxQueue.enqueue(new Uint8Array(data.bytes));
+    return;
+  }
+  // シリアルの接続状態・TX書き込み可否・drain上限。低頻度の片道メッセージ。
+  if (isSerialStateMessage(data)) {
+    serialConnected = data.connected;
+    serialTxWritable = data.txWritable;
+    serialMaxWriteBytes = data.maxWriteBytes;
+    // host未生成(initialize前)のときはここでは何もしない。次のinitialize完了後、
+    // main側は接続操作のたびに改めてこのメッセージを送るため、取りこぼしにはならない。
+    host?.setSerialConnected(serialConnected);
+    host?.setSerialTxWritable(serialTxWritable);
+    return;
+  }
+  // シリアルの切断・リセット。既定経路のresetSerialBridge()に相当する後始末に加えて、
+  // Worker側の受信キューもクリアする(残っていると次の接続へ前セッションのデータが漏れる)。
+  if (isSerialResetMessage(data)) {
+    serialRxQueue.reset();
+    host?.resetSerialBridge();
     return;
   }
   // 速度倍率更新(手順9)。同じく低頻度の専用メッセージ。0以下・非有限値は1(等倍)に丸め、

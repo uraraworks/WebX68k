@@ -20,6 +20,9 @@ import {
   MOUSE_TRACK_RESYNC_KIND,
   MOUSE_TRACK_UPDATE_KIND,
   RETURN_FRAME_BUFFER_KIND,
+  SERIAL_RESET_KIND,
+  SERIAL_RX_KIND,
+  SERIAL_STATE_KIND,
   SPEED_UPDATE_KIND,
   type CaptureDirtyMediaPayload,
   type CaptureDirtyMediaResult,
@@ -897,6 +900,35 @@ export class WorkerCoreProxy implements LibretroHostProxy {
   sendFlushScsi(): void {
     if (this.disposed || this.failed) return;
     this.worker.postMessage({ kind: FLUSH_SCSI_KIND });
+  }
+
+  /**
+   * シリアル(SCCチャネルA / Web Serial、master取り込み後のWorker配線の穴の是正)。
+   * WebSerialTransport.onData から受理したバイト列をそのままWorker側の受信キューへ渡す
+   * fire-and-forget(sendInputと同じ扱い。core-protocol.ts の SERIAL_RX_KIND コメント参照)。
+   * 部分受理はしない設計(呼び出し元 src/main.ts の routeSerialReceive 参照)なので、
+   * 常に bytes 全体を transfer する。
+   */
+  sendSerialRx(bytes: Uint8Array): void {
+    if (this.disposed || this.failed) return;
+    // bytes.buffer をそのまま渡すと呼び出し元(WebSerialTransport.readLoop)が使い回している
+    // ArrayBufferを誤ってdetachする恐れがあるため、独立したコピーをtransferする。
+    const owned = bytes.slice();
+    this.worker.postMessage({ kind: SERIAL_RX_KIND, bytes: owned.buffer }, [owned.buffer]);
+  }
+
+  /** シリアルの接続状態・TX書き込み可否・drain上限の更新。sendMouseTrackと同じ扱いの
+   * fire-and-forget(core-protocol.ts の SERIAL_STATE_KIND コメント参照)。 */
+  setSerialState(connected: boolean, txWritable: boolean, maxWriteBytes: number): void {
+    if (this.disposed || this.failed) return;
+    this.worker.postMessage({ kind: SERIAL_STATE_KIND, connected, txWritable, maxWriteBytes });
+  }
+
+  /** シリアルの切断・リセット。既定経路のhost.resetSerialBridge()に相当する後始末を
+   * Workerへ依頼する。sendMouseTrackResyncと同じ扱いのfire-and-forget。 */
+  resetSerial(): void {
+    if (this.disposed || this.failed) return;
+    this.worker.postMessage({ kind: SERIAL_RESET_KIND });
   }
 
   async readMemory(_address: number, _length: number): Promise<ArrayBuffer> {

@@ -222,6 +222,71 @@ export function isFlushScsiMessage(message: unknown): message is FlushScsiMessag
   );
 }
 
+// --- シリアル(SCCチャネルA / Web Serial、master取り込み後のWorker配線の穴の是正) -------
+//
+// WebSerialTransport(src/serial.ts)はnavigator.serialを使うためメインスレッド専用で、
+// Worker側へ移せない。搬送層(接続・読み書きループ・8N1ペーシング)はmainに残したまま、
+// バイト列と状態だけをWorkerと往復させる。同期の往復はできないため、受信は
+// 「main側のキュー長ミラーで背圧を判定する片道メッセージ」、送信は「frame eventへの相乗り」
+// という、既存のINPUT_UPDATE_KIND/音声chunkと同じ2つの方式を使い分ける
+// (純粋ロジックはsrc/serial-worker-bridge.tsに切り出し、単体テスト対象にした)。
+
+/** main→Worker: 受信したバイト列を1件、Worker側の受信キューへ積む片道メッセージ。
+ * 部分受理はしない設計(呼び出し元 src/main.ts の serialTransport.onData 参照)なので、
+ * 常にbytes全体をtransferする。SPEED_UPDATE_KINDと同じ理由でgeneration/requestIdを持たない。 */
+export const SERIAL_RX_KIND = 'serialRx' as const;
+
+export interface SerialRxMessage {
+  kind: typeof SERIAL_RX_KIND;
+  bytes: ArrayBuffer;
+}
+
+export function isSerialRxMessage(message: unknown): message is SerialRxMessage {
+  return (
+    typeof message === 'object' &&
+    message !== null &&
+    (message as { kind?: unknown }).kind === SERIAL_RX_KIND
+  );
+}
+
+/** main→Worker: 接続状態・TX書き込み可否・1回のdrainで取り出してよい上限バイト数を伝える
+ * 片道メッセージ。既定経路の host.setSerialConnected()/setSerialTxWritable() に相当する。
+ * maxWriteBytes は WebSerialTransport.recommendedWriteSize()(ボーレート由来のペース調整)を
+ * mainが計算し、Workerはその値を上限に drainSerialTx() する(Workerはボーレートを知らない)。 */
+export const SERIAL_STATE_KIND = 'serialState' as const;
+
+export interface SerialStateMessage {
+  kind: typeof SERIAL_STATE_KIND;
+  connected: boolean;
+  txWritable: boolean;
+  maxWriteBytes: number;
+}
+
+export function isSerialStateMessage(message: unknown): message is SerialStateMessage {
+  return (
+    typeof message === 'object' &&
+    message !== null &&
+    (message as { kind?: unknown }).kind === SERIAL_STATE_KIND
+  );
+}
+
+/** main→Worker: 切断・リセット時の後始末。既定経路の resetSerialBridge()
+ * (host.resetSerialBridge()呼び出し)に相当し、Worker側はこれに加えて自身の受信キューも
+ * クリアする(残っていると次の接続へ前のセッションのデータが漏れるため)。 */
+export const SERIAL_RESET_KIND = 'serialReset' as const;
+
+export interface SerialResetMessage {
+  kind: typeof SERIAL_RESET_KIND;
+}
+
+export function isSerialResetMessage(message: unknown): message is SerialResetMessage {
+  return (
+    typeof message === 'object' &&
+    message !== null &&
+    (message as { kind?: unknown }).kind === SERIAL_RESET_KIND
+  );
+}
+
 export type CoreCommand =
   | {
       kind: 'command';
@@ -555,6 +620,24 @@ export interface FrameSnapshot {
    * 確かめるためのもの。無効時・古いwasmではこのフィールド自体が存在しない。
    */
   scsiDebugProbe?: ScsiDebugFrameProbe;
+  /**
+   * シリアル(SCCチャネルA / Web Serial)の配線(master取り込み後の穴の是正、
+   * src/serial-worker-bridge.ts参照)。DEV専用プローブと違い常時載る値だが、フィールド自体は
+   * optionalにしてある: 既存テスト(test/worker-core-proxy.test.ts等)がFrameSnapshotを
+   * オブジェクトリテラルで直接組み立てており、必須フィールドにすると無関係な既存テストを
+   * 巻き込んで壊すため。実際のsendFrame()(core-worker.ts)は毎フレーム必ずこの値を積む。
+   */
+  serial?: {
+    /** host.drainSerialTx()で取り出した、このtickぶんの送信バイト列(0バイトのこともある)。
+     * 音声chunkと同じ「frame eventへの相乗り」方式。 */
+    txBytes: ArrayBuffer;
+    /** Worker側受信キュー(SerialRxQueue)に、このtick終了時点で残っているバイト数。
+     * mainはこれを見てミラーを下げ、下がっていれば
+     * serialTransport.notifyReceiveCapacity() を呼ぶ(背圧の解除)。 */
+    rxQueueLength: number;
+    /** host.serialGuestBaudRate()。既定経路のupdateSerialBaudNote()と同じ表示に使う。 */
+    guestBaudRate: number;
+  };
 }
 
 /** host.scsiDebugCounters()と同じ形。core-worker.ts/src/main.tsで共有する。 */
@@ -791,6 +874,7 @@ export function collectTransferables(
       if (snapshot.video.kind === 'bitmap') out.push(snapshot.video.bitmap);
       else if (snapshot.video.kind === 'rgba') out.push(snapshot.video.bytes);
       for (const chunk of snapshot.audio.chunks) out.push(chunk);
+      if (snapshot.serial) out.push(snapshot.serial.txBytes);
       break;
     }
     case 'sramChanged':

@@ -195,6 +195,7 @@ import {
   type SerialConnectionState,
   WebSerialTransport,
 } from './serial';
+import { applySerialRxQueueReport, routeSerialReceive } from './serial-worker-bridge';
 
 const canvas = document.getElementById('screen') as HTMLCanvasElement;
 const bootOverlay = document.getElementById('boot-overlay') as HTMLDivElement;
@@ -889,11 +890,37 @@ let workerLastMouseTrackProbe: MouseTrackFrameProbe | null = null;
 let workerLastScsiDebugProbe: ScsiDebugFrameProbe | null = null;
 
 const serialTransport = new WebSerialTransport();
+// Worker経路(?worker=1、既定)のシリアル配線(master取り込み後の穴の是正、
+// src/serial-worker-bridge.ts参照)。WebSerialTransport自体はnavigator.serialを使うため
+// メインスレッド専用のまま(搬送層はここに残す)。main側が持つのは「Worker側受信キュー長の
+// ミラー」と「直近のframe eventが運んできたゲスト側ボーレート」の2値だけ。
+let serialRxQueueMirror = 0;
+let workerLastSerialGuestBaudRate = 0;
+
+/** 接続状態・TX書き込み可否・drain上限をWorkerへ伝える(既定経路のsyncSerialConnectionToCore
+ * に相当)。txWritableはserialTransport.canWrite(=connected && 直前の書き込みが完了)を
+ * そのまま使う: フレームevent契機のTX書き込み開始直後にこれを呼ぶと、write()が同期的に
+ * writeTaskを立てた後なのでcanWriteは既にfalseになっている(bootWorkerCore()内の
+ * frame eventハンドラ参照)。 */
+function syncSerialConnectionToWorker(): void {
+  const connected = serialTransport.state === 'connected';
+  workerCoreProxy?.setSerialState(connected, connected && serialTransport.canWrite, serialTransport.recommendedWriteSize());
+}
+
 function resetSerialBridge(): void {
   serialTransport.discardPendingReceive();
+  if (urlWorkerMode) {
+    serialRxQueueMirror = 0;
+    workerCoreProxy?.resetSerial();
+    return;
+  }
   host?.resetSerialBridge();
 }
 function syncSerialConnectionToCore(): void {
+  if (urlWorkerMode) {
+    syncSerialConnectionToWorker();
+    return;
+  }
   if (host?.isInitialized() && !host.hasSerialBridge()) {
     if (serialTransport.state === 'connected') void serialTransport.disconnect();
     return;
@@ -903,8 +930,21 @@ function syncSerialConnectionToCore(): void {
   host?.setSerialTxWritable(connected && serialTransport.canWrite);
 }
 serialTransport.onData = (bytes) => {
-  // Web Serialの非同期コールバックと同期的なretro_run()は同じJSイベントループ上で直列実行される。
-  return host?.serialReceive(bytes) ?? 0;
+  // 既定経路(!urlWorkerMode): Web Serialの非同期コールバックと同期的なretro_run()は
+  // 同じJSイベントループ上で直列実行されるため、host.serialReceive()を直接同期呼びできる。
+  // Worker経路(urlWorkerMode): 同期の往復ができないため、routeSerialReceive()が
+  // ミラー(serialRxQueueMirror)で背圧を判定し、片道メッセージ(SERIAL_RX_KIND)で送る
+  // (host?.のような「片方で無言に素通りする」書き方はしない。経路はurlWorkerModeで
+  // 明示的に分岐する。src/serial-worker-bridge.ts参照)。
+  const result = routeSerialReceive(
+    bytes,
+    urlWorkerMode,
+    serialRxQueueMirror,
+    (b) => host?.serialReceive(b) ?? 0,
+    (b) => workerCoreProxy?.sendSerialRx(b),
+  );
+  serialRxQueueMirror += result.mirrorDelta;
+  return result.accepted;
 };
 serialTransport.onStateChange = (state) => {
   const connected = state === 'connected';
@@ -3840,6 +3880,38 @@ async function bootWorkerCore(): Promise<void> {
           speedMultiplier === 1 ? samples : resampleSpeed(samples, speedMultiplier, audioResampleState);
         audio?.push(out);
       }
+      // シリアル(SCCチャネルA、master取り込み後のWorker配線の穴の是正)。音声chunkと同じ
+      // 「frame eventへの相乗り」方式。snapshot.serialはWorker側core-worker.tsのsendFrame()が
+      // 毎フレーム必ず積むが、型はoptional(既存のFrameSnapshotオブジェクトリテラルを使う
+      // 他のテストを巻き込まないため。core-protocol.ts参照)なので存在チェックしてから使う。
+      if (snapshot.serial) {
+        // Worker側受信キュー長の報告でミラーを更新し、下がっていれば(=Workerが消費した)
+        // 待機中のreadLoopを起こす(既定経路のloop()のran>0時notifyReceiveCapacity()に相当)。
+        const serialRxReport = applySerialRxQueueReport(serialRxQueueMirror, snapshot.serial.rxQueueLength);
+        serialRxQueueMirror = serialRxReport.mirror;
+        if (serialRxReport.decreased) serialTransport.notifyReceiveCapacity();
+        workerLastSerialGuestBaudRate = snapshot.serial.guestBaudRate;
+        updateSerialBaudNote();
+        // 送信: WorkerがこのtickでdrainSerialTx()した分をそのままwrite()する(既定経路の
+        // loop()内、ran>0かつserialTransport.canWriteのときのdrainSerialTx()+write()に相当)。
+        // 失敗時の再送はしない(順序の重複を招くため。既定経路と同じ)。
+        if (snapshot.serial.txBytes.byteLength > 0) {
+          const txBytes = new Uint8Array(snapshot.serial.txBytes);
+          const proxyAtWriteTime = workerCoreProxy;
+          void serialTransport.write(txBytes)
+            .catch((error) => {
+              console.warn('Web Serial write failed; bytes were not retried', error);
+            })
+            .finally(() => {
+              // 書き込み完了後、proxyが再生成されていなければ最新の接続状態(canWrite等)を
+              // Workerへ送り直す(既定経路のsetSerialTxWritable(true)相当)。
+              if (workerCoreProxy === proxyAtWriteTime) syncSerialConnectionToWorker();
+            });
+          // write()呼び出し直後の時点でwriteTaskが同期的に立つため、ここでcanWriteは
+          // 既にfalseになっている(既定経路のsetSerialTxWritable(false)相当)。
+          syncSerialConnectionToWorker();
+        }
+      }
       applyDiskAccess(performance.now(), snapshot.disk.access);
       // 手順8: 既定経路のhost.readDirtyState()ポーリングに相当する値をframe eventから
       // 更新し、同じframe eventを契機にオートセーブ判定を行う(pollDiskAccessと同じ考え方)。
@@ -4317,7 +4389,9 @@ function updateSerialBaudNote(force = false): void {
   nextSerialBaudPollAt = now + SERIAL_BAUD_POLL_INTERVAL_MS;
 
   const selectedBaudRate = Number(cfgSerialBaud.value);
-  const guestBaudRate = host?.serialGuestBaudRate() ?? 0;
+  // Worker経路(urlWorkerMode)はhostが常にnullのため、直近のframe eventが運んできた値
+  // (workerLastSerialGuestBaudRate、bootWorkerCore()のイベントハンドラ参照)を使う。
+  const guestBaudRate = urlWorkerMode ? workerLastSerialGuestBaudRate : (host?.serialGuestBaudRate() ?? 0);
   const normalizedGuestBaudRate = normalizeGuestSerialBaudRate(guestBaudRate);
   const mismatch = serialTransport.state === 'connected' &&
     isSerialBaudRateMismatch(selectedBaudRate, guestBaudRate);
@@ -4361,7 +4435,12 @@ function updateSerialUi(): void {
 async function toggleSerialConnection(): Promise<void> {
   if (serialTransport.state === 'connecting') return;
   if (serialTransport.state === 'connected') {
-    host?.setSerialConnected(false);
+    // ポートの実際のクローズ(await disconnect())を待つ前に、コア側へ「もう受理しない」を
+    // 即座に伝える。既定経路はhost.setSerialConnected(false)を直接呼ぶ。Worker経路は
+    // host?.のような素通しではなく、明示的にworkerCoreProxy経由で同じ意図を送る
+    // (urlWorkerModeで経路を分岐。src/serial-worker-bridge.ts参照)。
+    if (urlWorkerMode) workerCoreProxy?.setSerialState(false, false, serialTransport.recommendedWriteSize());
+    else host?.setSerialConnected(false);
     await serialTransport.disconnect();
     resetSerialBridge();
     return;
@@ -4391,8 +4470,10 @@ serialToggleBtn.addEventListener('click', () => void toggleSerialConnection());
 window.addEventListener('pagehide', (event) => {
   // bfcacheへ退避する場合は同じページへ復帰するため、接続と読み取りタスクを維持する。
   if (event.persisted) return;
-  // pagehide では非同期切断を待てないため、先にコア側の接続状態を解除する。
-  host?.setSerialConnected(false);
+  // pagehide では非同期切断を待てないため、先にコア側の接続状態を解除する
+  // (urlWorkerModeで経路を明示的に分岐。host?.の素通しにはしない)。
+  if (urlWorkerMode) workerCoreProxy?.setSerialState(false, false, serialTransport.recommendedWriteSize());
+  else host?.setSerialConnected(false);
   resetSerialBridge();
   void serialTransport.disconnect();
 });
