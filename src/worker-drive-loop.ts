@@ -118,11 +118,16 @@ export interface UnlimitedTickResult {
  * 考え方)。呼び出し側から渡されたnextAllowedAtMsInより前に呼ばれたtickは、
  * retro_run()を1回も回さず即座に戻る。
  *
- * 画面提示のthrottleは入れない(master(メインスレッド専用実装)の
- * UNLIMITED_PRESENT_INTERVAL_MSはここには持ち込まない): frame event は音声サンプルも
- * 相乗りさせて運ぶため、tickごとに出す頻度を落とすと音声が枯れる。ここで省くのは
- * 「中間フレームの映像変換(RGB565→RGBA)」だけであり、setVideoSkip(true)で
- * host側の変換・描画そのものをスキップさせる(src/libretro-host.ts参照)。
+ * 画面提示のthrottle(2026-09-04追記、既定経路との挙動揃え): 当初は「frame eventは
+ * 音声サンプルも相乗りさせて運ぶため間引くと音声が枯れる」という理由でthrottleを
+ * 入れていなかった。しかしその後、既定経路(src/main.ts)に合わせて無制限中は音声を
+ * 丸ごと捨てる(pushAudioSamples側でunlimitedActiveを見て破棄する)方針に変えたため、
+ * この理由は解消した。呼び出し側(src/core-worker.ts)がWORKER_UNLIMITED_PRESENT_INTERVAL_MS
+ * 間隔でしかframe eventを出さないよう間引く際、このtickが「提示するtickか」を
+ * presentFinalFrame引数で受け取り、提示しないtickでは最後の保証フレームも
+ * setVideoSkip(true)のまま回す(=映像変換(RGB565→RGBA)そのものを省く。フレームは
+ * 回るのでframeNoは進む)。「中間フレームの映像変換」だけを省く、という設計自体は
+ * 変えていない。
  *
  * 「入らないフレームは始めない」(master と同じ考え方): 次の中間フレームを回した場合の
  * 見込みコストと、最後に必ず回す映像提示フレームぶんのコストの両方が予算内に収まる
@@ -139,6 +144,12 @@ export interface UnlimitedTickResult {
  * @param runFrameOnce 1フレーム進め、ディスクアクセス状態を返すコールバック(runTickと同じ)。
  * @param setVideoSkip 中間フレームの映像変換・描画をスキップするかを切り替えるコールバック
  *   (host.setVideoSkip をそのまま注入する想定)。
+ * @param presentFinalFrame 最後の1フレームを映像提示するか(既定true=従来どおり)。
+ *   falseのときは最後の保証フレームも setVideoSkip(true) のまま回す(呼び出し側
+ *   src/core-worker.ts が frame event の間引き(WORKER_UNLIMITED_PRESENT_INTERVAL_MS)を
+ *   行うための追加パラメータ。falseでも runFrameOnce() は必ず呼ばれ frameNo は進む。
+ *   このフラグは提示するかどうかだけを決め、フレームを回すかどうかには関与しない
+ *   (無制限中でも1tick 1フレームは必ず回る=経過時間の消費が既定経路と変わらないままにする)。
  */
 export function runUnlimitedTick(
   now: () => number,
@@ -148,6 +159,7 @@ export function runUnlimitedTick(
   frameCostMsIn: number,
   runFrameOnce: () => DiskAccessFlags,
   setVideoSkip: (skip: boolean) => void,
+  presentFinalFrame: boolean = true,
 ): UnlimitedTickResult {
   const tickStart = now();
   // 占有率の上限(実時間ベース)。前回のtickがまだ「次に走ってよい時刻」に達していなければ
@@ -183,12 +195,15 @@ export function runUnlimitedTick(
       ranFrames++;
     }
   } finally {
-    // 例外が起きても中間フレームのスキップ状態を必ず解除する。
-    setVideoSkip(false);
+    // 例外が起きても中間フレームのスキップ状態を必ず解除する。ただしpresentFinalFrame=false
+    // (このtickは提示しない=frame eventの間引き対象)のときは、最後の保証フレームも
+    // 映像を作る必要が無いためskip状態を維持する(setVideoSkip(true)のまま)。
+    setVideoSkip(!presentFinalFrame ? true : false);
   }
 
-  // 最後の1フレームは必ず映像を作る(setVideoSkipは既にfalse)。
-  // これにより予算が極端に小さい/尽きていても最低1フレームは進む。
+  // 最後の1フレームは必ず回す(presentFinalFrame=falseのときはsetVideoSkipがtrueのまま
+  // なので映像は作らない。それでもrunFrameOnce()はretro_run()を実行しframeNoを進める。
+  // これにより予算が極端に小さい/尽きていても最低1フレームは進む)。
   const presentStart = now();
   merge(runFrameOnce());
   frameCostMs = frameCostMs * 0.8 + (now() - presentStart) * 0.2;
@@ -236,4 +251,35 @@ export class FrameBufferPool {
     if (list) list.push(buffer);
     else this.pool.set(buffer.byteLength, [buffer]);
   }
+}
+
+/**
+ * 無制限速度モード中、このtickでframe event(映像+音声を相乗りさせる転送)を出すべきかの
+ * 判定(2026-09-04追加、frame eventの間引き)。
+ *
+ * 既定経路(src/main.ts)は無制限中、画面提示をUNLIMITED_PRESENT_INTERVAL_MS(33ms)まで
+ * 間引いている(提示の固定費が実測6.56msと大きく、毎tickやると予算が尽きるため)。
+ * Worker経路にはこれが無かったため、同じ理由で間引く。ただしWorker経路では
+ * frame eventがInputUpdateの往復のトリガーも兼ねる(src/main.tsがframe event契機で
+ * InputUpdateを送る)ため、33msより粗くしてはいけない(intervalMsに
+ * WORKER_UNLIMITED_PRESENT_INTERVAL_MS(=33、既定経路のUNLIMITED_PRESENT_INTERVAL_MSと
+ * 同じ値)以外を渡さないこと。呼び出し側src/core-worker.tsのコメント参照)。
+ *
+ * lastPresentAtMs===0(まだ一度もframe eventを出していない、または無制限モードに
+ * 切り替わった直後でリセットされた)のときは無条件でtrueを返す(切り替え直後に
+ * 最初のフレームが届くまで最大intervalMs待たされるのを防ぐ。runUnlimitedTick()の
+ * nextAllowedAtMsリセットと同じ考え方)。
+ *
+ * @param nowMs 現在時刻(ms)。呼び出し側のtick開始時刻(performance.now())を渡すこと。
+ * @param lastPresentAtMs 直近にframe eventを出した時刻(ms)。まだ一度も出していない/
+ *   リセット直後は0。
+ * @param intervalMs 提示の最小間隔(ms)。
+ */
+export function shouldPresentUnlimitedFrame(
+  nowMs: number,
+  lastPresentAtMs: number,
+  intervalMs: number,
+): boolean {
+  if (lastPresentAtMs === 0) return true;
+  return nowMs - lastPresentAtMs >= intervalMs;
 }

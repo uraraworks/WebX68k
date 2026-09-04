@@ -92,9 +92,16 @@ import { LibretroHost } from './libretro-host';
 import {
   computeFrameBudget,
   WORKER_UNLIMITED_MAX_DUTY,
+  WORKER_UNLIMITED_PRESENT_INTERVAL_MS,
   WORKER_UNLIMITED_TICK_BUDGET_MS,
 } from './frameBudget';
-import { FrameBufferPool, runTick, runUnlimitedTick, type DiskAccessFlags } from './worker-drive-loop';
+import {
+  FrameBufferPool,
+  runTick,
+  runUnlimitedTick,
+  shouldPresentUnlimitedFrame,
+  type DiskAccessFlags,
+} from './worker-drive-loop';
 import { WorkerInputState } from './worker-input';
 import { MouseTracker } from './mouse-track';
 import { initialTrackerState, trackKeyBufWrite, type KeyBufWriteTrackerState } from './keybuf-attribution';
@@ -317,6 +324,14 @@ function resetPendingAudio(): void {
 
 function pushAudioSamples(samples: Float32Array): void {
   if (samples.length === 0) return;
+  // 無制限モードの穴の是正(2026-09-04、既定経路と挙動を揃える): 既定経路(src/main.ts の
+  // LibretroHost audioPushコールバック冒頭)は「無制限中は実時間で消費しきれない量の
+  // 音が出る」ため、無制限中はサンプルを丸ごと捨てて無音にしている。Worker経路には
+  // これが無く、無制限中も溜め続けたサンプルをframe eventに相乗りさせて転送していた。
+  // Worker経路では音声は毎tick必ずframe eventの一部として転送されるため、既定経路以上に
+  // 「消費されないまま転送だけされる」無駄が大きい(転送先のmain側も結局同じ理由で
+  // 消費しきれない)。既定経路と同じく無音にして捨てる。
+  if (unlimitedActive) return;
   // stereo interleaved (L,R) なので1サンプルフレーム = 2要素。
   pendingAudioSampleFrames += samples.length / 2;
   // AudioPushFn の実引数は常に `new Float32Array(...)` で生成された素の ArrayBuffer
@@ -420,6 +435,11 @@ let workerUnlimitedFrameCostMs = 3;
  * (src/worker-drive-loop.tsのrunUnlimitedTick()参照)。初期値0はどのnowより小さいため、
  * 最初のtickは必ず実行される。 */
 let workerUnlimitedNextAllowedAtMs = 0;
+/** frame eventの間引き(2026-09-04追加、既定経路のUNLIMITED_PRESENT_INTERVAL_MSと挙動を
+ * 揃える是正)。無制限モード中に直近でframe eventを出した時刻(ctx.performance.now()基準)。
+ * shouldPresentUnlimitedFrame()にそのまま渡す。0は「まだ一度も出していない/直近で
+ * リセットされた」を表し、その場合は次のtickで必ず出す(SPEED_UPDATE_KINDハンドラ参照)。 */
+let workerUnlimitedLastPresentAtMs = 0;
 
 function stopDriveLoop(): void {
   if (driveIntervalId !== undefined) {
@@ -474,6 +494,9 @@ function tick(): void {
   };
 
   let result: { ranFrames: number; accumulator: number; access: DiskAccessFlags };
+  // このtickでframe eventを出すか(既定経路と挙動を揃える無制限モードの間引き対象は
+  // 無制限中のみ。無制限OFF時は従来どおり毎tick出す=trueのまま)。
+  let shouldSendFrame = true;
   if (unlimitedActive) {
     // 無制限速度モード(この穴の是正、docs/STORAGE-SCSI.md参照)。fps/accumulator/
     // computeFrameBudget()は使わず、tick間隔に縛られない絶対時間予算
@@ -482,6 +505,19 @@ function tick(): void {
     // src/frameBudget.tsのコメント参照。旧実装のtick間隔ベースの予算は
     // フレーム単価が刻みの半分を超える環境で1フレームしか回せなかった)。
     // speedMultiplierはここでは使わない(無制限モードには「目標倍率」が無いため)。
+    //
+    // frame eventの間引き(2026-09-04追加): 既定経路(src/main.ts)が無制限中に画面提示を
+    // UNLIMITED_PRESENT_INTERVAL_MSまで間引いているのに合わせ、Worker経路もこのtickで
+    // 提示するかをshouldPresentUnlimitedFrame()で先に決め、runUnlimitedTick()の
+    // presentFinalFrame引数へそのまま渡す(提示しないtickは最後の保証フレームも
+    // setVideoSkip(true)のままにして映像変換そのものを省く。frameNoはどちらでも進む)。
+    // WORKER_UNLIMITED_PRESENT_INTERVAL_MSより粗くしてはいけない
+    // (frame eventはInputUpdateの往復のトリガーも兼ねるため。frameBudget.tsのコメント参照)。
+    shouldSendFrame = shouldPresentUnlimitedFrame(
+      now,
+      workerUnlimitedLastPresentAtMs,
+      WORKER_UNLIMITED_PRESENT_INTERVAL_MS,
+    );
     const unlimitedResult = runUnlimitedTick(
       () => ctx.performance.now(),
       WORKER_UNLIMITED_TICK_BUDGET_MS,
@@ -490,9 +526,11 @@ function tick(): void {
       workerUnlimitedFrameCostMs,
       runFrameOnce,
       (skip) => currentHost.setVideoSkip(skip),
+      shouldSendFrame,
     );
     workerUnlimitedFrameCostMs = unlimitedResult.frameCostMs;
     workerUnlimitedNextAllowedAtMs = unlimitedResult.nextAllowedAtMs;
+    if (shouldSendFrame) workerUnlimitedLastPresentAtMs = now;
     result = unlimitedResult;
   } else {
     result = runTick(dt, fps, accumulator, speedMultiplier, runFrameOnce);
@@ -520,7 +558,9 @@ function tick(): void {
 
   let convertMs: number | null = null;
   let postMs: number | null = null;
-  if (result.ranFrames > 0) {
+  // shouldSendFrame: 無制限中の間引き対象(上記コメント参照)。無制限OFFでは常にtrueなので
+  // 挙動は従来のまま(ranFrames > 0 のときは必ず送る)。
+  if (result.ranFrames > 0 && shouldSendFrame) {
     sendFrame(
       result.access,
       probing
@@ -988,6 +1028,10 @@ ctx.onmessage = (ev) => {
     // 速度切り替え直後は必ず1tick即座に走らせる(main.tsのresetSpeedState()と同じ考え方。
     // 古いnextAllowedAtMsを持ち越すと、切り替え直前の占有率制限が残ったままになる)。
     workerUnlimitedNextAllowedAtMs = 0;
+    // frame eventの間引き(2026-09-04追加)も同じ理由でリセットする。古いlastPresentAtMsを
+    // 持ち越すと、切り替え直後の最初のframe eventが最大WORKER_UNLIMITED_PRESENT_INTERVAL_MS
+    // ぶん遅れる。
+    workerUnlimitedLastPresentAtMs = 0;
     return;
   }
   // SCSI(OPFS)の明示flush依頼(取りこぼしの窓の是正)。同じく低頻度の専用メッセージ。

@@ -8,7 +8,12 @@
 // 「取り戻しで複数フレーム走ること」のテストが実際に red になることを確認してから元に戻した
 // (2026-08-28、実装時に確認済み)。
 import { describe, expect, it } from 'vitest';
-import { FrameBufferPool, runTick, runUnlimitedTick } from '../src/worker-drive-loop';
+import {
+  FrameBufferPool,
+  runTick,
+  runUnlimitedTick,
+  shouldPresentUnlimitedFrame,
+} from '../src/worker-drive-loop';
 
 const FPS_60 = 60;
 const FRAME_INTERVAL_60 = 1 / FPS_60;
@@ -341,5 +346,95 @@ describe('FrameBufferPool', () => {
       pool.acquire(4096); // release()を呼ばない
     }
     expect(pool.misses).toBe(5);
+  });
+});
+
+// 2026-09-04追加: 無制限モードのWorker経路にも既定経路(src/main.ts)と同じ
+// frame event間引き(UNLIMITED_PRESENT_INTERVAL_MS)を入れる是正。既定経路との対称性を
+// 保つため、Worker側も「このtickで提示するか」を判定する純粋関数を切り出してテストする
+// (呼び出し側 src/core-worker.ts の tick() のコメント参照)。
+describe('shouldPresentUnlimitedFrame(無制限モードのframe event間引き判定)', () => {
+  it('lastPresentAtMsが0(まだ一度も出していない/直後にリセットされた)なら無条件でtrue', () => {
+    expect(shouldPresentUnlimitedFrame(1000, 0, 33)).toBe(true);
+  });
+
+  it('陽性対照: 間隔未満(interval未満)ならfalseを返す(間引かれる)', () => {
+    // 直近の提示から10msしか経っていない(33ms未満)。
+    expect(shouldPresentUnlimitedFrame(1010, 1000, 33)).toBe(false);
+  });
+
+  it('間隔以上ならtrueを返す(提示してよい)', () => {
+    expect(shouldPresentUnlimitedFrame(1033, 1000, 33)).toBe(true);
+    expect(shouldPresentUnlimitedFrame(1500, 1000, 33)).toBe(true);
+  });
+});
+
+// 2026-09-04追加: runUnlimitedTick()のpresentFinalFrame引数(既定true=従来どおり)。
+// falseのときは「frame eventを出さないtickでもフレーム自体は回り続ける」ことを保証する
+// (呼び出し元の frameNo は runFrameOnce() の呼び出し回数に比例して進むため、
+// ranFrames/呼び出し回数がここでのfreameNo進行の代理指標になる)。
+describe('runUnlimitedTick の presentFinalFrame引数(frame event間引き対象tickの映像スキップ)', () => {
+  function makeClock(frameCostMs: number): { now: () => number; runFrameOnce: () => { fddReading: boolean; fddDrive: number; hddAccessing: boolean } } {
+    let value = 0;
+    return {
+      now: () => value,
+      runFrameOnce: () => {
+        value += frameCostMs;
+        return { fddReading: false, fddDrive: -1, hddAccessing: false };
+      },
+    };
+  }
+
+  it('presentFinalFrame=falseでも最後の保証フレームは必ず回る(frameNo相当の呼び出し回数が進む)', () => {
+    const clock = makeClock(2);
+    let calls = 0;
+    const result = runUnlimitedTick(
+      clock.now,
+      0, // budgetMs(極端に小さくても最低1フレームは回る仕様、既存テストと同条件)
+      1,
+      0,
+      2,
+      () => {
+        calls++;
+        return clock.runFrameOnce();
+      },
+      () => {},
+      false, // presentFinalFrame
+    );
+    expect(result.ranFrames).toBe(1);
+    expect(calls).toBe(1);
+  });
+
+  it('presentFinalFrame=falseでは、setVideoSkip(false)が一度も呼ばれない(映像を作らない)', () => {
+    const clock = makeClock(2);
+    const skipCalls: boolean[] = [];
+    runUnlimitedTick(
+      clock.now,
+      20,
+      1,
+      0,
+      2,
+      () => clock.runFrameOnce(),
+      (skip) => skipCalls.push(skip),
+      false, // presentFinalFrame
+    );
+    expect(skipCalls.length).toBeGreaterThan(0);
+    expect(skipCalls.every((s) => s === true)).toBe(true);
+  });
+
+  it('陽性対照: presentFinalFrame=true(既定)では従来どおり最後にsetVideoSkip(false)が呼ばれる', () => {
+    const clock = makeClock(2);
+    const skipCalls: boolean[] = [];
+    runUnlimitedTick(
+      clock.now,
+      20,
+      1,
+      0,
+      2,
+      () => clock.runFrameOnce(),
+      (skip) => skipCalls.push(skip),
+      true, // presentFinalFrame
+    );
+    expect(skipCalls[skipCalls.length - 1]).toBe(false);
   });
 });

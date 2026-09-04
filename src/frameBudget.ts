@@ -100,6 +100,28 @@ export const WORKER_UNLIMITED_TICK_BUDGET_MS = 33;
 export const WORKER_UNLIMITED_MAX_DUTY = 0.9;
 
 /**
+ * Worker経路(?worker=1)の無制限速度モードで、frame event(映像+音声を相乗りさせて
+ * mainへ送る転送)を出す最小間隔(ms)。33ms ≈ 30fps、既定経路のUNLIMITED_PRESENT_INTERVAL_MS
+ * と同じ値(2026-09-04追加)。
+ *
+ * 既定経路が無制限中に画面提示を間引いている(上のUNLIMITED_PRESENT_INTERVAL_MS参照。
+ * 提示の固定費が実測6.56ms/回と大きく、毎tickやると予算を圧迫するため)のに対し、
+ * Worker経路はこれまで毎tick frame eventを出しており、対称性が無かった(この定数を
+ * 新設して揃える)。
+ *
+ * 【33ms未満にしてはいけない理由】frame eventはWorker経路ではInputUpdateの往復の
+ * トリガーも兼ねる(main側がframe event契機でInputUpdateを送り返す、
+ * src/core-worker.tsのapplyInputUpdate()コメント参照)。33msより粗くすると入力の
+ * 応答が遅れる。既定経路と同じ値に揃えることで、無制限モードの体感応答性を
+ * 既定経路と同程度に保つ。
+ *
+ * 提示しないtickでもフレーム自体は回り続ける(runUnlimitedTick()のpresentFinalFrame
+ * 引数参照。setVideoSkip(true)のまま最後の保証フレームも回すので、frameNoは
+ * 間引きの影響を受けず正しく進み続ける)。
+ */
+export const WORKER_UNLIMITED_PRESENT_INTERVAL_MS = 33;
+
+/**
  * @param dt 前フレームからの経過時間(秒)
  * @param frameInterval エミュレーション1フレームぶんの目標間隔(秒)。fps・speedMultiplier・
  *   音声キューによる±2%補正込みで呼び出し側が計算済みのもの。
