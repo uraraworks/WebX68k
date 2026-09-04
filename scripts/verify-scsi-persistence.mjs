@@ -88,6 +88,12 @@ function parseArgs(argv) {
       values.help = true;
       continue;
     }
+    // --scsi-ui は値を取らない(値なしフラグ)。渡すファイル名はこのハーネスが
+    // 検体のidから内部で組み立てる(probe-scsi-iocs.mjsへは --scsi-ui=<name> の形で渡す)。
+    if (arg === '--scsi-ui') {
+      values['scsi-ui'] = true;
+      continue;
+    }
     const match =
       /^--(port|probe-timeout|timeout|type-wait|post-write-wait|flush-grace|poll-scsi-debug|output|fault|chrome)=(.+)$/.exec(
         arg,
@@ -128,6 +134,11 @@ scripts/probe-scsi-iocs.mjs を子プロセスとして呼ぶオーケストレ�
                                 この段は行わない(時間がかかるため)。
   --chrome=<path>               probeへ--chromeとして渡すChrome実行ファイルパス
   --output=<path>               結果JSONの保存先
+  --scsi-ui                     プローブ側から__webx68kScsiOpfs等を直接立てず、製品の
+                                UI経路(localStorage['webx68k.scsi'] -> main.tsが
+                                __webx68kScsiOpfsPathを組み立てる -> setupScsiOpfsFromExisting())
+                                を通す。未指定なら従来どおり--scsi-opfs(プローブ側から
+                                直接立てる経路)を使う
 
 終了コード: 合格=0、不合格=1、ハーネスエラー=2`);
 }
@@ -164,6 +175,10 @@ function buildConfig(args) {
     fault,
     chrome: args.chrome ?? null,
     outputPath: isAbsolute(outputValue) ? outputValue : resolve(REPO_ROOT, outputValue),
+    // --scsi-ui: 製品のUI経路を通すかどうか。scsiUiName は main() で id が決まってから埋める
+    // (P/Q/Rの全段で同じ検体idから組み立てた同じファイル名を使い、OPFS上の同一性を保つため)。
+    scsiUi: Boolean(args['scsi-ui']),
+    scsiUiName: null,
   };
 }
 
@@ -203,7 +218,9 @@ async function runProbe(extraArgs, config, label) {
     'scripts/probe-scsi-iocs.mjs',
     `--port=${config.port}`,
     `--timeout=${config.probeTimeoutMs}`,
-    '--scsi-opfs',
+    // --scsi-ui指定時は製品のUI経路(localStorage経由)を通す。プローブ側から
+    // __webx68kScsiOpfs/__webx68kScsiUrlを直接立てる--scsi-opfsとは排他(probe側で検査済み)。
+    config.scsiUi ? `--scsi-ui=${config.scsiUiName}` : '--scsi-opfs',
     '--scsi-verbose-log=0',
     ...(config.chrome ? [`--chrome=${config.chrome}`] : []),
     ...extraArgs,
@@ -309,12 +326,18 @@ async function performReadback(fixturePath, profileDir, config, label) {
     `--poll-scsi-debug=${config.pollScsiDebugMs}`,
   ];
   let json = null;
+  // 打鍵の再試行は同じ--profile(=同じOPFS)を使い回すため、1回目でseedingが起きていれば
+  // 2回目以降は「既にある」でscsiUiSeeded===falseになる。これは実装の正しい挙動であって
+  // 不具合ではない(2回目以降で上書きしないのが仕様。docs/STORAGE-SCSI.md参照)。
+  // 「このプロファイルは元々空だったか」を見るには最初の試行の値が要るため別に残す。
+  let firstJson = null;
   let attempts = 0;
   for (; attempts < config.typeAttempts; attempts++) {
     json = await runProbe(extraArgs, config, label);
+    if (attempts === 0) firstJson = json;
     if (json.typedMismatch === null) break;
   }
-  return { json, attempts: attempts + 1 };
+  return { json, firstJson, attempts: attempts + 1 };
 }
 
 /** 読み返し結果からHEAD/TAILの有無と裏取り情報(取り込み=なし、writeCount=0)を取り出す。 */
@@ -334,7 +357,20 @@ function evaluateReadback(json, id) {
     : [];
   const lastSample = samples.length > 0 ? samples[samples.length - 1] : null;
   const writeCountZero = lastSample ? lastSample.writeCount === 0 : null; // null=観測できず
-  return { hasHead, hasTail, importedNone, importedSome, writeCountZero, lastSample, typedMismatch: json.typedMismatch };
+  return {
+    hasHead,
+    hasTail,
+    importedNone,
+    importedSome,
+    // --scsi-ui のときだけ意味を持つ(probe-scsi-iocs.mjsが返すJSONのトップレベル値)。
+    // UI経路(setupScsiOpfsFromExisting)は常にimported:falseを返すため、上のimportedNone/
+    // importedSomeログでは「この実行でseedingが起きたか」を裏取りできない
+    // (常に「取り込み=なし」の文言になる)。この経路の裏取りはscsiUiSeededで行う。
+    scsiUiSeeded: typeof json.scsiUiSeeded === 'boolean' ? json.scsiUiSeeded : null,
+    writeCountZero,
+    lastSample,
+    typedMismatch: json.typedMismatch,
+  };
 }
 
 async function main() {
@@ -353,6 +389,9 @@ async function main() {
   const profileP = join(workDir, 'profile-P');
   const profileQ = join(workDir, 'profile-Q');
   const profileR = join(workDir, 'profile-R');
+  // --scsi-ui: P/Q/Rの全段で同じOPFSファイル名を使う(検体idから組み立てる。
+  // 実行のたびに変わるので、複数回の実行結果が互いに衝突しない)。
+  if (config.scsiUi) config.scsiUiName = `scsi-${id}.hds`;
 
   const log = [];
   const record = (msg) => {
@@ -411,6 +450,7 @@ async function main() {
       hasTail: readbackEval.hasTail,
       importedNone: readbackEval.importedNone,
       importedSome: readbackEval.importedSome,
+      scsiUiSeeded: readbackEval.scsiUiSeeded,
       writeCountZero: readbackEval.writeCountZero,
       lastScsiDebugSample: readbackEval.lastSample,
     };
@@ -433,19 +473,27 @@ async function main() {
           `(typeの出力で画面から流れたとみられる): ${readbackEval.typedMismatch}`,
       );
     }
+    // UI経路(setupScsiOpfsFromExisting)は常にimported:falseを返すため、
+    // 「取り込み=なし」ログはUI経路かどうかに関わらず常に出る(裏取りにならない)。
+    // UI経路の裏取りは「プローブがseedingを行わなかったか(scsiUiSeeded===false)」で行う。
     record(
       `読み返し結果: HEAD=${readbackEval.hasHead} TAIL=${readbackEval.hasTail} ` +
-        `取り込み=なし裏取り=${readbackEval.importedNone} writeCount=0裏取り=${readbackEval.writeCountZero}`,
+        (config.scsiUi
+          ? `scsiUiSeeded=false裏取り=${readbackEval.scsiUiSeeded === false}`
+          : `取り込み=なし裏取り=${readbackEval.importedNone}`) +
+        ` writeCount=0裏取り=${readbackEval.writeCountZero}`,
     );
 
     // 主判定と矛盾する裏取りが出た場合(取り込みが起きていた/この実行で書き込みが
     // 発生していた)は、検査の前提そのものが崩れているのでハーネスエラーとして扱う
     // (「陽性対照が自分だけの抜け道を通る」事故を避けるため、主判定だけで通さない)。
     if (readbackEval.hasHead && readbackEval.hasTail) {
-      if (readbackEval.importedSome) {
+      const seededThisRun = config.scsiUi ? readbackEval.scsiUiSeeded === true : readbackEval.importedSome;
+      if (seededThisRun) {
         throw new HarnessError(
           '読み返し実行でHEAD/TAILは検出できましたが、この実行でSCSIイメージを再度取り込んでいます' +
-            '(取り込み=あり)。持続していたのではなく、検体の内容がそのまま見えているだけの疑いがあります。',
+            (config.scsiUi ? '(scsiUiSeeded=true)。' : '(取り込み=あり)。') +
+            '持続していたのではなく、検体の内容がそのまま見えているだけの疑いがあります。',
         );
       }
       if (readbackEval.writeCountZero === false) {
@@ -490,6 +538,8 @@ async function main() {
       typedScreen: negative.json.typedScreen,
       hasHead: negativeEval.hasHead,
       hasTail: negativeEval.hasTail,
+      scsiUiSeeded: negativeEval.scsiUiSeeded,
+      firstAttemptScsiUiSeeded: negative.firstJson?.scsiUiSeeded ?? null,
     };
     if (negativeEval.typedMismatch !== null) {
       throw new HarnessError(`陰性対照の打鍵が画面と一致しませんでした: ${negativeEval.typedMismatch}`);
@@ -501,7 +551,26 @@ async function main() {
           '何を測っても合格してしまいます。',
       );
     }
-    record('陰性対照OK(HEAD/TAILとも検出されなかった)');
+    // --scsi-ui: 新しいプロファイルはOPFSが空のはずなので、プローブがseedingを行う
+    // (scsiUiSeeded===true)のが期待どおり。falseならOPFSが実は空でなかった
+    // (プロファイル分離が壊れている等)可能性があり、この検査の前提が崩れている。
+    // 【注意】打鍵の再試行は同じ--profile(=同じOPFS)を使い回すため、2回目以降の
+    // 試行だけを見ると「既にある」でfalseになる(1回目の試行でもう埋まっているため。
+    // これは実装の正しい挙動)。「このプロファイルは元々空だったか」は最初の試行
+    // (negative.firstJson)で見る。
+    const negativeFirstSeeded = config.scsiUi ? negative.firstJson?.scsiUiSeeded === true : null;
+    if (config.scsiUi && !negativeFirstSeeded) {
+      throw new HarnessError(
+        `陰性対照(新しいプロファイル)の最初の試行でOPFSへのseedingが起きませんでした` +
+          `(1回目のscsiUiSeeded=${negative.firstJson?.scsiUiSeeded})。新しいプロファイルのOPFSは` +
+          '空のはずで、期待どおりseedingが起きていません。プロファイル分離の前提が崩れている疑いがあります。',
+      );
+    }
+    record(
+      '陰性対照OK(HEAD/TAILとも検出されなかった' +
+        (config.scsiUi ? `、1回目の試行のscsiUiSeeded=${negative.firstJson?.scsiUiSeeded}` : '') +
+        ')',
+    );
 
     // 手順5: 故障注入+陽性対照(--fault指定時のみ)。
     if (config.fault !== null) {
@@ -541,6 +610,7 @@ async function main() {
         typedScreen: faultReadback.json.typedScreen,
         hasHead: faultReadbackEval.hasHead,
         hasTail: faultReadbackEval.hasTail,
+        scsiUiSeeded: faultReadbackEval.scsiUiSeeded,
       };
       // 故障注入も「目印が出ないこと」が期待なので、陰性対照と同じ理由で緩めない。
       if (faultReadbackEval.typedMismatch !== null) {
@@ -586,6 +656,8 @@ async function main() {
       postWriteWaitMs: config.postWriteWaitMs,
       pollScsiDebugMs: config.pollScsiDebugMs,
       fault: config.fault,
+      scsiUi: config.scsiUi,
+      scsiUiName: config.scsiUiName,
     },
     workDir,
     stages,

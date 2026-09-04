@@ -8690,3 +8690,57 @@ node scripts/verify-scsi-persistence.mjs --fault=all
 
 **本当に確かめたい「タブを閉じた瞬間の耐性」は、どちらの層でも測れていない。**
 ブラウザプロセスを強制終了させる形の検査が要るが、未実装。宿題として残す。
+
+## 製品のUI経路（`setupScsiOpfsFromExisting`）でも永続化を実測した（実測、2026-09-04）
+
+これまでの永続化検証はすべて**プローブ経路**（`__webx68kScsiOpfs`/`__webx68kScsiUrl`を
+プローブが直接立て、`src/scsi-opfs.ts`の`setupScsiOpfs()`のURL取り込み分岐を通す）だった。
+しかし**利用者が実際に通るのは別の経路**である: SCSIスロットにディスクを挿すと
+`src/main.ts`が`localStorage['webx68k.scsi']`（`SCSI_STORAGE_KEY`）にファイル名を持ち、
+起動時に`__webx68kScsiOpfsPath = 'scsi/<name>'`を立てて`setupScsiOpfsFromExisting()`
+（プローブ経路とは別の関数）を通す。この経路は書き込み修正後に一度も検証していなかった。
+
+### 実装
+
+- `scripts/probe-scsi-iocs.mjs`に`--scsi-ui=<ファイル名>`を追加した。指定時はアプリを
+  起動しないURL（`run=1`無し）へ先に行き、OPFS上に`scsi/<ファイル名>`が無ければ
+  `--image=`の配信元からfetchして`createWritable()`で書き込み（**在れば何もしない**。
+  2回目の起動で上書きすると前回の書き込みが消え検証そのものが壊れるため）、
+  `localStorage['webx68k.scsi']`を立ててから本来のURLへ行く。プローブ側からは
+  `__webx68kScsiOpfs`/`__webx68kScsiUrl`/`__webx68kScsiOpfsPath`を一切立てない
+  （アプリ自身に立てさせるのが目的）。`--scsi-opfs`と同時指定は起動時エラーにした。
+  結果JSONに`scsiUiSeeded: true/false`を残す。
+  - **実装時の事故**: 最初`FileSystemSyncAccessHandle`（`createSyncAccessHandle()`）を
+    メインスレッド側のseeding処理で使い、`fileHandle.createSyncAccessHandle is not a
+    function`で落ちた。このAPIはワーカー専用（`src/scsi-opfs.ts`冒頭のコメントどおり）で、
+    `page.evaluate`はメインスレッド側。非同期版（`getFile()`/`createWritable()`）に直した。
+- `scripts/verify-scsi-persistence.mjs`に値なしフラグ`--scsi-ui`を追加した。指定時は
+  検体idから組み立てた同じOPFSファイル名（`scsi-<id>.hds`）を書き込み・読み返し・
+  陰性対照・故障注入の全段で`--scsi-ui=`としてプローブへ渡す。
+  - UI経路（`setupScsiOpfsFromExisting`）は**常に`imported: false`を返す**ため、
+    ワーカーログ`SCSI I/O: opfs (... 取り込み=なし)`は取り込みの有無に関わらず常に
+    その文言になり、裏取りにならない。実際に出るログを確認した:
+    `[WebX68k-worker] SCSI I/O: opfs (8421376 バイト, 取り込み=なし)`
+    （`--scsi-ui`で新規seedingした直後の起動でもこの文言）。
+    そのため、この経路では**「プローブがseedingを行わなかった
+    （`scsiUiSeeded === false`）」＋「`writeCount === 0`」**で裏取りするよう分岐した。
+  - 陰性対照（新しいプロファイル）はOPFSが空なのでseedingが起きる
+    （`scsiUiSeeded === true`）ことを確認する。ただし**打鍵の再試行は同じ`--profile`
+    （＝同じOPFS）を使い回す**ため、2回目以降の試行だけを見ると「既にある」で
+    `scsiUiSeeded === false`になる（1回目でもう埋まっているため。これは実装の
+    正しい挙動で不具合ではない）。そのため判定は**最初の試行**の値で行うよう直した
+    （最初は最後の試行だけを見て「陰性対照でseedingが起きない」という偽のハーネスエラーを
+    1回踏んだ）。
+
+### 実測結果（`node scripts/verify-scsi-persistence.mjs --scsi-ui --fault=all --flush-grace=0`）
+
+2回連続で実行し、いずれも終了コード0（合格）。
+
+| 段 | 条件 | 結果 |
+|---|---|---|
+| 主判定 | プロファイル`P`でUI経路から`copy` → 同じ`P`で`type` | **合格**。HEAD/TAILとも読み返せた。`scsiUiSeeded=false`・`writeCount=0`の裏取りつき（＝この実行で作ったものではない） |
+| 陰性対照 | **新しい**プロファイル`Q`で`type`（同じOPFSファイル名） | HEAD/TAILとも出ない。最初の試行で`scsiUiSeeded=true`（＝OPFSが空だったのでUI経路が新規に取り込んだ） |
+| 陽性対照（故障注入） | `--scsi-oracle-reply=0`で`copy`（画面上は成立） → 同じプロファイルで`type` | **TAILが現れない**（末尾が落ちる/永続化されない側の挙動が再現。この検査は修正の有無を見分けられる） |
+
+**プローブ経路だけでなく、利用者が実際に通る製品のUI経路（`setupScsiOpfsFromExisting`）でも、
+書き込み修正後の永続化が成立していることを実測で確認した。**

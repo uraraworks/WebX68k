@@ -90,6 +90,18 @@ if (SCSI_OPFS && String(args.worker ?? '') === '0') {
       '(--scsi-ram-writes --worker=0)。OPFSへの本当の書き戻しを測るなら --worker=0 を外してください。',
   );
 }
+// --scsi-ui=<ファイル名>: 製品のUI経路(src/main.ts の handleInsertScsi 等が
+// localStorage['webx68k.scsi'] を立て、起動時に __webx68kScsiOpfsPath を組み立てて
+// setupScsiOpfsFromExisting() を通す経路)でSCSIを載せる。--scsi-opfs(プローブが直接
+// __webx68kScsiOpfs/__webx68kScsiUrl を立てる経路)とは検証対象が違うため排他にする。
+const SCSI_UI = args['scsi-ui'] === undefined ? null : String(args['scsi-ui']);
+if (SCSI_UI !== null && SCSI_OPFS) {
+  throw new Error(
+    '--scsi-ui と --scsi-opfs は同時指定できません(--scsi-ui はプローブ側から' +
+      ' __webx68kScsiOpfs 等を一切立てず、アプリ自身にlocalStorage経由で立てさせて' +
+      ' 製品のUI経路を確かめるためのものです)。',
+  );
+}
 // 初期化コマンド($00)への返答値。どの欄が Human68k の判断に効くかを切り分けるための
 // 実験用スイッチ。意味は core-shim.c の js_scsi_reply_* を参照。未指定はコア側の既定に任せる。
 const REPLY_ERR = args['reply-err'] === undefined ? null : Number(args['reply-err']);
@@ -481,8 +493,11 @@ try {
     console.error(`[probe] SASI基準器を配信: ${HDD} (${hddServer.size} バイト) -> ${hddServer.url}`);
   }
   const page = await browser.newPage();
-  if (imageServer) {
+  if (imageServer && SCSI_UI === null) {
     // コア初期化より前に置く必要があるため evaluateOnNewDocument で入れる。
+    // --scsi-ui のときはプローブ側からこの変数を立てない(製品のUI経路である
+    // __webx68kScsiOpfsPath だけをアプリ自身に立てさせるのが目的なため)。
+    // imageServer.url そのものはseeding用のfetch元として後で使う。
     await page.evaluateOnNewDocument((u) => {
       window.__webx68kScsiUrl = u;
     }, imageServer.url);
@@ -806,6 +821,61 @@ try {
     (FD1 !== null ? `&fd1=${encodeURIComponent(FD1)}` : '') +
     (effectiveHdd !== null ? `&hdd=${encodeURIComponent(effectiveHdd)}` : '') +
     (WORKER !== null ? `&worker=${encodeURIComponent(WORKER)}` : '');
+
+  // --scsi-ui: 製品のUI経路を通す。アプリを起動しないURL(run=1無し)へ先に行き、
+  // OPFS上に scsi/<ファイル名> がまだ無ければ --image= の配信元からfetchして
+  // 書き込む(在れば何もしない。2回目以降の起動で上書きすると前回の書き込みが
+  // 消え、検証そのものが「取り込み=なし」相当の状態を壊してしまうため)。
+  // そのうえで localStorage['webx68k.scsi'](src/main.ts の SCSI_STORAGE_KEY と
+  // 同じキー名。ずれたら気づけるようここにも書いておく)を立て、本来のURLへ行く。
+  let scsiUiSeeded = null;
+  if (SCSI_UI !== null) {
+    await page.goto(`http://localhost:${PORT}/`, { waitUntil: 'domcontentloaded' });
+    // 【重要】ここはメインスレッド(page.evaluate)側。FileSystemSyncAccessHandle は
+    // ワーカー専用APIでメインスレッドのglobalThisには存在しない
+    // (src/scsi-opfs.ts冒頭のコメント参照。実測: createSyncAccessHandle is not a function)。
+    // 非同期版のAPI(FileSystemFileHandle#getFile/createWritable)だけを使う。
+    scsiUiSeeded = await page.evaluate(
+      async (fileName, imageUrl) => {
+        const root = await navigator.storage.getDirectory();
+        const dir = await root.getDirectoryHandle('scsi', { create: true });
+        // 既に在るか(サイズ0は「無い」と同じ扱いにする。src/scsi-opfs.tsの
+        // setupScsiOpfsFromExisting()がサイズ0を「無い」として none を返すのと揃える)。
+        let already = false;
+        try {
+          const existing = await dir.getFileHandle(fileName, { create: false });
+          const file = await existing.getFile();
+          already = file.size > 0;
+        } catch {
+          already = false;
+        }
+        if (already) return false;
+        if (!imageUrl) {
+          throw new Error(
+            `--scsi-ui: OPFS上に scsi/${fileName} が無く、--image= も指定されていないため取り込めない`,
+          );
+        }
+        const fileHandle = await dir.getFileHandle(fileName, { create: true });
+        const writable = await fileHandle.createWritable();
+        const res = await fetch(imageUrl);
+        if (!res.body) {
+          await writable.abort().catch(() => {});
+          throw new Error('取り込み用のfetchにボディが無い');
+        }
+        await res.body.pipeTo(writable);
+        return true;
+      },
+      SCSI_UI,
+      imageServer ? imageServer.url : null,
+    );
+    console.error(
+      `[probe] --scsi-ui: OPFS上の scsi/${SCSI_UI} を` +
+        `${scsiUiSeeded ? '新規に取り込んだ' : '既存のまま使う(取り込みなし)'}`,
+    );
+    // キー名 'webx68k.scsi' は src/main.ts の SCSI_STORAGE_KEY と一致させること。
+    await page.evaluate((name) => localStorage.setItem('webx68k.scsi', name), SCSI_UI);
+  }
+
   await page.goto(`http://localhost:${PORT}/?${args['no-system'] ? '' : 'system=1&'}run=1${fd1Query}`, { waitUntil: 'domcontentloaded' });
 
   // 起動待ち。到達しなくても観測は続行し、到達可否を結果に残す。
@@ -1027,6 +1097,7 @@ try {
         // 出しておらず、どの --spc-* で走らせたのかが結果ファイルから分からなかった。
         // 代理(ログに出る一部の設定)ではなく、条件そのものを記録する。
         invocation: process.argv.slice(2),
+        scsiUiSeeded,
         booted,
         typedScreen,
         typedMismatch,
