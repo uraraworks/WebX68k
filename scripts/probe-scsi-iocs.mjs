@@ -99,6 +99,10 @@ const REPLY_BPB = args['reply-bpb'] === undefined ? null : Number(args['reply-bp
 const REPLY_STATUS = args['reply-status'] === undefined ? null : Number(args['reply-status']);
 // 2回目以降の初期化コマンドに「ドライバ無し」で返答するかどうか。値を取らないフラグ。
 const REPLY_INIT_ONCE = args['reply-init-once'] !== undefined;
+// 2026-09-04: SASI(内蔵HARDDSKドライバ)を同時マウントした1回の起動で実測した
+// $05/$01への応答を有効化するかどうか。値を取らないフラグ。意味は core-shim.c の
+// js_scsi_oracle_reply、x68k/scsi.c の SCSI_HandleRequestHeader を参照。
+const SCSI_ORACLE_REPLY = args['scsi-oracle-reply'] !== undefined;
 // ストラテジ/インタラプトから戻る d0。既定(未指定)はコア側の既定 -1(何もしない)に任せる。
 const REPLY_D0 = args['reply-d0'] === undefined ? null : Number(args['reply-d0']);
 // 【調査用・実験スイッチ】2026-09-04: 成功したSCSI要求の処理直後に、要求ヘッダの
@@ -552,6 +556,11 @@ try {
       window.__webx68kScsiReplyInitOnce = 1;
     });
   }
+  if (SCSI_ORACLE_REPLY) {
+    await page.evaluateOnNewDocument(() => {
+      window.__webx68kScsiOracleReply = 1;
+    });
+  }
   if (REPLY_D0 !== null) {
     await page.evaluateOnNewDocument((v) => {
       window.__webx68kScsiReplyD0 = v;
@@ -771,6 +780,12 @@ try {
     // [SASI-READ]/[SASI-WRITE]も同じ作法で拾う(SASIが成功する場面で
     // 実際にどのセクタを読み書きしているかをSCSIと突き合わせるため)。
     if (text.includes('[SASI')) raw.push(text);
+    // 【重要】この収集はタグの列挙で成り立っているため、**新しいタグを足したら
+    // ここにも足さないと、そのログは1行も残らず「何も起きなかった」ように見える。**
+    // 実際に [DRV-HOOK] を足したとき、コアには確かに入っているのにログが0件で、
+    // 「フックが呼ばれていない」と誤って追いかけた(2026-09-04)。
+    // docs/STORAGE-SCSI.md「ログの絞り込みが偽の沈黙を作る」を参照。
+    if (text.includes('[DRV-HOOK')) raw.push(text);
   });
   const fd1Query =
     (FD1 !== null ? `&fd1=${encodeURIComponent(FD1)}` : '') +

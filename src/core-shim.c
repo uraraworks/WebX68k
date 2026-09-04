@@ -772,6 +772,20 @@ int webx68k_scsi_cmd_fill_val(void)
   return js_scsi_cmd_fill_val();
 }
 
+/* 【調査用・実験スイッチ】2026-09-04: SASI(内蔵HARDDSKドライバ)を同時
+ * マウントして実測した $05/$01 への応答をSCSIドライバ側にも適用するか。
+ * 既定 0(無効)=従来どおり未対応コマンド分岐へ落ちる。1で有効化。 */
+EM_JS(int, js_scsi_oracle_reply, (), {
+  var v = globalThis.__webx68kScsiOracleReply;
+  return (typeof v === 'number') ? (v | 0) : 0;
+});
+
+__attribute__((used))
+int webx68k_scsi_oracle_reply(void)
+{
+  return js_scsi_oracle_reply();
+}
+
 /* デバイスドライバヘッダ +$00(次のヘッダ)。既定 $ffffffff(従来と同じ)。 */
 EM_JS(int, js_scsi_drv_next, (), {
   var v = globalThis.__webx68kScsiDrvNext;
@@ -1223,6 +1237,7 @@ void webx68k_ram_watch_refresh(void)
   webx68k_ram_watch_hi = hi;
   webx68k_ram_watch_pc_lo = pc_lo;
   webx68k_ram_watch_pc_hi = pc_hi;
+
 }
 
 /*
