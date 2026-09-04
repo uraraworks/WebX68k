@@ -68,7 +68,14 @@ describe('Worker経路の無制限モード: 音声を捨てる/frame eventを�
 
     // 陽性対照: sendFrame()呼び出しのガードにshouldSendFrameが含まれること
       // (無制限モードの間引き判定が実際に配線されていること)。
-    expect(body).toMatch(/if\s*\(\s*result\.ranFrames\s*>\s*0\s*&&\s*shouldSendFrame\s*\)\s*\{\s*\n\s*sendFrame\(/);
+    // ゲート条件そのものを確かめる。ブロックの先頭に別の文が入ることは許す
+    // (2026-09-04: 「提示した時刻」の更新をこのブロック内へ移した際、
+    //  `if (...) {` の直後が sendFrame( であることまで字面で縛っていたため落ちた。
+    //  確かめたい性質はゲートに shouldSendFrame が入っていることであって、
+    //  ブロックの1行目が何かではない)。
+    expect(body).toMatch(/if\s*\(\s*result\.ranFrames\s*>\s*0\s*&&\s*shouldSendFrame\s*\)\s*\{/);
+    const gated = body.slice(body.search(/if\s*\(\s*result\.ranFrames\s*>\s*0\s*&&\s*shouldSendFrame\s*\)\s*\{/));
+    expect(gated).toMatch(/sendFrame\(/);
 
     // 陰性対照: 無制限OFF時にshouldSendFrameがfalseへ倒れないよう、既定値がtrueで
     // 宣言され、書き換えは`if (unlimitedActive)`ブロックの内側に閉じていること

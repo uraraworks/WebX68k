@@ -530,7 +530,12 @@ function tick(): void {
     );
     workerUnlimitedFrameCostMs = unlimitedResult.frameCostMs;
     workerUnlimitedNextAllowedAtMs = unlimitedResult.nextAllowedAtMs;
-    if (shouldSendFrame) workerUnlimitedLastPresentAtMs = now;
+    // 「提示した時刻」は**実際に frame event を送ったときだけ**進める。
+    // 2026-09-04 実測: ここで shouldSendFrame だけを見て進めていたため、
+    // 占有率の上限(nextAllowedAtMs)で ranFrames=0 になった tick でも時計が進み、
+    // 次の tick は間引かれる、という噛み合わせで **frame event が永久に出なくなった**
+    // (frameNo が 2723 で止まり、実測 0fps)。送信は下の
+    // `result.ranFrames > 0 && shouldSendFrame` で決まるので、更新もそこに合わせる。
     result = unlimitedResult;
   } else {
     result = runTick(dt, fps, accumulator, speedMultiplier, runFrameOnce);
@@ -561,6 +566,7 @@ function tick(): void {
   // shouldSendFrame: 無制限中の間引き対象(上記コメント参照)。無制限OFFでは常にtrueなので
   // 挙動は従来のまま(ranFrames > 0 のときは必ず送る)。
   if (result.ranFrames > 0 && shouldSendFrame) {
+    if (unlimitedActive) workerUnlimitedLastPresentAtMs = now;
     sendFrame(
       result.access,
       probing
