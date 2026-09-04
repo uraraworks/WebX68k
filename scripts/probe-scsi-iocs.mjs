@@ -799,6 +799,15 @@ try {
   }
   const raw = [];
   // Worker経路かどうかの判定に使う印も拾う(既定がどちらかを結果ファイルに残すため)。
+  // 【診断】タグで絞らない全件ログ。既存の raw はタグ列挙で絞っており、
+  // アプリ自身の起動メッセージが1行も残らない。「何も起きていない」のか
+  // 「見えていないだけ」なのかを区別できるよう、先頭から一定件数だけ丸ごと控える
+  // (2026-09-04追加。今日この盲点で4回判断を誤りかけた)。
+  const allLogs = [];
+  const ALL_LOG_MAX = 400;
+  page.on('console', (msg) => {
+    if (allLogs.length < ALL_LOG_MAX) allLogs.push(`[${msg.type()}] ${msg.text()}`.slice(0, 400));
+  });
   page.on('console', (msg) => {
     const text = msg.text();
     if (text.includes('[WebX68k-worker]')) raw.push(text);
@@ -816,6 +825,18 @@ try {
     // 「フックが呼ばれていない」と誤って追いかけた(2026-09-04)。
     // docs/STORAGE-SCSI.md「ログの絞り込みが偽の沈黙を作る」を参照。
     if (text.includes('[DRV-HOOK')) raw.push(text);
+  });
+  // 【重要】ページ内の未捕捉例外・Promise拒否は console イベントには来ない。
+  // これを拾っていなかったため、起動しない原因を追うときに「ログには何も出ていない」
+  // という状態になり、アプリ側かプローブ側かの切り分けができなかった(2026-09-04)。
+  page.on('pageerror', (err) => {
+    raw.push(`[PAGEERROR] ${err?.message ?? String(err)}`);
+  });
+  page.on('requestfailed', (req) => {
+    raw.push(`[REQFAILED] ${req.url()} ${req.failure()?.errorText ?? ''}`);
+  });
+  page.on('response', (res) => {
+    if (res.status() >= 400) raw.push(`[HTTP${res.status()}] ${res.url()}`);
   });
   const fd1Query =
     (FD1 !== null ? `&fd1=${encodeURIComponent(FD1)}` : '') +
@@ -879,6 +900,40 @@ try {
   await page.goto(`http://localhost:${PORT}/?${args['no-system'] ? '' : 'system=1&'}run=1${fd1Query}`, { waitUntil: 'domcontentloaded' });
 
   // 起動待ち。到達しなくても観測は続行し、到達可否を結果に残す。
+  // 【診断】起動を検知できなかったとき、「アプリが初期化されていない」のか
+  // 「初期化はされているが画面が A> に届いていない」のかを区別できるよう、
+  // 待ちに入る前に __webx68kDebug の有無を1回だけ記録する(2026-09-04追加)。
+  {
+    const probe0 = await page
+      .evaluate(() => ({
+        hasDebug: !!window.__webx68kDebug,
+        hasScreenText: !!window.__webx68kDebug?.screenText,
+        href: location.href,
+        readyState: document.readyState,
+      }))
+      .catch((e) => ({ error: String(e) }));
+    raw.push(`[PROBE-DIAG] 起動待ち開始時: ${JSON.stringify(probe0)}`);
+    console.error(`[probe] 起動待ち開始時: ${JSON.stringify(probe0)}`);
+    // 【診断】Workerが実際にフレームを進めているかを、起動待ちと並行して記録する。
+    // 「A>が出ない」だけでは、コアが回っていないのかコマンド経路が壊れているのかを
+    // 区別できない(2026-09-04追加)。workerStats() は frame event 相乗りで返るので、
+    // Workerが応答不能なら active:false / frameNo が進まない形で出る。
+    void (async () => {
+      for (let i = 0; i < 15; i++) {
+        const st = await page
+          .evaluate(async () => {
+            try {
+              return await window.__webx68kDebug?.workerStats?.();
+            } catch (e) {
+              return { error: String(e) };
+            }
+          })
+          .catch((e) => ({ error: String(e) }));
+        raw.push(`[PROBE-DIAG] workerStats +${i * 2}s: ${JSON.stringify(st ?? null)}`);
+        await sleep(2000);
+      }
+    })();
+  }
   const started = Date.now();
   let booted = false;
   let lastLines = null;
@@ -902,6 +957,32 @@ try {
       }
     }
     await sleep(500);
+  }
+  // 【診断】起動を検知できなかったときは、最後に見た画面ダンプの中身そのものと
+  // 実画面のスクリーンショットを残す。「A>が無い」だけでは、ゲストが動いていないのか
+  // 画面の読み出しが失敗しているのかを区別できない(2026-09-04追加)。
+  if (!booted) {
+    const last = await page
+      .evaluate(async () => {
+        const dbg = window.__webx68kDebug;
+        if (!dbg?.screenText) return { note: '__webx68kDebug.screenText が無い' };
+        try {
+          const d = await dbg.screenText();
+          return { available: d?.available, diagnostics: d?.diagnostics, lineCount: d?.lines?.length ?? null, tail: (d?.lines ?? []).slice(-6) };
+        } catch (e) {
+          return { error: String(e) };
+        }
+      })
+      .catch((e) => ({ error: String(e) }));
+    raw.push(`[PROBE-DIAG] 起動未検知時の画面ダンプ: ${JSON.stringify(last)}`);
+    console.error(`[probe] 起動未検知時の画面ダンプ: ${JSON.stringify(last)}`);
+    try {
+      const shot = `${REPO_ROOT}_local/scsi/probes/probe-notbooted.png`;
+      await page.screenshot({ path: shot });
+      console.error(`[probe] 起動未検知時の画面を保存: ${shot}`);
+    } catch (e) {
+      console.error(`[probe] スクリーンショットの保存に失敗: ${String(e)}`);
+    }
   }
   // プロンプト到達後もしばらく観測する(常駐ドライバが後から叩く可能性)。
   await sleep(3000);
@@ -1117,6 +1198,7 @@ try {
         byCmd,
         entries,
         rawUnparsed: raw.filter((l) => !parseLine(l)),
+        allLogs,
         lastScreenLines: booted ? undefined : lastLines,
       },
       null,
