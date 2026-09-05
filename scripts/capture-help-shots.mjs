@@ -99,6 +99,45 @@ async function waitForScreenPainted(page, timeoutMs) {
   }
 }
 
+/**
+ * 画面上に "A>" プロンプトが出るまで待つ(Human68kの起動完了判定)。
+ *
+ * 非黒ピクセルの有無(waitForScreenPainted)だけでは、起動メッセージの表示中
+ * (「浮動小数点演算パッケージ…」で止まりカーソルが点滅しているだけの画面)でも
+ * 条件を満たしてしまい、A>プロンプトとファンクションキー表示が揃う前の
+ * 途中の絵を撮ってしまう(ef8547cで撮り直した overview.png がこれだった)。
+ * scripts/probe-scsi-iocs.mjs の起動判定と同じ window.__webx68kDebug.screenText()
+ * でテキストを読み、"A>" を含む行が出るまでポーリングする。
+ * タイムアウトしたら例外にして、途中の絵を黙って撮らないようにする。
+ */
+async function waitForBootPrompt(page, timeoutMs) {
+  const deadline = Date.now() + timeoutMs;
+  let lastLines = null;
+  for (;;) {
+    const dump = await page
+      .evaluate(async () => {
+        const dbg = window.__webx68kDebug;
+        if (!dbg?.screenText) return null;
+        try {
+          return await dbg.screenText();
+        } catch {
+          return null;
+        }
+      })
+      .catch(() => null);
+    if (dump?.lines) {
+      lastLines = dump.lines;
+      if (dump.lines.some((l) => l.includes('A>'))) return;
+    }
+    if (Date.now() > deadline) {
+      throw new Error(
+        `A>プロンプトが出ないままタイムアウトしました。最後の画面: ${JSON.stringify(lastLines)}`,
+      );
+    }
+    await sleep(500);
+  }
+}
+
 async function shoot(page, selector, file) {
   const el = await page.$(selector);
   if (!el) throw new Error(`element not found: ${selector} (for ${file})`);
@@ -166,20 +205,24 @@ async function clickToolbarButton(page, id) {
 
 // library ショット用に IndexedDB(webx68k-disks/disks)へ注入するサンプルレコードの sourceKey。
 // 実在の市販ソフト名は使わず、明らかに架空と分かる名前にする。
-const LIBRARY_SAMPLE_KEYS = [
-  'sample:disk1',
-  'sample:harddisk1',
-  'sample:game:1',
-  'sample:game:2',
-  'sample:game:3',
-];
+//
+// 以前は単体ディスク2件(sample:disk1 / sample:harddisk1)も注入していたが、SCSI節が
+// 増えて縦が伸びたことで、.rom-modal(max-height:80vh)の残り高さを他要素(見出し・
+// SCSI節・フッタ)と奪い合う .library-list(それ自体もmax-height:320pxを持つ)の
+// 実効表示領域が既存の想定より狭くなり、フォルダの2枚目が行の途中で切れて撮れていた
+// (2026-09-05に発覚。実測: .library-list の clientHeight は260px前後しかなく、
+// 単体2件+フォルダ(2枚)の合計スクロール高は380px超で収まらない)。
+// フォルダの中身を3枚→2枚に減らしただけでは足りず、単体ディスク2件も削って
+// 「同梱ディスク + 複数枚フォルダ」だけにすることで実測260px枠に収める。
+// 単体ディスクの再挿入操作自体は本文中で別途説明されており、この図に写す必要はない。
+const LIBRARY_SAMPLE_KEYS = ['sample:game:1', 'sample:game:2'];
 const LIBRARY_SAMPLE_GROUP_ID = 'sample-game-group';
 
 /**
- * library ショットの直前に、単体ディスク2件 + 複数枚アーカイブ由来のフォルダ1件(3枚)を
- * IndexedDB へ注入する(移植元 WebNP2 の capture-help-shots.mjs と同じ方式)。
+ * library ショットの直前に、複数枚アーカイブ由来のフォルダ1件(2枚)を IndexedDB へ注入する
+ * (移植元 WebNP2 の capture-help-shots.mjs と同じ方式)。
  * bytes は実イメージ不要なのでダミーの Uint8Array(全ゼロ)を使う。
- * バッジ判定は拡張子で行われるため、FD は .xdf / HDD は .hdf にする。
+ * バッジ判定は拡張子で行われるため、FD は .xdf にする。
  */
 async function injectLibrarySamples(page) {
   await page.evaluate(async () => {
@@ -207,18 +250,15 @@ async function injectLibrarySamples(page) {
 
     const now = Date.now();
     const fdBytes = new Uint8Array(1474560); // 2HD 1440KB相当のダミーサイズ
-    const hddBytes = new Uint8Array(20 * 1024 * 1024); // 20MB相当のダミーサイズ
 
-    // 単体ディスク2件を最も新しい保存時刻にして、一覧の先頭(フォルダより上)に来るようにする。
-    await put({ sourceKey: 'sample:disk1', name: 'sample_disk1.xdf', bytes: fdBytes, savedAt: now });
-    await put({ sourceKey: 'sample:harddisk1', name: 'sample_harddisk.hdf', bytes: hddBytes, savedAt: now - 1000 });
-    for (let i = 1; i <= 3; i++) {
+    const gameDiskCount = 2; // 3枚から削減(library ショットの縦はみ出し対策。上のコメント参照)
+    for (let i = 1; i <= gameDiskCount; i++) {
       await put({
         sourceKey: `sample:game:${i}`,
         name: `sample_game_disk${i}.xdf`,
-        displayName: `sample_game (Disk ${i} of 3)`,
+        displayName: `sample_game (Disk ${i} of ${gameDiskCount})`,
         bytes: fdBytes,
-        savedAt: now - 2000 - (3 - i) * 100,
+        savedAt: now - 2000 - (gameDiskCount - i) * 100,
         group: 'sample-game-group',
         groupName: 'sample_game.zip',
         groupIndex: i - 1,
@@ -488,9 +528,11 @@ async function run() {
         if (!btn) throw new Error('btn-boot-system not found');
         btn.click();
       });
-      // Human68kの起動完了(画面描画)まで、非黒ピクセルで判定して待つ。
-      await sleep(20000);
-      await waitForScreenPainted(page, 25000);
+      // まず何か描画され始めたか(真っ黒に固まっていないか)を短時間で確認し、
+      // 続けて A>プロンプトが出るまで(起動完了)待つ。非黒ピクセルだけでは
+      // 起動メッセージ表示中の途中の絵で止まってしまうため(waitForBootPrompt参照)。
+      await waitForScreenPainted(page, 40000);
+      await waitForBootPrompt(page, 45000);
       await shoot(page, '.console-card', `overview${suffix}.png`);
 
       // --- menu: 「…」オーバーフローメニュー(overviewで起動済みのHuman68k画面を流用)。
