@@ -12,14 +12,23 @@
 // そのため WebNP2 と同様に、library ショットの直前だけ IndexedDB(webx68k-disks/disks、
 // 構造は src/disk-store.ts の StoredDisk)へアーカイブ由来フォルダ入りのサンプルレコードを
 // 注入し、撮影後すぐに撤去する(filemanager/overview など他ショットに写り込まないように)。
-// 撮影用プロファイルは毎回捨てるので、手元のブラウザ環境には影響しない。
+//
+// SCSI についても同じ理由で検体が要る: SCSI スロットとSCSIライブラリ(OPFSの`scsi/`
+// ディレクトリ、src/scsi-store.ts参照)を追加したのに、撮影用プロファイルは毎回まっさらで
+// OPFS上にSCSIイメージが1つも無いため、overview のスロット行にSCSI行はあってもディスク未挿入
+// のままになり、library モーダルの「SCSIディスク」節も空("(空)"表示)のまま撮れてしまう。
+// これでは overview/library のどちらも新機能を写せていないことになる。そのため library
+// ショットの直前だけ、既存の `scripts/_gen-scsi-blank.mts` で1MiBのブランクSCSIイメージを
+// 生成し、ブラウザの OPFS `scsi/` ディレクトリへ書き込んでからSCSIスロットへ挿入し、
+// 撮影後すぐに撤去する(IndexedDBのサンプル注入と同じ「直前に入れて直後に消す」作法)。
+// 撮影用プロファイルは毎回捨てるので、手元のブラウザ環境にもOPFSにも影響しない。
 //
 // 既知の落とし穴: headless だと requestAnimationFrame がスロットルされ、
 // エミュレータ画面が真っ黒なまま撮影されてしまう。そのため headless: false で
 // 起動し、bringToFront() でタブを前面に出したうえで、#screen canvas の
 // 非黒ピクセル数を確認してから overview を撮る。
 
-import { mkdtemp, rm } from 'node:fs/promises';
+import { mkdtemp, rm, readFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { spawn } from 'node:child_process';
@@ -29,6 +38,9 @@ const BASE_URL = process.env.WEBX68K_URL ?? 'http://localhost:5183';
 const CHROME =
   process.env.CHROME_PATH ?? '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome';
 const OUT_DIR = new URL('../public/help/', import.meta.url).pathname;
+const REPO_ROOT = new URL('..', import.meta.url).pathname;
+// library/overview ショット用のSCSI検体ファイル名。説明ページに載っても不自然でない名前にする。
+const SCSI_SAMPLE_NAME = 'sample_scsi.hds';
 
 /** 既存のスクリーンショットと同じ寸法になるビューポート(いずれも2倍解像度で保存する)。 */
 const VIEWPORT = { width: 900, height: 700, deviceScaleFactor: 2 };
@@ -255,6 +267,73 @@ async function removeFakeGamepad(page) {
   });
 }
 
+/**
+ * `scripts/_gen-scsi-blank.mts` を子プロセスとして呼び、1MiBのブランクSCSIイメージ(FAT16
+ * フォーマット済み)を生成する(scripts/verify-scsi-persistence.mjs の genFixture() と同じ
+ * 「生成スクリプトをvite-node経由で子プロセス呼び出し」パターン)。
+ */
+async function genScsiBlank(outPath) {
+  return new Promise((resolvePromise, rejectPromise) => {
+    const child = spawn(
+      './node_modules/.bin/vite-node',
+      ['scripts/_gen-scsi-blank.mts', outPath, '1'],
+      { cwd: REPO_ROOT, stdio: ['ignore', 'pipe', 'pipe'] },
+    );
+    let stderr = '';
+    child.stderr.on('data', (b) => {
+      stderr += b.toString();
+    });
+    child.on('close', (code) => {
+      if (code !== 0) {
+        rejectPromise(new Error(`_gen-scsi-blank.mts に失敗しました(code=${code}): ${stderr.trim()}`));
+      } else {
+        resolvePromise();
+      }
+    });
+    child.on('error', (err) => {
+      rejectPromise(new Error(`_gen-scsi-blank.mts を起動できませんでした: ${err.message}`));
+    });
+  });
+}
+
+/**
+ * library ショットの直前に、生成したブランクSCSIイメージをブラウザの OPFS `scsi/`
+ * ディレクトリへ書き込む(src/scsi-store.ts の置き場所と同じ)。メインスレッドの
+ * navigator.storage.getDirectory() で足りる(SCSIのセクタI/O自体はWorker専用の
+ * FileSystemSyncAccessHandle が要るが、ライブラリ一覧はメインスレッドから
+ * createWritable()/getFile() で読み書きするだけなので、Worker起動やコアの実行は不要)。
+ */
+async function injectScsiSample(page, bytes) {
+  // page.evaluate の引数は puppeteer 経由でJSONにシリアライズされる。1MiBを素の数値配列
+  // (Array.from(bytes))で渡すと巨大なJSON文字列になるため、base64文字列に変換して渡し、
+  // ブラウザ側で atob() してから Uint8Array へ戻す。
+  const base64 = Buffer.from(bytes).toString('base64');
+  await page.evaluate(
+    async (name, b64) => {
+      const bin = atob(b64);
+      const data = new Uint8Array(bin.length);
+      for (let i = 0; i < bin.length; i++) data[i] = bin.charCodeAt(i);
+      const root = await navigator.storage.getDirectory();
+      const dir = await root.getDirectoryHandle('scsi', { create: true });
+      const fileHandle = await dir.getFileHandle(name, { create: true });
+      const writable = await fileHandle.createWritable();
+      await writable.write(data);
+      await writable.close();
+    },
+    SCSI_SAMPLE_NAME,
+    base64,
+  );
+}
+
+/** injectScsiSample() で書き込んだ検体ファイルだけを OPFS `scsi/` ディレクトリから撤去する。 */
+async function removeScsiSample(page) {
+  await page.evaluate(async (name) => {
+    const root = await navigator.storage.getDirectory();
+    const dir = await root.getDirectoryHandle('scsi', { create: true });
+    await dir.removeEntry(name).catch(() => {});
+  }, SCSI_SAMPLE_NAME);
+}
+
 /** injectLibrarySamples() で入れたレコードだけを撤去する(他ショットに写り込ませないため)。 */
 async function removeLibrarySamples(page) {
   await page.evaluate(async (keys) => {
@@ -289,6 +368,14 @@ async function expandLibrarySampleGroup(page) {
 async function run() {
   const devServer = await startDevServer();
   const profile = await mkdtemp(join(tmpdir(), 'webx68k-shots-'));
+  // library ショットのSCSI検体(1MiBブランクイメージ)は ja/en 共通で使い回せるので、
+  // ブラウザ起動前に一度だけ生成しておく。生成場所は既存の一時ファイル群と同じ流儀で
+  // mkdtemp した専用ディレクトリにし、終わったら削除する。
+  const scsiTmpDir = await mkdtemp(join(tmpdir(), 'webx68k-scsi-sample-'));
+  const scsiTmpPath = join(scsiTmpDir, SCSI_SAMPLE_NAME);
+  await genScsiBlank(scsiTmpPath);
+  const scsiSampleBytes = await readFile(scsiTmpPath);
+  await rm(scsiTmpDir, { recursive: true, force: true });
   const browser = await puppeteer.launch({
     executablePath: CHROME,
     userDataDir: profile,
@@ -316,7 +403,10 @@ async function run() {
       //     アーカイブ由来フォルダの見え方を説明どおり撮るため撮影直前だけサンプルを注入する) ---
       // モーダルは max-height: 80vh; overflow-y: auto で、単体2件+展開フォルダの中身3件をすべて
       // 収めるには足りないので、フォルダの折りたたみ表示(▼ + "3枚")と中身の先頭1件が見えていれば良しとする。
+      // SCSIライブラリ節も同じ理由(撮影用プロファイルはOPFSも毎回まっさら)で検体が要る。
+      // 生成済みのブランクSCSIイメージをOPFSへ書き込んでから開く。
       await injectLibrarySamples(page);
+      await injectScsiSample(page, scsiSampleBytes);
       await clickToolbarButton(page, 'btn-disk-library');
       await sleep(800);
       await expandLibrarySampleGroup(page);
@@ -328,6 +418,7 @@ async function run() {
       await sleep(400);
       // 他のショット(filemanager/overview)に写り込まないよう、撮影後すぐに撤去する。
       await removeLibrarySamples(page);
+      await removeScsiSample(page);
 
       // --- filemanager: ファイル転送ダイアログ(対象はライブラリの human302.xdf) ---
       await clickToolbarButton(page, 'btn-file-manager');
