@@ -676,7 +676,7 @@ const STRINGS: Record<Lang, Dict> = {
 
     fmDialogTitle: () => 'ファイル転送',
     fmDialogNote: () =>
-      'ホストPCとFDD0/FDD1/HDD・ライブラリ内のディスクイメージとの間でファイルをやり取りします。ファイル名は自動的に8.3形式へ変換されます。実行中のFDDスロットへ書き込んだ場合はディスクを入れ直したのと同じ扱いになります。起動中のHDDは読み出し専用です。',
+      'ホストPCとFDD0/FDD1/HDD・SCSIディスク・ライブラリ内のディスクイメージとの間でファイルをやり取りします。ファイル名は自動的に8.3形式へ変換されます。実行中のFDDスロットへ書き込んだ場合はディスクを入れ直したのと同じ扱いになります。起動中のHDDは読み出し専用です。起動中にSCSIスロットへ挿入中のイメージは扱えません。',
     fmHostPaneTitle: () => 'ホスト(このPC)',
     fmDiskPaneTitle: () => 'ディスクイメージ',
     fmSelectFilesBtn: () => 'ファイルを選択',
@@ -1056,7 +1056,7 @@ const STRINGS: Record<Lang, Dict> = {
 
     fmDialogTitle: () => 'File Transfer',
     fmDialogNote: () =>
-      'Transfer files between this PC and disk images in FDD0/FDD1/HDD or the library. File names are automatically converted to 8.3 format. Writing to a running FDD slot is treated as reinserting the disk. The HDD is read-only while the emulator is running.',
+      'Transfer files between this PC and disk images in FDD0/FDD1/HDD, SCSI disks, or the library. File names are automatically converted to 8.3 format. Writing to a running FDD slot is treated as reinserting the disk. The HDD is read-only while the emulator is running. An image currently inserted in the SCSI slot cannot be accessed while running.',
     fmHostPaneTitle: () => 'Host (this PC)',
     fmDiskPaneTitle: () => 'Disk Image',
     fmSelectFilesBtn: () => 'Select Files',
