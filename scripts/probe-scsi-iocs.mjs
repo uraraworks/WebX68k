@@ -109,8 +109,13 @@ const REPLY_UNITS = args['reply-units'] === undefined ? null : Number(args['repl
 const REPLY_END = args['reply-end'] === undefined ? null : Number(args['reply-end']);
 const REPLY_BPB = args['reply-bpb'] === undefined ? null : Number(args['reply-bpb']);
 const REPLY_STATUS = args['reply-status'] === undefined ? null : Number(args['reply-status']);
-// 2回目以降の初期化コマンドに「ドライバ無し」で返答するかどうか。値を取らないフラグ。
-const REPLY_INIT_ONCE = args['reply-init-once'] !== undefined;
+// 2回目以降の初期化コマンドに「ドライバ無し」で返答するかどうか。
+// 従来は値を取らないフラグ(指定すると1)だったが、0を渡して明示的に無効化したい
+// 実測(コア既定のreply_init_once=1を切ったらどうなるか)のため、他の同種オプション
+// (--reply-err=等)と同じく値を取れるようにした。値を省いた従来書式は後方互換のため
+// これまでどおり1として扱う。
+const REPLY_INIT_ONCE =
+  args['reply-init-once'] === undefined ? null : Number(args['reply-init-once'] === 'true' ? 1 : args['reply-init-once']);
 // SASI(内蔵HARDDSKドライバ)を同時マウントした1回の起動で実測した $05/$01への応答。
 // 2026-09-04、解決済みとしてコア側の既定が1(有効)に変わったため、このプローブでは
 // 未指定(null)ならコアの既定に任せる。--scsi-oracle-reply(値なし、または=1)で明示的に
@@ -582,10 +587,10 @@ try {
       window.__webx68kScsiReplyStatus = v;
     }, REPLY_STATUS);
   }
-  if (REPLY_INIT_ONCE) {
-    await page.evaluateOnNewDocument(() => {
-      window.__webx68kScsiReplyInitOnce = 1;
-    });
+  if (REPLY_INIT_ONCE !== null) {
+    await page.evaluateOnNewDocument((v) => {
+      window.__webx68kScsiReplyInitOnce = v;
+    }, REPLY_INIT_ONCE);
   }
   if (SCSI_ORACLE_REPLY !== null) {
     await page.evaluateOnNewDocument((v) => {
