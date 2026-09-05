@@ -62,8 +62,13 @@ describe('Worker生成のビルド形式(静的検査)', () => {
   it('core-worker.ts は emscripten glue を fetch+eval で読み込む(import()ではない)', () => {
     // import() だとモジュールスコープで実行され、glueが期待する self.PX68K への
     // グローバル代入が起きない(実測)。fetch してソースを取得し評価する形を維持する。
+    // 2026-09-06: fetch先はサイトルート絶対パスの直書き(`/core/px68k_libretro.js`)から
+    // InitPayload.coreBaseUrl 経由のbase URL(`${coreBaseUrl}px68k_libretro.js?v=...`)へ
+    // 変わった(公開版がサブパス配信で起動不能だった不具合の修正。下の
+    // 'ルート絶対パス...' テストが同じ不具合の再発をより直接的に検査する)。
     const code = stripComments(readSrc('src/core-worker.ts'));
-    expect(code).toMatch(/fetch\(['"]\/core\/px68k_libretro\.js['"]\)/);
+    expect(code).toMatch(/fetch\(url\)/);
+    expect(code).toMatch(/coreBaseUrl/);
     expect(code).toMatch(/\(0,\s*eval\)\(/);
   });
 

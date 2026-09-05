@@ -781,6 +781,14 @@ export class WorkerCoreProxy implements LibretroHostProxy {
     // ではpage側のglobalThisが見えず丸ごと効かなかった(実測: SCSI-BPB読み出し失敗→
     // ゲストで「ドライブ名が無効です」)。initialize時に1回だけWorkerのglobalThisへ写す。
     hostGlobals?: Record<string, HostGlobalValue>,
+    // 2026-09-06追加(公開版が起動不能だった不具合の修正): Worker には document が無く
+    // `document.baseURI` を計算できないため、呼び出し元(main.ts、documentを持つ側)が
+    // 計算した base をここで受け取り、InitPayload.coreBaseUrl として Worker へ渡す
+    // (core-worker.ts の handleInitialize() がコア資産の fetch/locateFile に使う。
+    // core-protocol.ts の InitPayload.coreBaseUrl コメント参照)。呼び出し元は必ず
+    // 明示的に渡す想定だが、他の引数と同じ「省略時のフォールバック」を1箇所で
+    // 保証しておく(呼び出し元を増やしても無言でルート絶対パス相当に戻らないように)。
+    coreBaseUrl?: string,
   ): Promise<void> {
     // 起動完了(startupSettled)の判定はここでは行わない。initializeの応答が返っても
     // コアはまだ動き出していないため(startupSettledコメント参照、実測2026-09-04)、
@@ -796,6 +804,10 @@ export class WorkerCoreProxy implements LibretroHostProxy {
       })),
       options,
       hostGlobals,
+      // ここでの `location` はテスト環境(vitestのnode環境)には存在しないことがあるため
+      // 参照前にガードする(実ブラウザのメインスレッドには必ず存在する。このフォールバック
+      // 自体は上のコメントの通り実運用では通らない想定)。
+      coreBaseUrl: coreBaseUrl ?? new URL('core/', typeof location !== 'undefined' ? location.href : 'http://localhost/').href,
     });
   }
 

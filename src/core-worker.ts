@@ -63,7 +63,7 @@
 //
 // モジュールworkerでは importScripts() が使えない。一方 px68k_libretro.js
 // (emscripten glue)はクラシックスクリプトで、グローバル(`self.PX68K` / `window.PX68K`)へ
-// 代入する形式(index.htmlの<script src="/core/px68k_libretro.js">と同じもの)なので、
+// 代入する形式(index.htmlの<script src="...core/px68k_libretro.js">と同じもの)なので、
 // `import()` で読み込むとモジュールスコープで実行されグローバルに何も設定されない。
 // そのため fetch してソースを取得し、ワーカーのグローバルスコープで直接評価する
 // (`(0, eval)(src)` の間接eval形にして、この関数のローカルスコープを汚さずグローバル
@@ -279,17 +279,31 @@ function toCoreError(err: unknown, operation: string): CoreError {
   return createCoreError('CORE_FAILURE', message, { operation });
 }
 
-/** px68k-libretro (emscripten) の wasm glue を一度だけ読み込む。index.html の
- * `<script src="/core/px68k_libretro.js">` と同じ絶対パスを使う(base設定に依存しない)。
+/** px68k-libretro (emscripten) の wasm glue を一度だけ読み込む。
+ *
+ * 2026-09-06訂正: 以前はここも index.html の `<script src="/core/px68k_libretro.js">` に
+ * 揃えるつもりでサイトルートからの絶対パス `/core/px68k_libretro.js` を直書きしていたが、
+ * これが実際には誤りだった。index.html 側はvite(`base:'./'`)が `./core/...` へ書き換えて
+ * くれるため相対パスとして機能するが、ここの `/core/...` はルート絶対パスのままで
+ * base設定の影響を受けない。ローカルのdevサーバはサイトの `/` 直下で配信するため
+ * 気づけなかったが、本番の公開先(`https://uraraworks.github.io/WebX68k/`)はサブパス配信
+ * であり、`/core/px68k_libretro.js` はサブパスの外を指して404になり、起動不能になった
+ * (実測、2026-09-06)。Worker内には `document` が無く `document.baseURI` を計算できないため、
+ * ページ側(main.ts)で計算した base を InitPayload.coreBaseUrl 経由で受け取って使う
+ * (handleInitialize() 参照)。`?v=${__BUILD_ID__}` は index.html 側のグルーJS本体にも
+ * vite.config.ts の versionFooterPlugin が同じキャッシュバストクエリを付けているため、
+ * 揃えて古いグルーJSを掴む事故を防ぐ。
+ *
  * モジュールworker内では importScripts() が使えないため、fetch でソースを取得し
  * 間接eval(`(0, eval)(src)`)でワーカーのグローバルスコープで評価する。このglueは
  * クラシックスクリプトとして自身を `self.PX68K` に代入する形式(import()でモジュール
  * として読み込むとモジュールスコープに閉じてしまい失敗する)。 */
-async function ensureCoreModuleLoaded(): Promise<void> {
+async function ensureCoreModuleLoaded(coreBaseUrl: string): Promise<void> {
   if (coreModuleLoaded) return;
-  const res = await fetch('/core/px68k_libretro.js');
+  const url = `${coreBaseUrl}px68k_libretro.js?v=${__BUILD_ID__}`;
+  const res = await fetch(url);
   if (!res.ok) {
-    throw new Error(`px68k_libretro.js の取得に失敗しました (status=${res.status})`);
+    throw new Error(`px68k_libretro.js の取得に失敗しました (status=${res.status}, url=${url})`);
   }
   const src = await res.text();
   // 間接eval: グローバル(self)スコープで評価させ、この関数のローカルスコープを汚染しない。
@@ -815,7 +829,7 @@ async function handleInitialize(
     } else {
       console.log(`[WebX68k-worker] SCSI I/O: none (理由: ${scsi.reason ?? '不明'}) — 従来のXHR経路(読み取り専用)を使う`);
     }
-    await ensureCoreModuleLoaded();
+    await ensureCoreModuleLoaded(payload.coreBaseUrl);
     // scratch canvas: ファイル冒頭のコメント参照。
     scratchCanvas = new OffscreenCanvas(1, 1);
     scratchCtx = scratchCanvas.getContext('2d');
@@ -844,6 +858,7 @@ async function handleInitialize(
       new Uint8Array(payload.biosIpl),
       new Uint8Array(payload.biosCg),
       payload.sram ? new Uint8Array(payload.sram) : undefined,
+      payload.coreBaseUrl,
     );
     // 初期ディスクのマウント(src/main.ts の bootCore() 末尾と同じ手順を Worker 内へ移した版)。
     // FDDホットマウント(実行中の差し替え。手順8でhandleHotSwapFddとして実装)とは違い、

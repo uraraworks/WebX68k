@@ -511,6 +511,22 @@ export interface InitPayload {
   initialDisks?: Array<{ slot: 'fdd0' | 'fdd1' | 'hdd'; name: string; bytes: ArrayBuffer }>;
   offscreenCanvas?: OffscreenCanvas;
   /**
+   * コア資産(px68k_libretro.js / .wasm)を置いてあるディレクトリの絶対URL(末尾 '/' 付き。
+   * 例: 本番なら 'https://uraraworks.github.io/WebX68k/core/'、devなら 'http://localhost:.../core/')。
+   *
+   * 2026-09-06に追加(実測で公開版が起動不能になっていた不具合の修正、docs参照): 以前は
+   * src/core-worker.ts の fetch も src/libretro-host.ts の locateFile も、サイトルートからの
+   * 絶対パス `/core/...` を直書きしていた。ローカルのdevサーバはサイトの `/` 直下で配信する
+   * ためこれで通っていたが、公開先(`https://uraraworks.github.io/WebX68k/`)は
+   * サブパス配信であり、`/core/...` はサブパスの外(存在しないURL)を指してしまい
+   * 404で起動不能になった。Worker には `document` が無く `document.baseURI` を計算できないため、
+   * ページ側(main.ts、documentを持つ側)で `new URL('core/', document.baseURI).href` を
+   * 1回だけ計算し、initialize 時にこの素の string としてWorkerへ渡す(`hostGlobals` の
+   * 転写ルートには乗せない。あちらは `globalThis.__webx68k*` 専用の橋であり、この値は
+   * コア資産のfetch元というWorker内部の実装詳細なので、別チャンネルの方が意図が明確)。
+   */
+  coreBaseUrl: string;
+  /**
    * ページ(main)側の `globalThis.__webx68k*` のうち、structured clone で運べる値
    * (string/number/boolean/ArrayBuffer/ArrayBufferView/配列)をそのまま Worker の
    * globalThis へ写すための橋。SCSI の設定(__webx68kScsiUrl 等)や計測用の監視範囲

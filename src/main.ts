@@ -4028,6 +4028,10 @@ async function bootWorkerCore(): Promise<void> {
   });
   virtualPad.setPadType(gamepadStore.joyType[0]);
 
+  // コア資産(px68k_libretro.js/.wasm)の取得先base。Workerにはdocumentが無いため、
+  // ここ(documentを持つページ側)で計算してInitPayload経由で渡す(2026-09-06、公開版が
+  // 起動不能だった不具合の修正。core-protocol.ts の InitPayload.coreBaseUrl コメント参照)。
+  const coreBaseUrl = new URL('core/', document.baseURI).href;
   await proxy.init(
     biosIplBytes,
     biosCgBytes,
@@ -4035,6 +4039,7 @@ async function bootWorkerCore(): Promise<void> {
     initialDisks,
     workerCoreOptions,
     collectHostGlobalsFromWindow(),
+    coreBaseUrl,
   );
   await proxy.loadGame('/game/boot.cmd');
   workerAvInfo = await proxy.fetchAvInfo();

@@ -719,21 +719,53 @@ export class LibretroHost {
    * 0x4000(16KB)でないものは壊れたデータを渡さないよう無視する(未初期化 0xFF 埋めの
    * ままIPLに既定値を書かせたほうが安全なため)。
    */
-  async init(biosIpl: Uint8Array, biosCg: Uint8Array, sram?: Uint8Array): Promise<void> {
-    // locateFile: 絶対パス `/core/` を明示する理由と、.wasm にビルドIDを付ける理由の
-    // 2つが同居する。
-    //   - 絶対パス: emscripten glue は既定で自身のスクリプトの所在(scriptDirectory、
+  async init(biosIpl: Uint8Array, biosCg: Uint8Array, sram?: Uint8Array, coreBaseUrl?: string): Promise<void> {
+    // locateFile: 明示的な base URL(coreBaseUrl)を使う理由と、.wasm にビルドIDを付ける
+    // 理由の2つが同居する。
+    //   - base URL: emscripten glue は既定で自身のスクリプトの所在(scriptDirectory、
     //     メインスレッドでは document.currentScript.src、Workerでは self.location.href)から
     //     wasm の相対パスを推測する。Worker内では core-worker.ts が glue を
-    //     `<script src="/core/px68k_libretro.js">` 経由ではなく fetch+eval で読み込むため、
+    //     `<script src="...core/px68k_libretro.js">` 経由ではなく fetch+eval で読み込むため、
     //     scriptDirectory が worker自身のURL(/src/core-worker.ts?...)になってしまい、
     //     wasm を誤って `/src/px68k_libretro.wasm` から取得しようとして失敗する(実測)。
-    //     メインスレッドの `<script>` タグと同じ絶対パス `/core/` を明示することで、
-    //     メインスレッド・Worker どちらでも scriptDirectory 推測に依存しないようにする。
+    //     そのため呼び出し元(メインスレッド/Worker どちらも)に scriptDirectory 推測へ
+    //     依存させず、base URL を明示的に渡させる。
+    //
+    //     2026-09-06訂正(実測で公開版が起動不能になっていた不具合): 以前はここを
+    //     サイトルートからの絶対パス `/core/` に固定していた。ローカルのdevサーバは
+    //     サイトの `/` 直下で配信するため気づかなかったが、本番の公開先
+    //     (`https://uraraworks.github.io/WebX68k/`)はサブパス配信であり、`/core/...` は
+    //     サブパスの外(存在しないURL)を指してしまい404で起動不能になった。
+    //     このメソッドは main.ts(document を持つ)と core-worker.ts(document を
+    //     持たない)の両方から呼ばれるため、base は引数(coreBaseUrl)で受け取り、
+    //     渡されなかったときだけ以下のフォールバックで解決する:
+    //       - document があれば `new URL('core/', document.baseURI).href`
+    //         (main.ts の既定経路 bootCore() は現状これに乗る。document.baseURI は
+    //         サブパス配信でも正しくページ自身の配信元を指す)。
+    //       - 無ければ(=Worker内で呼ばれたのに引数が渡らなかった異常系)
+    //         `new URL('../core/', self.location.href).href`。ビルド後のworkerは
+    //         `<base>/assets/` 配下、devでは `/src/` 配下に置かれるため、どちらも
+    //         1つ上がって `core/` で正しく解決される。本来は core-worker.ts が
+    //         InitPayload.coreBaseUrl を必ず渡すので、この分岐が実際に使われるのは
+    //         保険としてのみ。
     //   - ビルドID: .wasm 本体にビルドID(コミットハッシュ)をクエリとして付け、
     //     グルーJS更新時に古いキャッシュのwasmを読ませないようにする。
+    // 実ブラウザ(メインスレッド/Worker)には document か self.location のどちらかが
+    // 必ずあるが、単体テスト(node環境、locateFileの戻り値自体はモック済みfactoryが
+    // 使わない)ではどちらも無いことがあるため、その場合は相対パス 'core/' に落ちる
+    // (実運用では通らない、最後の保険)。
+    const resolvedCoreBaseUrl =
+      coreBaseUrl ??
+      (typeof document !== 'undefined'
+        ? new URL('core/', document.baseURI).href
+        : typeof self !== 'undefined'
+          ? new URL('../core/', self.location.href).href
+          : 'core/');
     const mod = await getPX68KFactory()({
-      locateFile: (path: string) => (path.endsWith('.wasm') ? `/core/${path}?v=${__BUILD_ID__}` : `/core/${path}`),
+      locateFile: (path: string) =>
+        path.endsWith('.wasm')
+          ? `${resolvedCoreBaseUrl}${path}?v=${__BUILD_ID__}`
+          : `${resolvedCoreBaseUrl}${path}`,
     });
     this.mod = mod;
 
