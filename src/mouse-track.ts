@@ -122,6 +122,10 @@ export class MouseTracker {
   get disabled(): boolean {
     return this.trackDisabled;
   }
+  /** 目標比率を保持しているか。Worker経路へ「目標を捨てた」ことを伝えるのに使う。 */
+  get hasRatio(): boolean {
+    return this.hasDesiredRatio;
+  }
 
   /** canvas 内の相対位置(0..1)を目標として記録する。実際の送信は step() に任せる。 */
   setDesiredRatio(ratioX: number, ratioY: number): void {

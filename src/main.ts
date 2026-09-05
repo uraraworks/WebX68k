@@ -1230,6 +1230,21 @@ function applyMouseButton(button: 'left' | 'right', down: boolean): void {
   host?.setMouseButton(button, down);
 }
 
+/**
+ * マウス状態(積み残しデルタ・押しっぱなし判定)の全クリア。既定経路は host.clearMouseState()
+ * を直接呼ぶが、Worker経路では host が常にnullのため意味を持たず、代わりに
+ * clearWorkerInputGeneration()(入力世代を進めてmain側スナップショットも空にする)で揃える。
+ * host?. のような片方で無言に素通りする書き方を避けるため、他の apply* と同じ並びで
+ * ここに経路分岐を集約する。
+ */
+function applyClearMouseState(): void {
+  if (urlWorkerMode) {
+    clearWorkerInputGeneration();
+    return;
+  }
+  host?.clearMouseState();
+}
+
 function applyJoyState(port: 0 | 1, bits: number): void {
   if (urlWorkerMode) {
     workerInput.joyState(port, bits);
@@ -1264,6 +1279,9 @@ function sendWorkerMouseTrackUpdate(): void {
     enabled: isMouseTracking(),
     ratioX: mouseTracker.ratioX,
     ratioY: mouseTracker.ratioY,
+    // 目標比率を保持しているかも伝える。トラックパッド等の相対移動が clearDesiredRatio() した
+    // 直後にここを通ると false になり、Worker側が古い目標を引きずらなくなる(片側配線の再発防止)。
+    hasRatio: mouseTracker.hasRatio,
   });
 }
 
@@ -3917,6 +3935,15 @@ async function bootWorkerCore(): Promise<void> {
       // 更新し、同じframe eventを契機にオートセーブ判定を行う(pollDiskAccessと同じ考え方)。
       workerLastDirty = snapshot.disk.dirty;
       pollWorkerAutoSave(performance.now());
+      // バーチャルトラックパッドの毎フレーム処理(applyDiskAccess/pollWorkerAutoSaveと同じ考え方):
+      // 既定経路ではloop()から毎フレームstepTouchTrackpad()を呼んでおり、その中で
+      // virtualTrackpad.step()(長押し→左ボタン押し込みのドラッグ判定)と
+      // pumpTouchClickQueue()(タップ→クリックパルスの送出)が回っている。Worker経路では
+      // loop()自体が回らないため、frame eventのこのブロックが唯一の呼び出し口になる。
+      // これを呼ばないとWorker経路ではタップしてもクリックパルスが出ず、長押しをドラッグへ
+      // 変換する処理も走らず、ゲストのマウスボタン状態が0のまま無言で変化しなくなる
+      // (実ブラウザで確認済みの不具合)。
+      stepTouchTrackpad();
       // ∞MHzの自動クロック調整(呼び出し元指摘の是正): 既定経路はloop()内でhost.runFrame()を
       // 直接計測してautoClockFrameCostMsを更新するが、Worker経路はコアがWorker側にあるため
       // 直接計測できない。frame eventが運んできたsnapshot.frameCostMs(既定経路の
@@ -4843,8 +4870,9 @@ document.addEventListener('pointerlockchange', () => {
     showToast(t('mouseCaptured'));
   } else {
     // 解除時は積み残しのデルタと押しっぱなし判定を捨てる(ボタンを押したまま Esc された場合の保険)。
-    // 追従モードへ戻るので基準も作り直す。
-    host?.clearMouseState();
+    // 追従モードへ戻るので基準も作り直す。経路ごとに明示分岐する applyClearMouseState を通す
+    // (host?.の素通しにはしない)。
+    applyClearMouseState();
     if (running) showToast(t('mouseReleased'));
   }
   // 追従モードの有効/無効(isMouseTracking())が変わったことをWorkerへ伝える(手順6後半)。
@@ -4941,9 +4969,12 @@ function pumpTouchClickQueue(): void {
   const button = touchClickQueue.shift();
   if (button === undefined) return;
   touchClickBusy = true;
-  host?.setMouseButton(button, true);
+  // applyMouseButton(host?.の素通しではなく経路を明示分岐する窓口)を必ず通す。
+  // バーチャルトラックパッドは元々ここだけ host を直接触っており、Worker経路(既定)では
+  // タッチのマウス操作が丸ごと無効になっていた(実測済みの不具合。窓口を統一して再発防止)。
+  applyMouseButton(button, true);
   window.setTimeout(() => {
-    host?.setMouseButton(button, false);
+    applyMouseButton(button, false);
     window.setTimeout(() => {
       touchClickBusy = false;
       pumpTouchClickQueue();
@@ -4953,7 +4984,9 @@ function pumpTouchClickQueue(): void {
 
 /** virtual-trackpad.ts からの相対移動(CSSピクセル)をゲストのドット数へ換算して送る。 */
 function trackpadMoveBy(dx: number, dy: number): void {
-  if (!host) return;
+  // 既定経路(host)・Worker経路のどちらでも動く必要があるため、host の有無で早期returnしない
+  // (前回の欠陥: `if (!host) return;` によりWorker経路ではこの関数が一度も意味のある処理を
+  // しなかった)。
   // キャプチャモードの mousemove と同じ考え方(感度倍率)だが、換算倍率は canvas 表示倍率
   // ではなく TRACKPAD_SCALE 固定(上記コメント参照)。
   touchPadResidX += dx * TRACKPAD_SCALE * mouseSensitivity;
@@ -4961,12 +4994,15 @@ function trackpadMoveBy(dx: number, dy: number): void {
   const sendX = sendAmountFor(touchPadResidX);
   const sendY = sendAmountFor(touchPadResidY);
   // 古い絶対位置の目標(マウスの追従モード側)が残っていると閉ループが相対移動と
-  // 綱引きするので捨てる。
+  // 綱引きするので捨てる。Worker経路では捨てたことをWorker側にも伝える必要がある
+  // (mouseTracker.hasRatio がfalseになったことを送らないと、Worker内の別インスタンスが
+  // 古い目標を保持したままになり閉ループが綱引きする)。
   mouseTracker.clearDesiredRatio();
+  sendWorkerMouseTrackUpdate();
   if (sendX === 0 && sendY === 0) return;
   touchPadResidX -= predictedMoveFor(sendX);
   touchPadResidY -= predictedMoveFor(sendY);
-  host.addMouseDelta(sendX, sendY);
+  applyMouseDelta(sendX, sendY);
 }
 
 /** ストローク終了(全指離れた/キャンセル/パネルを閉じた)の通知。次のストロークへ残差を持ち越さない。 */
@@ -4977,8 +5013,10 @@ function trackpadStrokeEnd(): void {
 
 const virtualTrackpad: VirtualTrackpad = createVirtualTrackpad(virtualTrackpadPanel, {
   moveBy: trackpadMoveBy,
-  buttonDown: (button) => host?.setMouseButton(button, true),
-  buttonUp: (button) => host?.setMouseButton(button, false),
+  // host?. の素通し配線をやめ、経路を明示分岐する applyMouseButton を通す
+  // (Worker経路でタッチのマウス操作が丸ごと無効になっていた不具合の是正)。
+  buttonDown: (button) => applyMouseButton(button, true),
+  buttonUp: (button) => applyMouseButton(button, false),
   tap: (button) => touchClickQueue.push(button),
   strokeEnd: trackpadStrokeEnd,
 });

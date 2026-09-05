@@ -113,6 +113,11 @@ export interface MouseTrackUpdate {
   /** ホスト側カーソルの canvas 内相対位置(0..1)。 */
   ratioX: number;
   ratioY: number;
+  /** main側(MouseTracker)が目標比率を保持しているか。false は「相対移動系の入力
+   * (トラックパッド等)が目標を明示的に捨てた」ことを表す必須フィールド。これが無いと
+   * Worker側が古い目標を保持し続け、Worker内の閉ループが相対移動と綱引きしてしまう
+   * (片側配線の再発防止。既定経路の trackpadMoveBy() が clearDesiredRatio() する理由と同じ)。 */
+  hasRatio: boolean;
 }
 
 export interface MouseTrackUpdateMessage {
@@ -121,10 +126,17 @@ export interface MouseTrackUpdateMessage {
 }
 
 export function isMouseTrackUpdateMessage(message: unknown): message is MouseTrackUpdateMessage {
+  if (
+    typeof message !== 'object' ||
+    message === null ||
+    (message as { kind?: unknown }).kind !== MOUSE_TRACK_UPDATE_KIND
+  ) {
+    return false;
+  }
+  // hasRatio は必須フィールド。欠落・型違いを弾く(片方の送信元だけ足し忘れる事故の再発防止)。
+  const update = (message as { update?: unknown }).update;
   return (
-    typeof message === 'object' &&
-    message !== null &&
-    (message as { kind?: unknown }).kind === MOUSE_TRACK_UPDATE_KIND
+    typeof update === 'object' && update !== null && typeof (update as { hasRatio?: unknown }).hasRatio === 'boolean'
   );
 }
 

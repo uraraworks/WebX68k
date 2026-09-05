@@ -384,9 +384,17 @@ const mouseTracker = new MouseTracker();
  * 常にこの変数をそのまま渡す。 */
 let mouseTrackEnabled = false;
 
-function applyMouseTrackUpdate(update: { enabled: boolean; ratioX: number; ratioY: number }): void {
+function applyMouseTrackUpdate(update: { enabled: boolean; ratioX: number; ratioY: number; hasRatio: boolean }): void {
   mouseTrackEnabled = update.enabled;
-  mouseTracker.setDesiredRatio(update.ratioX, update.ratioY);
+  // hasRatio が false は「main側が目標比率を捨てた」合図(トラックパッド等の相対移動が
+  // 動いている)。ここで setDesiredRatio してしまうと、閉ループが古い目標へ引き戻そうとして
+  // 相対移動と綱引きになる(片側配線の再発防止。既定経路の trackpadMoveBy() が
+  // clearDesiredRatio() する理由と同じ)。
+  if (update.hasRatio) {
+    mouseTracker.setDesiredRatio(update.ratioX, update.ratioY);
+  } else {
+    mouseTracker.clearDesiredRatio();
+  }
 }
 
 // --- シリアル(SCCチャネルA / Web Serial、master取り込み後のWorker配線の穴の是正) --------
