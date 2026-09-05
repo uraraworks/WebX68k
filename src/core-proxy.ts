@@ -19,6 +19,7 @@ import {
   isWorkerBootAck,
   MOUSE_TRACK_RESYNC_KIND,
   MOUSE_TRACK_UPDATE_KIND,
+  PAUSE_UPDATE_KIND,
   RETURN_FRAME_BUFFER_KIND,
   SERIAL_RESET_KIND,
   SERIAL_RX_KIND,
@@ -863,6 +864,15 @@ export class WorkerCoreProxy implements LibretroHostProxy {
   sendMouseTrackResync(): void {
     if (this.disposed || this.failed) return;
     this.worker.postMessage({ kind: MOUSE_TRACK_RESYNC_KIND });
+  }
+
+  /** ポーズ(呼び出し元指摘の是正、2026-09-05)。sendMouseTrackと同じ扱いのfire-and-forget。
+   * ユーザー操作契機(ツールバーのポーズボタン)の低頻度メッセージ。
+   * core-protocol.ts の PAUSE_UPDATE_KIND コメント参照(既定経路のloop()早期returnに
+   * 相当する処理がWorker経路に無かった欠陥の是正)。 */
+  setPaused(paused: boolean): void {
+    if (this.disposed || this.failed) return;
+    this.worker.postMessage({ kind: PAUSE_UPDATE_KIND, update: { paused } });
   }
 
   /** 速度倍率の更新(手順9でWorker対応。docs/STORAGE-SCSI.md「ワーカー移行 手順9」参照)。

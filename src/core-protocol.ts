@@ -156,6 +156,39 @@ export function isMouseTrackResyncMessage(message: unknown): message is MouseTra
   );
 }
 
+// --- ポーズ(呼び出し元指摘の是正、2026-09-05: 「ポーズがWorker経路で効いていない」
+// 欠陥の是正) ------------------------------------------------------------------
+//
+// ポーズは既定経路では loop() (src/main.ts) 冒頭の pausedByUser 早期return と
+// scheduleNext() のsetTimeoutポーリングで実現しており、Worker経路にはこれに相当する
+// protocolが1つも無かった(setPaused()はpausedByUserとUIを変えるだけで、実際にWorkerを
+// 止める配線が無い)。実測: ポーズのオーバーレイが出ている間にWorkerが2秒で111フレーム
+// 進行していた(≒55fps、止まっていなかった)。MOUSE_TRACK_UPDATE_KINDと同じ理由
+// (低頻度・応答不要)でgeneration/requestIdを持たない専用メッセージにする。
+export const PAUSE_UPDATE_KIND = 'pauseUpdate' as const;
+
+export interface PauseUpdate {
+  /** true でWorker側の駆動ループ(src/core-worker.ts の tick())を止める。 */
+  paused: boolean;
+}
+
+export interface PauseUpdateMessage {
+  kind: typeof PAUSE_UPDATE_KIND;
+  update: PauseUpdate;
+}
+
+export function isPauseUpdateMessage(message: unknown): message is PauseUpdateMessage {
+  if (
+    typeof message !== 'object' ||
+    message === null ||
+    (message as { kind?: unknown }).kind !== PAUSE_UPDATE_KIND
+  ) {
+    return false;
+  }
+  const update = (message as { update?: unknown }).update;
+  return typeof update === 'object' && update !== null && typeof (update as { paused?: unknown }).paused === 'boolean';
+}
+
 // --- 速度倍率(コーディネータ指摘への対応、2026-08-31: 「速度変更がWorker経路で
 // 効かないのに効いたように見える」欠陥の是正) --------------------------------------
 //

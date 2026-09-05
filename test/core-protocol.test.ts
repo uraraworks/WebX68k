@@ -12,6 +12,8 @@ import {
   isCoreEvent,
   isCoreResponse,
   isInputUpdateMessage,
+  isPauseUpdateMessage,
+  PAUSE_UPDATE_KIND,
   type CoreCommand,
   type CoreEvent,
   type CoreResponse,
@@ -72,6 +74,19 @@ describe('型ガード', () => {
     expect(isInputUpdateMessage(undefined)).toBe(false);
     expect(isInputUpdateMessage({})).toBe(false);
     expect(isInputUpdateMessage(42)).toBe(false);
+  });
+
+  it('isPauseUpdateMessage は kind:"pauseUpdate" かつ update.paused が boolean のメッセージだけを true にする(呼び出し元指摘の是正)', () => {
+    expect(isPauseUpdateMessage({ kind: PAUSE_UPDATE_KIND, update: { paused: true } })).toBe(true);
+    expect(isPauseUpdateMessage({ kind: PAUSE_UPDATE_KIND, update: { paused: false } })).toBe(true);
+    // paused欠落・型違いは弾く(mouseTrackのhasRatio必須チェックと同じ理由)。
+    expect(isPauseUpdateMessage({ kind: PAUSE_UPDATE_KIND, update: {} })).toBe(false);
+    expect(isPauseUpdateMessage({ kind: PAUSE_UPDATE_KIND, update: { paused: 'true' } })).toBe(false);
+    expect(isPauseUpdateMessage({ kind: 'mouseTrackUpdate', update: { paused: true } })).toBe(false);
+    expect(isPauseUpdateMessage(null)).toBe(false);
+    expect(isPauseUpdateMessage(undefined)).toBe(false);
+    expect(isPauseUpdateMessage({})).toBe(false);
+    expect(isPauseUpdateMessage(42)).toBe(false);
   });
 });
 

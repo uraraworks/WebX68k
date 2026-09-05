@@ -10,6 +10,7 @@ import { describe, expect, it } from 'vitest';
 import {
   CORE_OPTION_UPDATE_KIND,
   INPUT_UPDATE_KIND,
+  PAUSE_UPDATE_KIND,
   RETURN_FRAME_BUFFER_KIND,
   SPEED_UPDATE_KIND,
   WORKER_BOOT_ACK_KIND,
@@ -61,12 +62,13 @@ class FakeWorker implements WorkerLike {
     this.rawSent.push(message);
     const asRecord = message as { kind?: unknown };
     // 応答不要のfire-and-forget(RETURN_FRAME_BUFFER_KIND/INPUT_UPDATE_KIND/SPEED_UPDATE_KIND/
-    // CORE_OPTION_UPDATE_KIND)。
+    // CORE_OPTION_UPDATE_KIND/PAUSE_UPDATE_KIND)。
     if (
       asRecord.kind === RETURN_FRAME_BUFFER_KIND ||
       asRecord.kind === INPUT_UPDATE_KIND ||
       asRecord.kind === SPEED_UPDATE_KIND ||
-      asRecord.kind === CORE_OPTION_UPDATE_KIND
+      asRecord.kind === CORE_OPTION_UPDATE_KIND ||
+      asRecord.kind === PAUSE_UPDATE_KIND
     )
       return;
     const cmd = message as CoreCommand;
@@ -663,6 +665,32 @@ describe('WorkerCoreProxy', () => {
 
     const rawSentCountBefore = worker.rawSent.length;
     proxy.setSpeedMultiplier(2);
+    expect(worker.rawSent.length).toBe(rawSentCountBefore);
+  });
+
+  it('呼び出し元指摘の是正(2026-09-05): setPaused()はgeneration/requestIdを持たない一方向メッセージを送る(応答を待たない)', async () => {
+    // ポーズが既定経路のloop()早期returnで実現されておりWorker経路にはprotocolが無かった
+    // 欠陥の是正。sendMouseTrack/setSpeedMultiplierと同じfire-and-forgetの枠組み。
+    const worker = new FakeWorker();
+    const proxy = new WorkerCoreProxy({ createWorker: () => worker });
+    const { biosIpl, biosCg } = makeBios();
+    await proxy.init(biosIpl, biosCg);
+
+    proxy.setPaused(true);
+
+    expect(worker.rawSent).toContainEqual({ kind: PAUSE_UPDATE_KIND, update: { paused: true } });
+    expect(worker.sent.some((c) => (c as unknown as { kind: unknown }).kind === PAUSE_UPDATE_KIND)).toBe(false);
+  });
+
+  it('呼び出し元指摘の是正(2026-09-05): dispose後にsetPaused()を呼んでも何も送らない(fire-and-forgetの安全側)', async () => {
+    const worker = new FakeWorker();
+    const proxy = new WorkerCoreProxy({ createWorker: () => worker });
+    const { biosIpl, biosCg } = makeBios();
+    await proxy.init(biosIpl, biosCg);
+    await proxy.dispose();
+
+    const rawSentCountBefore = worker.rawSent.length;
+    proxy.setPaused(true);
     expect(worker.rawSent.length).toBe(rawSentCountBefore);
   });
 

@@ -78,6 +78,7 @@ import {
   isInputUpdateMessage,
   isMouseTrackResyncMessage,
   isMouseTrackUpdateMessage,
+  isPauseUpdateMessage,
   isReturnFrameBufferMessage,
   isSerialResetMessage,
   isSerialRxMessage,
@@ -453,6 +454,10 @@ let lastTickAtMs = 0;
 let accumulator = 0;
 /** 起動後に完了した retro_run() の累積数。境界上の唯一の時系列識別子(docs参照)。 */
 let frameNo = 0;
+/** 呼び出し元指摘の是正(2026-09-05)で追加。main側(src/main.ts)からPAUSE_UPDATE_KINDで
+ * 送られるポーズ状態。既定経路のpausedByUser(loop()冒頭の早期return)に相当する
+ * Worker側のフラグ(core-protocol.ts の PAUSE_UPDATE_KIND コメント参照)。 */
+let paused = false;
 /** 手順9で追加。main側(src/main.ts)からSPEED_UPDATE_KINDで送られる実効速度倍率。
  * 1が等倍。ファイル冒頭コメント「速度倍率」参照。 */
 let speedMultiplier = 1;
@@ -500,6 +505,19 @@ function startDriveLoop(): void {
 
 function tick(): void {
   if (!running || !host) return;
+  // ポーズ(呼び出し元指摘の是正、2026-09-05)。既定経路のloop()冒頭のpausedByUser早期return
+  // と同じ位置(シリアル受信のdrain・retro_run()より前)に置く。lastTickAtMs/accumulatorを
+  // ここで更新しておかないと、ポーズ解除の瞬間に「止まっていた分」をdt/accumulatorが
+  // 一気に取り戻そうとして大量のフレームを走らせてしまう(既定経路には無いWorker固有の罠。
+  // 既定経路はpausedByUser中もloop()自体が呼ばれ続けるだけでdt計算に関与しないため
+  // この問題が起きない)。次のtickは startDriveLoop() が張ったsetIntervalが自動的に
+  // 呼び続けるため、ここで改めてスケジュールし直す必要は無い(scheduleNext()相当の処理は
+  // setIntervalが肩代わりしている)。
+  if (paused) {
+    lastTickAtMs = ctx.performance.now();
+    accumulator = 0;
+    return;
+  }
   const now = ctx.performance.now();
   const sinceLastTickMs = lastTickAtMs === 0 ? 0 : now - lastTickAtMs;
   if (lastTickAtMs === 0) lastTickAtMs = now;
@@ -1111,6 +1129,12 @@ ctx.onmessage = (ev) => {
   }
   if (isMouseTrackResyncMessage(data)) {
     applyMouseTrackResync();
+    return;
+  }
+  // ポーズ(呼び出し元指摘の是正、2026-09-05)。ユーザー操作契機の低頻度専用メッセージ。
+  // 実際の停止はtick()冒頭のpausedゲートで行う(このハンドラはフラグを保持するだけ)。
+  if (isPauseUpdateMessage(data)) {
+    paused = data.update.paused;
     return;
   }
   // シリアル(SCCチャネルA)の受信バイト列。毎接続中は高頻度になりうる片道メッセージなので、

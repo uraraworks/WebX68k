@@ -5565,6 +5565,16 @@ function setPaused(next: boolean): void {
   btnPause.title = label;
   btnPause.setAttribute('aria-label', label);
   pauseOverlay.classList.toggle('hidden', !pausedByUser);
+  // 呼び出し元指摘の是正(2026-09-05): ポーズは既定経路ではloop()冒頭の早期returnと
+  // scheduleNext()のsetTimeoutポーリングで実現しており、Worker経路にはこれに相当する
+  // protocolが無く表示(pausedByUser・UI)だけが変わって実体は止まっていなかった
+  // (実測: オーバーレイ表示中にWorkerが2秒で111フレーム進行)。urlWorkerModeで経路を
+  // 明示分岐する(host?.のような無言の素通しにはしない)。
+  if (urlWorkerMode) {
+    workerCoreProxy?.setPaused(pausedByUser);
+    return;
+  }
+  // ここから下は既定経路専用(Worker経路は上のurlWorkerMode分岐で既にreturnしている)。
   if (!pausedByUser) {
     // 200ms の setTimeout を待たせず即座にループを再開させる。
     cancelScheduled();
