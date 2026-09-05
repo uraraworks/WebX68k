@@ -211,6 +211,29 @@ drop targets).
   use it as a data drive (confirmed on real hardware: booting the system
   disk picks it up as `C:`, and `DIR C:` reports "40779K Byte 使用可能").
 
+### SCSI hard disk
+
+A SCSI hard disk (`.hds`) is a **separate slot from HDD (SASI)** — both can
+be mounted at the same time.
+
+- Blank creation takes an integer size from **1 to 2047MB**, formatted as
+  FAT16 (the 2047MB ceiling comes from the SCSI HLE implementation handling
+  the image size as a signed 32-bit integer).
+- An image with **multiple partitions shows up as multiple drives**.
+- Inserting takes effect **from the next boot** — no swapping while running
+  (reload the page to change it).
+- It's saved separately from the FD/HDD Disk Library (IndexedDB), in the
+  browser's **OPFS** (`scsi/`); anything the guest writes there persists
+  across reloads.
+- It requires a **secure connection (HTTPS)** — OPFS is only available in a
+  secure context, so it's unavailable entirely over a plain LAN `http://`
+  address.
+- **It cannot be specified via URL parameters** (only `fd1`, `fd2`, `hdd`,
+  and `system` can be). Whenever any of those appear in the URL, whichever
+  slot(s) the URL does *not* specify are cleared.
+- **Not supported**: the file transfer (browser ⇔ disk image) dialog does
+  not handle SCSI — only FDD0/FDD1/HDD.
+
 ### Disk Library
 
 Disk images you've loaded are kept in a browser-side library (IndexedDB), so
@@ -547,6 +570,9 @@ the bundled files on future visits.
 - **HDD**: can only be set/edited before boot; read-only and locked once
   running. Blank HDDs are FAT16 data drives only (no IPL).
 - **FDD0/FDD1**: hot-swappable at any time.
+- **SCSI**: a separate slot from HDD, insertable at any time but only takes
+  effect from the next boot; not reachable via URL parameters or file
+  transfer.
 
 ## Sprout68k shared runtime
 
@@ -645,6 +671,10 @@ This repository is **GPLv2** ([COPYING](COPYING)).
   and editing its contents while it is only set
 - Blank HDD creation (40MB, FAT16-formatted, Human68k-partitioned; carries no
   IPL, so it's a data drive only)
+- SCSI hard disk (`.hds`) as a separate slot from HDD, mountable at the same
+  time; blank creation from 1-2047MB (FAT16), multi-partition images appear
+  as multiple drives, persisted to OPFS (`scsi/`), insertable only from the
+  next boot, requires HTTPS
 - Real access lamps (lit only on actual read/write frames, not just "disk
   inserted"), tracked per-drive for FDD
 - Disk Library (browser-side, IndexedDB), blank FD creation (2HD 1232KB), per-slot

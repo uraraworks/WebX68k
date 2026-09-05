@@ -410,6 +410,47 @@
           </div>
         </section>
 
+        <!-- 特徴2.6: SCSI ハードディスク -->
+        <section class="help-card feature-card">
+          <div class="lang-ja">
+            <h2>SCSI ハードディスクにも対応</h2>
+            <p>
+              HDD(SASI)とは別系統のスロットとして、SCSI ハードディスク(<code>.hds</code>)にも
+              対応しています。両方を同時に搭載できます。ブランク作成は1〜2047MBを整数で指定でき、
+              FAT16 でフォーマットされます(2047MBが上限なのは、SCSI の HLE 実装がイメージサイズを
+              32bit符号あり整数で扱うためです)。区画が複数あるイメージは、複数のドライブとして
+              認識されます。
+            </p>
+            <p>
+              挿入は次回の起動から有効になります(起動中の差し替えはできません。差し替えるには
+              ページを再読み込みしてください)。保存先は FD/HDD のディスクライブラリとは別の、
+              ブラウザの OPFS(<code>scsi/</code>)で、ゲストが書き込んだ内容はリロードをまたいで
+              永続化されます。OPFS を使うため、<strong>保護された接続(https)でないと利用できません</strong>
+              (LANの http:// では機能ごと出ません)。なお、URLパラメータでの指定や、ファイル転送
+              (ブラウザ⇔ディスクイメージ)には現時点で対応していません。
+            </p>
+          </div>
+          <div class="lang-en">
+            <h2>SCSI hard disk support</h2>
+            <p>
+              WebX68k also supports a SCSI hard disk (<code>.hds</code>) as a separate slot from the
+              HDD (SASI) one — both can be mounted at the same time. A blank image can be created at
+              any integer size from 1 to 2047MB, formatted as FAT16 (the 2047MB ceiling comes from the
+              SCSI HLE implementation handling the image size as a signed 32-bit integer). An image with
+              multiple partitions shows up as multiple drives.
+            </p>
+            <p>
+              Inserting one takes effect from the next boot (no swapping while running — reload the page
+              to change it). It's saved separately from the FD/HDD Disk Library, in the browser's OPFS
+              (<code>scsi/</code>), so anything the guest writes persists across reloads. Because it
+              relies on OPFS, <strong>it only works over a secure connection (HTTPS)</strong> — it's
+              unavailable entirely over a plain LAN <code>http://</code> address. It is not currently
+              addressable via URL parameters, nor supported by the file transfer (browser ⇔ disk image)
+              dialog.
+            </p>
+          </div>
+        </section>
+
         <!-- 特徴2.5: 4:3表示モード -->
         <section class="help-card feature-card">
           <div class="lang-ja">
