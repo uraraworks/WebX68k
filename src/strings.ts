@@ -216,6 +216,8 @@ interface Dict {
   fmMountedBadge(): string;
   fmNotEditableNote(): string;
   fmRunningLockedNote(): string;
+  /** SCSIライブラリのイメージがファイル転送の対象一覧に出るときの理由注記(256MB超)。 */
+  fmScsiTooLargeNote(): string;
   fmPathRoot(): string;
   fmUpDir(): string;
   fmDirMarker(): string;
@@ -686,6 +688,7 @@ const STRINGS: Record<Lang, Dict> = {
     fmMountedBadge: () => 'マウント中',
     fmNotEditableNote: () => '編集非対応',
     fmRunningLockedNote: () => '起動中は変更不可',
+    fmScsiTooLargeNote: () => '256MB超のため対象外(イメージ全体をメモリへ読み込む実装のため)',
     fmPathRoot: () => '/(ルート)',
     fmUpDir: () => '上の階層へ',
     fmDirMarker: () => 'DIR',
@@ -1065,6 +1068,7 @@ const STRINGS: Record<Lang, Dict> = {
     fmMountedBadge: () => 'mounted',
     fmNotEditableNote: () => 'not editable',
     fmRunningLockedNote: () => 'locked while running',
+    fmScsiTooLargeNote: () => 'excluded: over 256MB (the implementation loads the whole image into memory)',
     fmPathRoot: () => '/ (root)',
     fmUpDir: () => 'Up',
     fmDirMarker: () => 'DIR',

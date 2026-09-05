@@ -1,9 +1,11 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import {
   canDeleteScsiImage,
+  decideScsiFmEditable,
   deleteScsiImage,
   isScsiStorageAvailable,
   listScsiImages,
+  SCSI_FM_MAX_BYTES,
   sortScsiEntries,
   type ScsiEntry,
 } from '../src/scsi-store.ts';
@@ -89,6 +91,43 @@ describe('canDeleteScsiImage (挿入中の削除ガード)', () => {
 
   it('何も挿入していない(null)ならどの名前でも削除可', () => {
     expect(canDeleteScsiImage('any.hds', null)).toBe(true);
+  });
+});
+
+describe('decideScsiFmEditable (ファイル転送の対象可否判定)', () => {
+  const small: ScsiEntry = { name: 'work.hds', bytes: 1024 };
+
+  it('実行中でなければ、挿入中の名前と一致していても対象にできる', () => {
+    expect(decideScsiFmEditable(small, { mountedName: 'work.hds', running: false })).toBeNull();
+  });
+
+  it('実行中かつ当該イメージがSCSIスロットに挿入中なら対象外(排他ロック)', () => {
+    expect(decideScsiFmEditable(small, { mountedName: 'work.hds', running: true })).toBe('running-locked');
+  });
+
+  it('実行中でも、挿入されていない別のSCSIイメージは対象にできる', () => {
+    expect(decideScsiFmEditable(small, { mountedName: 'other.hds', running: true })).toBeNull();
+  });
+
+  it('実行中でなくても、挿入中でなければ対象にできる(そもそも挿入されていない)', () => {
+    expect(decideScsiFmEditable(small, { mountedName: null, running: true })).toBeNull();
+  });
+
+  it('SCSI_FM_MAX_BYTESちょうどは対象にできる', () => {
+    const atLimit: ScsiEntry = { name: 'big.hds', bytes: SCSI_FM_MAX_BYTES };
+    expect(decideScsiFmEditable(atLimit, { mountedName: null, running: false })).toBeNull();
+  });
+
+  it('SCSI_FM_MAX_BYTESを1バイトでも超えると対象外(サイズ超過)', () => {
+    const overLimit: ScsiEntry = { name: 'big.hds', bytes: SCSI_FM_MAX_BYTES + 1 };
+    expect(decideScsiFmEditable(overLimit, { mountedName: null, running: false })).toBe('too-large');
+  });
+
+  it('実行中に挿入中でも、サイズ超過が優先して報告される場合がある(挿入中判定が先)', () => {
+    // running-locked を先に判定するため、挿入中かつサイズ超過なら running-locked が返る
+    // (どちらの理由でも editable=false という結論は変わらないが、表示する注記の優先順位を固定する)。
+    const overLimitMounted: ScsiEntry = { name: 'huge.hds', bytes: SCSI_FM_MAX_BYTES + 1 };
+    expect(decideScsiFmEditable(overLimitMounted, { mountedName: 'huge.hds', running: true })).toBe('running-locked');
   });
 });
 

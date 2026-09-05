@@ -123,7 +123,10 @@ HDD(SASI)とは別系統のスロットとして、SCSI ハードディスク(`.
   (https)でないと使えない**(LANの http:// では機能ごと出ない)。
 - URLパラメータでは SCSI を指定できない(指定できるのは `fd1`/`fd2`/`hdd`/`system` のみ)。それらの
   いずれかが URL にあるとき、URL が指定していないスロット(SCSI含む)は解除される。
-- ファイル転送(ブラウザ⇔ディスクイメージ)は FDD0/FDD1/HDD のみ対応で、SCSI には未対応。
+- ファイル転送(ブラウザ⇔ディスクイメージ)は FDD0/FDD1/HDD に加え、SCSIライブラリ(OPFS上の
+  各イメージ)にも対応する。ただし実行中に当該イメージがSCSIスロットへ挿入中の場合(Workerの
+  排他ロック)と、256MBを超えるイメージ(全体をメモリへ読み込む実装のため)は対象外。詳細は
+  「ファイル転送(ファイルマネージャ)」節参照。
 
 ## ディスクのホットマウント(FDD)
 
@@ -1152,6 +1155,31 @@ UI変更後に撮り直す際は、開発サーバーを起動した状態で `n
   FDD0/FDD1/HDDという3スロット構成の表示名を一元管理するため)。
 - `src/main.ts` の `fmListTargets`/`fmListDir`/`fmReadFile`/`fmWriteFile`/`fmDeleteFile`/
   `fmMakeDir`/`fmCreateTransferFd` … WebNP2の `np2.diskXxx`/`libraryXxx` 相当のコールバック実装。
+
+### SCSIライブラリの対象化
+
+`FmTarget` に `kind: 'scsi'` を追加し、SCSIライブラリ(OPFSの `scsi/`)の各イメージも
+FDD0/FDD1/HDD・ライブラリのFD/HDDと同じ2ペインUIで読み書きできるようにした。`fat.ts` の
+`openDiskImage()` はSCSIヘッダ(`X68SCSI1`)を既に解釈できたため、FAT層の改修は不要だった。
+
+- 対象一覧では `SCSI: <ファイル名>` の形でラベル化し、スロット行(`<ドライブ名>: <ファイル名>`)・
+  ライブラリ行と見分けが付くようにしている。
+- **対象外になる条件が2つある**(`src/scsi-store.ts` の `decideScsiFmEditable()` に切り出した
+  純粋関数で判定。単体テストは `test/scsi-store.test.ts`):
+  1. **実行中に、そのイメージがSCSIスロットへ挿入中**の場合。`src/scsi-opfs.ts` はWorker内で
+     `createSyncAccessHandle()` を使い、挿入中のイメージだけをセクタI/Oのために排他ロックする。
+     ロック中のファイルはメインスレッドの `createWritable()`/`getFile()` からは扱えないため、
+     読み出しも不可としている。挿入されていない他のSCSIイメージはWorkerが触っていないため、
+     実行中でも読み書きできる。
+  2. **イメージが256MB(`SCSI_FM_MAX_BYTES`)を超える**場合。ファイルマネージャはFATボリューム
+     として開くため、イメージ全体を `Uint8Array` へ読み込む(`readScsiImageBytes()`)。ブランク
+     SCSIディスクの作成上限は2047MBなので、大きなイメージをそのまま丸ごとメモリへ載せるのは
+     現実的でない。この上限は定数化し、理由をコメントに残してある。
+- 読み書きは `scsi-store.ts` に足した `readScsiImageBytes()`(全体読み出し)と
+  `overwriteScsiImage()`(全体上書き。既存の取り込み処理 `putScsiImage()` と同じ書き込み経路に
+  合わせるため、バイト列を `File` に包んでそちらへ委譲する)を使う。書き戻しは差分ではなく
+  常に全体上書き。
+- SCSIスロットのラベル・`SLOT_IDS`・URLパラメータ・コア側・`localStorage` キーは変更していない。
 
 ### RGB565→RGBA 変換は 65536 要素の変換表で行う
 

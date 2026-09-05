@@ -231,8 +231,12 @@ be mounted at the same time.
 - **It cannot be specified via URL parameters** (only `fd1`, `fd2`, `hdd`,
   and `system` can be). Whenever any of those appear in the URL, whichever
   slot(s) the URL does *not* specify are cleared.
-- **Not supported**: the file transfer (browser ⇔ disk image) dialog does
-  not handle SCSI — only FDD0/FDD1/HDD.
+- The file transfer (browser ⇔ disk image) dialog also handles SCSI
+  library images, listed as "SCSI: &lt;file name&gt;". An image is excluded
+  when it's **currently inserted in the SCSI slot while running** (the
+  Worker holds an exclusive lock on it) or when it's **larger than 256MB**
+  (the implementation loads the whole image into memory). A non-inserted
+  SCSI image can still be read and written while running.
 
 ### Disk Library
 

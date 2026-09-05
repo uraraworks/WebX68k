@@ -14,8 +14,11 @@ import { isArchive, extractArchive } from './api/archive.ts';
 
 /** 転送先/転送元として選択できる1件(実行中スロット or ライブラリ内イメージ)。 */
 export interface FmTarget {
-  kind: 'slot' | 'library';
-  /** kind='slot': 'fdd0'|'fdd1'|'hdd'。kind='library': disk-store.tsのsourceKey。 */
+  kind: 'slot' | 'library' | 'scsi';
+  /**
+   * kind='slot': 'fdd0'|'fdd1'|'hdd'。kind='library': disk-store.tsのsourceKey。
+   * kind='scsi': scsi-store.tsのOPFS上のファイル名(ScsiEntry.name)。
+   */
   ref: string;
   /** 呼び出し側で組み立て済みの表示ラベル(ドライブ名/ファイル名/非対応理由等を含む)。 */
   label: string;

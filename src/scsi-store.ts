@@ -135,3 +135,50 @@ export async function readScsiImage(name: string): Promise<File> {
   const handle = await dir.getFileHandle(name, { create: false });
   return handle.getFile();
 }
+
+/**
+ * ファイル転送(ファイルマネージャ)用に、指定ファイルを丸ごと Uint8Array として読み出す。
+ * FATボリュームとして開くには全体をメモリへ載せる必要があるため(SCSI_FM_MAX_BYTES参照)、
+ * ここではストリーミングせず一括で読む。無ければ例外を投げる。
+ */
+export async function readScsiImageBytes(name: string): Promise<Uint8Array> {
+  const file = await readScsiImage(name);
+  return new Uint8Array(await file.arrayBuffer());
+}
+
+/**
+ * ファイル転送での書き戻し用に、指定ファイルを丸ごと上書きする(既存の取り込み処理
+ * putScsiImage() と同じ書き込み経路に合わせるため、bytes を File に包んでそちらへ委譲する)。
+ */
+export async function overwriteScsiImage(name: string, bytes: Uint8Array): Promise<void> {
+  await putScsiImage(new File([bytes.slice()], name));
+}
+
+/**
+ * ファイル転送(ファイルマネージャ)がイメージ全体をメモリへ読み込んで扱う実装のため、
+ * 大きすぎるイメージは対象外にする上限。256MBを超えるSCSIイメージ(ブランク作成の上限は
+ * 2047MBなので普通に起こりうる)は、丸ごとUint8Arrayへ読むとタブのメモリを圧迫するため
+ * ファイルマネージャの対象から外す。定数化してあるのはこの理由をコードの一箇所にまとめるため。
+ */
+export const SCSI_FM_MAX_BYTES = 256 * 1024 * 1024;
+
+/** decideScsiFmEditable() が返す、編集不可の理由。null は編集可能を表す。 */
+export type ScsiFmEditableReason = 'running-locked' | 'too-large' | null;
+
+/**
+ * SCSIイメージ1件をファイルマネージャの対象にできるか判定する。DOM非依存の純粋関数として
+ * 切り出してあり単体テスト可能。
+ *
+ * - `running` かつ現在SCSIスロットへ挿入中(`mountedName === entry.name`)のイメージは、
+ *   Workerが `createSyncAccessHandle()` で排他ロックしているためメインスレッドから触れない
+ *   (読み出しも不可)。挿入されていない他のSCSIイメージは実行中でも読み書きできる。
+ * - `SCSI_FM_MAX_BYTES` を超えるイメージは、イメージ全体をメモリへ読み込む実装のため対象外。
+ */
+export function decideScsiFmEditable(
+  entry: ScsiEntry,
+  opts: { mountedName: string | null; running: boolean },
+): ScsiFmEditableReason {
+  if (opts.running && entry.name === opts.mountedName) return 'running-locked';
+  if (entry.bytes > SCSI_FM_MAX_BYTES) return 'too-large';
+  return null;
+}

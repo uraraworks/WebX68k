@@ -683,10 +683,13 @@
               起動後はHDDの行に「起動中は変更不可」と表示され、読み取り専用になります。
             </p>
             <div class="note-box">
-              <strong>SCSIハードディスクは未対応です。</strong> ファイル転送で扱えるのは
-              FDD0/FDD1/HDDのみで、SCSIディスクの中身をブラウザから覗いたり出し入れしたり
-              することはできません。ファイルをやり取りしたい場合は、フロッピー経由で転送する
-              か、SCSIディスクをダウンロードして手元で扱ってください。
+              <strong>SCSIハードディスク(OPFS上のライブラリ)にも対応しています。</strong>
+              対象一覧には「SCSI: ファイル名」の形で並びます。ただし2つの条件で対象外になります:
+              (1) <strong>起動中に、そのイメージがSCSIスロットへ挿入中</strong>の場合
+              (Workerがセクタ入出力を排他ロックしているため、読み出しもできません)。
+              (2) <strong>イメージが256MBを超える</strong>場合(イメージ全体をメモリへ
+              読み込む実装のため)。挿入されていないSCSIイメージであれば、起動中でも
+              読み書きできます。
             </div>
           </div>
           <div class="lang-en">
@@ -712,10 +715,13 @@
               row shows "locked while running" and becomes read-only.
             </p>
             <div class="note-box">
-              <strong>SCSI hard disks aren't supported here.</strong> File Transfer only handles
-              FDD0/FDD1/HDD — you can't browse or move files in and out of a SCSI disk from the
-              browser. Use a floppy for file exchange instead, or download the SCSI disk and work
-              with it locally.
+              <strong>SCSI hard disks (from the OPFS library) are also supported.</strong> They
+              appear in the target list as "SCSI: &lt;file name&gt;". Two conditions exclude an
+              image from the list: (1) it's <strong>currently inserted in the SCSI slot while
+              running</strong> (the Worker holds an exclusive lock on its sector I/O, so it can't
+              even be read), or (2) it's <strong>larger than 256MB</strong> (the implementation
+              loads the whole image into memory). A SCSI image that isn't inserted can be read and
+              written even while running.
             </div>
           </div>
         </section>

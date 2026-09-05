@@ -30,11 +30,14 @@ import { computeAttributionBreakdown } from './keybuf-attribution';
 import { loadSramFile, saveSramFile } from './sram-store';
 import {
   canDeleteScsiImage,
+  decideScsiFmEditable,
   deleteScsiImage,
   isScsiStorageAvailable,
   listScsiImages,
+  overwriteScsiImage,
   putScsiImage,
   readScsiImage,
+  readScsiImageBytes,
   type ScsiEntry,
 } from './scsi-store';
 import {
@@ -6907,6 +6910,25 @@ async function openLibraryVolume(sourceKey: string): Promise<FmVolumeHandle> {
   };
 }
 
+/**
+ * SCSIライブラリ(OPFS上)のイメージをFATボリュームとして開く。書き戻しはOPFSへ全体を上書きする
+ * (scsi-store.tsのoverwriteScsiImage、putScsiImage()と同じ書き込み経路)。
+ * 実行中に当該イメージがSCSIスロットへ挿入中かどうかは fmListTargets() 側で editable=false に
+ * しており、そちらのUIガードで到達しない前提だが、二重の安全のためここでは特にチェックしない
+ * (openSlotVolume/openLibraryVolumeも呼び出し側のeditableチェックに委ねる作りに揃えている)。
+ */
+async function openScsiVolume(name: string): Promise<FmVolumeHandle> {
+  const image = await readScsiImageBytes(name);
+  const vol = openDiskImage(image, name);
+  return {
+    vol,
+    persist: async () => {
+      await overwriteScsiImage(name, image);
+      if (!libraryBackdrop.classList.contains('hidden')) void refreshScsiLibraryList();
+    },
+  };
+}
+
 /** ファイルマネージャのターゲット一覧: FDD0/FDD1/HDD(実行中スロット) + ライブラリ内イメージ。 */
 async function fmListTargets(): Promise<FmTarget[]> {
   const targets: FmTarget[] = [];
@@ -6939,11 +6961,25 @@ async function fmListTargets(): Promise<FmTarget[]> {
     const label = `${entry.displayName}${mountedSlot ? ` [${t('fmMountedBadge')}]` : ''}${note ? ` (${note})` : ''}`;
     targets.push({ kind: 'library', ref: entry.sourceKey, label, mounted: !!mountedSlot, editable });
   }
+
+  // SCSIライブラリ(OPFS上の各イメージ)。スロット・ライブラリの行と見分けが付くよう
+  // 「SCSI: <ファイル名>」の形でラベル化する(スロット行の「<ドライブ名>: <ファイル名>」に倣う)。
+  // 実行中に当該イメージがSCSIスロットへ挿入中の場合はWorkerの排他ロックで触れず、
+  // 256MB超のイメージは全体をメモリへ読み込む実装のため対象外にする(decideScsiFmEditable参照)。
+  for (const entry of await listScsiImages()) {
+    const reason = decideScsiFmEditable(entry, { mountedName: scsiName, running });
+    const editable = reason === null;
+    const note = reason === 'running-locked' ? t('fmRunningLockedNote') : reason === 'too-large' ? t('fmScsiTooLargeNote') : '';
+    const mountedHere = scsiName === entry.name;
+    const label = `${t('scsiSlotLabel')}: ${entry.name}${mountedHere ? ` [${t('fmMountedBadge')}]` : ''}${note ? ` (${note})` : ''}`;
+    targets.push({ kind: 'scsi', ref: entry.name, label, mounted: mountedHere, editable });
+  }
   return targets;
 }
 
 async function fmOpenVolume(target: FmTarget): Promise<FmVolumeHandle> {
   if (target.kind === 'slot') return openSlotVolume(target.ref as SlotId);
+  if (target.kind === 'scsi') return openScsiVolume(target.ref);
   return openLibraryVolume(target.ref);
 }
 

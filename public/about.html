@@ -426,8 +426,10 @@
               ページを再読み込みしてください)。保存先は FD/HDD のディスクライブラリとは別の、
               ブラウザの OPFS(<code>scsi/</code>)で、ゲストが書き込んだ内容はリロードをまたいで
               永続化されます。OPFS を使うため、<strong>保護された接続(https)でないと利用できません</strong>
-              (LANの http:// では機能ごと出ません)。なお、URLパラメータでの指定や、ファイル転送
-              (ブラウザ⇔ディスクイメージ)には現時点で対応していません。
+              (LANの http:// では機能ごと出ません)。なお、URLパラメータでの指定には現時点で
+              対応していませんが、ファイル転送(ブラウザ⇔ディスクイメージ)の対象には
+              SCSIライブラリのイメージも並びます(起動中にSCSIスロットへ挿入中のイメージと、
+              256MBを超えるイメージは対象外)。
             </p>
           </div>
           <div class="lang-en">
@@ -445,8 +447,9 @@
               (<code>scsi/</code>), so anything the guest writes persists across reloads. Because it
               relies on OPFS, <strong>it only works over a secure connection (HTTPS)</strong> — it's
               unavailable entirely over a plain LAN <code>http://</code> address. It is not currently
-              addressable via URL parameters, nor supported by the file transfer (browser ⇔ disk image)
-              dialog.
+              addressable via URL parameters, but its library images do appear as targets in the
+              file transfer (browser ⇔ disk image) dialog (excluding an image that's currently
+              inserted in the SCSI slot while running, or larger than 256MB).
             </p>
           </div>
         </section>
