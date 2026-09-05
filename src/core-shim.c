@@ -858,6 +858,23 @@ unsigned int webx68k_scsi_drv_ram_from(void)
 }
 
 /*
+ * 実験用スイッチ(2026-09-05): RAMへの置き場(drv_ram/drv_ram_from)が
+ * 使えないとき、ヘッダをRAMへ組み立てず ROM窓 $00ea0100 のままにし、
+ * 初期化コマンド返答の終了アドレスだけをこの値に差し替えて、Human68k の
+ * 2つの門(上のコメント参照)の読み方そのものを実測するためのもの。
+ * 既定0(無効・従来どおり「名乗らない」)。 */
+EM_JS(int, js_scsi_rom_header_end, (), {
+  var v = globalThis.__webx68kScsiRomHeaderEnd;
+  return (typeof v === 'number') ? (v | 0) : 0;
+});
+
+__attribute__((used))
+unsigned int webx68k_scsi_rom_header_end(void)
+{
+  return (unsigned int)js_scsi_rom_header_end();
+}
+
+/*
  * 本物の外部SCSIボードROMイメージ(8192バイト)をホストから流し込む経路。
  * 逆アセンブルはせず、実機ROMを走らせて「何番地を叩き、何を返すか」を
  * 実測するためのオラクルとして使う。JS 側のグローバルは

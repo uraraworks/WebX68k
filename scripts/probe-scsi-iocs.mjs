@@ -199,6 +199,12 @@ if (args['cmd-fill'] !== undefined) {
 const DRV_NEXT = args['drv-next'] === undefined ? null : Number(args['drv-next']);
 const DRV_RAM = args['drv-ram'] === undefined ? null : Number(args['drv-ram']);
 const DRV_RAM_FROM = args['drv-ram-from'] === undefined ? null : Number(args['drv-ram-from']);
+// 【実験用】drv-ram/drv-ram-from が使えないとき、ヘッダをRAMへ組み立てず
+// ROM窓 $00ea0100 のまま名乗り、初期化コマンド($00)応答の終了アドレスだけを
+// この値に差し替える(x68k/scsi.c の webx68k_scsi_rom_header_end 参照)。
+// Human68kの門1/門2の読み方そのものを実測するためのスイッチ。未指定はコア側の
+// 既定(0=無効)のまま。
+const ROM_HEADER_END = args['rom-header-end'] === undefined ? null : Number(args['rom-header-end']);
 // SPC(MB89352)セレクト応答関連。意味は core-shim.c の js_scsi_spc_* / x68k/scsi.c
 // の SCSI_SpcSelectCheck を参照。未指定はコア側の既定(ints-sel=$08 / ints-timeout=$20 /
 // ssts・psns=-1=触らない)に任せる。本物ROM使用時(--rom=)のみ効く。
@@ -655,6 +661,11 @@ try {
     await page.evaluateOnNewDocument((v) => {
       window.__webx68kScsiDrvRamFrom = v;
     }, DRV_RAM_FROM);
+  }
+  if (ROM_HEADER_END !== null) {
+    await page.evaluateOnNewDocument((v) => {
+      window.__webx68kScsiRomHeaderEnd = v;
+    }, ROM_HEADER_END);
   }
   if (SPC_TARGET !== null) {
     await page.evaluateOnNewDocument((v) => {
