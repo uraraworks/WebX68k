@@ -27,6 +27,27 @@ import type { HostGlobalValue } from './core-protocol';
  * 現状のROM等のサイズ(数百KB〜数MB)では起動・リセット時(低頻度)の一度のコピーで
  * 無視できる範囲と判断している。
  */
+/**
+ * 転写できなくて当然の DEV 専用フック(デバッグ/計測用で関数を持つため structured clone
+ * で運べない)の一覧。DEV ビルドで Worker を起動するたびに毎回これらの警告が出ており、
+ * 本来の目的(設定が無言で落ちたことに気づく)を果たせなくなっていた(2026-09-05実測、
+ * 実ブラウザのコンソールで毎回必ず4件の警告を確認)。
+ *
+ * ここに載っているキーは従来どおり転写しない(挙動は変えない)が、`onSkipped` には
+ * 含めない(警告を出さない)。挙動を変えているのは「警告に出すかどうか」だけである点に
+ * 注意。
+ *
+ * **新しい `__webx68k*` の DEV 専用プローブ/デバッグフックを追加したら、
+ * このSetにも追加すること。** さもないと転写できない旨の警告が毎回鳴り続け、
+ * 本物の取りこぼし(設計外の欠落)に気づけなくなる。
+ */
+export const KNOWN_DEV_ONLY_HOST_GLOBALS: ReadonlySet<string> = new Set([
+  '__webx68kDebug',
+  '__webx68kStorageProbe',
+  '__webx68kFrameProbe',
+  '__webx68kKeybufAttributionProbe',
+]);
+
 export function isTransferableHostGlobalValue(v: unknown): v is HostGlobalValue {
   const t = typeof v;
   if (t === 'string' || t === 'number' || t === 'boolean') return true;
@@ -54,7 +75,7 @@ export function collectHostGlobals(
     const v = source[key];
     if (isTransferableHostGlobalValue(v)) {
       out[key] = v;
-    } else {
+    } else if (!KNOWN_DEV_ONLY_HOST_GLOBALS.has(key)) {
       skipped.push(key);
     }
   }

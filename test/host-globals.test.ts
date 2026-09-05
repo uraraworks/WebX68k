@@ -10,7 +10,11 @@
 // 版で同じテストを当て、検査自体が実際に落ちることを確かめる(陽性対照。
 // feedback_fault_injection_needs_positive_control.md参照)。
 import { describe, expect, it } from 'vitest';
-import { collectHostGlobals, isTransferableHostGlobalValue } from '../src/host-globals';
+import {
+  KNOWN_DEV_ONLY_HOST_GLOBALS,
+  collectHostGlobals,
+  isTransferableHostGlobalValue,
+} from '../src/host-globals';
 
 describe('collectHostGlobals', () => {
   it('__webx68k で始まらないキーは無視する', () => {
@@ -89,6 +93,39 @@ describe('collectHostGlobals', () => {
       called = true;
     });
     expect(called).toBe(false);
+  });
+
+  it('KNOWN_DEV_ONLY_HOST_GLOBALSのキーは関数値でもonSkippedを呼ばない(毎回の警告を止める)', () => {
+    const skipped: string[][] = [];
+    const source: Record<string, unknown> = {};
+    for (const key of KNOWN_DEV_ONLY_HOST_GLOBALS) {
+      source[key] = () => 0;
+    }
+    source.__webx68kOk = 1;
+    const out = collectHostGlobals(source, (keys) => skipped.push(keys));
+    expect(skipped).toEqual([]);
+    expect(out).toEqual({ __webx68kOk: 1 });
+  });
+
+  it('KNOWN_DEV_ONLY_HOST_GLOBALSのキーはoutにも入らない(転写しない点は従来どおり)', () => {
+    const source: Record<string, unknown> = {};
+    for (const key of KNOWN_DEV_ONLY_HOST_GLOBALS) {
+      source[key] = () => 0;
+    }
+    const out = collectHostGlobals(source);
+    for (const key of KNOWN_DEV_ONLY_HOST_GLOBALS) {
+      expect(out[key]).toBeUndefined();
+    }
+  });
+
+  it('集合に無い__webx68kSomethingNewが関数値だと従来どおりonSkippedが呼ばれる', () => {
+    const skipped: string[][] = [];
+    const out = collectHostGlobals(
+      { __webx68kSomethingNew: () => 0 },
+      (keys) => skipped.push(keys),
+    );
+    expect(out).toEqual({});
+    expect(skipped).toEqual([['__webx68kSomethingNew']]);
   });
 });
 
