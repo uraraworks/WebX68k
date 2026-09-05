@@ -4582,6 +4582,10 @@ function applyDocumentStrings(): void {
     const els = slotElements[slot];
     const drive = slotDisplayName(slot);
     els.label.textContent = drive;
+    // HDDだけ「種類」を名乗りSCSIと非対称になるため、ラベルにツールチップで接続方式を補う
+    // (表示ラベル自体はHDDのまま。テキストコンテンツがあるのでtitleはツールチップに留まり、
+    // アクセシブルネームは引き続き「HDD」のまま変わらない)。
+    if (slot === 'hdd') els.label.title = t('hddSlotTitle');
     els.lamp.setAttribute('aria-label', t('diskLampLabel', { drive }));
     // title(ツールチップ)はロック状態で文言が変わるため updateSlotControls() 側で貼る
     els.insertBtn.setAttribute('aria-label', `${drive} ${t('slotInsert')}`);
@@ -4603,6 +4607,7 @@ function applyDocumentStrings(): void {
   {
     const scsiDrive = t('scsiSlotLabel');
     scsiElements.label.textContent = scsiDrive;
+    scsiElements.label.title = t('scsiSlotTitle');
     scsiElements.lamp.setAttribute('aria-label', t('diskLampLabel', { drive: scsiDrive }));
     scsiElements.insertBtn.setAttribute('aria-label', `${scsiDrive} ${t('slotInsert')}`);
     scsiElements.libraryBtn.setAttribute('aria-label', `${scsiDrive} ${t('slotInsertFromLibrary')}`);

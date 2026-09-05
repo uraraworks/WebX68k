@@ -128,6 +128,10 @@ interface Dict {
   hddCreateBlank(): string;
   /** ブランクHDDを作ってセットしたときの通知(トースト)。 */
   statusHddBlankCreated(args: { name: string }): string;
+  /** HDDスロットのラベル(#label-hdd)に付けるツールチップ。表示ラベル自体は「HDD」のまま変えず、接続方式(SASI)を補足する。 */
+  hddSlotTitle(): string;
+  /** SCSIスロットのラベル(#label-scsi)に付けるツールチップ。HDDと非対称にならないよう、こちらも「種類」として補足する。 */
+  scsiSlotTitle(): string;
   slotDownload(): string;
   libraryMenuEmpty(): string;
   alertBiosMissing(): string;
@@ -596,6 +600,8 @@ const STRINGS: Record<Lang, Dict> = {
     hddCreateBlank: () => 'ブランクHDDを作成(40MB・FAT16)',
     statusHddBlankCreated: ({ name }) =>
       `ブランクHDD「${name}」を作成してセットしました(40MB・FAT16)。単体では起動できないため、FDDからHuman68kを起動してデータ用ドライブとして使ってください。`,
+    hddSlotTitle: () => 'ハードディスク(SASI)',
+    scsiSlotTitle: () => 'ハードディスク(SCSI)',
     slotDownload: () => 'ダウンロード',
     libraryMenuEmpty: () => '保存済みのディスクイメージはありません。',
     alertBiosMissing: () => 'BIOS ファイル (IPLROM.DAT / CGROM.DAT) を設定してください。',
@@ -972,6 +978,8 @@ const STRINGS: Record<Lang, Dict> = {
     hddCreateBlank: () => 'Create blank HDD (40MB, FAT16)',
     statusHddBlankCreated: ({ name }) =>
       `Created and set blank HDD "${name}" (40MB, FAT16). It is not bootable on its own — boot Human68k from an FDD and use it as a data drive.`,
+    hddSlotTitle: () => 'Hard disk (SASI)',
+    scsiSlotTitle: () => 'Hard disk (SCSI)',
     slotDownload: () => 'Download',
     libraryMenuEmpty: () => 'No saved disk images yet.',
     alertBiosMissing: () => 'Please set the BIOS files (IPLROM.DAT / CGROM.DAT).',
