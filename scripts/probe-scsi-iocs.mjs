@@ -1166,6 +1166,49 @@ try {
     });
   }
 
+  // --peek=<開始>:<長さ>[,<開始>:<長さ>...] で、既存の観測がすべて終わったあとに
+  // ゲストメモリを覗いて16進で残す。--dump は「登録の成否」を見るための道具
+  // だったが、こちらは連鎖リンク先など任意番地を素直に読むためだけの覗き見。
+  // --worker=0 前提(Worker経路では host が null で peek は使えない。上の
+  // dbg.peek 利用箇所と同じ制約)。未指定なら1バイトも挙動を変えない。
+  let peeks = null;
+  if (args.peek !== undefined) {
+    peeks = {};
+    for (const part of String(args.peek).split(',')) {
+      const [a, n] = part.split(':');
+      const base = parseRamWatchAddr(a);
+      const len = Number(n);
+      if (!Number.isFinite(len) || len <= 0) {
+        throw new Error(`--peek の長さが不正です: ${part}`);
+      }
+      const bytes = await page
+        .evaluate(
+          (base, len) => {
+            const dbg = window.__webx68kDebug;
+            if (!dbg?.peek) return { error: 'peek がない' };
+            const out = [];
+            for (let i = 0; i < len; i += 2) {
+              const w = dbg.peek(base + i);
+              if (w === null) return { error: `peek(${base + i}) が null` };
+              out.push((w >> 8) & 0xff, w & 0xff);
+            }
+            return out;
+          },
+          base,
+          len,
+        )
+        .catch((err) => ({ error: String(err) }));
+      const hex = Array.isArray(bytes)
+        ? bytes.map((b) => b.toString(16).padStart(2, '0')).join(' ')
+        : bytes;
+      const key = `$${base.toString(16).padStart(6, '0')}`;
+      peeks[key] = hex;
+      console.error(
+        `[probe] peek ${key}: ${Array.isArray(bytes) ? hex : `(失敗: ${JSON.stringify(bytes)})`}`,
+      );
+    }
+  }
+
   const entries = raw.map(parseLine).filter(Boolean);
   const byCmd = {};
   for (const e of entries) byCmd[e.cmd] = (byCmd[e.cmd] ?? 0) + 1;
@@ -1201,6 +1244,7 @@ try {
         scsiDebugBaseline,
         scsiDebugSamples,
         dumps,
+        peeks,
         screenshot: shot,
         iocsVectors: vectors,
         scsiIocsVector: Array.isArray(vectors)
