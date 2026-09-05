@@ -216,6 +216,11 @@ drop targets).
 A SCSI hard disk (`.hds`) is a **separate slot from HDD (SASI)** — both can
 be mounted at the same time.
 
+- **WebX68k can't boot from SCSI.** The SCSI implementation is HLE and
+  doesn't implement the SCSI board ROM's boot entry point, so a bootable
+  `.HDS` won't boot from the SCSI slot — boot from a floppy or the HDD
+  (SASI) instead, and use SCSI as a data drive. (On real hardware, an SRAM
+  setting can boot from SCSI; WebX68k doesn't support this.)
 - Blank creation takes an integer size from **1 to 2047MB**, formatted as
   FAT16 (the 2047MB ceiling comes from the SCSI HLE implementation handling
   the image size as a signed 32-bit integer).

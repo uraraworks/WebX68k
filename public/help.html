@@ -592,6 +592,15 @@
               挿入ボタン、または「ライブラリから挿入」から読み込ませます。
             </p>
             <div class="note-box">
+              <strong>SCSIからは起動できません。</strong> WebX68kのSCSI実装はHLE(高水準
+              エミュレーション)で、SCSIボードROMの「起動エントリ」を実装していません。
+              起動可能な<code>.HDS</code>を挿しても、そこからは起動しません。フロッピー、
+              またはHDD(SASI)から起動し、SCSIはデータ用のドライブとして使ってください。
+              (参考: 実機ではSRAMの設定(『Human68k version 3.0』の<code>SWITCH</code>の
+              起動デバイス設定。既定の探索順はFDD0→FDD1→SCSI ID0→SCSI ID1)でSCSIからの
+              起動が可能ですが、WebX68kでは未対応です。)
+            </div>
+            <div class="note-box">
               <strong>挿入は次回の起動から有効です。</strong> 挿すと「SCSIディスクを挿しました。
               次回の起動から使えます」というトースト通知が出ます。<strong>起動中は差し替え
               られません</strong>(そのときは「起動中はSCSIディスクを差し替えられません」と
@@ -628,6 +637,16 @@
               used at the same time. Drag & drop a file onto the SCSI slot row at the bottom of the
               player, use its insert button, or "Insert from Library".
             </p>
+            <div class="note-box">
+              <strong>You can't boot from SCSI.</strong> WebX68k's SCSI implementation is HLE
+              (high-level emulation) and doesn't implement the SCSI board ROM's "boot entry
+              point." Inserting a bootable <code>.HDS</code> won't make it bootable — boot from a
+              floppy or the HDD (SASI) instead, and use SCSI as a data drive.
+              (For reference: on real hardware, an SRAM setting — the boot device setting in
+              <code>SWITCH</code> from Human68k version 3.0, whose default search order is
+              FDD0 → FDD1 → SCSI ID0 → SCSI ID1 — can boot from SCSI, but WebX68k doesn't support
+              this.)
+            </div>
             <div class="note-box">
               <strong>An inserted disk takes effect from the next boot.</strong> Inserting one shows
               a toast: "SCSI disk inserted. It will be available from the next boot." It
