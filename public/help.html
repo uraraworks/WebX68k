@@ -319,6 +319,14 @@
               スロットへは自動挿入せず必ずライブラリを開き、指定時は <code>run=1</code> でも
               自動起動しません。
             </p>
+            <p>
+              <code>?fd1=</code> / <code>?fd2=</code> / <code>?hdd=</code> / <code>?system=</code> の
+              いずれかがURLにある場合、URLが指定していないスロットは解除された状態でページが
+              開きます。共有リンクを開いた人が誰でも同じ状態で起動できるようにするための仕様です。
+              なお、<strong>SCSIハードディスクはURLパラメータでは指定できません。</strong>
+              SCSIディスクを挿した状態でも、上記のいずれかを含むリンクを開くとSCSIスロットは
+              解除されます。
+            </p>
             <div class="note-box">
               <strong>注意:</strong> 音声再生には <code>AudioWorklet</code> が必要ですが、これは
               https または localhost でのみ使えます。LAN の IP アドレス(<code>http://192.168.x.x:port/</code>
@@ -356,6 +364,14 @@
               parameter that only registers images in the Disk Library, regardless of kind (FD/HDD).
               It never auto-inserts into a slot — the Library always opens — and skips <code>run=1</code>
               auto-boot whenever it's given.
+            </p>
+            <p>
+              When the URL carries any of <code>?fd1=</code> / <code>?fd2=</code> / <code>?hdd=</code> /
+              <code>?system=</code>, any slot the URL doesn't mention is cleared as the page opens —
+              this is what makes a shared link boot into the same state for everyone who opens it.
+              Note that <strong>a SCSI hard disk can't be specified via URL parameters</strong>: if a
+              SCSI disk is inserted, opening a link with any of those parameters clears the SCSI slot
+              too.
             </p>
             <div class="note-box">
               <strong>Note:</strong> Audio playback needs <code>AudioWorklet</code>, which is only
@@ -566,6 +582,82 @@
           </div>
         </section>
 
+        <!-- 4.5 SCSIハードディスク -->
+        <section class="help-card">
+          <div class="lang-ja">
+            <h2>SCSIハードディスクを使う</h2>
+            <p>
+              SCSIハードディスクは、HDD(SASI)とは別系統の専用スロットです。両方を同時に
+              挿した状態で使えます。画面下部のSCSIスロット行へドラッグ&ドロップするか、
+              挿入ボタン、または「ライブラリから挿入」から読み込ませます。
+            </p>
+            <div class="note-box">
+              <strong>挿入は次回の起動から有効です。</strong> 挿すと「SCSIディスクを挿しました。
+              次回の起動から使えます」というトースト通知が出ます。<strong>起動中は差し替え
+              られません</strong>(そのときは「起動中はSCSIディスクを差し替えられません」と
+              表示されます)。差し替えるにはページを再読み込みしてください。
+            </div>
+            <p>
+              SCSIスロット行の「ブランクSCSIディスクを作成(サイズ指定・FAT16)」ボタンから、
+              新規イメージ(拡張子<code>.hds</code>)をその場で作成できます。サイズは
+              <strong>1〜2047MBの整数</strong>で指定します。上限が2047MBなのは、SCSIのHLE
+              (ハードウェアエミュレーション層)がイメージサイズを32bit符号あり整数として
+              扱っているためです。区画が複数あるイメージを挿入した場合、それぞれの区画は
+              別々のドライブとして見えます。
+            </p>
+            <p>
+              保存先はFD/HDDのディスクライブラリとは別で、ブラウザの
+              OPFS(Origin Private File System)内の<code>scsi/</code>に置かれます。設定
+              ダイアログのライブラリには「SCSIディスク」という独立した節があり、そこから
+              一覧・削除ができます。<strong>現在スロットに挿入中のイメージは削除できません。</strong>
+              ドライブ行の「ダウンロード」ボタンから、ゲストが書き込んだ後のイメージを手元の
+              ファイルとして取り出せます。
+            </p>
+            <div class="note-box">
+              <strong>保護された接続(https)が必要です。</strong> OPFSはセキュアコンテキストでしか
+              使えないため、LANの<code>http://</code>で開いた場合など保護されていない接続では、
+              SCSIスロットに「この環境では使えません(保護された接続が必要です)」と表示され、
+              機能そのものが使えません。
+            </div>
+          </div>
+          <div class="lang-en">
+            <h2>Using a SCSI hard disk</h2>
+            <p>
+              A SCSI hard disk uses its own slot, separate from the HDD (SASI) slot, and both can be
+              used at the same time. Drag & drop a file onto the SCSI slot row at the bottom of the
+              player, use its insert button, or "Insert from Library".
+            </p>
+            <div class="note-box">
+              <strong>An inserted disk takes effect from the next boot.</strong> Inserting one shows
+              a toast: "SCSI disk inserted. It will be available from the next boot." It
+              <strong>can't be swapped while running</strong> (a message reads "Can't swap a SCSI
+              disk while running"); reload the page to swap it.
+            </div>
+            <p>
+              The SCSI slot row's "Create Blank SCSI Disk (choose size, FAT16)" button builds a new
+              image (extension <code>.hds</code>) on the spot. Size is an <strong>integer from 1 to
+              2047 MB</strong>; the 2047 MB ceiling comes from the SCSI HLE (high-level emulation)
+              handling the image size as a signed 32-bit integer. An image with multiple partitions
+              shows up as multiple drives.
+            </p>
+            <p>
+              It's stored separately from the FD/HDD disk library, in your browser's
+              OPFS (Origin Private File System) under <code>scsi/</code>. The settings dialog's
+              library has its own "SCSI Disks" section for listing and deleting them.
+              <strong>The image currently inserted in the slot can't be deleted.</strong> The
+              "Download" button on the drive row exports the image — including the guest's writes —
+              as a file on your machine.
+            </p>
+            <div class="note-box">
+              <strong>Requires a secure connection (https).</strong> OPFS only works in a secure
+              context, so opening the page over an insecure connection — a LAN
+              <code>http://</code> address, for example — shows "Not available in this environment
+              (a secure connection is required)" on the SCSI slot, and the feature is unavailable
+              entirely.
+            </div>
+          </div>
+        </section>
+
         <!-- 5. ファイル転送 -->
         <section class="help-card">
           <div class="lang-ja">
@@ -590,6 +682,12 @@
               (ディスクライブラリ)へ保存されるため、ページを再読み込みしても残ります。
               起動後はHDDの行に「起動中は変更不可」と表示され、読み取り専用になります。
             </p>
+            <div class="note-box">
+              <strong>SCSIハードディスクは未対応です。</strong> ファイル転送で扱えるのは
+              FDD0/FDD1/HDDのみで、SCSIディスクの中身をブラウザから覗いたり出し入れしたり
+              することはできません。ファイルをやり取りしたい場合は、フロッピー経由で転送する
+              か、SCSIディスクをダウンロードして手元で扱ってください。
+            </div>
           </div>
           <div class="lang-en">
             <h2>File transfer (browser ⇔ disk image)</h2>
@@ -613,6 +711,12 @@
               IndexedDB (the disk library), so they survive a page reload. Once running, the HDD
               row shows "locked while running" and becomes read-only.
             </p>
+            <div class="note-box">
+              <strong>SCSI hard disks aren't supported here.</strong> File Transfer only handles
+              FDD0/FDD1/HDD — you can't browse or move files in and out of a SCSI disk from the
+              browser. Use a floppy for file exchange instead, or download the SCSI disk and work
+              with it locally.
+            </div>
           </div>
         </section>
 
@@ -1408,6 +1512,7 @@
               <li><strong>マウスが反応しない</strong> — マウスをキャプチャしていない可能性があります。画面を右ダブルクリックするか、「…」メニューの「入力」グループにある「マウスキャプチャ」を押してください。カーソルの追従がずれた場合は同じグループの「マウス再同期」で直せます。</li>
               <li><strong>ディスクが認識されない</strong> — 拡張子を確認してください(FDDは<code>.xdf,.dim,.d88,.hdm,.img,.2hd</code>、HDDは<code>.hdf,.dup</code>)。</li>
               <li><strong>ステート復元でおかしくなる</strong> — 保存時とディスク構成が異なる旨の確認ダイアログが出た場合、キャンセルすれば復元を中止できます。</li>
+              <li><strong>SCSIを挿したのにC:などのドライブが現れない</strong> — 起動ディスクの構成によっては、SCSIドライバを登録する場所が確保できず、SCSIドライブが認識されないことがあります。その場合でも起動そのものは妨げられません。ドライブが必要な場合は、別の起動ディスク(同梱のシステムディスクなど)で試してください。</li>
             </ul>
           </div>
           <div class="lang-en">
@@ -1417,6 +1522,7 @@
               <li><strong>The mouse doesn't respond</strong> — The mouse may not be captured. Right double-click the screen, or use "Capture Mouse" in the "…" menu's Input group. If the cursor drifts out of sync, use "Resync Mouse" in the same group.</li>
               <li><strong>A disk isn't recognized</strong> — Check the file extension (FDD: <code>.xdf,.dim,.d88,.hdm,.img,.2hd</code>; HDD: <code>.hdf,.dup</code>).</li>
               <li><strong>Loading a state causes odd behavior</strong> — If a confirmation dialog about a disk configuration mismatch appears, canceling it aborts the load.</li>
+              <li><strong>Drives like C: don't appear even though a SCSI disk is inserted</strong> — Depending on the boot disk's configuration, there may be no room to register a SCSI driver, so the SCSI drive won't be recognized. This doesn't prevent booting itself. If you need the drive, try a different boot disk (such as the bundled system disk).</li>
             </ul>
           </div>
         </section>
