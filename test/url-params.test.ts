@@ -8,6 +8,7 @@ import {
   parseCpuSpeedParam,
   parseRamSizeParam,
   parseWorkerModeParam,
+  slotsToUnmountForUrl,
 } from '../src/url-params';
 
 describe('parseRamSizeParam', () => {
@@ -122,5 +123,43 @@ describe('parseWorkerModeParam', () => {
 
   it.each([null, '', '2', 'abc', 'worker'])('%s -> null', (input) => {
     expect(parseWorkerModeParam(input)).toBeNull();
+  });
+});
+
+describe('slotsToUnmountForUrl', () => {
+  it('run=1相当(指定なし)では何も解除しない', () => {
+    expect(slotsToUnmountForUrl({ system: false })).toEqual({
+      fdd0: false,
+      fdd1: false,
+      hdd: false,
+      scsi: false,
+    });
+  });
+
+  it('fd1だけ指定: fdd0以外を解除する', () => {
+    expect(slotsToUnmountForUrl({ fd1: 'a.d88', system: false })).toEqual({
+      fdd0: false,
+      fdd1: true,
+      hdd: true,
+      scsi: true,
+    });
+  });
+
+  it('system=1だけ指定: fdd0以外を解除する', () => {
+    expect(slotsToUnmountForUrl({ system: true })).toEqual({
+      fdd0: false,
+      fdd1: true,
+      hdd: true,
+      scsi: true,
+    });
+  });
+
+  it('fd1とhddを指定: fdd0/hdd以外を解除する', () => {
+    expect(slotsToUnmountForUrl({ fd1: 'a.d88', hdd: 'b.hdf', system: false })).toEqual({
+      fdd0: false,
+      fdd1: true,
+      hdd: false,
+      scsi: true,
+    });
   });
 });

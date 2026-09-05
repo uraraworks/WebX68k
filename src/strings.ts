@@ -285,6 +285,8 @@ interface Dict {
   urlArchiveKindMismatch(args: { label: string; kind: 'hdd' | 'fd' }): string;
   /** URLパラメータのアーカイブが複数枚のディスクを含んでいたため、ライブラリを開いて選ばせるときの案内(run=1でも自動起動しない旨を含む)。 */
   urlArchiveNeedsSelection(): string;
+  /** URLがディスク構成を指定しているため、指定外のスロットを起動前に取り出したことを知らせるトースト。「消えていません」を必ず含める。 */
+  urlUnmountedOtherSlots(): string;
   /** ?lib=<url> (複数指定可)のトースト等で使う、何本目のlibか示すラベル(fdSlotLabel/hddSlotLabelのlib版)。 */
   urlLibSlotLabel(args: { index: number }): string;
   /** run=1自動起動時、自動再生制限でAudioContextがsuspendedのままのときに出す表示。 */
@@ -741,6 +743,8 @@ const STRINGS: Record<Lang, Dict> = {
       `${label}: アーカイブ内に${kind === 'hdd' ? 'HDD' : 'FD'}用のディスクイメージが見つかりませんでした。`,
     urlArchiveNeedsSelection: () =>
       'アーカイブに複数のディスクイメージが含まれていたため、ライブラリを開きました。使用するイメージを選んでください(自動起動はしません)。',
+    urlUnmountedOtherSlots: () =>
+      'URLで指定されたディスク構成で起動するため、他のスロットを取り出しました(ディスクは消えていません)。',
     urlLibSlotLabel: ({ index }) => `ライブラリ${index}`,
     audioMutedBanner: () =>
       '自動再生の制限により音声が無効です。画面のタップ(クリック)またはキー入力で音声が有効になります。',
@@ -1116,6 +1120,8 @@ const STRINGS: Record<Lang, Dict> = {
       `${label}: The archive doesn't contain a ${kind === 'hdd' ? 'HDD' : 'FD'} disk image.`,
     urlArchiveNeedsSelection: () =>
       'The archive contains multiple disk images, so the library was opened. Please choose which image to use (auto-boot is skipped).',
+    urlUnmountedOtherSlots: () =>
+      'Ejected the other slots to boot with the disk configuration specified in the URL (the disks have not been deleted).',
     urlLibSlotLabel: ({ index }) => `Library ${index}`,
     audioMutedBanner: () =>
       'Audio is muted due to autoplay restrictions. Tap or click the screen, or press a key, to enable sound.',

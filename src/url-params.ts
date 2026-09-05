@@ -127,3 +127,38 @@ export function parseAspectModeParam(raw: string | null): AspectMode | null {
   if (trimmed === 'native' || trimmed === '1:1' || trimmed === '11') return 'native';
   return null;
 }
+
+/** URL のディスク構成指定(?fd1=/?fd2=/?hdd=/?system=1)を表す。 */
+export interface UrlSlotSpec {
+  fd1?: string | undefined;
+  fd2?: string | undefined;
+  hdd?: string | undefined;
+  system: boolean;
+}
+
+/**
+ * URL がディスク構成を指定しているとき、指定外のスロットを解除する対象を返す。
+ *
+ * 共有リンクは「誰が開いても同じ状態で起動する」のが本来だが、前のセッションで挿さっていた
+ * スロットがそのまま残ると、意図しないディスクが同時に挿さった状態で起動してしまう。
+ * 実測でも、起動可能な SCSI ディスクが挿さっていると FDD0 の起動ディスクを指定していても
+ * IPL が止まる(「システムを起動できませんでした」)ことを確認している。
+ *
+ * `fd1`/`fd2`/`hdd`/`system` のいずれも無ければ(`run=1` だけの URL 等)、
+ * 「いま挿さっているもので起動する」という意味なので何も解除しない。
+ */
+export function slotsToUnmountForUrl(
+  spec: UrlSlotSpec,
+): { fdd0: boolean; fdd1: boolean; hdd: boolean; scsi: boolean } {
+  // system=1 は fd1 が無いときだけ fdd0 の指定として扱われる(main.ts の wantsBundledSystem と同じ規則)。
+  const specifiesFdd0 = spec.fd1 !== undefined || spec.system;
+  const specifiesAny = specifiesFdd0 || spec.fd2 !== undefined || spec.hdd !== undefined;
+  if (!specifiesAny) return { fdd0: false, fdd1: false, hdd: false, scsi: false };
+  return {
+    fdd0: !specifiesFdd0,
+    fdd1: spec.fd2 === undefined,
+    hdd: spec.hdd === undefined,
+    // SCSI は URL から指定する手段が無いため、この規則が働く場面では常に解除対象になる。
+    scsi: true,
+  };
+}

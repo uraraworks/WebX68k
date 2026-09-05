@@ -95,6 +95,7 @@ import {
   parseCpuSpeedParam,
   parseRamSizeParam,
   parseWorkerModeParam,
+  slotsToUnmountForUrl,
 } from './url-params';
 import {
   hostMatches,
@@ -7076,6 +7077,40 @@ async function applyUrlParams(): Promise<void> {
   const wantsBundledSystem = urlSystem && !urlFd1;
   if (!urlFd1 && !urlFd2 && !urlHdd && !wantsBundledSystem && !urlRun && urlLib.length === 0) return;
 
+  // 共有リンクは「誰が開いても同じ状態で起動する」のが本来。前のセッションで挿さっていた
+  // スロットが残ったままだと、起動可能なSCSIディスクが挿さっているだけでFDD0指定のIPLが
+  // 止まる実測がある。URLがディスク構成を指定しているときは、指定外のスロットをここで
+  // (ディスク読み込みの前に)取り出す。
+  const unmount = slotsToUnmountForUrl({ fd1: urlFd1, fd2: urlFd2, hdd: urlHdd, system: urlSystem });
+  let unmountedAny = false;
+  if (unmount.fdd0) {
+    slots.fdd0 = null;
+    updateSlotDisplay('fdd0', null);
+    unmountedAny = true;
+  }
+  if (unmount.fdd1) {
+    slots.fdd1 = null;
+    updateSlotDisplay('fdd1', null);
+    unmountedAny = true;
+  }
+  if (unmount.hdd) {
+    slots.hdd = null;
+    updateSlotDisplay('hdd', null);
+    unmountedAny = true;
+  }
+  if (unmount.scsi && scsiName !== null) {
+    // OPFS上の実体・ライブラリのレコードは消さない扱いはhandleEjectScsi()と同じ。
+    handleEjectScsi();
+    unmountedAny = true;
+  }
+  // トーストは1枠で後勝ちのため、読み込み中の別トーストに潰されないよう最後に出す
+  // (途中のreturnより前に呼ぶことで、告知せずに終わる経路を作らない)。
+  const notifyUnmountedIfAny = (): void => {
+    if (!unmountedAny) return;
+    unmountedAny = false;
+    showToast(t('urlUnmountedOtherSlots'), 6000);
+  };
+
   if (wantsBundledSystem) {
     const bytes = await fetchBytes(BUNDLED_DISK_URL);
     if (bytes) {
@@ -7109,6 +7144,7 @@ async function applyUrlParams(): Promise<void> {
   if (unresolvedGroupId) {
     showToast(t('urlArchiveNeedsSelection'), 8000);
     openLibraryModal(unresolvedGroupId);
+    notifyUnmountedIfAny();
     return; // 複数枚のときは run=1 でも自動起動しない(要件3)
   }
 
@@ -7125,10 +7161,12 @@ async function applyUrlParams(): Promise<void> {
     if (firstOutcome) {
       openLibraryModal(firstOutcome.kind === 'group' ? firstOutcome.groupId : undefined);
     }
+    notifyUnmountedIfAny();
     return;
   }
 
   // run=1: オーバーレイの2択を待たずそのまま自動起動する(ディスク未指定でも run=1 だけで起動する)。
+  notifyUnmountedIfAny();
   if (urlRun) await startFromOverlay(false);
 }
 
