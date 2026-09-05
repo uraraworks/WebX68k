@@ -224,7 +224,11 @@ be mounted at the same time.
   (reload the page to change it).
 - It's saved separately from the FD/HDD Disk Library (IndexedDB), in the
   browser's **OPFS** (`scsi/`); anything the guest writes there persists
-  across reloads.
+  across reloads. This site does not request persistent storage
+  (`navigator.storage.persist()` is not called, confirmed
+  `navigator.storage.persisted()` returns `false`), so it can be cleared
+  under the same conditions as IndexedDB — with up to 2047MB at stake,
+  downloading a backup regularly is worthwhile.
 - It requires a **secure connection (HTTPS)** — OPFS is only available in a
   secure context, so it's unavailable entirely over a plain LAN `http://`
   address.

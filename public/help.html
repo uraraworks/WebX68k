@@ -611,7 +611,8 @@
               ダイアログのライブラリには「SCSIディスク」という独立した節があり、そこから
               一覧・削除ができます。<strong>現在スロットに挿入中のイメージは削除できません。</strong>
               ドライブ行の「ダウンロード」ボタンから、ゲストが書き込んだ後のイメージを手元の
-              ファイルとして取り出せます。
+              ファイルとして取り出せます。保存先や消えるタイミングの詳細は後述の
+              「ディスクの保存と、データが消える条件」を参照してください。
             </p>
             <div class="note-box">
               <strong>保護された接続(https)が必要です。</strong> OPFSはセキュアコンテキストでしか
@@ -646,7 +647,8 @@
               library has its own "SCSI Disks" section for listing and deleting them.
               <strong>The image currently inserted in the slot can't be deleted.</strong> The
               "Download" button on the drive row exports the image — including the guest's writes —
-              as a file on your machine.
+              as a file on your machine. See "How disks are saved, and when the data disappears"
+              below for where it's stored and when it can be lost.
             </p>
             <div class="note-box">
               <strong>Requires a secure connection (https).</strong> OPFS only works in a secure
@@ -1286,7 +1288,7 @@
               読み込み直してください。
             </div>
             <p>
-              保存先はサーバーではなく<strong>ブラウザ内のストレージ(IndexedDB)</strong>です。
+              保存先はサーバーではなく<strong>ブラウザ内のストレージ(FD/HDDはIndexedDB)</strong>です。
               これは Cookie と同じ扱いで、次のような場合に<strong>まとめて消えます</strong>。
             </p>
             <ul>
@@ -1297,12 +1299,29 @@
               <li><strong>Safari で7日間このサイトを開かなかったとき</strong>(WebKit の仕様で、スクリプトから書き込めるストレージが一括削除されます)</li>
             </ul>
             <div class="note-box">
+              <strong>SCSIハードディスクは別の入れ物(OPFS)ですが、消える条件は同じです。</strong>
+              FD/HDDのディスクライブラリはIndexedDBに置かれますが、SCSIディスクは
+              <code>OPFS(Origin Private File System)</code>に置かれます。入れ物は違っても、
+              上記のいずれの条件でもまとめて消える点は変わりません。また、このサイトは
+              永続化(<code>navigator.storage.persist()</code>)を申請していないため、
+              ブラウザから見ると「必要なら消してよいデータ」のままです。SCSIは
+              <strong>最大2047MBまで育てられる分、失ったときの被害も大きくなります。</strong>
+              こまめな手元へのダウンロードを特におすすめします。
+            </div>
+            <div class="note-box">
               <strong>大事なデータは定期的にダウンロードしてください。</strong>
               ドライブ行の<strong>ダウンロード</strong>ボタンで、ゲストの書き込みを反映した
               ディスクイメージを手元のファイルとして書き出せます。ブラウザのストレージは
               いつ消えてもおかしくないものなので、遊び込んだディスクほど手元に控えを
               持っておくと安心です。また別のブラウザや別の端末へは引き継がれないため、
               持ち出すときにもダウンロードしたファイルを使います。
+            </div>
+            <div class="note-box">
+              <strong>SCSIは起動中でもダウンロードできますが、直前の書き込みが
+              反映されていないことがあります。</strong>
+              SCSIディスクへの書き出しは、ゲストの書き込みが止まってから0.25秒後、
+              または最長でも2秒ごとに行われる仕組みです。確実な控えが欲しいときは、
+              ディスクアクセスが落ち着いてからダウンロードしてください。
             </div>
           </div>
           <div class="lang-en">
@@ -1322,8 +1341,8 @@
               file.
             </div>
             <p>
-              This is stored in <strong>your browser's storage (IndexedDB)</strong>, not on a
-              server. It behaves just like cookies, and it <strong>all disappears</strong> when:
+              This is stored in <strong>your browser's storage (IndexedDB for FD/HDD)</strong>, not
+              on a server. It behaves just like cookies, and it <strong>all disappears</strong> when:
             </p>
             <ul>
               <li>You clear "Cookies and other site data" (clearing only "Cached images and files" does not remove it)</li>
@@ -1333,12 +1352,30 @@
               <li><strong>You don't open this site in Safari for seven days</strong> (WebKit deletes all script-writable storage)</li>
             </ul>
             <div class="note-box">
+              <strong>A SCSI hard disk lives in a different store (OPFS), but disappears under the
+              same conditions.</strong>
+              The FD/HDD disk library is kept in IndexedDB, while SCSI disks are kept in
+              <code>OPFS (Origin Private File System)</code>. Different store, same fate: any of the
+              conditions above clears it too. This site also does not request persistent storage
+              (<code>navigator.storage.persist()</code>), so from the browser's point of view it's
+              still "safe to delete if needed." Because SCSI disks can grow up to
+              <strong>2047 MB, losing one loses that much more</strong> — downloading a copy
+              regularly is especially worthwhile here.
+            </div>
+            <div class="note-box">
               <strong>Download anything you care about, regularly.</strong>
               The <strong>download</strong> button on each drive row exports the disk image —
               including the guest's writes — as a file on your machine. Browser storage can vanish
               at any time, so the more you have invested in a disk, the more worth keeping a copy.
               Storage is also never shared with another browser or device, so use the downloaded
               file when you want to take a disk elsewhere.
+            </div>
+            <div class="note-box">
+              <strong>You can download a SCSI disk while it's running, but a very recent write may
+              not be reflected yet.</strong>
+              SCSI writes are flushed 0.25 seconds after guest writes stop, or at least every 2
+              seconds while they continue. For a reliable copy, download after disk activity has
+              settled down.
             </div>
           </div>
         </section>
