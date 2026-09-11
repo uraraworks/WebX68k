@@ -79,8 +79,36 @@ C8_MODE set 0                   * C8: 親の仮説「戻り値は+18のロング
 * _DSKFRE構造体をそこへ書く)。C8_MODE=0のときは1バイトも命令が増えない
 * (既存条件のバイナリに影響しない)。
         endc
+
+        ifnd C9_MODE
+C9_MODE set 0                   * C9: 0=無効(既存条件と同じ)。1=有効。
+* 有効時、record_requestはコマンド番号を問わず「+14/+18がゲストRAMを指す
+* ポインタらしい値(0<val<$C00000かつ偶数)」ならその先64バイトずつ記録する
+* (旧来の$47/$48専用88+53バイト記録の代わり)。さらに、未対応コマンドの
+* 応答は「状態0・+18=-2(ファイルが見つからない)」に変える(C3b等の
+* $1003/成功スタブより優先)。加えて open/read/close らしきコマンドを
+* CMD_OPEN/CMD_READ/CMD_CLOSEで指定でき、指定したコードにだけ個別応答する
+* (未指定=$FFのままなら該当コードは無く、全部C9の既定フォールバックに落ちる)。
+        endc
+        ifnd CMD_OPEN
+CMD_OPEN set $ff                * C9: 「開く」とみなすコマンドコード。$ffは無効(一致しない)
+        endc
+        ifnd CMD_READ
+CMD_READ set $ff                * C9: 「読む」とみなすコマンドコード
+        endc
+        ifnd CMD_CLOSE
+CMD_CLOSE set $ff               * C9: 「閉じる」とみなすコマンドコード
+        endc
+        ifnd CMD_READ_BUF_OFF
+CMD_READ_BUF_OFF set 18         * C9: 読み込みバッファへの far pointer がヘッダのどのオフセットか
+        endc
+
 EXTRA_SIZE set 142
+        ifne C9_MODE
+ENTRY_SIZE set 156              * C9: 2(cmd)+26(hdr)+64(+14先)+64(+18先)
+        else
 ENTRY_SIZE set 170
+        endc
 
         section text
 
@@ -139,6 +167,14 @@ interrupt:
         cmp.b   #$50,d0
         beq.w   cmd50_ok
         endc
+        ifne C9_MODE
+        cmp.b   #CMD_OPEN,d0
+        beq.w   cmd_open_ok
+        cmp.b   #CMD_READ,d0
+        beq.w   cmd_read_ok
+        cmp.b   #CMD_CLOSE,d0
+        beq.w   cmd_close_ok
+        endc
         endc
 
         ifne CMD5_SPECIAL
@@ -147,6 +183,14 @@ interrupt:
         beq.s   cmd5_ok
         endc
 
+        ifne C9_MODE
+* --- C9: 未対応コマンドは状態0・+18=-2(ファイルが見つからない)を返す ---
+        move.b  #$00,3(a0)
+        move.b  #$00,4(a0)
+        move.l  #-2,18(a0)
+        moveq   #0,d0
+        bra.w   done
+        else
         ifeq UNKNOWN_OK
 * --- 未対応コマンド: エラー $1003 (中止のみ・コマンドコード不正) ---
         move.b  #$03,3(a0)              * +3 エラーlow
@@ -159,6 +203,7 @@ interrupt:
         move.b  #$00,4(a0)
         moveq   #0,d0
         bra.s   done
+        endc
         endc
 
         ifne CMD5_SPECIAL
@@ -421,6 +466,60 @@ cmd50_noptr:
         bra.w   done
         endc
 
+        ifne C9_MODE
+* --- C9: 「開く」らしいコマンド(CMD_OPENで指定)。常に成功(+18=0)を返す。
+* readの呼び出し回数カウンタをここで0へ戻す(1ファイルぶんの読み出し状態
+* を素朴に1個のグローバルカウンタで代用する。推測: openのたびにリセット
+* すれば足りるはず) ---
+cmd_open_ok:
+        lea     c9_read_count(pc),a1
+        move.w  #0,(a1)
+        move.b  #$00,3(a0)
+        move.b  #$00,4(a0)
+        move.l  #0,18(a0)
+        moveq   #0,d0
+        bra.w   done
+
+* --- C9: 「読む」らしいコマンド(CMD_READで指定)。1回目はCMD_READ_BUF_OFF
+* (既定+18)が指すバッファへ'Hello from host!\r\n'(18バイト、推測: 改行は
+* CRLF)を書き、+18へ読んだバイト数(18)を返す。2回目以降は+18=0(EOF)。
+* バッファ先頭アドレスは読み終えてから+18を上書きする(CMD_READ_BUF_OFF=18
+* のとき入力/出力が同じ欄を兼ねるため) ---
+cmd_read_ok:
+        lea     c9_read_count(pc),a1
+        move.w  (a1),d1
+        bne.s   cmd_read_eof
+
+        movea.l CMD_READ_BUF_OFF(a0),a2 * a2 = バッファへのfar pointer(推測)
+        lea     c9_hello(pc),a3
+        moveq   #18-1,d2
+cmd_read_copy:
+        move.b  (a3)+,(a2)+
+        dbra    d2,cmd_read_copy
+
+        move.w  #1,(a1)                 * 次回からEOFにする
+        move.b  #$00,3(a0)
+        move.b  #$00,4(a0)
+        move.l  #18,18(a0)
+        moveq   #0,d0
+        bra.w   done
+
+cmd_read_eof:
+        move.b  #$00,3(a0)
+        move.b  #$00,4(a0)
+        move.l  #0,18(a0)
+        moveq   #0,d0
+        bra.w   done
+
+* --- C9: 「閉じる」らしいコマンド(CMD_CLOSEで指定)。常に成功を返す ---
+cmd_close_ok:
+        move.b  #$00,3(a0)
+        move.b  #$00,4(a0)
+        move.l  #0,18(a0)
+        moveq   #0,d0
+        bra.w   done
+        endc
+
         ifne REC_MODE
 * -----------------------------------------------------------------------
 * record_request -- 要求が来るたびに記録領域へ追記するサブルーチン。
@@ -434,7 +533,11 @@ record_request:
         lea     rec_count(pc),a1
         move.w  (a1),d1
         cmp.w   #REC_MAX,d1
+        ifne C9_MODE
+        bge.w   rec_ret                 * あふれた: 記録せず戻る(C9は新規コードが挟まり.sでは届かない)
+        else
         bge.s   rec_ret                 * あふれた: 記録せず戻る
+        endc
 
         move.w  d1,d3
         mulu    #ENTRY_SIZE,d3
@@ -455,6 +558,44 @@ rec_hdr:
         move.b  (a4)+,(a3)+
         dbra    d3,rec_hdr              * ここでa3はentry+28(拡張領域の先頭)になる
 
+        ifne C9_MODE
+* C9: コマンド番号を問わず、+14/+18が「ゲストRAMを指すポインタらしい値」
+* (0<val<$C00000 かつ偶数)ならその先64バイトずつ記録する(旧来の$47/$48
+* 専用88+53バイト記録の代わり)。a3はここでentry+28(拡張領域の先頭)。
+        move.l  14(a0),d1
+        beq.s   rec_c9_p14_skip          * 0はポインタとみなさない
+        cmp.l   #$00c00000,d1
+        blo.s   rec_c9_p14_lo
+        bra.s   rec_c9_p14_skip
+rec_c9_p14_lo:
+        move.l  d1,d2
+        and.l   #1,d2
+        bne.s   rec_c9_p14_skip          * 奇数番地はポインタとみなさない
+        movea.l d1,a4
+        moveq   #64-1,d3
+rec_c9_p14_copy:
+        move.b  (a4)+,(a3)+
+        dbra    d3,rec_c9_p14_copy
+        bra.s   rec_c9_p18
+rec_c9_p14_skip:
+        lea     64(a3),a3               * 書かなくても64バイト分は進める(entry+92に揃える)
+rec_c9_p18:
+        move.l  18(a0),d1
+        beq.w   rec_bump
+        cmp.l   #$00c00000,d1
+        blo.s   rec_c9_p18_lo
+        bra.w   rec_bump
+rec_c9_p18_lo:
+        move.l  d1,d2
+        and.l   #1,d2
+        bne.s   rec_bump
+        movea.l d1,a4
+        moveq   #64-1,d3
+rec_c9_p18_copy:
+        move.b  (a4)+,(a3)+
+        dbra    d3,rec_c9_p18_copy
+        bra.w   rec_bump
+        else
         moveq   #0,d3
         move.b  2(a0),d3
         cmp.b   #$47,d3
@@ -482,6 +623,7 @@ rec_c48:
 rec_c48_fb:
         move.b  (a4)+,(a3)+
         dbra    d3,rec_c48_fb
+        endc
 
 rec_bump:
         lea     rec_count(pc),a1
@@ -567,6 +709,18 @@ cmd48_count:
         dc.w    0                * B群: $48が呼ばれた回数(1始まりで数える)
 safety_hit:
         dc.b    0                * B群: 安全弁(6回目以降)が作動したら1
+
+        ifne C9_MODE
+* safety_hitが1バイトで奇数番地になりうるため、dc.wの前でevenを打つ
+* (実測: 打たないとc9_read_countが奇数番地に来てmove.w #0,(a1)でアドレス
+* エラーになった。PC=header+$25a)。
+        even
+c9_read_count:
+        dc.w    0                * C9: 「読む」が何回呼ばれたか(open成功で0に戻す)
+c9_hello:
+        dc.b    'Hello from host!',$0d,$0a  * C9: 「読む」1回目で返す18バイト(推測: 改行はCRLF)
+        even
+        endc
 
         even
 

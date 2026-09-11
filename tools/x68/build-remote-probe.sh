@@ -185,5 +185,28 @@ build_one "c8b" 2000 -DCMD_INIT=\$40 -DREC_MODE=1 -DC6_MODE=2 -DC6_SUB=3 -DC8_MO
 build_device_variant "c8b"
 print_rec_offsets "c8b"
 
+echo "== C9-r1: 属性\$2000, 初期化=\$40。C8-bを土台に、コマンド番号を問わず+14/+18の"
+echo "   ポインタ先を64バイトずつ記録する。未対応コマンドは状態0・+18=-2。"
+echo "   open/read/closeはCMD_OPEN/CMD_READ/CMD_CLOSEで個別指定(既定\$ffは無効=未設定)。"
+echo "   最初のラウンドは何も指定せず、'開く'が何番で来るかを記録だけで観測する。"
+echo "   REC_MAXは96(dir c:より少ない往復で済む想定だが念のため引き上げ) =="
+build_one "c9r1" 2000 -DCMD_INIT=\$40 -DREC_MODE=1 -DC6_MODE=2 -DC6_SUB=3 -DC8_MODE=2 -DC9_MODE=1 -DREC_MAX=96
+build_device_variant "c9r1"
+print_rec_offsets "c9r1"
+
+echo "== C9-r2: C9-r1の実測(type c:hello.txtでcmd\$4aが1回だけ来た。+14が"
+echo "   _NAMESTS形式(drive=2=C:, path=\\のみ)を指していた)を受け、\$4aを'開く'とみなし"
+echo "   常に成功(+18=0)を返すようにする。次に来るコマンドを見るための段 =="
+build_one "c9r2" 2000 -DCMD_INIT=\$40 -DREC_MODE=1 -DC6_MODE=2 -DC6_SUB=3 -DC8_MODE=2 -DC9_MODE=1 -DREC_MAX=96 -DCMD_OPEN=\$4a
+build_device_variant "c9r2"
+print_rec_offsets "c9r2"
+
+echo "== C9-r3: C9-r2の実測(cmd\$4a=開く成功後、cmd\$4c(+14=ポインタ,+18=長さ1024)"
+echo "   →cmd\$4bの順で来た。\$4cを'読む'、\$4bを'閉じる'とみなし、バッファは+14"
+echo "   (CMD_READ_BUF_OFF=14に変更)へ'Hello from host!\\r\\n'を書いて+18=18を返す =="
+build_one "c9r3" 2000 -DCMD_INIT=\$40 -DREC_MODE=1 -DC6_MODE=2 -DC6_SUB=3 -DC8_MODE=2 -DC9_MODE=1 -DREC_MAX=96 -DCMD_OPEN=\$4a -DCMD_READ=\$4c -DCMD_CLOSE=\$4b -DCMD_READ_BUF_OFF=14
+build_device_variant "c9r3"
+print_rec_offsets "c9r3"
+
 echo "== 完了 =="
-echo "$OUT_DIR/{c0,c1,c2,c1b,c3a,c3b,c6v1,c6v2,c6f1,c6f2,c6f3,c7d0,c7d1,c7d2,c8a,c8b}.xdf を作成しました。"
+echo "$OUT_DIR/{c0,c1,c2,c1b,c3a,c3b,c6v1,c6v2,c6f1,c6f2,c6f3,c7d0,c7d1,c7d2,c8a,c8b,c9r1,c9r2,c9r3}.xdf を作成しました。"
