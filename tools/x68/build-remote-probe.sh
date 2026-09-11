@@ -208,5 +208,12 @@ build_one "c9r3" 2000 -DCMD_INIT=\$40 -DREC_MODE=1 -DC6_MODE=2 -DC6_SUB=3 -DC8_M
 build_device_variant "c9r3"
 print_rec_offsets "c9r3"
 
+echo "== C10: C9-r3を土台に、\$47/\$48のワイルドカード照合・HELLO.TXTの3000バイト"
+echo "   実データ・+22(FCB候補)先96バイトの記録を追加。REC_MAXは96のまま"
+echo "   (entryが252バイトに増えるため領域は24192バイト) =="
+build_one "c10" 2000 -DCMD_INIT=\$40 -DREC_MODE=1 -DC6_MODE=2 -DC6_SUB=3 -DC8_MODE=2 -DC9_MODE=1 -DREC_MAX=96 -DCMD_OPEN=\$4a -DCMD_READ=\$4c -DCMD_CLOSE=\$4b -DCMD_READ_BUF_OFF=14 -DC10_MODE=1
+build_device_variant "c10"
+print_rec_offsets "c10"
+
 echo "== 完了 =="
-echo "$OUT_DIR/{c0,c1,c2,c1b,c3a,c3b,c6v1,c6v2,c6f1,c6f2,c6f3,c7d0,c7d1,c7d2,c8a,c8b,c9r1,c9r2,c9r3}.xdf を作成しました。"
+echo "$OUT_DIR/{c0,c1,c2,c1b,c3a,c3b,c6v1,c6v2,c6f1,c6f2,c6f3,c7d0,c7d1,c7d2,c8a,c8b,c9r1,c9r2,c9r3,c10}.xdf を作成しました。"

@@ -103,11 +103,26 @@ CMD_CLOSE set $ff               * C9: 「閉じる」とみなすコマンドコ
 CMD_READ_BUF_OFF set 18         * C9: 読み込みバッファへの far pointer がヘッダのどのオフセットか
         endc
 
+        ifnd C10_MODE
+C10_MODE set 0                  * C10: 0=無効。1にするとC9の上に以下を足す(C9_MODE=1と併用が前提):
+* ・$47/$48が_NAMESTSの名前8+拡張子3を'?'をワイルドカードとしてfake_file/
+*   fake_file2と照合し、一致したものだけを返す(一致なしは$47=-2/$48=-18)。
+* ・HELLO.TXT(fake_file)の中身を3000バイトの実データにし、$4c(読む)は
+*   c10_read_pos(開いたときに0、読むたびに進める、1ファイルぶんのみ)を
+*   使って要求長ぶんを返す。
+* ・record_requestで+22(a0)もポインタらしければ、その先96バイト(FCB候補)
+*   をentry+156へ記録する(ENTRY_SIZEを252へ拡張)。
+        endc
+
 EXTRA_SIZE set 142
-        ifne C9_MODE
-ENTRY_SIZE set 156              * C9: 2(cmd)+26(hdr)+64(+14先)+64(+18先)
+        ifne C10_MODE
+ENTRY_SIZE set 252              * C10: 2(cmd)+26(hdr)+64(+14先)+64(+18先)+96(+22先=FCB候補)
         else
+          ifne C9_MODE
+ENTRY_SIZE set 156              * C9: 2(cmd)+26(hdr)+64(+14先)+64(+18先)
+          else
 ENTRY_SIZE set 170
+          endc
         endc
 
         section text
@@ -303,8 +318,28 @@ cmd47_ok:
         moveq   #0,d1
         move.b  13(a0),d1               * ヘッダ+13 = 検索属性
         cmp.b   #$08,d1                 * $08ちょうどのときだけボリューム検索
+        ifne C10_MODE
+        beq.w   cmd47_vol               * C10はcmd47_okの本体が大きく.sでは届かない
+        else
         beq.s   cmd47_vol
+        endc
 
+        ifne C10_MODE
+* C10: _NAMESTS(+14が指す)の名前8+拡張子3(+67〜+77)を、次の$48でも使える
+* よう c10_pat_name/extへ保存し、探索位置c10_search_idxを0に戻してから
+* 共通の照合ルーチンcmd10_scanへ渡す。
+        move.l  14(a0),a1               * a1 = _NAMESTSへのポインタ(推測)
+        lea     67(a1),a1               * +67名前8, 続けて+75拡張子3(連続11B)
+        lea     c10_pat_name(pc),a2
+        moveq   #11-1,d2
+cmd47_pat_copy:
+        move.b  (a1)+,(a2)+
+        dbra    d2,cmd47_pat_copy
+
+        lea     c10_search_idx(pc),a2
+        move.w  #0,(a2)
+        bra.w   cmd10_scan
+        else
         move.l  18(a0),a2               * a2 = FILBUFへの出力先(far pointer)
         lea     10(a2),a2               * +10から先だけ書く
         lea     fake_file(pc),a1
@@ -319,6 +354,7 @@ cmd47_copy:
         endc
         moveq   #0,d0
         bra.w   done
+        endc
 
 cmd47_vol:
         ifne C8_MODE
@@ -363,6 +399,12 @@ cmd47_vol_copy:
 * B群は呼び出し回数で振る: 1回目=WORLD.DOC、2〜5回目=C6_SUBのF1/F2/F3で
 * 「もう無い」、6回目以降は安全弁として強制的に両方-18を返し、印を残す。 ---
 cmd48_ok:
+        ifne C10_MODE
+* C10: c10_search_idx(前回の$47/$48が残した続き位置)からそのまま照合を
+* 続ける(パターンは再送されない前提。$47のときに保存したc10_pat_name/ext
+* をここでも使う)。
+        bra.w   cmd10_scan
+        endc
         ifeq C6_MODE-1
         move.b  #$ee,3(a0)
         move.b  #$ff,4(a0)
@@ -466,14 +508,95 @@ cmd50_noptr:
         bra.w   done
         endc
 
+        ifne C10_MODE
+* -----------------------------------------------------------------------
+* cmd10_scan -- $47(パターン設定直後)・$48(続き)共通の照合ルーチン。
+* 前提: a0=リクエストヘッダ。c10_pat_name/ext(11B)に探すパターン、
+* c10_search_idx(word)に次に調べる候補番号(0=fake_file,1=fake_file2,
+* 2=使い切り)が入っている。'?'はワイルドカード(any)として扱う。
+* 一致したら、その候補をFILBUF(+18(a0)の far pointer)+10へ43バイト
+* コピーし、状態0・+18(a0)=0で返す。全候補を使い切ったら状態0のまま、
+* 呼び出し元の元コマンド(header+2)に応じて $47=+18=-2 / $48=+18=-18 を返す。
+* -----------------------------------------------------------------------
+cmd10_scan:
+        lea     c10_search_idx(pc),a3
+        move.w  (a3),d3                  * d3 = 現在の探索位置
+
+cmd10_scan_loop:
+        cmp.w   #2,d3
+        bge.w   cmd10_scan_none           * 候補を使い切った
+
+        lea     fake_file(pc),a1
+        tst.w   d3
+        beq.s   cmd10_scan_cand
+        lea     fake_file2(pc),a1
+cmd10_scan_cand:
+        lea     c10_pat_name(pc),a2       * a2 = パターン(11B: 名前8+拡張子3)
+        moveq   #11-1,d2
+cmd10_scan_cmp:
+        move.b  (a2)+,d1
+        cmp.b   #'?',d1
+        beq.s   cmd10_scan_cmp_next
+        cmp.b   (a1),d1
+        bne.s   cmd10_scan_nomatch
+cmd10_scan_cmp_next:
+        addq.l  #1,a1
+        dbra    d2,cmd10_scan_cmp
+
+* 一致: この候補(d3)をFILBUFへコピーしてから、探索位置をd3+1へ進める。
+        move.l  18(a0),a2                * a2 = FILBUFへの出力先(far pointer)
+        lea     10(a2),a2
+        lea     fake_file(pc),a1
+        tst.w   d3
+        beq.s   cmd10_scan_srccopy
+        lea     fake_file2(pc),a1
+cmd10_scan_srccopy:
+        moveq   #43-1,d2
+cmd10_scan_copy:
+        move.b  (a1)+,(a2)+
+        dbra    d2,cmd10_scan_copy
+
+        addq.w  #1,d3
+        move.w  d3,(a3)
+
+        move.b  #$00,3(a0)
+        move.b  #$00,4(a0)
+        move.l  #0,18(a0)
+        moveq   #0,d0
+        bra.w   done
+
+cmd10_scan_nomatch:
+        addq.w  #1,d3
+        bra.w   cmd10_scan_loop
+
+cmd10_scan_none:
+        move.w  d3,(a3)                   * 探索位置を2(使い切り)に固定
+        move.b  #$00,3(a0)
+        move.b  #$00,4(a0)
+        cmp.b   #$47,2(a0)
+        beq.s   cmd10_scan_none_47
+        move.l  #-18,18(a0)               * $48: もう無い
+        moveq   #0,d0
+        bra.w   done
+cmd10_scan_none_47:
+        move.l  #-2,18(a0)                * $47: 見つからない
+        moveq   #0,d0
+        bra.w   done
+        endc
+
         ifne C9_MODE
 * --- C9: 「開く」らしいコマンド(CMD_OPENで指定)。常に成功(+18=0)を返す。
 * readの呼び出し回数カウンタをここで0へ戻す(1ファイルぶんの読み出し状態
 * を素朴に1個のグローバルカウンタで代用する。推測: openのたびにリセット
 * すれば足りるはず) ---
 cmd_open_ok:
+        ifne C10_MODE
+        lea     c10_read_pos(pc),a1
+        move.l  #0,(a1)                 * C10: 読み位置を0に戻す(1ファイルぶんのみ保持)
+        else
         lea     c9_read_count(pc),a1
         move.w  #0,(a1)
+        endc
         move.b  #$00,3(a0)
         move.b  #$00,4(a0)
         move.l  #0,18(a0)
@@ -486,6 +609,40 @@ cmd_open_ok:
 * バッファ先頭アドレスは読み終えてから+18を上書きする(CMD_READ_BUF_OFF=18
 * のとき入力/出力が同じ欄を兼ねるため) ---
 cmd_read_ok:
+        ifne C10_MODE
+* C10: c10_read_pos(0..3000)から、要求長(18(a0)、推測)と残りバイト数の
+* 小さいほうだけhello3000からコピーし、読み位置を進めて返す。
+        lea     c10_read_pos(pc),a1
+        move.l  (a1),d1                 * d1 = 現在の読み位置
+        cmp.l   #3000,d1
+        bge.w   cmd_read_eof
+
+        move.l  18(a0),d2                * d2 = 要求長(推測)
+        move.l  #3000,d3
+        sub.l   d1,d3                     * d3 = 残りバイト数
+        cmp.l   d3,d2
+        bls.s   cmd10_read_uselen         * 要求長<=残り: 要求長ぶん返す
+        move.l  d3,d2                     * 残りぶんだけ返す
+cmd10_read_uselen:
+        movea.l CMD_READ_BUF_OFF(a0),a2   * a2 = バッファ(推測: +14)
+        lea     hello3000(pc),a3
+        adda.l  d1,a3                     * a3 = hello3000 + 現在位置
+        move.l  d2,d3
+        beq.s   cmd10_read_zero
+        subq.l  #1,d3
+cmd10_read_copy:
+        move.b  (a3)+,(a2)+
+        dbra    d3,cmd10_read_copy
+cmd10_read_zero:
+        add.l   d2,d1
+        move.l  d1,(a1)                   * 読み位置を進める
+
+        move.b  #$00,3(a0)
+        move.b  #$00,4(a0)
+        move.l  d2,18(a0)
+        moveq   #0,d0
+        bra.w   done
+        else
         lea     c9_read_count(pc),a1
         move.w  (a1),d1
         bne.s   cmd_read_eof
@@ -503,6 +660,7 @@ cmd_read_copy:
         move.l  #18,18(a0)
         moveq   #0,d0
         bra.w   done
+        endc
 
 cmd_read_eof:
         move.b  #$00,3(a0)
@@ -559,9 +717,11 @@ rec_hdr:
         dbra    d3,rec_hdr              * ここでa3はentry+28(拡張領域の先頭)になる
 
         ifne C9_MODE
-* C9: コマンド番号を問わず、+14/+18が「ゲストRAMを指すポインタらしい値」
-* (0<val<$C00000 かつ偶数)ならその先64バイトずつ記録する(旧来の$47/$48
-* 専用88+53バイト記録の代わり)。a3はここでentry+28(拡張領域の先頭)。
+* C9/C10: コマンド番号を問わず、+14/+18(C10はさらに+22)が「ゲストRAMを
+* 指すポインタらしい値」(0<val<$C00000 かつ偶数)ならその先を記録する
+* (+14→entry+28に64B、+18→entry+92に64B、C10のみ+22→entry+156に96B=
+* FCB候補)。a2=entry先頭(固定)を使って各フィールドを独立に書くので、
+* 途中を飛ばしても後続の位置がずれない。
         move.l  14(a0),d1
         beq.s   rec_c9_p14_skip          * 0はポインタとみなさない
         cmp.l   #$00c00000,d1
@@ -572,28 +732,49 @@ rec_c9_p14_lo:
         and.l   #1,d2
         bne.s   rec_c9_p14_skip          * 奇数番地はポインタとみなさない
         movea.l d1,a4
+        lea     28(a2),a3
         moveq   #64-1,d3
 rec_c9_p14_copy:
         move.b  (a4)+,(a3)+
         dbra    d3,rec_c9_p14_copy
-        bra.s   rec_c9_p18
 rec_c9_p14_skip:
-        lea     64(a3),a3               * 書かなくても64バイト分は進める(entry+92に揃える)
-rec_c9_p18:
+
         move.l  18(a0),d1
-        beq.w   rec_bump
+        beq.s   rec_c9_p18_skip
         cmp.l   #$00c00000,d1
         blo.s   rec_c9_p18_lo
-        bra.w   rec_bump
+        bra.s   rec_c9_p18_skip
 rec_c9_p18_lo:
         move.l  d1,d2
         and.l   #1,d2
-        bne.s   rec_bump
+        bne.s   rec_c9_p18_skip
         movea.l d1,a4
+        lea     92(a2),a3
         moveq   #64-1,d3
 rec_c9_p18_copy:
         move.b  (a4)+,(a3)+
         dbra    d3,rec_c9_p18_copy
+rec_c9_p18_skip:
+
+        ifne C10_MODE
+        move.l  22(a0),d1
+        beq.s   rec_c10_p22_skip
+        cmp.l   #$00c00000,d1
+        blo.s   rec_c10_p22_lo
+        bra.s   rec_c10_p22_skip
+rec_c10_p22_lo:
+        move.l  d1,d2
+        and.l   #1,d2
+        bne.s   rec_c10_p22_skip
+        movea.l d1,a4
+        lea     156(a2),a3
+        moveq   #96-1,d3
+rec_c10_p22_copy:
+        move.b  (a4)+,(a3)+
+        dbra    d3,rec_c10_p22_copy
+rec_c10_p22_skip:
+        endc
+
         bra.w   rec_bump
         else
         moveq   #0,d3
@@ -666,7 +847,11 @@ fake_file:
         dc.b    $20                     * +21 属性の一致
         dc.w    $645c                   * +22 最終変更時刻 12:34:56
         dc.w    $5d2b                   * +24 最終変更日 2026-09-11
+        ifne C10_MODE
+        dc.l    3000                    * +26 ファイルサイズ(C10: hello3000と一致させる)
+        else
         dc.l    1234                    * +26 ファイルサイズ
+        endc
 * +30 ファイル名23バイトの先頭9バイト、続く14バイトは0パディング(23バイト分)
         dc.b    'HELLO.TXT'
         dcb.b   14,0
@@ -720,6 +905,26 @@ c9_read_count:
 c9_hello:
         dc.b    'Hello from host!',$0d,$0a  * C9: 「読む」1回目で返す18バイト(推測: 改行はCRLF)
         even
+
+        ifne C10_MODE
+* --- C10: $47/$48のワイルドカード照合で使う状態 ---
+c10_pat_name:
+        ds.b    8                * 検索パターンの名前8(前回の$47から保存、'?'=ワイルドカード)
+c10_pat_ext:
+        ds.b    3                * 検索パターンの拡張子3
+        even
+c10_search_idx:
+        dc.w    0                * 次に調べる候補番号(0=fake_file,1=fake_file2,2=使い切り)
+c10_read_pos:
+        dc.l    0                * HELLO.TXTの読み位置(0..3000、openで0に戻す)
+
+* --- C10: HELLO.TXTの中身(3000バイト=60バイト×50行)。実データを使うのは
+* $4c(読む)がファイルサイズ・シーク位置と整合する結果を返せるようにする
+* ため(推測に頼らず本物の長さのデータで動作を確かめる)。---
+hello3000:
+        include "hello3000.inc.s"
+hello3000_end:
+        endc
         endc
 
         even
