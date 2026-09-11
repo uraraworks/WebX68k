@@ -114,6 +114,17 @@ interface Dict {
   scsiBlankSizeInvalidTooLarge(args: { max: number }): string;
   /** ブランクSCSIディスクの作成が完了したときのトースト。 */
   statusScsiBlankCreated(args: { name: string; sizeMiB: number }): string;
+  /** HostFS(feature/hostfs) P2a #3: フォルダ行のラベル・ボタン・トースト。 */
+  hostfsSlotLabel(): string;
+  hostfsEmpty(): string;
+  hostfsConnect(): string;
+  hostfsDisconnect(): string;
+  hostfsReconnect(): string;
+  hostfsUnavailable(): string;
+  hostfsWorkerOnly(): string;
+  statusHostFsConnected(args: { name: string }): string;
+  statusHostFsDisconnected(): string;
+  statusHostFsPermissionDenied(): string;
   /** 実行中にFDを排出しようとしたときの確認(誤タップでゲストがフリーズする事故の防止)。 */
   slotEjectConfirmRunning(): string;
   /** ドライブアクセスランプのスクリーンリーダー向けラベル。 */
@@ -591,6 +602,16 @@ const STRINGS: Record<Lang, Dict> = {
     scsiBlankSizeInvalidTooSmall: ({ min }) => `${min}MB以上を指定してください`,
     scsiBlankSizeInvalidTooLarge: ({ max }) =>
       `${max}MBまでです(SCSI HLEがイメージサイズを32bit符号あり整数で扱うため、これを超えると壊れます)`,
+    hostfsSlotLabel: () => 'HostFS',
+    hostfsEmpty: () => '未接続',
+    hostfsConnect: () => 'フォルダをつなぐ',
+    hostfsDisconnect: () => '外す',
+    hostfsReconnect: () => '再接続(許可が必要です)',
+    hostfsUnavailable: () => 'この環境では使えません(フォルダ選択に対応していません)',
+    hostfsWorkerOnly: () => 'この機能は?worker=1(既定)でのみ使えます',
+    statusHostFsConnected: ({ name }) => `ホストフォルダ「${name}」に接続しました`,
+    statusHostFsDisconnected: () => 'ホストフォルダを切断しました',
+    statusHostFsPermissionDenied: () => 'ホストフォルダへのアクセスが許可されませんでした',
     statusScsiBlankCreated: ({ name, sizeMiB }) =>
       `ブランクSCSIディスク「${name}」(${sizeMiB}MB)を作成しました。次回の起動から使えます`,
     slotEjectConfirmRunning: () =>
@@ -970,6 +991,16 @@ const STRINGS: Record<Lang, Dict> = {
     scsiBlankSizeInvalidTooSmall: ({ min }) => `Please enter at least ${min}MB`,
     scsiBlankSizeInvalidTooLarge: ({ max }) =>
       `The limit is ${max}MB (the SCSI HLE stores the image size as a signed 32-bit integer; larger sizes get corrupted)`,
+    hostfsSlotLabel: () => 'HostFS',
+    hostfsEmpty: () => 'Not connected',
+    hostfsConnect: () => 'Connect a folder',
+    hostfsDisconnect: () => 'Disconnect',
+    hostfsReconnect: () => 'Reconnect (permission needed)',
+    hostfsUnavailable: () => 'Not available here (folder picking is not supported)',
+    hostfsWorkerOnly: () => 'This feature only works with ?worker=1 (the default)',
+    statusHostFsConnected: ({ name }) => `Connected to host folder "${name}"`,
+    statusHostFsDisconnected: () => 'Disconnected the host folder',
+    statusHostFsPermissionDenied: () => 'Permission to access the host folder was denied',
     statusScsiBlankCreated: ({ name, sizeMiB }) =>
       `Created blank SCSI disk "${name}" (${sizeMiB}MB). It will be used from the next boot.`,
     slotEjectConfirmRunning: () =>

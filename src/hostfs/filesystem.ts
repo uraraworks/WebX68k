@@ -73,6 +73,36 @@ function makeFakeContent(entry: HostFsFileEntry): Uint8Array {
  * setTimeout(0) で意図的にマクロタスク境界をまたぐことで、request() の
  * 呼び出し中には絶対に解決しない(=最低1回はpollで拾う)ことを保証する。
  */
+/**
+ * フォルダが未接続のときのバックエンド(P2a #2)。常に空/nullを返す。
+ * dispatcher側はentries.length===0を-2(見つからない)、readFile null を-2として
+ * 扱うため、これだけで「検索は-2、開くは-2」の要件を満たす。
+ */
+export class NotConnectedFs implements HostFileSystem {
+  listDir(_path: string): Promise<HostFsFileEntry[]> {
+    return Promise.resolve([]);
+  }
+  readFile(_path: string, _name: string, _ext: string): Promise<Uint8Array | null> {
+    return Promise.resolve(null);
+  }
+}
+
+/**
+ * 実行時に接続先を差し替えられるプロキシ(P2a #3: HOSTFS_ATTACH/DETACHで
+ * バックエンドを生やし直すため)。HostFsDispatcherの生成は1回きりなので、
+ * このオブジェクト自体をdispatcherへ渡し、current だけを差し替える。
+ */
+export class SwitchableFs implements HostFileSystem {
+  current: HostFileSystem = new NotConnectedFs();
+
+  listDir(path: string): Promise<HostFsFileEntry[]> {
+    return this.current.listDir(path);
+  }
+  readFile(path: string, name: string, ext: string): Promise<Uint8Array | null> {
+    return this.current.readFile(path, name, ext);
+  }
+}
+
 export class FakeFs implements HostFileSystem {
   listDir(_path: string): Promise<HostFsFileEntry[]> {
     return new Promise((resolve) => {

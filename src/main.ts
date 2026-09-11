@@ -200,6 +200,15 @@ import {
   WebSerialTransport,
 } from './serial';
 import { applySerialRxQueueReport, routeSerialReceive } from './serial-worker-bridge';
+import {
+  clearHostFolderHandle,
+  isDirectoryPickerSupported,
+  loadHostFolderHandle,
+  queryHostFolderPermission,
+  requestHostFolderPermission,
+  saveHostFolderHandle,
+} from './hostfs/host-folder-store';
+import { seedHostFsOpfsTest } from './hostfs/opfs-test-seed';
 
 const canvas = document.getElementById('screen') as HTMLCanvasElement;
 const bootOverlay = document.getElementById('boot-overlay') as HTMLDivElement;
@@ -353,6 +362,138 @@ const scsiElements: ScsiElements = {
   ejectBtn: document.getElementById('btn-eject-scsi') as HTMLButtonElement,
   downloadBtn: document.getElementById('btn-download-scsi') as HTMLButtonElement,
 };
+
+// HostFS(feature/hostfs) P2a #3: フォルダ行。Worker経路(urlWorkerMode)だけ対応する
+// (メインスレッド経路は行を無効にして説明を出す。Web Serialの流儀、serial.ts参照)。
+interface HostFsElements {
+  lamp: HTMLElement;
+  name: HTMLElement;
+  connectBtn: HTMLButtonElement;
+  reconnectBtn: HTMLButtonElement;
+  disconnectBtn: HTMLButtonElement;
+}
+
+const hostFsElements: HostFsElements = {
+  lamp: document.getElementById('lamp-hostfs') as HTMLElement,
+  name: document.getElementById('name-hostfs') as HTMLElement,
+  connectBtn: document.getElementById('btn-connect-hostfs') as HTMLButtonElement,
+  reconnectBtn: document.getElementById('btn-reconnect-hostfs') as HTMLButtonElement,
+  disconnectBtn: document.getElementById('btn-disconnect-hostfs') as HTMLButtonElement,
+};
+
+let hostFsHandle: FileSystemDirectoryHandle | null = null;
+/** queryPermission()が'prompt'を返した保存済みハンドル。再接続ボタン用。 */
+let hostFsReconnectCandidate: FileSystemDirectoryHandle | null = null;
+
+function updateHostFsUi(): void {
+  const supported = urlWorkerMode && isDirectoryPickerSupported();
+  hostFsElements.name.textContent = hostFsHandle
+    ? hostFsHandle.name
+    : !urlWorkerMode
+      ? t('hostfsWorkerOnly')
+      : !isDirectoryPickerSupported()
+        ? t('hostfsUnavailable')
+        : t('hostfsEmpty');
+  hostFsElements.connectBtn.disabled = !supported;
+  hostFsElements.connectBtn.title = supported
+    ? t('hostfsConnect')
+    : !urlWorkerMode
+      ? t('hostfsWorkerOnly')
+      : t('hostfsUnavailable');
+  hostFsElements.disconnectBtn.disabled = !supported || !hostFsHandle;
+  hostFsElements.reconnectBtn.hidden = !supported || !hostFsReconnectCandidate;
+}
+
+async function connectHostFsFolder(): Promise<void> {
+  if (!urlWorkerMode || !isDirectoryPickerSupported()) return;
+  try {
+    const picker = (globalThis as Record<string, unknown>).showDirectoryPicker as (opts?: {
+      mode?: 'read' | 'readwrite';
+    }) => Promise<FileSystemDirectoryHandle>;
+    const handle = await picker({ mode: 'read' });
+    hostFsHandle = handle;
+    hostFsReconnectCandidate = null;
+    workerCoreProxy?.sendHostFsAttach(handle);
+    await saveHostFolderHandle(handle);
+    showToast(t('statusHostFsConnected', { name: handle.name }));
+  } catch (err) {
+    // ユーザーがキャンセルした場合(AbortError)は黙って何もしない。
+    if (err instanceof Error && err.name === 'AbortError') return;
+    console.warn('[HostFS] フォルダ選択に失敗しました', err);
+  }
+  updateHostFsUi();
+}
+
+function disconnectHostFsFolder(): void {
+  hostFsHandle = null;
+  hostFsReconnectCandidate = null;
+  workerCoreProxy?.sendHostFsDetach();
+  void clearHostFolderHandle();
+  showToast(t('statusHostFsDisconnected'));
+  updateHostFsUi();
+}
+
+async function reconnectHostFsFolder(): Promise<void> {
+  const handle = hostFsReconnectCandidate;
+  if (!handle) return;
+  const result = await requestHostFolderPermission(handle);
+  if (result !== 'granted') {
+    showToast(t('statusHostFsPermissionDenied'));
+    return;
+  }
+  hostFsHandle = handle;
+  hostFsReconnectCandidate = null;
+  workerCoreProxy?.sendHostFsAttach(handle);
+  showToast(t('statusHostFsConnected', { name: handle.name }));
+  updateHostFsUi();
+}
+
+/**
+ * 起動時の自動再接続(P2a #3、親からの指示書: 自動では許可を求めない)。
+ * 保存済みハンドルの許可が既に'granted'なら黙って再接続し、'prompt'なら
+ * 再接続ボタンを出すだけに留める。
+ */
+async function tryReattachHostFsFolder(): Promise<void> {
+  if (!urlWorkerMode || !isDirectoryPickerSupported()) {
+    updateHostFsUi();
+    return;
+  }
+  try {
+    const saved = await loadHostFolderHandle();
+    if (!saved) {
+      updateHostFsUi();
+      return;
+    }
+    const permission = await queryHostFolderPermission(saved);
+    if (permission === 'granted') {
+      hostFsHandle = saved;
+      workerCoreProxy?.sendHostFsAttach(saved);
+    } else {
+      hostFsReconnectCandidate = saved;
+    }
+  } catch (err) {
+    console.warn('[HostFS] 保存済みフォルダの読み出しに失敗しました', err);
+  }
+  updateHostFsUi();
+}
+
+/** `?hostfs=opfs-test` 専用: OPFSへ検証用ファイル一式を作り、そのままATTACHする。 */
+async function setupHostFsOpfsTest(): Promise<void> {
+  try {
+    const handle = await seedHostFsOpfsTest();
+    hostFsHandle = handle;
+    workerCoreProxy?.sendHostFsAttach(handle);
+    console.log('[HostFS] opfs-test: OPFSへ検証用ファイルを作り、ATTACHした');
+  } catch (err) {
+    console.error('[HostFS] opfs-test: セットアップに失敗しました', err);
+  }
+  updateHostFsUi();
+}
+
+hostFsElements.connectBtn.addEventListener('click', () => void connectHostFsFolder());
+hostFsElements.disconnectBtn.addEventListener('click', disconnectHostFsFolder);
+hostFsElements.reconnectBtn.addEventListener('click', () => void reconnectHostFsFolder());
+updateHostFsUi();
 
 // iOS の Chrome ではファイル選択ダイアログが accept 属性の拡張子を UTI(Uniform Type
 // Identifier)へ変換して候補を絞る。.xdf/.hdf/.dup/.hdm/.2hd/.dim のような拡張子は
@@ -4093,10 +4234,16 @@ async function bootCore(): Promise<void> {
       g.__webx68kScsiOpfs = true;
       g.__webx68kScsiOpfsPath = `scsi/${scsiName}`;
     }
-    if (hostfsParamRaw === 'fake') {
-      (globalThis as Record<string, unknown>).__webx68kHostFsMode = 'fake';
-    }
+    // P2a #3: 既定(未指定/'real'/'opfs-test')は 'real'(実フォルダ・OPFSテストどちらも
+    // 同じHOSTFS_ATTACHメッセージ経由でバックエンドを差し替える、src/hostfs/worker-bridge.ts
+    // 参照)。'fake' のときだけP1譲りの検証用FakeFsのまま固定する。
+    (globalThis as Record<string, unknown>).__webx68kHostFsMode = hostfsParamRaw === 'fake' ? 'fake' : 'real';
     await bootWorkerCore();
+    if (hostfsParamRaw === 'opfs-test') {
+      await setupHostFsOpfsTest();
+    } else {
+      await tryReattachHostFsFolder();
+    }
     return;
   }
   // 起動時・リセット時は必ず速度ボタンをOFF(実効100%)に戻す。状態を保存しない設計のため、

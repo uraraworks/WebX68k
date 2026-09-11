@@ -185,6 +185,11 @@ export interface PX68KModule {
   // 古いwasm(再ビルド前)でも落ちないよう任意プロパティにしている。
   _webx68k_mem_read?(addr: number, bufPtr: number, len: number): void;
   _webx68k_mem_write?(addr: number, bufPtr: number, len: number): void;
+  // HostFS (feature/hostfs) P2a #1: 非同期処理が終わった"その場"でJSから1回呼び、
+  // Cの完了フラグ(HostFsStatus)を落とす。状態ポートの読み(HOSTFS_Read)がJSを
+  // 呼ばずに答えられるようにするための入口。古いwasm(再ビルド前)でも落ちないよう
+  // 任意プロパティにしている。
+  _webx68k_hostfs_complete?(): void;
   // RETROK → X68000 スキャンコード結合テスト用
   _webx68k_keybuf_peek(index: number): number;
   _webx68k_keybuf_write_pointer(): number;
@@ -536,6 +541,15 @@ export class LibretroHost {
     } finally {
       this.mod._free(ptr);
     }
+  }
+
+  /**
+   * HostFS (feature/hostfs) P2a #1: 非同期処理(listDir/readFile)が解決した"その場"で
+   * 1回呼ぶ。Cの完了フラグ(mem_wrap.cのHostFsStatus)を落とし、以後の状態ポート読みが
+   * JSを呼ばずに答えられるようにする。古いwasm(再ビルド前)では何もしない。
+   */
+  hostFsComplete(): void {
+    this.mod._webx68k_hostfs_complete?.();
   }
 
   /**

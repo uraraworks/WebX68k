@@ -50,7 +50,13 @@ const VOLUME_LABEL_ATTR = 0x08;
 
 const DOS_ERR_NOT_FOUND = -2;
 const DOS_ERR_NO_MORE_FILES = -18;
-const DOS_ERR_CANT_SEEK = -25; // 「指定の位置にはシークできません」(PRO-68Kマニュアル p.71)
+/**
+ * 「書き込み禁止です」(PRO-68Kマニュアルp.71)。書き込み系コマンドの番号は
+ * 今回未確定のため、ディスパッチャ内では未使用のままexportだけしておく
+ * (未知コマンドが実際に書き込み系だと判明した時点で、専用caseから使う)。
+ */
+export const DOS_ERR_WRITE_PROTECTED = -19;
+const DOS_ERR_CANT_SEEK = -25; // 「指定の位置にはシークできません」(PRO-68Kマニュアルp.71)
 
 const SEEK_ORIGIN_START = 0;
 const SEEK_ORIGIN_CURRENT = 1;
@@ -124,7 +130,15 @@ export class HostFsDispatcher {
   private readonly fs: HostFileSystem;
   private readonly dirStates = new Map<number, DirSearchState>(); // key: filbufPtr
   private readonly fcbStates = new Map<number, FcbReadState>(); // key: FCBポインタ
+  private readonly seenUnknownCommands = new Set<number>();
   private pending: PendingOperation | null = null;
+  /**
+   * 非同期処理(listDir/readFile)がPromise解決した"その場"で呼ばれる通知。
+   * C側(wasm)へ「完了した」を伝え、状態ポートの読みがJSを一切呼ばずに
+   * 完了フラグだけで答えられるようにするためのフック(P2a #1)。
+   * poll()を外部(C)から呼び続けなくても完了できるのがポイント。
+   */
+  private notifyComplete: (() => void) | null = null;
 
   private stats: HostFsStats = {
     requestCount: 0,
@@ -133,9 +147,10 @@ export class HostFsDispatcher {
     pollCompletedCount: 0,
   };
 
-  constructor(mem: GuestMemory, fs: HostFileSystem) {
+  constructor(mem: GuestMemory, fs: HostFileSystem, notifyComplete?: () => void) {
     this.mem = mem;
     this.fs = fs;
+    this.notifyComplete = notifyComplete ?? null;
   }
 
   getStats(): HostFsStats {
@@ -183,6 +198,14 @@ export class HostFsDispatcher {
         writeI32BE(this.mem, addr + HDR_FILBUF_PTR_OFFSET, 0);
         break;
       default:
+        // P2a #2: 書き込み系コマンドの番号は未確定。既存の挙動(-2で完了扱い)は変えず、
+        // 初めて見たコマンドだけログに出す(親からの指示書: 未知コマンドは今までどおり、
+        // ただし記録は残す)。書き込み系と判明したコマンドを見つけたら、ここを
+        // DOS_ERR_WRITE_PROTECTED(-19)を返す専用caseへ切り出すこと。
+        if (!this.seenUnknownCommands.has(cmd)) {
+          this.seenUnknownCommands.add(cmd);
+          console.warn(`[HostFS] 未知のコマンド: $${cmd.toString(16)} (初回、-2で応答)`);
+        }
         writeI32BE(this.mem, addr + HDR_FILBUF_PTR_OFFSET, DOS_ERR_NOT_FOUND);
         break;
     }
@@ -235,9 +258,15 @@ export class HostFsDispatcher {
     this.pending = pending;
 
     // 非同期経路を必ず通す(FakeFs.listDir はマクロタスク境界をまたいでから解決する)。
+    // 解決した"その場"で完了処理まで行う(pollを外部から呼ばれるのを待たない)。
     this.fs.listDir(namests.path).then((entries) => {
       // 別の request() が割り込んでいたら(通常は起きない想定)、古い結果は捨てる。
-      if (this.pending === pending) pending.entries = entries;
+      if (this.pending !== pending) return;
+      pending.entries = entries;
+      this.pending = null;
+      this.stats.pollCompletedCount++;
+      this.finishSearchFirst(addr, filbufPtr, queryName, queryExt, attr, entries);
+      this.notifyComplete?.();
     });
 
     return true;
@@ -308,7 +337,12 @@ export class HostFsDispatcher {
     this.pending = pending;
 
     this.fs.readFile(namests.path, namests.name.toUpperCase(), namests.ext.toUpperCase()).then((content) => {
-      if (this.pending === pending) pending.content = content;
+      if (this.pending !== pending) return;
+      pending.content = content;
+      this.pending = null;
+      this.stats.pollCompletedCount++;
+      this.finishOpen(addr, fcbPtr, content ?? null);
+      this.notifyComplete?.();
     });
 
     return true;

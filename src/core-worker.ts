@@ -75,6 +75,8 @@ import {
   CoreProxyError,
   isCoreOptionUpdateMessage,
   isFlushScsiMessage,
+  isHostFsAttachMessage,
+  isHostFsDetachMessage,
   isInputUpdateMessage,
   isMouseTrackResyncMessage,
   isMouseTrackUpdateMessage,
@@ -261,6 +263,8 @@ const ctx = self as unknown as WorkerGlobalLike;
 let proxy: LocalCoreProxy | null = null;
 /** readDiskAccess/avInfo等の同期的な読み出しに使う実体。initialize完了後にのみ非null。 */
 let host: LibretroHost | null = null;
+/** HostFS(feature/hostfs) P2a #3: mode==='real'のときだけattach/detachが入る。 */
+let hostFsBridge: ReturnType<typeof installHostFsBridge> | null = null;
 let coreModuleLoaded = false;
 /** 現在の generation。initialize command から受け取ったものをそのまま event に載せ続ける。 */
 let currentGeneration: Generation = 0;
@@ -866,6 +870,7 @@ async function handleInitialize(
     // Worker自身へ生やす。ゲストメモリの読み書き(_webx68k_mem_read/write)を使うため
     // newHost.init()でmodが確定した後に呼ぶ必要がある。
     const hostfs = installHostFsBridge(newHost);
+    hostFsBridge = hostfs;
     console.log(
       hostfs.installed
         ? '[WebX68k-worker] HostFS: 有効'
@@ -1226,6 +1231,26 @@ ctx.onmessage = (ev) => {
       | undefined;
     const flushed = flushNow ? flushNow() : false;
     console.log(`[WebX68k-worker] SCSI flush依頼を受信: ${flushed ? 'flushした' : '何もしなかった'}`);
+    return;
+  }
+  // HostFS(feature/hostfs) P2a #3: フォルダの接続/切断。mode==='real'のときだけ
+  // hostFsBridge.attach/detachが入っている(installHostFsBridge参照)。'fake'モードや
+  // 未接続(installed:false)のときは黙って無視する(UI側は?worker=0や機能未対応環境でも
+  // 行自体は出すため、ここで受けても安全に無視できる必要がある)。
+  if (isHostFsAttachMessage(data)) {
+    if (hostFsBridge?.attach) {
+      hostFsBridge.attach(data.handle);
+    } else {
+      console.log('[WebX68k-worker] HostFS ATTACH を受信したが、real モードが有効でないため無視した');
+    }
+    return;
+  }
+  if (isHostFsDetachMessage(data)) {
+    if (hostFsBridge?.detach) {
+      hostFsBridge.detach();
+    } else {
+      console.log('[WebX68k-worker] HostFS DETACH を受信したが、real モードが有効でないため無視した');
+    }
     return;
   }
   const cmd = data as CoreCommand;

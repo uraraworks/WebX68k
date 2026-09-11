@@ -267,6 +267,41 @@ export function isFlushScsiMessage(message: unknown): message is FlushScsiMessag
   );
 }
 
+// --- HostFS(feature/hostfs) フォルダ接続/切断(P2a #3) -----------------------------
+//
+// main側(UI操作、またはOPFSテストモード)がFileSystemDirectoryHandleを得たら、これで
+// Workerへ渡す。FlushScsiMessageと同じ理由(低頻度・応答不要)でfire-and-forgetにするが、
+// ハンドル自体は構造化複製可能(structured clone)なオブジェクトなので、そのままpayloadへ
+// 乗せられる(transferable化は不要)。
+export const HOSTFS_ATTACH_KIND = 'hostfsAttach' as const;
+
+export interface HostFsAttachMessage {
+  kind: typeof HOSTFS_ATTACH_KIND;
+  handle: FileSystemDirectoryHandle;
+}
+
+export function isHostFsAttachMessage(message: unknown): message is HostFsAttachMessage {
+  return (
+    typeof message === 'object' &&
+    message !== null &&
+    (message as { kind?: unknown }).kind === HOSTFS_ATTACH_KIND
+  );
+}
+
+export const HOSTFS_DETACH_KIND = 'hostfsDetach' as const;
+
+export interface HostFsDetachMessage {
+  kind: typeof HOSTFS_DETACH_KIND;
+}
+
+export function isHostFsDetachMessage(message: unknown): message is HostFsDetachMessage {
+  return (
+    typeof message === 'object' &&
+    message !== null &&
+    (message as { kind?: unknown }).kind === HOSTFS_DETACH_KIND
+  );
+}
+
 // --- シリアル(SCCチャネルA / Web Serial、master取り込み後のWorker配線の穴の是正) -------
 //
 // WebSerialTransport(src/serial.ts)はnavigator.serialを使うためメインスレッド専用で、

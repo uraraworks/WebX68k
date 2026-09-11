@@ -14,6 +14,8 @@ import {
   CoreProxyError,
   createCoreError,
   FLUSH_SCSI_KIND,
+  HOSTFS_ATTACH_KIND,
+  HOSTFS_DETACH_KIND,
   INPUT_UPDATE_KIND,
   isCoreResponse,
   isWorkerBootAck,
@@ -922,6 +924,21 @@ export class WorkerCoreProxy implements LibretroHostProxy {
   sendFlushScsi(): void {
     if (this.disposed || this.failed) return;
     this.worker.postMessage({ kind: FLUSH_SCSI_KIND });
+  }
+
+  /**
+   * HostFS(feature/hostfs) P2a #3: フォルダを接続する。handle自体は構造化複製可能
+   * (structured clone)なのでtransferしない。sendFlushScsiと同じfire-and-forget。
+   */
+  sendHostFsAttach(handle: FileSystemDirectoryHandle): void {
+    if (this.disposed || this.failed) return;
+    this.worker.postMessage({ kind: HOSTFS_ATTACH_KIND, handle });
+  }
+
+  /** HostFS(feature/hostfs) P2a #3: フォルダを切断する。 */
+  sendHostFsDetach(): void {
+    if (this.disposed || this.failed) return;
+    this.worker.postMessage({ kind: HOSTFS_DETACH_KIND });
   }
 
   /**
