@@ -102,6 +102,9 @@ CMD_CLOSE set $ff               * C9: 「閉じる」とみなすコマンドコ
         ifnd CMD_READ_BUF_OFF
 CMD_READ_BUF_OFF set 18         * C9: 読み込みバッファへの far pointer がヘッダのどのオフセットか
         endc
+        ifnd CMD_CD
+CMD_CD set $ff                  * C11: 「cd」とみなすコマンドコード。$ffは無効(一致しない)
+        endc
 
         ifnd C10_MODE
 C10_MODE set 0                  * C10: 0=無効。1にするとC9の上に以下を足す(C9_MODE=1と併用が前提):
@@ -112,6 +115,22 @@ C10_MODE set 0                  * C10: 0=無効。1にするとC9の上に以下
 *   使って要求長ぶんを返す。
 * ・record_requestで+22(a0)もポインタらしければ、その先96バイト(FCB候補)
 *   をentry+156へ記録する(ENTRY_SIZEを252へ拡張)。
+        endc
+
+        ifnd C11_MODE
+C11_MODE set 0                  * C11: 0=無効。1にするとC10の上に以下を足す(C10_MODE=1
+* かつC9_MODE=1が前提。ENTRY_SIZE/REC_MAXはC10のまま変えない):
+* ・ルート直下にSUB(属性$10、ディレクトリ)を追加。\SUB\配下にABC.TXT
+*   (内容'abc in sub\r\n'、12バイト)を追加。
+* ・$47/$48は、_NAMESTSのパス欄(+14の先+2以降)を見てルート/\SUB\/その他
+*   のどのツリーを検索しているか判定してから、名前パターンで照合する。
+* ・$4a(CMD_OPENで指定)も同じ判定でHELLO.TXT(ルート)/ABC.TXT(\SUB\)を
+*   選び、$4c(CMD_READ)はそのファイルの内容と長さぶんだけ返す。
+* ・未対応コマンドの応答を「状態0・+18=-2」から「状態0・+18=-3(ディレク
+*   トリが見つからない)」に変える(cd等、未知のコマンドの解読用)。
+* ・CMD_CDで指定したコマンドコードだけ、_NAMESTSのパス欄を見て0(成功)/
+*   -3(ディレクトリが見つからない)を返す(未指定=$ffのままなら無効で、
+*   該当コードは他の未対応コマンドと同じくフォールバックの-3に落ちる)。
         endc
 
 EXTRA_SIZE set 142
@@ -189,6 +208,10 @@ interrupt:
         beq.w   cmd_read_ok
         cmp.b   #CMD_CLOSE,d0
         beq.w   cmd_close_ok
+        ifne C11_MODE
+        cmp.b   #CMD_CD,d0
+        beq.w   cmd_cd_ok
+        endc
         endc
         endc
 
@@ -199,10 +222,15 @@ interrupt:
         endc
 
         ifne C9_MODE
-* --- C9: 未対応コマンドは状態0・+18=-2(ファイルが見つからない)を返す ---
+* --- C9: 未対応コマンドは状態0・+18=-2(ファイルが見つからない)を返す。
+* C11は-3(ディレクトリが見つからない)に変える(cd等の未知コマンドの解読用)。 ---
         move.b  #$00,3(a0)
         move.b  #$00,4(a0)
+        ifne C11_MODE
+        move.l  #-3,18(a0)
+        else
         move.l  #-2,18(a0)
+        endc
         moveq   #0,d0
         bra.w   done
         else
@@ -329,12 +357,24 @@ cmd47_ok:
 * よう c10_pat_name/extへ保存し、探索位置c10_search_idxを0に戻してから
 * 共通の照合ルーチンcmd10_scanへ渡す。
         move.l  14(a0),a1               * a1 = _NAMESTSへのポインタ(推測)
+        ifne C11_MODE
+        movea.l a1,a3                   * a3 = NAMESTS先頭を退避(パス判定用)
+        endc
         lea     67(a1),a1               * +67名前8, 続けて+75拡張子3(連続11B)
         lea     c10_pat_name(pc),a2
         moveq   #11-1,d2
 cmd47_pat_copy:
         move.b  (a1)+,(a2)+
         dbra    d2,cmd47_pat_copy
+
+        ifne C11_MODE
+* C11: NAMESTSのパス欄(+2以降)を見てルート/\SUB\/その他を判定し、
+* c11_treeへ残しておく(cmd10_scanの中で再利用する)。
+        lea     2(a3),a1
+        bsr.w   cmd11_check_path
+        lea     c11_tree(pc),a2
+        move.w  d0,(a2)
+        endc
 
         lea     c10_search_idx(pc),a2
         move.w  #0,(a2)
@@ -519,6 +559,9 @@ cmd50_noptr:
 * 呼び出し元の元コマンド(header+2)に応じて $47=+18=-2 / $48=+18=-18 を返す。
 * -----------------------------------------------------------------------
 cmd10_scan:
+        ifne C11_MODE
+        bra.w   cmd11_scan                * C11: ツリー対応版へ委譲(以下はC11_MODE=0のときだけ使う)
+        endc
         lea     c10_search_idx(pc),a3
         move.w  (a3),d3                  * d3 = 現在の探索位置
 
@@ -582,6 +625,134 @@ cmd10_scan_none_47:
         move.l  #-2,18(a0)                * $47: 見つからない
         moveq   #0,d0
         bra.w   done
+
+        ifne C11_MODE
+* -----------------------------------------------------------------------
+* cmd11_scan -- C11: c11_tree(0=ルート/1=\SUB\/2=その他)に応じた候補集合で
+* 照合する(cmd10_scanのツリー対応版)。ルートはfake_file(HELLO.TXT)/
+* fake_file2(WORLD.DOC)/fake_dir_sub(SUB)の3件、\SUB\はfake_file_abc
+* (ABC.TXT)の1件、その他は0件(即「見つからない」= cmd10_scan_noneへ)。
+* 一致・使い切りの返し方はcmd10_scanと同じくcmd10_scan_noneを共用する。
+* -----------------------------------------------------------------------
+cmd11_scan:
+        lea     c10_search_idx(pc),a3
+        move.w  (a3),d3                  * d3 = 現在の探索位置(ツリー内の番号)
+
+        move.w  c11_tree(pc),d4
+        cmp.w   #0,d4
+        beq.s   cmd11_scan_root
+        cmp.w   #1,d4
+        beq.s   cmd11_scan_sub
+        bra.w   cmd10_scan_none           * その他のツリー: 即座に0件扱い
+
+cmd11_scan_root:
+        cmp.w   #3,d3
+        bge.w   cmd10_scan_none
+        bsr.w   cmd11_root_addr           * d3→a1
+        bra.w   cmd11_scan_cmp
+
+cmd11_scan_sub:
+        cmp.w   #1,d3
+        bge.w   cmd10_scan_none
+        lea     fake_file_abc(pc),a1
+        bra.w   cmd11_scan_cmp
+
+cmd11_scan_cmp:
+        lea     c10_pat_name(pc),a2        * a2 = パターン(11B: 名前8+拡張子3)
+        moveq   #11-1,d2
+cmd11_scan_cmp_loop:
+        move.b  (a2)+,d1
+        cmp.b   #'?',d1
+        beq.s   cmd11_scan_cmp_next
+        cmp.b   (a1),d1
+        bne.s   cmd11_scan_nomatch
+cmd11_scan_cmp_next:
+        addq.l  #1,a1
+        dbra    d2,cmd11_scan_cmp_loop
+
+* 一致: この候補(d3, c11_tree)をFILBUFへコピーしてから、探索位置をd3+1へ
+* 進める。
+        move.l  18(a0),a2                  * a2 = FILBUFへの出力先(far pointer)
+        lea     10(a2),a2
+        cmp.w   #0,d4
+        beq.s   cmd11_scan_copy_root
+        lea     fake_file_abc(pc),a1
+        bra.w   cmd11_scan_copy_body
+cmd11_scan_copy_root:
+        bsr.w   cmd11_root_addr
+cmd11_scan_copy_body:
+        moveq   #43-1,d2
+cmd11_scan_copy_loop:
+        move.b  (a1)+,(a2)+
+        dbra    d2,cmd11_scan_copy_loop
+
+        addq.w  #1,d3
+        move.w  d3,(a3)
+
+        move.b  #$00,3(a0)
+        move.b  #$00,4(a0)
+        move.l  #0,18(a0)
+        moveq   #0,d0
+        bra.w   done
+
+cmd11_scan_nomatch:
+        addq.w  #1,d3
+        move.w  d3,(a3)                    * 次のcmd11_scan呼び出しのためd3を保存
+        bra.w   cmd11_scan
+
+* --- 入力: d3(0/1/2、ルートツリー内の候補番号) 出力: a1=候補のアドレス。
+* d3以外のレジスタは破壊しない ---
+cmd11_root_addr:
+        cmp.w   #0,d3
+        beq.s   cmd11_ra_0
+        cmp.w   #1,d3
+        beq.s   cmd11_ra_1
+        lea     fake_dir_sub(pc),a1
+        rts
+cmd11_ra_0:
+        lea     fake_file(pc),a1
+        rts
+cmd11_ra_1:
+        lea     fake_file2(pc),a1
+        rts
+
+* -----------------------------------------------------------------------
+* cmd11_check_path -- _NAMESTSのパス欄(a1=+2以降の先頭、$09開始・$00終端)
+* を見て、ルート("\"のみ=$09 $00)/\SUB\(大小文字を区別しない)/その他を
+* 判定する。出力: d0 = 0(ルート) / 1(\SUB\) / 2(その他)。d1とa1(消費して
+* 進める)を破壊する。
+* -----------------------------------------------------------------------
+cmd11_check_path:
+        move.b  (a1)+,d1
+        cmp.b   #$09,d1
+        bne.s   cmd11_cp_other
+        move.b  (a1),d1
+        tst.b   d1
+        beq.s   cmd11_cp_root
+        and.b   #$df,d1                    * 'a'-'z' → 'A'-'Z'(この用途に限り安全)
+        cmp.b   #'S',d1
+        bne.s   cmd11_cp_other
+        move.b  1(a1),d1
+        and.b   #$df,d1
+        cmp.b   #'U',d1
+        bne.s   cmd11_cp_other
+        move.b  2(a1),d1
+        and.b   #$df,d1
+        cmp.b   #'B',d1
+        bne.s   cmd11_cp_other
+        cmp.b   #$09,3(a1)
+        bne.s   cmd11_cp_other
+        tst.b   4(a1)
+        bne.s   cmd11_cp_other
+        moveq   #1,d0
+        rts
+cmd11_cp_root:
+        moveq   #0,d0
+        rts
+cmd11_cp_other:
+        moveq   #2,d0
+        rts
+        endc
         endc
 
         ifne C9_MODE
@@ -593,6 +764,24 @@ cmd_open_ok:
         ifne C10_MODE
         lea     c10_read_pos(pc),a1
         move.l  #0,(a1)                 * C10: 読み位置を0に戻す(1ファイルぶんのみ保持)
+        ifne C11_MODE
+* C11: _NAMESTS(+14が指す、$47と共通と仮定)のパス欄を見て、開くファイルを
+* ルート=HELLO.TXT(3000B)/\SUB\=ABC.TXT(12B)から選び、c11_cur_file/
+* c11_cur_lenへ残す(cmd_read_okが使う)。
+        move.l  14(a0),a1
+        lea     2(a1),a1
+        bsr.w   cmd11_check_path
+        lea     c11_cur_file(pc),a2
+        move.w  d0,(a2)
+        lea     c11_cur_len(pc),a2
+        cmp.w   #1,d0
+        bne.s   cmd11_open_len_hello
+        move.l  #12,(a2)
+        bra.s   cmd11_open_len_done
+cmd11_open_len_hello:
+        move.l  #3000,(a2)
+cmd11_open_len_done:
+        endc
         else
         lea     c9_read_count(pc),a1
         move.w  #0,(a1)
@@ -610,6 +799,50 @@ cmd_open_ok:
 * のとき入力/出力が同じ欄を兼ねるため) ---
 cmd_read_ok:
         ifne C10_MODE
+        ifne C11_MODE
+* C11: c10_read_pos(0..c11_cur_len)から、要求長(18(a0)、推測)と残り
+* バイト数の小さいほうだけ、開いているファイル(c11_cur_file: 0=hello3000
+* /1=abc_content)からコピーし、読み位置を進めて返す(C10のhello3000固定
+* 版と同じ組み立て、長さと参照元だけをc11_cur_len/c11_cur_fileで振る)。
+        lea     c10_read_pos(pc),a1
+        move.l  (a1),d1                   * d1 = 現在の読み位置
+        move.l  c11_cur_len(pc),d4         * d4 = 開いているファイルの長さ
+        cmp.l   d4,d1
+        bge.w   cmd_read_eof
+
+        move.l  18(a0),d2                  * d2 = 要求長(推測)
+        move.l  d4,d3
+        sub.l   d1,d3                       * d3 = 残りバイト数
+        cmp.l   d3,d2
+        bls.s   cmd11_read_uselen
+        move.l  d3,d2
+cmd11_read_uselen:
+        movea.l CMD_READ_BUF_OFF(a0),a2
+        move.w  c11_cur_file(pc),d5
+        cmp.w   #1,d5
+        beq.s   cmd11_read_src_abc
+        lea     hello3000(pc),a3
+        bra.s   cmd11_read_src_done
+cmd11_read_src_abc:
+        lea     abc_content(pc),a3
+cmd11_read_src_done:
+        adda.l  d1,a3                       * a3 = 先頭 + 現在位置
+        move.l  d2,d3
+        beq.s   cmd11_read_zero
+        subq.l  #1,d3
+cmd11_read_copy:
+        move.b  (a3)+,(a2)+
+        dbra    d3,cmd11_read_copy
+cmd11_read_zero:
+        add.l   d2,d1
+        move.l  d1,(a1)                     * 読み位置を進める
+
+        move.b  #$00,3(a0)
+        move.b  #$00,4(a0)
+        move.l  d2,18(a0)
+        moveq   #0,d0
+        bra.w   done
+        else
 * C10: c10_read_pos(0..3000)から、要求長(18(a0)、推測)と残りバイト数の
 * 小さいほうだけhello3000からコピーし、読み位置を進めて返す。
         lea     c10_read_pos(pc),a1
@@ -642,6 +875,7 @@ cmd10_read_zero:
         move.l  d2,18(a0)
         moveq   #0,d0
         bra.w   done
+        endc
         else
         lea     c9_read_count(pc),a1
         move.w  (a1),d1
@@ -676,6 +910,27 @@ cmd_close_ok:
         move.l  #0,18(a0)
         moveq   #0,d0
         bra.w   done
+
+        ifne C11_MODE
+* --- C11: 「cd」らしいコマンド(CMD_CDで指定)。+14の先(_NAMESTSと仮定、
+* $47/$4aと共通)のパス欄を見て、ルートか\SUB\なら成功(+18=0)、それ以外は
+* -3(ディレクトリが見つからない)を返す。 ---
+cmd_cd_ok:
+        move.l  14(a0),a1
+        lea     2(a1),a1
+        bsr.w   cmd11_check_path
+        move.b  #$00,3(a0)
+        move.b  #$00,4(a0)
+        cmp.w   #2,d0
+        beq.s   cmd11_cd_bad
+        move.l  #0,18(a0)
+        moveq   #0,d0
+        bra.w   done
+cmd11_cd_bad:
+        move.l  #-3,18(a0)
+        moveq   #0,d0
+        bra.w   done
+        endc
         endc
 
         ifne REC_MODE
@@ -924,6 +1179,49 @@ c10_read_pos:
 hello3000:
         include "hello3000.inc.s"
 hello3000_end:
+
+        ifne C11_MODE
+* --- C11: SUBディレクトリ(ルート直下、属性$10)のエントリ ---
+fake_dir_sub:
+        dc.b    'SUB',32,32,32,32,32    * +10 名前8
+        dc.b    32,32,32                * +18 拡張子3(ディレクトリなので空白)
+        dc.b    $10                     * +21 属性=ディレクトリ
+        dc.w    0                       * +22 時刻(無指定=0)
+        dc.w    0                       * +24 日付(無指定=0)
+        dc.l    0                       * +26 サイズ(ディレクトリなので0)
+        dc.b    'SUB'
+        dcb.b   20,0
+fake_dir_sub_end:
+
+* \SUB\ABC.TXT / 12バイト('abc in sub\r\n') / 属性$20
+fake_file_abc:
+        dc.b    'ABC',32,32,32,32,32    * +10 名前8
+* +18 拡張子3
+        dc.b    'TXT'
+        dc.b    $20                     * +21 属性
+        dc.w    $645c                   * +22 最終変更時刻(HELLO.TXTと同じ値を仮に流用)
+        dc.w    $5d2b                   * +24 最終変更日
+        dc.l    12                      * +26 ファイルサイズ
+        dc.b    'ABC.TXT'
+        dcb.b   16,0
+fake_file_abc_end:
+
+* fake_dir_sub/fake_file_abc(いずれも43バイト、奇数)の直後なので、ワード/
+* ロング変数の前にevenを打つ(fake_file等と同じ理由。実測はC10側のコメント
+* 参照)。
+        even
+c11_tree:
+        dc.w    2                * $47直後に設定: 0=ルート 1=\SUB\ 2=その他(該当ツリー無し)
+c11_cur_file:
+        dc.w    0                * $4a(開く)で設定: 0=HELLO.TXT(root) 1=ABC.TXT(\SUB\)
+c11_cur_len:
+        dc.l    0                * 開いたファイルの長さ($4c読み終わり判定用。open時に3000/12を設定)
+
+* abc_content: \SUB\ABC.TXTの中身(12バイト、fake_file_abcの+26サイズと一致)
+abc_content:
+        dc.b    'abc in sub',$0d,$0a
+abc_content_end:
+        endc
         endc
         endc
 
