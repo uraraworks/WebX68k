@@ -454,6 +454,35 @@
           </div>
         </section>
 
+        <!-- 特徴2.7: HostFS -->
+        <section class="help-card feature-card">
+          <div class="lang-ja">
+            <h2>HostFSでフォルダをそのままドライブに</h2>
+            <p>
+              ブラウザで選んだ手元のフォルダを、ディスクイメージ無しでゲスト側から1つの
+              ドライブ(例: <code>C:</code>)として見せられます。読み取り専用ですが、
+              <code>dir</code>・<code>type</code>・コピーがそのまま使えます。ディスク
+              ライブラリの各行の「HostFSを組み込む」ボタンで、起動ディスクへ
+              <code>HOSTFS.SYS</code>と設定行を自動で足せます(同梱システムディスクは
+              書き換えず、コピーを作ってから組み込みます)。対応はChrome系のPC・Android
+              (iPhone・Firefoxは非対応)です。
+            </p>
+          </div>
+          <div class="lang-en">
+            <h2>HostFS: expose a folder as a drive</h2>
+            <p>
+              A folder you pick in the browser can appear to the guest as a single drive
+              (e.g. <code>C:</code>) without any disk image. It's read-only, but
+              <code>dir</code>, <code>type</code>, and copy all work directly against it.
+              The "Install HostFS" button on each Disk Library row writes
+              <code>HOSTFS.SYS</code> and the needed CONFIG.SYS line to that disk
+              automatically (the bundled system disk is never modified — a copy is made
+              first). Supported on Chrome-family browsers on PC and Android (not on iPhone
+              or Firefox).
+            </p>
+          </div>
+        </section>
+
         <!-- 特徴2.5: 4:3表示モード -->
         <section class="help-card feature-card">
           <div class="lang-ja">

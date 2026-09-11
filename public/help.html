@@ -679,6 +679,113 @@
           </div>
         </section>
 
+        <!-- 4.6 HostFS -->
+        <section class="help-card">
+          <div class="lang-ja">
+            <h2>HostFS(フォルダを直接ドライブとして見せる)</h2>
+            <p>
+              HostFSは、ブラウザで選んだ手元のフォルダを、ゲスト側から1つのドライブ
+              (例: <code>C:</code>)として見せる機能です。ディスクイメージを介さず、
+              フォルダの中身をそのまま<code>dir</code>や<code>type</code>、コピーで
+              扱えます。画面下部のSCSI行の下にある「HostFS」行から操作します。
+            </p>
+            <ol>
+              <li>「つなぐ」ボタンでフォルダ選択ダイアログを開き、見せたいフォルダを選ぶ。</li>
+              <li>
+                起動したいディスク(FD/HDD)に、下記の「組み込みボタン」でHostFSを組み込む。
+              </li>
+              <li>(必要なら)ページを再読み込みしてから起動する。</li>
+              <li>起動後、ゲスト側で <code>dir c:</code> のように使う。</li>
+            </ol>
+            <div class="note-box">
+              <strong>読み取り専用です。</strong> ゲストからフォルダの中身を書き換えることは
+              できません(ファイルの新規作成・上書き・削除は不可)。
+            </div>
+            <p>
+              ゲストがHostFSを使うには、起動ディスクのCONFIG.SYSに
+              <code>DEVICE = \HOSTFS.SYS</code>という1行が必要です。ディスクライブラリの
+              各行(HDD、またはFAT12/16として扱えるFD)にある
+              <strong>「HostFSを組み込む」</strong>ボタンを押すと、その行のディスクへ
+              自動的に<code>HOSTFS.SYS</code>を書き込み、CONFIG.SYSにこの行を追加します
+              (すでにCONFIG.SYSがあれば末尾に追記、無ければ新規作成。同じ行が既にあれば
+              二重には追加しません)。
+            </p>
+            <div class="note-box">
+              <strong>同梱システムディスク(human302.xdf)は書き換えません。</strong>
+              同梱ディスクの行で「HostFSを組み込む」を押すと、まずライブラリへコピーを
+              1枚作り、そのコピーへ組み込みます。同梱ディスクそのものは無改変のまま
+              残ります。
+            </div>
+            <div class="note-box">
+              <strong>起動中のディスクには組み込めません。</strong> 実行中に対象へ
+              書き込むと、コアがマウントしている内容とずれてしまうため、稼働中のディスク
+              には組み込みボタンが働きません。停止してから操作してください。
+            </div>
+            <p>
+              対応環境はChrome系のPC・Android(<code>showDirectoryPicker</code>が使える
+              ブラウザ)です。<strong>iPhone(Safari)とFirefoxでは使えません。</strong>
+            </p>
+            <p>
+              ホスト側のファイル名は、Human68kの8.3形式(名前8文字+拡張子3文字、ドットは
+              1つまで)に変換して見せます。18文字を超える名前、ドットが2つ以上ある名前、
+              CP932で表せない文字を含む名前は一覧に出ません。改行コードは変換せず、
+              ホスト上のバイト列をそのまま渡します。
+            </p>
+            <p>接続したフォルダのハンドルはブラウザに保存され、「再接続」で次回も使えます。</p>
+          </div>
+          <div class="lang-en">
+            <h2>HostFS (expose a local folder as a drive)</h2>
+            <p>
+              HostFS lets a folder you pick in the browser appear to the guest as a single
+              drive (e.g. <code>C:</code>), without going through a disk image — you can
+              <code>dir</code>, <code>type</code>, and copy files straight out of that folder.
+              Use the "HostFS" row below the SCSI row at the bottom of the player.
+            </p>
+            <ol>
+              <li>Click "Connect" to open the folder picker and choose the folder to expose.</li>
+              <li>Install HostFS onto the disk (FD/HDD) you want to boot, using the button below.</li>
+              <li>(If needed) reload the page, then boot.</li>
+              <li>After boot, use it from the guest with e.g. <code>dir c:</code>.</li>
+            </ol>
+            <div class="note-box">
+              <strong>Read-only.</strong> The guest cannot modify the folder's contents (no
+              creating, overwriting, or deleting files).
+            </div>
+            <p>
+              For the guest to use HostFS, the boot disk's CONFIG.SYS needs the line
+              <code>DEVICE = \HOSTFS.SYS</code>. The <strong>"Install HostFS"</strong> button on
+              each disk library row (HDD, or an FD that can be handled as FAT12/16) writes
+              <code>HOSTFS.SYS</code> to that disk and adds this line to CONFIG.SYS
+              automatically (appended if CONFIG.SYS already exists, created new otherwise; it
+              won't be added twice if the line is already there).
+            </p>
+            <div class="note-box">
+              <strong>The bundled system disk (human302.xdf) is never modified.</strong>
+              Pressing "Install HostFS" on the bundled disk's row first makes a copy in the
+              library and installs onto that copy — the bundled disk itself stays unchanged.
+            </div>
+            <div class="note-box">
+              <strong>Can't install onto a disk that's currently running.</strong> Writing to a
+              disk while it's mounted by the running core would fall out of sync with what the
+              core has in memory, so the install button is disabled for a running disk. Stop
+              first.
+            </div>
+            <p>
+              Supported on Chrome-family browsers on PC and Android (any browser with
+              <code>showDirectoryPicker</code>). <strong>Not supported on iPhone (Safari) or
+              Firefox.</strong>
+            </p>
+            <p>
+              Host file names are converted to Human68k's 8.3 format (8-character name + 3-character
+              extension, at most one dot) before being shown. Names longer than 18 characters,
+              names with more than one dot, and names containing characters that can't be
+              represented in CP932 are omitted from listings. Line endings are not converted — the
+              host's byte stream is passed through as-is.
+            </p>
+            <p>The connected folder's handle is remembered by the browser; use "Reconnect" next time.</p>
+          </div>
+        </section>
+
         <!-- 5. ファイル転送 -->
         <section class="help-card">
           <div class="lang-ja">

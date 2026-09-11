@@ -247,6 +247,39 @@ be mounted at the same time.
   (the implementation loads the whole image into memory). A non-inserted
   SCSI image can still be read and written while running.
 
+### HostFS (expose a local folder as a drive)
+
+HostFS lets a folder you pick in the browser appear to the guest as a
+single drive (e.g. `C:`), without going through a disk image. It's
+controlled from the "HostFS" row below the SCSI row.
+
+1. Click "Connect" and pick the folder to expose.
+2. Install HostFS onto the disk (FD/HDD) you want to boot, using the
+   **"Install HostFS"** button on that disk's row in the Disk Library.
+3. Reload the page if needed, then boot.
+4. From the guest, use it like `dir c:`.
+
+- **Read-only** — the guest cannot create, overwrite, or delete files in
+  the folder.
+- Supported on **Chrome-family browsers on PC and Android** (anything with
+  `showDirectoryPicker`). **Not supported on iPhone (Safari) or Firefox.**
+- Host file names are converted to Human68k's 8.3 format (8-char name +
+  3-char extension, at most one dot); names over 18 characters, names with
+  more than one dot, or names containing characters not representable in
+  CP932 are omitted. Line endings are **not** converted — bytes are passed
+  through as-is.
+- The "Install HostFS" button writes `HOSTFS.SYS` to the disk's root and
+  adds `DEVICE = \HOSTFS.SYS` to `CONFIG.SYS` (appended if it exists,
+  created new otherwise; it won't add the line twice). It's available on
+  HDD rows and FD rows that can be handled as FAT12/16.
+- **The bundled system disk (`human302.xdf`) is never modified** — pressing
+  the button on its row makes a copy in the library first and installs
+  onto that copy.
+- **You can't install onto a disk that's currently running** (writing to a
+  disk the core has mounted would go out of sync with what's in memory).
+- The connected folder's handle is remembered by the browser (IndexedDB);
+  use "Reconnect" next time.
+
 ### Disk Library
 
 Disk images you've loaded are kept in a browser-side library (IndexedDB), so
