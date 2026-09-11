@@ -215,5 +215,20 @@ build_one "c10" 2000 -DCMD_INIT=\$40 -DREC_MODE=1 -DC6_MODE=2 -DC6_SUB=3 -DC8_MO
 build_device_variant "c10"
 print_rec_offsets "c10"
 
+echo "== C11-r1: C10を土台に、ルート直下にSUB(ディレクトリ)、\SUB\配下にABC.TXTを"
+echo "   追加。\$47/\$48/\$4a/\$4cはNAMESTSのパス欄でツリー(ルート/\SUB\)を選ぶ。"
+echo "   未対応コマンドの既定応答を-2から-3(ディレクトリが見つからない)へ変更"
+echo "   (cd等の未知コマンドの解読用)。CMD_CDは未指定(\$ff)のまま=まだ無効 =="
+build_one "c11r1" 2000 -DCMD_INIT=\$40 -DREC_MODE=1 -DC6_MODE=2 -DC6_SUB=3 -DC8_MODE=2 -DC9_MODE=1 -DREC_MAX=96 -DCMD_OPEN=\$4a -DCMD_READ=\$4c -DCMD_CLOSE=\$4b -DCMD_READ_BUF_OFF=14 -DC10_MODE=1 -DC11_MODE=1
+build_device_variant "c11r1"
+print_rec_offsets "c11r1"
+
+echo "== C11-r2: C11-r1の実測(cdは\$41で来た。+14の先は_NAMESTS形式で、"
+echo "   'cd c:\\sub'はdrive=2 path=\\x09subx\\x09\\x00、'cd \\'はdrive=2 path=\\x09\\x00"
+echo "   だった)を受け、CMD_CD=\$41を指定して有効化する =="
+build_one "c11r2" 2000 -DCMD_INIT=\$40 -DREC_MODE=1 -DC6_MODE=2 -DC6_SUB=3 -DC8_MODE=2 -DC9_MODE=1 -DREC_MAX=96 -DCMD_OPEN=\$4a -DCMD_READ=\$4c -DCMD_CLOSE=\$4b -DCMD_READ_BUF_OFF=14 -DC10_MODE=1 -DC11_MODE=1 -DCMD_CD=\$41
+build_device_variant "c11r2"
+print_rec_offsets "c11r2"
+
 echo "== 完了 =="
-echo "$OUT_DIR/{c0,c1,c2,c1b,c3a,c3b,c6v1,c6v2,c6f1,c6f2,c6f3,c7d0,c7d1,c7d2,c8a,c8b,c9r1,c9r2,c9r3,c10}.xdf を作成しました。"
+echo "$OUT_DIR/{c0,c1,c2,c1b,c3a,c3b,c6v1,c6v2,c6f1,c6f2,c6f3,c7d0,c7d1,c7d2,c8a,c8b,c9r1,c9r2,c9r3,c10,c11r1,c11r2}.xdf を作成しました。"
