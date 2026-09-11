@@ -25,6 +25,7 @@ import {
   type FatEntry,
 } from './api/fat';
 import { loadBiosFile, saveBiosFile } from './bios-store';
+import { installHostFsIntoVolume } from './hostfs/install-hostfs';
 import { storageProbe, frameProbe, keybufAttributionProbe } from './storage-probe';
 import { computeAttributionBreakdown } from './keybuf-attribution';
 import { loadSramFile, saveSramFile } from './sram-store';
@@ -1755,6 +1756,9 @@ const BUNDLED_DISK_URL = `./system/human302.xdf?v=${__BUILD_ID__}`;
 const BUNDLED_DISK_NAME = 'human302.xdf';
 // 同梱ディスクはIndexedDBには保存せず、ディスクライブラリの先頭に固定表示する(削除不可)。
 const BUNDLED_DISK_SOURCE_KEY = 'bundled:human302';
+// HostFSのゲスト側ドライバ本体(自作物。詳細はpublic/system/hostfs.sys.README.md参照)。
+// 「このディスクにHostFSを組み込む」ボタンで各ディスクのルートへ書き込む。
+const HOSTFS_SYS_URL = `./system/hostfs.sys?v=${__BUILD_ID__}`;
 
 // --- URLパラメータ(WebNP2 に準拠。fd1/fd2/hdd でディスクURL指定、run=1で自動起動)。---
 // system=1: 同梱システムディスク(human302.xdf)をFDD0として使う(WebNP2の freedos=1 相当)。
@@ -3040,6 +3044,20 @@ function buildLibraryRow(entry: LibraryRowEntry, inGroup = false): HTMLElement {
       })();
     });
     actions.append(insertBtn);
+  }
+
+  // HostFS組み込み: 既存のファイル転送(fatReadFile/fatWriteFile)で書ける形式(HDD、
+  // またはFAT12/16として扱えるFD)にだけ出す。同梱ディスクはコピーを作ってから組み込む
+  // (installHostFsOnLibraryEntry側でbundled分岐している)。
+  if (kind === 'hdd' || (kind === 'fd' && isFmEditableFdName(entry.name))) {
+    const installBtn = document.createElement('button');
+    installBtn.type = 'button';
+    installBtn.className = 'library-action-btn';
+    installBtn.textContent = t('libraryActionInstallHostFs');
+    installBtn.addEventListener('click', () => {
+      void installHostFsOnLibraryEntry(entry);
+    });
+    actions.append(installBtn);
   }
 
   if (entry.bundled) {
@@ -7072,6 +7090,62 @@ async function openLibraryVolume(sourceKey: string): Promise<FmVolumeHandle> {
       if (!libraryBackdrop.classList.contains('hidden')) void refreshLibraryList();
     },
   };
+}
+
+/** ディスクライブラリのentry.sourceKeyが、現在稼働中(host!==null && running)のスロットにマウント中か。 */
+function isMountedWhileRunning(sourceKey: string): boolean {
+  const slot = SLOT_IDS.find((s) => slots[s]?.sourceKey === sourceKey);
+  return slot !== undefined && host !== null && running;
+}
+
+/**
+ * ディスクライブラリの1行(または同梱ディスク)へ「HostFSを組み込む」を実行する。
+ * ルートへHOSTFS.SYSを書き、CONFIG.SYSにDEVICE行を足す(install-hostfs.tsが中身)。
+ * 書き込み経路はopenLibraryVolume()に揃えており(=既存のファイル転送=fmWriteFile等と同じ
+ * fatReadFile/fatWriteFile/openDiskImageの土台)、マウント中ならスロット側を実体として使う。
+ *
+ * 起動中にマウントしているディスクには書かない(isMountedWhileRunning)。
+ * 同梱システムディスク(human302.xdf)そのものは書き換えず、まずライブラリへコピーを
+ * 保存してから、そのコピーへ組み込む。
+ */
+async function installHostFsOnLibraryEntry(entry: LibraryRowEntry): Promise<void> {
+  try {
+    let sourceKey = entry.sourceKey;
+    let displayName = entry.displayName;
+
+    if (entry.bundled) {
+      if (!confirm(t('installHostFsConfirmBundled'))) return;
+      const bytes = await fetchBytes(BUNDLED_DISK_URL);
+      if (!bytes) throw new Error('human302.xdfの取得に失敗しました');
+      const stored = await listDisks();
+      const existingNames = new Set(stored.map((d) => d.name.toLowerCase()));
+      let name = 'human302-hostfs.xdf';
+      for (let i = 2; existingNames.has(name.toLowerCase()); i++) {
+        name = `human302-hostfs${i}.xdf`;
+      }
+      sourceKey = fileKeyFor(name, bytes.length);
+      await saveDisk({ sourceKey, name, bytes: bytes.slice(), savedAt: Date.now() });
+      displayName = name;
+    } else {
+      if (!confirm(t('installHostFsConfirm', { name: entry.displayName }))) return;
+      if (isMountedWhileRunning(sourceKey)) {
+        throw new Error(t('installHostFsLockedError'));
+      }
+    }
+
+    const hostfsBytes = await fetchBytes(HOSTFS_SYS_URL);
+    if (!hostfsBytes) throw new Error('hostfs.sysの取得に失敗しました');
+
+    const handle = await openLibraryVolume(sourceKey);
+    installHostFsIntoVolume(handle.vol, hostfsBytes);
+    await handle.persist();
+
+    showToast(t('installHostFsDone', { name: displayName }));
+    await refreshLibraryList();
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    showToast(t('installHostFsFailed', { message }));
+  }
 }
 
 /**

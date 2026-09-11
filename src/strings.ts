@@ -196,6 +196,18 @@ interface Dict {
   libraryRenamePrompt(args: { name: string }): string;
   libraryDeleteConfirm(args: { name: string }): string;
   bundledDiskDisplayName(): string;
+  /** 「このディスクにHostFSを組み込む」ボタン(ディスクライブラリの各行)。 */
+  libraryActionInstallHostFs(): string;
+  /** 組み込み実行前の確認ダイアログ(通常のディスク向け)。 */
+  installHostFsConfirm(args: { name: string }): string;
+  /** 組み込み実行前の確認ダイアログ(同梱ディスク向け。コピーを作ってから組み込む旨を説明する)。 */
+  installHostFsConfirmBundled(): string;
+  /** 起動中でロックされたディスクには組み込めない旨のエラー。 */
+  installHostFsLockedError(): string;
+  /** 組み込み完了時のトースト。 */
+  installHostFsDone(args: { name: string }): string;
+  /** 組み込み中にエラーが起きた場合のトースト。 */
+  installHostFsFailed(args: { message: string }): string;
   /** アーカイブ(ZIP/LZH)にディスクイメージが1つも見つからなかった場合。 */
   dropNoDiskImage(): string;
   /** アーカイブの展開自体に失敗した場合。 */
@@ -684,6 +696,14 @@ const STRINGS: Record<Lang, Dict> = {
     libraryRenamePrompt: ({ name }) => `表示名を入力してください(元のファイル名: ${name})`,
     libraryDeleteConfirm: ({ name }) => `保存済みデータ「${name}」を削除します。よろしいですか？`,
     bundledDiskDisplayName: () => 'human302.xdf (同梱)',
+    libraryActionInstallHostFs: () => 'HostFSを組み込む',
+    installHostFsConfirm: ({ name }) =>
+      `「${name}」のルートへHOSTFS.SYSを書き込み、CONFIG.SYSに DEVICE = \\HOSTFS.SYS を追加します。よろしいですか？`,
+    installHostFsConfirmBundled: () =>
+      '同梱システムディスクは書き換えないため、コピーを作ってからHostFSを組み込みます。よろしいですか？',
+    installHostFsLockedError: () => '起動中のディスクには組み込めません。停止してから操作してください。',
+    installHostFsDone: ({ name }) => `「${name}」にHostFSを組み込みました`,
+    installHostFsFailed: ({ message }) => `HostFSの組み込みに失敗しました: ${message}`,
     dropNoDiskImage: () => 'ディスクイメージが見つかりませんでした。',
     statusArchiveFailed: ({ name, message }) => `${name} の展開に失敗しました: ${message}`,
     statusLibraryAdded: ({ count }) => `ディスクライブラリに${count}件追加しました。`,
@@ -1074,6 +1094,14 @@ const STRINGS: Record<Lang, Dict> = {
     libraryRenamePrompt: ({ name }) => `Enter a display name (original file name: ${name})`,
     libraryDeleteConfirm: ({ name }) => `This will delete the saved data "${name}". Continue?`,
     bundledDiskDisplayName: () => 'human302.xdf (bundled)',
+    libraryActionInstallHostFs: () => 'Install HostFS',
+    installHostFsConfirm: ({ name }) =>
+      `This will write HOSTFS.SYS to the root of "${name}" and add DEVICE = \\HOSTFS.SYS to CONFIG.SYS. Continue?`,
+    installHostFsConfirmBundled: () =>
+      'The bundled system disk is never modified, so a copy will be made first and HostFS installed on that copy. Continue?',
+    installHostFsLockedError: () => 'Cannot install onto a disk that is currently running. Stop it first.',
+    installHostFsDone: ({ name }) => `HostFS installed onto "${name}"`,
+    installHostFsFailed: ({ message }) => `Failed to install HostFS: ${message}`,
     dropNoDiskImage: () => 'No disk image was found.',
     statusArchiveFailed: ({ name, message }) => `Failed to extract ${name}: ${message}`,
     statusLibraryAdded: ({ count }) => `Added ${count} image(s) to the disk library.`,
