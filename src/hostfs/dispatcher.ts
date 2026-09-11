@@ -344,11 +344,17 @@ export class HostFsDispatcher {
   /** $50: 空き容量。固定の作り物の値を返す(検証用途のため実容量は問わない)。 */
   private handleFreeSpace(addr: number): void {
     const outPtr = readU32BE(this.mem, addr + HDR_ARG_PTR_OFFSET);
-    // 使用可能クラスタ / 総クラスタ / クラスタあたりセクタ / セクタあたりバイト
-    writeU16BE(this.mem, outPtr + 0, 1000);
-    writeU16BE(this.mem, outPtr + 2, 2000);
-    writeU16BE(this.mem, outPtr + 4, 8);
-    writeU16BE(this.mem, outPtr + 6, 512);
+    // 使用可能クラスタ(W) / 総クラスタ(W) / クラスタあたりセクタ(W) / セクタあたりバイト(W)
+    // (PRO-68K DOS呼び出しガイド p.150の順序)。
+    // どの欄もワード(0-65535)に収まる値にする必要があるため、
+    // クラスタ=32KB(セクタ512B×64セクタ)を採用し、
+    //   総クラスタ  32768 × 32KB = 1,073,741,824B(1GB)
+    //   使用可能    32000 × 32KB = 1,048,576,000B(約1000MB、使用中は残り768クラスタ=24MB)
+    // という、もっともらしい「ほぼ空き」の1GBドライブとして見せる。
+    writeU16BE(this.mem, outPtr + 0, 32000); // 使用可能クラスタ
+    writeU16BE(this.mem, outPtr + 2, 32768); // 総クラスタ
+    writeU16BE(this.mem, outPtr + 4, 64); // クラスタあたりセクタ
+    writeU16BE(this.mem, outPtr + 6, 512); // セクタあたりバイト
     writeI32BE(this.mem, addr + HDR_FILBUF_PTR_OFFSET, 0);
   }
 
