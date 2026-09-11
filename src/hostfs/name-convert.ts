@@ -11,7 +11,7 @@
 // 疑似文字列(filbuf.ts が charCodeAt でそのまま書き出す前提)なので、CP932のバイト列を
 // String.fromCharCode で1バイトずつ文字に変換して積む。
 
-import { encodeSjisUnits } from '../api/sjis';
+import { encodeSjisUnits, decodeSjis } from '../api/sjis';
 
 const MAX_NAME_LEN = 18; // FILBUF +10(8) + +78相当の続き(10)
 const MAX_EXT_LEN = 3;
@@ -72,4 +72,23 @@ export function convertHostNameToHuman68k(hostName: string): HostNameConversion 
   if (extBytes === null || extBytes.length > MAX_EXT_LEN) return null;
 
   return { name: nameBytes, ext: extBytes };
+}
+
+/** 疑似文字列(1文字=1バイト、CP932のバイト列)を実際のバイト列へ戻す。 */
+function byteStringToBytes(s: string): Uint8Array {
+  const out = new Uint8Array(s.length);
+  for (let i = 0; i < s.length; i++) out[i] = s.charCodeAt(i) & 0xff;
+  return out;
+}
+
+/**
+ * W2a(書き込み): ゲスト側の名前・拡張子(_NAMESTSから復元した、1文字=1バイトの
+ * CP932疑似文字列。大文字小文字はゲストが渡したとおり)を、新規に作るホスト側の
+ * ファイル名(Unicode)へ変換する。既存ファイルとの照合はここでは行わない
+ * (呼び出し側=host-folder-fs.tsが大文字小文字無視で別途探す)。
+ */
+export function convertGuestNameToHostFileName(guestName: string, guestExt: string): string {
+  const name = decodeSjis(byteStringToBytes(guestName));
+  const ext = decodeSjis(byteStringToBytes(guestExt));
+  return ext.length > 0 ? `${name}.${ext}` : name;
 }

@@ -394,6 +394,24 @@
     </div>
   </div>
 
+  <!-- HostFS(feature/hostfs) W2a: つなぐときに読み取り専用/書き込み許可を選ぶダイアログ。
+       設定ダイアログ・ディスクライブラリダイアログと同じ.rom-modal系の意匠(index.html内で
+       既に使われている流儀をそのまま踏襲)。ボタン2つを常時フォルダ行に並べるのではなく
+       ダイアログにしたのは、フォルダ行が既にアイコンボタンで手狭なため(main.ts参照)。 -->
+  <div id="hostfs-mode-backdrop" class="rom-modal-backdrop hidden">
+    <div class="rom-modal" role="dialog" aria-modal="true" aria-labelledby="hostfs-mode-title">
+      <h2 id="hostfs-mode-title" class="rom-modal-title">ホストフォルダをつなぐ</h2>
+      <p id="hostfs-mode-description" class="rom-modal-description">
+        書き込みを許可すると、ゲストからの削除・上書きがそのままホスト側のフォルダに反映されます(ゴミ箱はありません)。
+      </p>
+      <div class="rom-modal-footer">
+        <button id="hostfs-mode-cancel" type="button" class="rom-close-btn">キャンセル</button>
+        <button id="hostfs-mode-readonly" type="button" class="rom-close-btn">読み取り専用でつなぐ</button>
+        <button id="hostfs-mode-readwrite" type="button" class="rom-close-btn">書き込みも許可してつなぐ</button>
+      </div>
+    </div>
+  </div>
+
   <!-- ディスクライブラリダイアログ(IndexedDB保存済みディスクイメージ一覧)。WebNP2 のディスクライブラリと同じ流儀(rom-modal系+library-list)。 -->
   <div id="library-backdrop" class="rom-modal-backdrop hidden">
     <div class="rom-modal" role="dialog" aria-modal="true" aria-labelledby="library-title">

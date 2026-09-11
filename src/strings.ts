@@ -125,6 +125,15 @@ interface Dict {
   statusHostFsConnected(args: { name: string }): string;
   statusHostFsDisconnected(): string;
   statusHostFsPermissionDenied(): string;
+  /** W2a(書き込み): 接続名の末尾に付ける、現在のモードの表示(例: "MyFolder (書き込み可)")。 */
+  hostfsModeReadonlySuffix(): string;
+  hostfsModeReadwriteSuffix(): string;
+  /** W2a(書き込み): 「つなぐ」を押したときに出す、読み取り専用/書き込み許可の選択ダイアログ。 */
+  hostfsModeDialogTitle(): string;
+  hostfsModeDialogDescription(): string;
+  hostfsModeDialogReadonly(): string;
+  hostfsModeDialogReadwrite(): string;
+  hostfsModeDialogCancel(): string;
   /** 実行中にFDを排出しようとしたときの確認(誤タップでゲストがフリーズする事故の防止)。 */
   slotEjectConfirmRunning(): string;
   /** ドライブアクセスランプのスクリーンリーダー向けラベル。 */
@@ -624,6 +633,14 @@ const STRINGS: Record<Lang, Dict> = {
     statusHostFsConnected: ({ name }) => `ホストフォルダ「${name}」に接続しました`,
     statusHostFsDisconnected: () => 'ホストフォルダを切断しました',
     statusHostFsPermissionDenied: () => 'ホストフォルダへのアクセスが許可されませんでした',
+    hostfsModeReadonlySuffix: () => '(読み取り専用)',
+    hostfsModeReadwriteSuffix: () => '(書き込み可)',
+    hostfsModeDialogTitle: () => 'ホストフォルダをつなぐ',
+    hostfsModeDialogDescription: () =>
+      '書き込みを許可すると、ゲストからの削除・上書きがそのままホスト側のフォルダに反映されます(ゴミ箱はありません)。',
+    hostfsModeDialogReadonly: () => '読み取り専用でつなぐ',
+    hostfsModeDialogReadwrite: () => '書き込みも許可してつなぐ',
+    hostfsModeDialogCancel: () => 'キャンセル',
     statusScsiBlankCreated: ({ name, sizeMiB }) =>
       `ブランクSCSIディスク「${name}」(${sizeMiB}MB)を作成しました。次回の起動から使えます`,
     slotEjectConfirmRunning: () =>
@@ -1021,6 +1038,14 @@ const STRINGS: Record<Lang, Dict> = {
     statusHostFsConnected: ({ name }) => `Connected to host folder "${name}"`,
     statusHostFsDisconnected: () => 'Disconnected the host folder',
     statusHostFsPermissionDenied: () => 'Permission to access the host folder was denied',
+    hostfsModeReadonlySuffix: () => '(read-only)',
+    hostfsModeReadwriteSuffix: () => '(read/write)',
+    hostfsModeDialogTitle: () => 'Connect a host folder',
+    hostfsModeDialogDescription: () =>
+      'If you allow writing, deletes and overwrites from the guest are applied directly to the host folder (there is no trash).',
+    hostfsModeDialogReadonly: () => 'Connect read-only',
+    hostfsModeDialogReadwrite: () => 'Connect with writing allowed',
+    hostfsModeDialogCancel: () => 'Cancel',
     statusScsiBlankCreated: ({ name, sizeMiB }) =>
       `Created blank SCSI disk "${name}" (${sizeMiB}MB). It will be used from the next boot.`,
     slotEjectConfirmRunning: () =>

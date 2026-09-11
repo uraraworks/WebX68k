@@ -16,6 +16,7 @@ import {
   FLUSH_SCSI_KIND,
   HOSTFS_ATTACH_KIND,
   HOSTFS_DETACH_KIND,
+  type HostFsAttachMode,
   INPUT_UPDATE_KIND,
   isCoreResponse,
   isWorkerBootAck,
@@ -930,9 +931,9 @@ export class WorkerCoreProxy implements LibretroHostProxy {
    * HostFS(feature/hostfs) P2a #3: フォルダを接続する。handle自体は構造化複製可能
    * (structured clone)なのでtransferしない。sendFlushScsiと同じfire-and-forget。
    */
-  sendHostFsAttach(handle: FileSystemDirectoryHandle): void {
+  sendHostFsAttach(handle: FileSystemDirectoryHandle, mode: HostFsAttachMode): void {
     if (this.disposed || this.failed) return;
-    this.worker.postMessage({ kind: HOSTFS_ATTACH_KIND, handle });
+    this.worker.postMessage({ kind: HOSTFS_ATTACH_KIND, handle, mode });
   }
 
   /** HostFS(feature/hostfs) P2a #3: フォルダを切断する。 */

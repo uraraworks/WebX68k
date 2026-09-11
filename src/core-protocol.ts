@@ -275,9 +275,15 @@ export function isFlushScsiMessage(message: unknown): message is FlushScsiMessag
 // 乗せられる(transferable化は不要)。
 export const HOSTFS_ATTACH_KIND = 'hostfsAttach' as const;
 
+// W2a(書き込み): つなぐときに選んだモード。'read'=読み取り専用、'readwrite'=書き込みも許可
+// (definitionはsrc/hostfs/filesystem.tsのHostFsConnectMode。循環import回避のためここでは
+// 同じ文字列リテラル型をそのまま書く)。
+export type HostFsAttachMode = 'read' | 'readwrite';
+
 export interface HostFsAttachMessage {
   kind: typeof HOSTFS_ATTACH_KIND;
   handle: FileSystemDirectoryHandle;
+  mode: HostFsAttachMode;
 }
 
 export function isHostFsAttachMessage(message: unknown): message is HostFsAttachMessage {

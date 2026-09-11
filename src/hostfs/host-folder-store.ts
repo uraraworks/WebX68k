@@ -3,12 +3,22 @@
 // せず(親からの指示書のとおり)、許可が既に'granted'のときだけ黙って再接続し、
 // 'prompt'のときはUI側が「再接続」ボタンを出す(main.ts参照)。
 //
+// W2a(書き込み): つなぐときに選んだモード(read/readwrite)もhandleと一緒に保存し、
+// 再接続では同じモードでrequestPermissionする(親からの指示書のとおり)。
+//
 // 命名規約(CLAUDE.md): IndexedDBは `webx68k-<名詞>`。
+
+import type { HostFsConnectMode } from './filesystem';
 
 const DB_NAME = 'webx68k-hostfs';
 const DB_VERSION = 1;
 const STORE_NAME = 'handle';
 const KEY = 'root';
+
+export interface StoredHostFolder {
+  handle: FileSystemDirectoryHandle;
+  mode: HostFsConnectMode;
+}
 
 function openDb(): Promise<IDBDatabase> {
   return new Promise((resolve, reject) => {
@@ -24,12 +34,13 @@ function openDb(): Promise<IDBDatabase> {
   });
 }
 
-export async function saveHostFolderHandle(handle: FileSystemDirectoryHandle): Promise<void> {
+export async function saveHostFolderHandle(handle: FileSystemDirectoryHandle, mode: HostFsConnectMode): Promise<void> {
   const db = await openDb();
   try {
     await new Promise<void>((resolve, reject) => {
       const tx = db.transaction(STORE_NAME, 'readwrite');
-      tx.objectStore(STORE_NAME).put(handle, KEY);
+      const record: StoredHostFolder = { handle, mode };
+      tx.objectStore(STORE_NAME).put(record, KEY);
       tx.oncomplete = () => resolve();
       tx.onerror = () => reject(tx.error ?? new Error('IndexedDB書き込み失敗'));
     });
@@ -38,13 +49,28 @@ export async function saveHostFolderHandle(handle: FileSystemDirectoryHandle): P
   }
 }
 
-export async function loadHostFolderHandle(): Promise<FileSystemDirectoryHandle | null> {
+/**
+ * 保存済みのフォルダを読み出す。旧形式(W2a以前、handleを直接保存していたもの)が
+ * 残っていた場合は読み取り専用モードとして扱う(安全側。書き込み許可を黙って
+ * 復元しない)。
+ */
+export async function loadHostFolderHandle(): Promise<StoredHostFolder | null> {
   const db = await openDb();
   try {
-    return await new Promise<FileSystemDirectoryHandle | null>((resolve, reject) => {
+    return await new Promise<StoredHostFolder | null>((resolve, reject) => {
       const tx = db.transaction(STORE_NAME, 'readonly');
       const req = tx.objectStore(STORE_NAME).get(KEY);
-      req.onsuccess = () => resolve((req.result as FileSystemDirectoryHandle | undefined) ?? null);
+      req.onsuccess = () => {
+        const result = req.result as StoredHostFolder | FileSystemDirectoryHandle | undefined;
+        if (!result) {
+          resolve(null);
+        } else if ('handle' in result && 'mode' in result) {
+          resolve(result as StoredHostFolder);
+        } else {
+          // 旧形式: handleそのものが保存されている。読み取り専用として扱う。
+          resolve({ handle: result as FileSystemDirectoryHandle, mode: 'read' });
+        }
+      };
       req.onerror = () => reject(req.error ?? new Error('IndexedDB読み取り失敗'));
     });
   } finally {
@@ -68,26 +94,28 @@ export async function clearHostFolderHandle(): Promise<void> {
 
 export type HostFolderPermissionState = 'granted' | 'prompt' | 'denied';
 
-/** 既存の許可状態を"確認するだけ"(要求はしない)。 */
+/** 既存の許可状態を"確認するだけ"(要求はしない)。保存済みモードと同じmodeで確認する。 */
 export async function queryHostFolderPermission(
   handle: FileSystemDirectoryHandle,
+  mode: HostFsConnectMode,
 ): Promise<HostFolderPermissionState> {
   const h = handle as FileSystemDirectoryHandle & {
-    queryPermission?: (opts: { mode: 'read' }) => Promise<HostFolderPermissionState>;
+    queryPermission?: (opts: { mode: HostFsConnectMode }) => Promise<HostFolderPermissionState>;
   };
   if (!h.queryPermission) return 'prompt';
-  return h.queryPermission({ mode: 'read' });
+  return h.queryPermission({ mode });
 }
 
-/** ユーザー操作(クリック)の中からだけ呼ぶこと。許可を要求する。 */
+/** ユーザー操作(クリック)の中からだけ呼ぶこと。保存済みモードと同じmodeで許可を要求する。 */
 export async function requestHostFolderPermission(
   handle: FileSystemDirectoryHandle,
+  mode: HostFsConnectMode,
 ): Promise<HostFolderPermissionState> {
   const h = handle as FileSystemDirectoryHandle & {
-    requestPermission?: (opts: { mode: 'read' }) => Promise<HostFolderPermissionState>;
+    requestPermission?: (opts: { mode: HostFsConnectMode }) => Promise<HostFolderPermissionState>;
   };
   if (!h.requestPermission) return 'granted'; // requestPermission非対応環境(OPFS等)は常に許可済み扱い
-  return h.requestPermission({ mode: 'read' });
+  return h.requestPermission({ mode });
 }
 
 /** File System Access API (showDirectoryPicker) がこの環境で使えるか。 */

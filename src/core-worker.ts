@@ -1239,7 +1239,7 @@ ctx.onmessage = (ev) => {
   // 行自体は出すため、ここで受けても安全に無視できる必要がある)。
   if (isHostFsAttachMessage(data)) {
     if (hostFsBridge?.attach) {
-      hostFsBridge.attach(data.handle);
+      hostFsBridge.attach(data.handle, data.mode);
     } else {
       console.log('[WebX68k-worker] HostFS ATTACH を受信したが、real モードが有効でないため無視した');
     }

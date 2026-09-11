@@ -210,6 +210,10 @@ import {
   saveHostFolderHandle,
 } from './hostfs/host-folder-store';
 import { seedHostFsOpfsTest } from './hostfs/opfs-test-seed';
+import type { HostFsConnectMode } from './hostfs/filesystem';
+// W2a検証プローブ(__webx68kDebug.hostFsW2aProbe)専用: dispatcherを経由せず、
+// バックエンドの書き込みAPIをOPFSのhandleへ直接叩いて確かめる(DEV限定)。
+import { HostFolderFs } from './hostfs/host-folder-fs';
 
 const canvas = document.getElementById('screen') as HTMLCanvasElement;
 const bootOverlay = document.getElementById('boot-overlay') as HTMLDivElement;
@@ -366,6 +370,13 @@ const scsiElements: ScsiElements = {
 
 // HostFS(feature/hostfs) P2a #3: フォルダ行。Worker経路(urlWorkerMode)だけ対応する
 // (メインスレッド経路は行を無効にして説明を出す。Web Serialの流儀、serial.ts参照)。
+//
+// W2a(書き込み): つなぐときに読み取り専用/書き込み許可を選ぶ小さなダイアログを足した
+// (「フォルダをつなぐ」ボタン→モード選択ダイアログ→showDirectoryPicker、の3段)。
+// 意匠は設定ダイアログ・ディスクライブラリダイアログと同じ.rom-modal系(index.html参照)。
+// 2つの独立ボタンではなくダイアログにしたのは、フォルダ行自体が既にアイコンボタン4個
+// (つなぐ/再接続/外す、他にHDD等の行もある)で手狭で、モード選択を常時ボタン2個に
+// 増やすより「つなぐ」を押した後に1回だけ聞く方が既存の行の見た目を崩さないため。
 interface HostFsElements {
   lamp: HTMLElement;
   name: HTMLElement;
@@ -382,14 +393,20 @@ const hostFsElements: HostFsElements = {
   disconnectBtn: document.getElementById('btn-disconnect-hostfs') as HTMLButtonElement,
 };
 
+const hostFsModeBackdrop = document.getElementById('hostfs-mode-backdrop') as HTMLDivElement;
+const hostFsModeReadonlyBtn = document.getElementById('hostfs-mode-readonly') as HTMLButtonElement;
+const hostFsModeReadwriteBtn = document.getElementById('hostfs-mode-readwrite') as HTMLButtonElement;
+const hostFsModeCancelBtn = document.getElementById('hostfs-mode-cancel') as HTMLButtonElement;
+
 let hostFsHandle: FileSystemDirectoryHandle | null = null;
-/** queryPermission()が'prompt'を返した保存済みハンドル。再接続ボタン用。 */
-let hostFsReconnectCandidate: FileSystemDirectoryHandle | null = null;
+let hostFsMode: HostFsConnectMode | null = null;
+/** queryPermission()が'prompt'を返した保存済みハンドル(モード込み)。再接続ボタン用。 */
+let hostFsReconnectCandidate: { handle: FileSystemDirectoryHandle; mode: HostFsConnectMode } | null = null;
 
 function updateHostFsUi(): void {
   const supported = urlWorkerMode && isDirectoryPickerSupported();
   hostFsElements.name.textContent = hostFsHandle
-    ? hostFsHandle.name
+    ? `${hostFsHandle.name}${hostFsMode === 'readwrite' ? t('hostfsModeReadwriteSuffix') : t('hostfsModeReadonlySuffix')}`
     : !urlWorkerMode
       ? t('hostfsWorkerOnly')
       : !isDirectoryPickerSupported()
@@ -405,17 +422,25 @@ function updateHostFsUi(): void {
   hostFsElements.reconnectBtn.hidden = !supported || !hostFsReconnectCandidate;
 }
 
-async function connectHostFsFolder(): Promise<void> {
-  if (!urlWorkerMode || !isDirectoryPickerSupported()) return;
+function openHostFsModeDialog(): void {
+  hostFsModeBackdrop.classList.remove('hidden');
+}
+function closeHostFsModeDialog(): void {
+  hostFsModeBackdrop.classList.add('hidden');
+}
+
+async function pickHostFsFolder(mode: HostFsConnectMode): Promise<void> {
+  closeHostFsModeDialog();
   try {
     const picker = (globalThis as Record<string, unknown>).showDirectoryPicker as (opts?: {
-      mode?: 'read' | 'readwrite';
+      mode?: HostFsConnectMode;
     }) => Promise<FileSystemDirectoryHandle>;
-    const handle = await picker({ mode: 'read' });
+    const handle = await picker({ mode });
     hostFsHandle = handle;
+    hostFsMode = mode;
     hostFsReconnectCandidate = null;
-    workerCoreProxy?.sendHostFsAttach(handle);
-    await saveHostFolderHandle(handle);
+    workerCoreProxy?.sendHostFsAttach(handle, mode);
+    await saveHostFolderHandle(handle, mode);
     showToast(t('statusHostFsConnected', { name: handle.name }));
   } catch (err) {
     // ユーザーがキャンセルした場合(AbortError)は黙って何もしない。
@@ -427,6 +452,7 @@ async function connectHostFsFolder(): Promise<void> {
 
 function disconnectHostFsFolder(): void {
   hostFsHandle = null;
+  hostFsMode = null;
   hostFsReconnectCandidate = null;
   workerCoreProxy?.sendHostFsDetach();
   void clearHostFolderHandle();
@@ -435,24 +461,25 @@ function disconnectHostFsFolder(): void {
 }
 
 async function reconnectHostFsFolder(): Promise<void> {
-  const handle = hostFsReconnectCandidate;
-  if (!handle) return;
-  const result = await requestHostFolderPermission(handle);
+  const candidate = hostFsReconnectCandidate;
+  if (!candidate) return;
+  const result = await requestHostFolderPermission(candidate.handle, candidate.mode);
   if (result !== 'granted') {
     showToast(t('statusHostFsPermissionDenied'));
     return;
   }
-  hostFsHandle = handle;
+  hostFsHandle = candidate.handle;
+  hostFsMode = candidate.mode;
   hostFsReconnectCandidate = null;
-  workerCoreProxy?.sendHostFsAttach(handle);
-  showToast(t('statusHostFsConnected', { name: handle.name }));
+  workerCoreProxy?.sendHostFsAttach(candidate.handle, candidate.mode);
+  showToast(t('statusHostFsConnected', { name: candidate.handle.name }));
   updateHostFsUi();
 }
 
 /**
  * 起動時の自動再接続(P2a #3、親からの指示書: 自動では許可を求めない)。
  * 保存済みハンドルの許可が既に'granted'なら黙って再接続し、'prompt'なら
- * 再接続ボタンを出すだけに留める。
+ * 再接続ボタンを出すだけに留める。モードは保存時に選んだものをそのまま使う。
  */
 async function tryReattachHostFsFolder(): Promise<void> {
   if (!urlWorkerMode || !isDirectoryPickerSupported()) {
@@ -465,10 +492,11 @@ async function tryReattachHostFsFolder(): Promise<void> {
       updateHostFsUi();
       return;
     }
-    const permission = await queryHostFolderPermission(saved);
+    const permission = await queryHostFolderPermission(saved.handle, saved.mode);
     if (permission === 'granted') {
-      hostFsHandle = saved;
-      workerCoreProxy?.sendHostFsAttach(saved);
+      hostFsHandle = saved.handle;
+      hostFsMode = saved.mode;
+      workerCoreProxy?.sendHostFsAttach(saved.handle, saved.mode);
     } else {
       hostFsReconnectCandidate = saved;
     }
@@ -478,22 +506,36 @@ async function tryReattachHostFsFolder(): Promise<void> {
   updateHostFsUi();
 }
 
-/** `?hostfs=opfs-test` 専用: OPFSへ検証用ファイル一式を作り、そのままATTACHする。 */
+/**
+ * `?hostfs=opfs-test` 専用: OPFSへ検証用ファイル一式を作り、そのままATTACHする。
+ * OPFSはrequestPermissionが無く常に許可済み扱いのため、W2a検証(書き込みAPIの実地確認)も
+ * 兼ねて書き込み可能モードでATTACHする。
+ */
 async function setupHostFsOpfsTest(): Promise<void> {
   try {
     const handle = await seedHostFsOpfsTest();
     hostFsHandle = handle;
-    workerCoreProxy?.sendHostFsAttach(handle);
-    console.log('[HostFS] opfs-test: OPFSへ検証用ファイルを作り、ATTACHした');
+    hostFsMode = 'readwrite';
+    workerCoreProxy?.sendHostFsAttach(handle, 'readwrite');
+    console.log('[HostFS] opfs-test: OPFSへ検証用ファイルを作り、ATTACH(readwrite)した');
   } catch (err) {
     console.error('[HostFS] opfs-test: セットアップに失敗しました', err);
   }
   updateHostFsUi();
 }
 
-hostFsElements.connectBtn.addEventListener('click', () => void connectHostFsFolder());
+hostFsElements.connectBtn.addEventListener('click', () => openHostFsModeDialog());
 hostFsElements.disconnectBtn.addEventListener('click', disconnectHostFsFolder);
 hostFsElements.reconnectBtn.addEventListener('click', () => void reconnectHostFsFolder());
+hostFsModeReadonlyBtn.addEventListener('click', () => void pickHostFsFolder('read'));
+hostFsModeReadwriteBtn.addEventListener('click', () => void pickHostFsFolder('readwrite'));
+hostFsModeCancelBtn.addEventListener('click', () => closeHostFsModeDialog());
+hostFsModeBackdrop.addEventListener('click', (e) => {
+  if (e.target === hostFsModeBackdrop) closeHostFsModeDialog();
+});
+window.addEventListener('keydown', (e) => {
+  if (e.key === 'Escape' && !hostFsModeBackdrop.classList.contains('hidden')) closeHostFsModeDialog();
+});
 // 初回描画は urlWorkerMode(このファイル下方でconst宣言、TDZの都合でここでは呼べない)の
 // 宣言直後で行う(このすぐ下のコメント「SCSIスロット(手順4)」より前の位置を探すのではなく、
 // urlWorkerMode宣言のコメント参照)。
@@ -4815,6 +4857,13 @@ function applyDocumentStrings(): void {
   document.getElementById('footer-poweredby-prefix')!.textContent = t('footerPoweredByPrefix');
   document.getElementById('footer-poweredby-suffix')!.textContent = t('footerPoweredBySuffix');
 
+  document.getElementById('hostfs-mode-title')!.textContent = t('hostfsModeDialogTitle');
+  document.getElementById('hostfs-mode-description')!.textContent = t('hostfsModeDialogDescription');
+  hostFsModeCancelBtn.textContent = t('hostfsModeDialogCancel');
+  hostFsModeReadonlyBtn.textContent = t('hostfsModeDialogReadonly');
+  hostFsModeReadwriteBtn.textContent = t('hostfsModeDialogReadwrite');
+  updateHostFsUi();
+
   document.getElementById('settings-title')!.textContent = t('settingsTitle');
   document.getElementById('settings-description')!.textContent = t('settingsDescription');
   document.getElementById('settings-bios-title')!.textContent = t('settingsBiosSectionTitle');
@@ -6093,6 +6142,107 @@ document.addEventListener('visibilitychange', () => {
   }
 });
 
+/**
+ * W2a検証プローブ: HostFolderFsの書き込みAPIを、dispatcherを一切経由せず直接叩いて
+ * 実際にOPFSへ作成・書き込み・閉じる・改名・削除ができるか確かめる(親からの指示書の
+ * 「権限の実地確認」用)。OPFSはFile System Access APIと同じFileSystemDirectoryHandle
+ * インターフェイスなので、そのまま new HostFolderFs(dir, true) へ渡せる。
+ * 戻り値はJSON化してそのままprobe結果として保存する想定(呼び出し側でJSON.stringifyする)。
+ */
+async function hostFsW2aProbe(): Promise<Record<string, unknown>> {
+  const opfsRoot = await navigator.storage.getDirectory();
+  // 既存のopfs-test(読み取り専用の固定データ)とは別の、書き込み検証専用ディレクトリ。
+  // 前回実行分が残っていても上書きされるだけなので、毎回作り直しはしない。
+  const probeRoot = await opfsRoot.getDirectoryHandle('hostfs-w2a-probe', { create: true });
+  const fs = new HostFolderFs(probeRoot, true);
+  const readonlyFs = new HostFolderFs(probeRoot, false);
+  const results: Record<string, unknown> = {};
+
+  // 1. createFile(_CREATE相当・新規)
+  results.createNew = await fs.createFile('', 'HELLO', 'TXT', false);
+  // 2. openWriteで書き込み→close→読み戻しでバイト一致を確認。
+  const writeHandle1 = await fs.openWrite('', 'HELLO', 'TXT');
+  if (typeof writeHandle1 !== 'number') {
+    writeHandle1.write(0, new TextEncoder().encode('hello world'));
+    await writeHandle1.close();
+  }
+  results.openWriteOk = typeof writeHandle1 !== 'number';
+  results.readBackAfterClose = new TextDecoder().decode((await fs.readFile('', 'HELLO', 'TXT')) ?? new Uint8Array());
+
+  // 3. 閉じるまで反映されないこと: 書き込み中(close前)は旧内容のまま。
+  const writeHandle2 = await fs.openWrite('', 'HELLO', 'TXT');
+  let readWhileOpen: string | null = null;
+  if (typeof writeHandle2 !== 'number') {
+    writeHandle2.write(0, new TextEncoder().encode('CHANGED!!!!'));
+    readWhileOpen = new TextDecoder().decode((await fs.readFile('', 'HELLO', 'TXT')) ?? new Uint8Array());
+    await writeHandle2.close();
+  }
+  results.readWhileOpenStillOld = readWhileOpen;
+  results.readAfterSecondClose = new TextDecoder().decode((await fs.readFile('', 'HELLO', 'TXT')) ?? new Uint8Array());
+
+  // 4. 大文字小文字を区別しない上書き: HELLO.TXTとして作った実体(hello.txt)へ
+  // 別ケースの名前で上書きしても、同じホスト名のまま中身が変わること。
+  results.createOverwriteDifferentCase = await fs.createFile('', 'hello', 'txt', false);
+  const listAfterCaseOverwrite = await fs.listDir('');
+  results.hostNameUnchangedAfterCaseOverwrite =
+    listAfterCaseOverwrite.filter((e) => e.name.toUpperCase() === 'HELLO' && e.ext.toUpperCase() === 'TXT').length === 1;
+  results.sizeAfterCaseOverwrite = listAfterCaseOverwrite.find((e) => e.name.toUpperCase() === 'HELLO')?.size ?? null;
+
+  // 5. _NEWFILE相当(failIfExists): 既にあるので-80。
+  results.createNewFileWhenExists = await fs.createFile('', 'HELLO', 'TXT', true);
+
+  // 6. mkdir/rmdir
+  results.mkdir = await fs.mkdir('', 'SUBDIR');
+  results.mkdirAgain = await fs.mkdir('', 'SUBDIR'); // -20
+  await fs.createFile('\\SUBDIR', 'X', 'TXT', false);
+  results.rmdirNotEmpty = await fs.rmdir('', 'SUBDIR'); // -21
+  results.deleteInnerFile = await fs.deleteFile('\\SUBDIR', 'X', 'TXT');
+  results.rmdirEmpty = await fs.rmdir('', 'SUBDIR'); // 0
+
+  // 7. rename(ファイル)。move()が使えるかどうかも記録する。
+  // 実際のホスト名は最初のcreateFile('','HELLO','TXT',...)のときに付いた'HELLO.TXT'の
+  // まま(大文字小文字を区別しない上書きでは、既存のホスト名を変えない)。
+  const beforeRenameHandle = await probeRoot.getFileHandle('HELLO.TXT');
+  results.fileHandleHasMove = typeof (beforeRenameHandle as unknown as { move?: unknown }).move === 'function';
+  results.renameFile = await fs.rename('', 'HELLO', 'TXT', 'RENAMED', 'TXT', false);
+  results.readAfterRename = new TextDecoder().decode((await fs.readFile('', 'RENAMED', 'TXT')) ?? new Uint8Array());
+  results.oldNameGoneAfterRename = (await fs.readFile('', 'HELLO', 'TXT')) === null;
+
+  // 8. renameの衝突(-22)。
+  await fs.createFile('', 'OTHER', 'TXT', false);
+  results.renameTargetExists = await fs.rename('', 'OTHER', 'TXT', 'RENAMED', 'TXT', false);
+
+  // 9. ディレクトリのrename。move()が使えるかどうかで-19になるかが変わる。
+  await fs.mkdir('', 'DIRA');
+  const dirHandle = await probeRoot.getDirectoryHandle('DIRA');
+  results.dirHandleHasMove = typeof (dirHandle as unknown as { move?: unknown }).move === 'function';
+  results.renameDir = await fs.rename('', 'DIRA', '', 'DIRB', '', true);
+
+  // 10. 削除。
+  results.deleteFile = await fs.deleteFile('', 'RENAMED', 'TXT');
+  results.deleteAfterDeleteIsNotFound = (await fs.readFile('', 'RENAMED', 'TXT')) === null;
+
+  // 11. getAttr/setFileDate/setAttr(いずれもno-op系)。
+  await fs.createFile('', 'ATTR', 'TXT', false);
+  results.getAttrFile = await fs.getAttr('', 'ATTR', 'TXT');
+  results.setFileDate = await fs.setFileDate('', 'ATTR', 'TXT');
+  results.setAttr = await fs.setAttr('', 'ATTR', 'TXT', 0x20);
+
+  // 12. 読み取り専用モード: 書き込み系はすべて-19。
+  results.readonlyCreateFile = await readonlyFs.createFile('', 'RO', 'TXT', false);
+  results.readonlyOpenWrite = await readonlyFs.openWrite('', 'ATTR', 'TXT');
+  results.readonlyDeleteFile = await readonlyFs.deleteFile('', 'ATTR', 'TXT');
+  results.readonlyMkdir = await readonlyFs.mkdir('', 'RODIR');
+  results.readonlyRmdir = await readonlyFs.rmdir('', 'DIRB');
+  results.readonlyRename = await readonlyFs.rename('', 'ATTR', 'TXT', 'ATTR2', 'TXT', false);
+  results.readonlySetFileDate = await readonlyFs.setFileDate('', 'ATTR', 'TXT');
+  results.readonlySetAttr = await readonlyFs.setAttr('', 'ATTR', 'TXT', 0x20);
+  results.readonlyIsWritable = readonlyFs.isWritable();
+  results.writableIsWritable = fs.isWritable();
+
+  return results;
+}
+
 // 開発時デバッグ用: 音声遅延(キュー滞留秒)とコアの現在 fps をコンソールから覗けるようにする。
 if (import.meta.env.DEV) {
   (window as unknown as Record<string, unknown>).__webx68kDebug = {
@@ -6453,6 +6603,9 @@ if (import.meta.env.DEV) {
       if (v !== undefined) setPaused(v);
       return pausedByUser;
     },
+    // HostFS W2a検証プローブ(上のhostFsW2aProbe参照)。dispatcherを経由せず、
+    // OPFS上でバックエンドの書き込みAPIを直接叩いて結果をJSONで返す。
+    hostFsW2aProbe: () => hostFsW2aProbe(),
   };
 }
 

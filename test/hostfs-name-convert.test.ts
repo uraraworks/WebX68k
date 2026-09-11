@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { convertHostNameToHuman68k } from '../src/hostfs/name-convert';
+import { convertHostNameToHuman68k, convertGuestNameToHostFileName } from '../src/hostfs/name-convert';
 
 describe('convertHostNameToHuman68k', () => {
   it('ASCIIの名前と拡張子はそのまま(小文字もそのまま)通す', () => {
@@ -50,5 +50,23 @@ describe('convertHostNameToHuman68k', () => {
 
   it('空の名前は出さない', () => {
     expect(convertHostNameToHuman68k('')).toBeNull();
+  });
+});
+
+describe('convertGuestNameToHostFileName (W2a: ゲスト→ホストの逆変換)', () => {
+  it('ASCIIはそのまま、大文字小文字はゲストが渡したとおりになる', () => {
+    expect(convertGuestNameToHostFileName('HELLO', 'TXT')).toBe('HELLO.TXT');
+    expect(convertGuestNameToHostFileName('hello', 'txt')).toBe('hello.txt');
+  });
+
+  it('拡張子が無ければドットを付けない', () => {
+    expect(convertGuestNameToHostFileName('README', '')).toBe('README');
+  });
+
+  it('CP932疑似文字列(1文字=1バイト)をデコードして実際の文字へ戻す', () => {
+    // convertHostNameToHuman68kが作る疑似文字列と往復できること
+    // (「日」= CP932で 0x93 0xFA)。
+    const conv = convertHostNameToHuman68k('日本語.txt')!;
+    expect(convertGuestNameToHostFileName(conv.name, conv.ext)).toBe('日本語.txt');
   });
 });

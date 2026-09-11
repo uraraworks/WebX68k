@@ -10,7 +10,7 @@
 
 import type { GuestMemory } from './guest-memory';
 import { HostFsDispatcher, type HostFsStats } from './dispatcher';
-import { FakeFs, SwitchableFs, NotConnectedFs } from './filesystem';
+import { FakeFs, SwitchableFs, NotConnectedFs, type HostFsConnectMode } from './filesystem';
 import { HostFolderFs } from './host-folder-fs';
 
 /** LibretroHost が実際に持っていれば十分(循環import回避のため構造的に受け取る)。 */
@@ -36,7 +36,7 @@ export interface HostFsBridgeResult {
    * mode==='real' のときだけ入る。HOSTFS_ATTACH/DETACH(core-worker.ts)から
    * バックエンドを差し替えるためのハンドル。
    */
-  attach?: (dirHandle: FileSystemDirectoryHandle) => void;
+  attach?: (dirHandle: FileSystemDirectoryHandle, mode: HostFsConnectMode) => void;
   detach?: () => void;
 }
 
@@ -132,9 +132,9 @@ export function installHostFsBridge(host: GuestMemoryHost): HostFsBridgeResult {
   console.log('[WebX68k-worker] HostFS: real (未接続、NotConnectedFs) を有効化した');
   return {
     installed: true,
-    attach: (dirHandle: FileSystemDirectoryHandle) => {
-      (switchable as SwitchableFs).current = new HostFolderFs(dirHandle);
-      console.log(`[WebX68k-worker] HostFS: フォルダを接続した (name=${dirHandle.name})`);
+    attach: (dirHandle: FileSystemDirectoryHandle, mode: HostFsConnectMode) => {
+      (switchable as SwitchableFs).current = new HostFolderFs(dirHandle, mode === 'readwrite');
+      console.log(`[WebX68k-worker] HostFS: フォルダを接続した (name=${dirHandle.name}, mode=${mode})`);
     },
     detach: () => {
       (switchable as SwitchableFs).current = new NotConnectedFs();
