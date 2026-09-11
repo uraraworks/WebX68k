@@ -55,6 +55,31 @@ print(f"{dst}: attr=${attr:04x} をオフセット0x{off:x}へパッチ")
 PYEOF
 }
 
+# REC_MODE用: rec_marker/rec_count/rec_entriesの、ドライバヘッダ先頭からの
+# オフセット(バイト)を、アセンブル直後のRAW.bin(Xヘッダを被せる前の生バイナリ)
+# から直接検索して求める。RAW.binのファイル先頭=drv_header(text section先頭)
+# なので、この検索結果のオフセットがそのまま実行時のメモリオフセットになる
+# (hu_pack.pyが被せる64バイトのXヘッダはロード時にHuman68kが読み捨てるので、
+# ロードされた本体の先頭はRAW.binの先頭と一致する)。
+print_rec_offsets() {
+  local name="$1"
+  python3 - "$OUT_DIR/${name}_RAW.bin" <<'PYEOF'
+import sys
+data = open(sys.argv[1], "rb").read()
+name_off = data.find(b"RPROBE1")
+marker_off = data.find(b"RECBUF01")
+if name_off < 0 or marker_off < 0:
+    print("エラー: RPROBE1 または RECBUF01 が見つからない", file=sys.stderr)
+    sys.exit(1)
+header_off = name_off - 15  # 名前(+14)の直後(+15)が'RPROBE1'の先頭
+rec_count_off = marker_off - header_off + 8
+rec_entries_off = rec_count_off + 2
+print(f"[{sys.argv[1]}] header基準: rec_marker=+{marker_off - header_off} "
+      f"rec_count=+{rec_count_off} rec_entries=+{rec_entries_off} "
+      f"(strategy=+22 interrupt=+30 も参考)")
+PYEOF
+}
+
 # name: 生成物の接頭辞 / attr_hex: 属性ワード / vasm_defs: vasmへの-D引数(配列)
 build_one() {
   local name="$1" attr_hex="$2"
@@ -107,5 +132,31 @@ echo "== C3b: 属性\$2000, 初期化コマンド=\$40, 未対応コマンドは
 build_one "c3b" 2000 -DCMD_INIT=\$40 -DUNKNOWN_OK=1
 build_device_variant "c3b"
 
+echo "== C6-V1/V2(A群): 属性\$2000, 初期化=\$40。\$47のボリューム検索(+13 bit3)に"
+echo "   -2をヘッダのみ/D0のみで返す(FILBUFには書かない)。既存条件・C5のバイナリは"
+echo "   変えない(C6_MODE/C6_SUBの既定値が変わるだけ) =="
+build_one "c6v1" 2000 -DCMD_INIT=\$40 -DREC_MODE=1 -DC6_MODE=1 -DC6_SUB=1
+build_device_variant "c6v1"
+print_rec_offsets "c6v1"
+
+build_one "c6v2" 2000 -DCMD_INIT=\$40 -DREC_MODE=1 -DC6_MODE=1 -DC6_SUB=2
+build_device_variant "c6v2"
+print_rec_offsets "c6v2"
+
+echo "== C6-F1/F2/F3(B群): ボリューム検索=WEBX68Kラベルを成功で返す。本体検索="
+echo "   HELLO.TXT成功。1回目の\$48=WORLD.DOC成功、2〜5回目=「もう無い」をF1/F2/F3"
+echo "   で振る。6回目以降は安全弁で両方-18+印 =="
+build_one "c6f1" 2000 -DCMD_INIT=\$40 -DREC_MODE=1 -DC6_MODE=2 -DC6_SUB=1
+build_device_variant "c6f1"
+print_rec_offsets "c6f1"
+
+build_one "c6f2" 2000 -DCMD_INIT=\$40 -DREC_MODE=1 -DC6_MODE=2 -DC6_SUB=2
+build_device_variant "c6f2"
+print_rec_offsets "c6f2"
+
+build_one "c6f3" 2000 -DCMD_INIT=\$40 -DREC_MODE=1 -DC6_MODE=2 -DC6_SUB=3
+build_device_variant "c6f3"
+print_rec_offsets "c6f3"
+
 echo "== 完了 =="
-echo "$OUT_DIR/{c0,c1,c2,c1b,c3a,c3b}.xdf を作成しました。"
+echo "$OUT_DIR/{c0,c1,c2,c1b,c3a,c3b,c6v1,c6v2,c6f1,c6f2,c6f3}.xdf を作成しました。"
