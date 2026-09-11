@@ -337,6 +337,10 @@ class MixedAttrFs implements HostFileSystem {
   readFile(_path: string, _name: string, _ext: string): Promise<Uint8Array | null> {
     return Promise.resolve(null);
   }
+
+  dirExists(path: string): Promise<boolean> {
+    return Promise.resolve(path === '' || path === '\\');
+  }
 }
 
 describe('HostFsDispatcher: $47の属性絞り込み((エントリの属性 & 検索属性) != 0)', () => {
@@ -527,5 +531,50 @@ describe('HostFsDispatcher: $4e(シーク)', () => {
     const dispatcher = new HostFsDispatcher(mem, new FakeFs());
     dispatcher.request(HDR_ADDR);
     expect(readI32(ram, HDR_ADDR + 18)).toBe(-25);
+  });
+});
+
+describe('HostFsDispatcher: $41(cd)', () => {
+  const HDR_ADDR = 0x1000;
+  const PATH_ADDR = 0x2000;
+
+  /** namests.tsのdecodeCdPathと同じ規約(区切り$09、NUL終端)で生パスを書く。 */
+  function writeCdPath(ram: Uint8Array, addr: number, segments: string[]): void {
+    let p = addr;
+    for (const seg of segments) {
+      ram[p++] = 0x09;
+      for (let i = 0; i < seg.length; i++) ram[p++] = seg.charCodeAt(i);
+    }
+    ram[p] = 0; // NUL終端
+  }
+
+  async function pollUntilDone(dispatcher: HostFsDispatcher): Promise<void> {
+    let stillPending = true;
+    for (let i = 0; i < 20 && stillPending; i++) {
+      stillPending = dispatcher.poll();
+      if (stillPending) await new Promise((r) => setTimeout(r, 5));
+    }
+    expect(stillPending).toBe(false);
+  }
+
+  it('ルート(\\)へのcdは実在するので+18=0', async () => {
+    const { mem, ram } = makeFakeGuestMemory();
+    writeCdPath(ram, PATH_ADDR, []); // "\x00" だけ(ルート)
+    writeRequestHeader(ram, HDR_ADDR, { cmd: 0x41, argPtr: PATH_ADDR });
+    const dispatcher = new HostFsDispatcher(mem, new FakeFs());
+    const pending = dispatcher.request(HDR_ADDR);
+    expect(pending).toBe(true); // 非同期経路を必ず通す
+    await pollUntilDone(dispatcher);
+    expect(readI32(ram, HDR_ADDR + 18)).toBe(0);
+  });
+
+  it('存在しないパスへのcdは-3(ディレクトリが見つかりません)', async () => {
+    const { mem, ram } = makeFakeGuestMemory();
+    writeCdPath(ram, PATH_ADDR, ['SUB']); // FakeFsはフラットなのでSUBは無い
+    writeRequestHeader(ram, HDR_ADDR, { cmd: 0x41, argPtr: PATH_ADDR });
+    const dispatcher = new HostFsDispatcher(mem, new FakeFs());
+    dispatcher.request(HDR_ADDR);
+    await pollUntilDone(dispatcher);
+    expect(readI32(ram, HDR_ADDR + 18)).toBe(-3);
   });
 });

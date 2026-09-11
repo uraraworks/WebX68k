@@ -57,3 +57,23 @@ export function decodeNamests(buf: Uint8Array): Namests {
 
   return { questionMarks, drive, path, name, ext, nameRest };
 }
+
+/**
+ * $41(cd)専用: +14が指す先は88バイトの_NAMESTS全体ではなく、パス部分だけの
+ * 生バッファ(区切り$09、NUL終端)。親からの指示書・実測例:
+ *   cd c:\sub  → 09 73 75 62 09 00 (= "\sub\" + NUL)
+ *   cd \ / ..  → 09 00 (= "\" + NUL、Human68kが絶対パスへ解決してから送る)
+ * decodeNamestsのPATH部分と同じ規約(区切り$09→'\'、NUL終端)を、オフセット0から
+ * 適用するだけの軽量版。
+ */
+export function decodeCdPath(buf: Uint8Array, maxLen = 65): string {
+  let end = 0;
+  const limit = Math.min(buf.length, maxLen);
+  while (end < limit && buf[end] !== 0) end++;
+  let path = '';
+  for (let i = 0; i < end; i++) {
+    const c = buf[i];
+    path += c === 0x09 ? '\\' : String.fromCharCode(c);
+  }
+  return path;
+}

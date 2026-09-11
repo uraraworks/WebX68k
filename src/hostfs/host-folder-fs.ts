@@ -92,6 +92,12 @@ export class HostFolderFs implements HostFileSystem {
     return entries;
   }
 
+  /** $41(cd)用: パスが実在するディレクトリか。ルート('')は常にtrue。 */
+  async dirExists(path: string): Promise<boolean> {
+    if (path === '' || path === '\\') return true;
+    return (await this.resolveDir(path)) !== null;
+  }
+
   async readFile(path: string, name: string, ext: string): Promise<Uint8Array | null> {
     const dir = await this.resolveDir(path);
     if (!dir) return null;

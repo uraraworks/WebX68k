@@ -493,7 +493,9 @@ async function setupHostFsOpfsTest(): Promise<void> {
 hostFsElements.connectBtn.addEventListener('click', () => void connectHostFsFolder());
 hostFsElements.disconnectBtn.addEventListener('click', disconnectHostFsFolder);
 hostFsElements.reconnectBtn.addEventListener('click', () => void reconnectHostFsFolder());
-updateHostFsUi();
+// 初回描画は urlWorkerMode(このファイル下方でconst宣言、TDZの都合でここでは呼べない)の
+// 宣言直後で行う(このすぐ下のコメント「SCSIスロット(手順4)」より前の位置を探すのではなく、
+// urlWorkerMode宣言のコメント参照)。
 
 // iOS の Chrome ではファイル選択ダイアログが accept 属性の拡張子を UTI(Uniform Type
 // Identifier)へ変換して候補を絞る。.xdf/.hdf/.dup/.hdm/.2hd/.dim のような拡張子は
@@ -594,6 +596,9 @@ const urlWorkerMode = parsedWorkerMode ?? true;
 // `?hostfs=fake` : HostFS(feature/hostfs、配管のみ)を検証用FakeFs(HELLO.TXT/
 // WORLD.DOC固定)で有効化する。Worker経路(src/hostfs/worker-bridge.ts)専用。
 const hostfsParamRaw = new URLSearchParams(location.search).get('hostfs');
+// urlWorkerModeが確定した直後にHostFS行の初回描画を行う(TDZの都合。updateHostFsUi自体の
+// 定義箇所のコメント参照)。
+updateHostFsUi();
 
 // --- ∞MHz(ホスト次第): CPUクロックの自動調整 ---
 //

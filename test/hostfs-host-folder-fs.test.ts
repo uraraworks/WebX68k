@@ -114,4 +114,11 @@ describe('HostFolderFs', () => {
     const fs = new HostFolderFs(makeRoot() as unknown as FileSystemDirectoryHandle);
     expect(await fs.readFile('', 'NOPE', 'TXT')).toBeNull();
   });
+
+  it('dirExists: ルートと実在するサブディレクトリはtrue、無いパスはfalse($41 cd用)', async () => {
+    const fs = new HostFolderFs(makeRoot() as unknown as FileSystemDirectoryHandle);
+    expect(await fs.dirExists('')).toBe(true);
+    expect(await fs.dirExists('\\SUB')).toBe(true);
+    expect(await fs.dirExists('\\NOPE')).toBe(false);
+  });
 });

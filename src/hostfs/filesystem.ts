@@ -33,6 +33,12 @@ export interface HostFileSystem {
    * の経路に通すため)。
    */
   readFile(path: string, name: string, ext: string): Promise<Uint8Array | null>;
+
+  /**
+   * $41(cd)用: 指定パスのディレクトリが実在するか。ルート('')は常にtrue。
+   * 非同期であること自体が要件(他のコマンドと同じく保留→ポーリングの経路を通す)。
+   */
+  dirExists(path: string): Promise<boolean>;
 }
 
 const FAKE_ENTRIES: HostFsFileEntry[] = [
@@ -85,6 +91,10 @@ export class NotConnectedFs implements HostFileSystem {
   readFile(_path: string, _name: string, _ext: string): Promise<Uint8Array | null> {
     return Promise.resolve(null);
   }
+  dirExists(_path: string): Promise<boolean> {
+    // 未接続時はルートすら無い(検索/開くと同じく-2/-3で応答させるため常にfalse)。
+    return Promise.resolve(false);
+  }
 }
 
 /**
@@ -100,6 +110,9 @@ export class SwitchableFs implements HostFileSystem {
   }
   readFile(path: string, name: string, ext: string): Promise<Uint8Array | null> {
     return this.current.readFile(path, name, ext);
+  }
+  dirExists(path: string): Promise<boolean> {
+    return this.current.dirExists(path);
   }
 }
 
@@ -118,6 +131,13 @@ export class FakeFs implements HostFileSystem {
         );
         resolve(entry ? makeFakeContent(entry) : null);
       }, 0);
+    });
+  }
+
+  /** FakeFsはフラット(サブディレクトリを持たない)なので、ルートだけ実在扱いにする。 */
+  dirExists(path: string): Promise<boolean> {
+    return new Promise((resolve) => {
+      setTimeout(() => resolve(path === '' || path === '\\'), 0);
     });
   }
 }

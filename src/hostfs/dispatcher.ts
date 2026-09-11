@@ -26,10 +26,15 @@
 
 import type { GuestMemory } from './guest-memory';
 import { readU32BE, readI32BE, writeI32BE, writeU16BE, readU8 } from './guest-memory';
-import { decodeNamests } from './namests';
+import { decodeNamests, decodeCdPath } from './namests';
 import { filbufPayload, FILBUF_WRITE_OFFSET, type FilbufEntry } from './filbuf';
 import type { HostFileSystem, HostFsFileEntry } from './filesystem';
 
+// $41 = cd(カレントディレクトリの変更、master側C11実験で解読・親からの指示書で確定)。
+// +14 = パス(_NAMESTS全体ではなく、区切り$09・NUL終端のパス部分だけの生バッファ。
+// namests.tsのdecodeCdPath参照)。相対パス・'..'はHuman68k側で絶対パスへ解決済みで
+// 届くため、ドライバ(TS)側でカレントディレクトリを持つ必要は無い。
+const CMD_CD = 0x41;
 const CMD_SEARCH_FIRST = 0x47;
 const CMD_SEARCH_NEXT = 0x48;
 const CMD_FREE_SPACE = 0x50;
@@ -56,6 +61,7 @@ const DOS_ERR_NO_MORE_FILES = -18;
  * (未知コマンドが実際に書き込み系だと判明した時点で、専用caseから使う)。
  */
 export const DOS_ERR_WRITE_PROTECTED = -19;
+const DOS_ERR_DIR_NOT_FOUND = -3; // 「ディレクトリが見つかりません」(cd、親からの指示書のとおり)
 const DOS_ERR_CANT_SEEK = -25; // 「指定の位置にはシークできません」(PRO-68Kマニュアルp.71)
 
 const SEEK_ORIGIN_START = 0;
@@ -115,6 +121,11 @@ type PendingOperation =
       addr: number;
       fcbPtr: number;
       content?: Uint8Array | null;
+    }
+  | {
+      kind: 'cd';
+      addr: number;
+      exists?: boolean;
     };
 
 /** 観測用カウンタ。probeのjson(allLogs)へ載せる値の裏取り用に外から読める。 */
@@ -175,6 +186,11 @@ export class HostFsDispatcher {
       if (isPending) this.stats.pendingReturnedCount++;
       return isPending;
     }
+    if (cmd === CMD_CD) {
+      const isPending = this.handleCd(addr);
+      if (isPending) this.stats.pendingReturnedCount++;
+      return isPending;
+    }
 
     switch (cmd) {
       case CMD_SEARCH_NEXT:
@@ -229,12 +245,21 @@ export class HostFsDispatcher {
       return false;
     }
 
-    // kind === 'open'
-    if (this.pending.content === undefined) return true;
-    const { addr, fcbPtr, content } = this.pending;
+    if (this.pending.kind === 'open') {
+      if (this.pending.content === undefined) return true;
+      const { addr, fcbPtr, content } = this.pending;
+      this.pending = null;
+      this.stats.pollCompletedCount++;
+      this.finishOpen(addr, fcbPtr, content);
+      return false;
+    }
+
+    // kind === 'cd'
+    if (this.pending.exists === undefined) return true;
+    const { addr, exists } = this.pending;
     this.pending = null;
     this.stats.pollCompletedCount++;
-    this.finishOpen(addr, fcbPtr, content);
+    this.finishCd(addr, exists);
     return false;
   }
 
@@ -357,6 +382,35 @@ export class HostFsDispatcher {
     writeI32BE(this.mem, addr + HDR_FILBUF_PTR_OFFSET, 0);
   }
 
+  /**
+   * $41: cd(カレントディレクトリの変更、master側C11実験で解読)。+14はパス部分だけの
+   * 生バッファ(namests.tsのdecodeCdPath参照)。相対パス・'..'はHuman68k側で絶対パスへ
+   * 解決済みで届くため、ここではパスの実在確認だけ行う。非同期(fs.dirExists待ち)。
+   */
+  private handleCd(addr: number): boolean {
+    const pathPtr = readU32BE(this.mem, addr + HDR_ARG_PTR_OFFSET);
+    // パス部分はNAMESTSのPATH_LEN(65バイト)以内(+NUL)という実測どおりの想定で読む。
+    const path = decodeCdPath(this.mem.read(pathPtr, 65));
+
+    const pending: PendingOperation = { kind: 'cd', addr };
+    this.pending = pending;
+
+    this.fs.dirExists(path).then((exists) => {
+      if (this.pending !== pending) return;
+      pending.exists = exists;
+      this.pending = null;
+      this.stats.pollCompletedCount++;
+      this.finishCd(addr, exists);
+      this.notifyComplete?.();
+    });
+
+    return true;
+  }
+
+  private finishCd(addr: number, exists: boolean): void {
+    writeI32BE(this.mem, addr + HDR_FILBUF_PTR_OFFSET, exists ? 0 : DOS_ERR_DIR_NOT_FOUND);
+  }
+
   /** $4c: 読む。同期(open済みの内容から切り出すだけ)。 */
   private handleRead(addr: number): void {
     const bufPtr = readU32BE(this.mem, addr + HDR_ARG_PTR_OFFSET);
@@ -379,6 +433,12 @@ export class HostFsDispatcher {
   /** $4b: 閉じる。同期。 */
   private handleClose(addr: number): void {
     const fcbPtr = readU32BE(this.mem, addr + HDR_FCB_PTR_OFFSET);
+    const state = this.fcbStates.get(fcbPtr);
+    if (state) {
+      // 検証用(probe): シークせずに最後まで読み切った場合、この値が元ファイルの
+      // サイズと一致するはず。type c:hello.txtが3000バイト全部出るかの裏取りに使う。
+      console.log(`[HostFS] close: pos=${state.pos} content=${state.content.length}バイト`);
+    }
     this.fcbStates.delete(fcbPtr);
     writeI32BE(this.mem, addr + HDR_FILBUF_PTR_OFFSET, 0);
   }
