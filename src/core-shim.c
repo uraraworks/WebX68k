@@ -205,6 +205,93 @@ int webx68k_peek8(unsigned int addr)
 }
 
 /*
+ * HostFS (feature/hostfs) 用: ゲストRAMのブロック読み書き。
+ * px68k の MEM はバイトスワップして保持している(rm_main() の MEM[addr^1]、
+ * mem_wrap.c 参照)ため、1バイトずつ ^1 を適用して読み書きする。
+ * RAM は 0x00c00000 未満(mem_wrap.c のコメント「Use RAM upto 12MB」)のみが
+ * 対象で、範囲外(RAM末尾をまたぐ場合も含め全体を)は書き込み/読み出しを
+ * 行わず拒否する(安全側)。read側は範囲外を0埋めで返す。
+ */
+#define WEBX68K_HOSTFS_RAM_LIMIT 0x00c00000u
+
+__attribute__((used))
+void webx68k_mem_read(unsigned int addr, unsigned char *buf, int len)
+{
+  int i;
+  if (len <= 0)
+    return;
+  if (!MEM || addr >= WEBX68K_HOSTFS_RAM_LIMIT || (unsigned int)len > WEBX68K_HOSTFS_RAM_LIMIT - addr)
+  {
+    for (i = 0; i < len; i++)
+      buf[i] = 0;
+    return;
+  }
+  for (i = 0; i < len; i++)
+    buf[i] = MEM[(addr + (unsigned int)i) ^ 1];
+}
+
+__attribute__((used))
+void webx68k_mem_write(unsigned int addr, const unsigned char *buf, int len)
+{
+  int i;
+  if (len <= 0)
+    return;
+  if (!MEM || addr >= WEBX68K_HOSTFS_RAM_LIMIT || (unsigned int)len > WEBX68K_HOSTFS_RAM_LIMIT - addr)
+    return; /* 範囲外は拒否する */
+  for (i = 0; i < len; i++)
+    MEM[(addr + (unsigned int)i) ^ 1] = buf[i];
+}
+
+/*
+ * HostFS (feature/hostfs) ポートの要求/ポーリングをJSへ橋渡しする。
+ * x68k/mem_wrap.c の HOSTFS_Write/HOSTFS_Read から同期的に呼ばれる
+ * (extern int webx68k_hostfs_request(unsigned int)/webx68k_hostfs_poll(void))。
+ * globalThis.__webx68kHostFs (Worker内で src/hostfs/worker-bridge.ts が生やす)
+ * が無い場合は、安全側として即「完了扱い」(0)を返す。要求ヘッダへ
+ * エラー値(-2)を書くのはJS側(__webx68kHostFsが無いときのフォールバック)の
+ * 役目ではなく、__webx68kHostFs自体が無いケースでは要求ヘッダの形式
+ * (どのコマンドか)をここでは解釈しないため書き込みも行わない。実際の
+ * エラー応答は src/hostfs 側のディスパッチャが常駐している前提で作られており、
+ * 未接続時に画面へ出したいならドライバ側のタイムアウトで検知する
+ * (今回のゴールでは __webx68kHostFs は必ず有効にして検証する)。
+ */
+EM_JS(int, js_hostfs_request, (unsigned int addr), {
+  var h = globalThis.__webx68kHostFs;
+  if (!h || typeof h.request !== 'function')
+    return 0; /* フックが無ければ完了扱い(安全側) */
+  try {
+    return h.request(addr >>> 0) ? 1 : 0;
+  } catch (e) {
+    console.error('[HostFS] request() が例外を投げた', e);
+    return 0;
+  }
+});
+
+__attribute__((used))
+int webx68k_hostfs_request(unsigned int addr)
+{
+  return js_hostfs_request(addr);
+}
+
+EM_JS(int, js_hostfs_poll, (), {
+  var h = globalThis.__webx68kHostFs;
+  if (!h || typeof h.poll !== 'function')
+    return 0;
+  try {
+    return h.poll() ? 1 : 0;
+  } catch (e) {
+    console.error('[HostFS] poll() が例外を投げた', e);
+    return 0;
+  }
+});
+
+__attribute__((used))
+int webx68k_hostfs_poll(void)
+{
+  return js_hostfs_poll();
+}
+
+/*
  * マシン構成の RAM 設定が、実際にゲストのマシン構造(SRAM)まで反映されたかを
  * 検証する結合テスト用。
  * px68k-libretro の WinX68k_Exec()(libretro.c 内、retro_run から毎フレーム呼ばれる)は

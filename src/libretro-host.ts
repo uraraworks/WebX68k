@@ -181,6 +181,10 @@ export interface PX68KModule {
   _get_mouse_scc_stat(): number;
   _webx68k_peek16(addr: number): number;
   _webx68k_peek8(addr: number): number;
+  // HostFS (feature/hostfs) 用: ゲストRAMのブロック読み書き。core-shim.c参照。
+  // 古いwasm(再ビルド前)でも落ちないよう任意プロパティにしている。
+  _webx68k_mem_read?(addr: number, bufPtr: number, len: number): void;
+  _webx68k_mem_write?(addr: number, bufPtr: number, len: number): void;
   // RETROK → X68000 スキャンコード結合テスト用
   _webx68k_keybuf_peek(index: number): number;
   _webx68k_keybuf_write_pointer(): number;
@@ -503,6 +507,35 @@ export class LibretroHost {
   /** ゲストメモリを1ワード(ビッグエンディアン)読む(デバッグ・IOCSワーク参照用) */
   peekWord(addr: number): number {
     return this.mod._webx68k_peek16(addr);
+  }
+
+  /**
+   * HostFS (feature/hostfs) 用: ゲストRAMをブロックで読む。
+   * _webx68k_mem_read が無い古いwasm(再ビルド前)では全域0バイトの配列を返す
+   * (呼び出し側でその旨を判定できるようにするのが理想だが、この経路は
+   * 新規機能でありビルド更新済み前提のため、まずは安全側の空値で妥協する)。
+   */
+  readGuestMemory(addr: number, len: number): Uint8Array {
+    if (!this.mod._webx68k_mem_read || len <= 0) return new Uint8Array(Math.max(0, len));
+    const ptr = this.mod._malloc(len);
+    try {
+      this.mod._webx68k_mem_read(addr, ptr, len);
+      return new Uint8Array(this.mod.HEAPU8.subarray(ptr, ptr + len));
+    } finally {
+      this.mod._free(ptr);
+    }
+  }
+
+  /** HostFS (feature/hostfs) 用: ゲストRAMへブロックを書く。 */
+  writeGuestMemory(addr: number, bytes: Uint8Array): void {
+    if (!this.mod._webx68k_mem_write || bytes.length === 0) return;
+    const ptr = this.mod._malloc(bytes.length);
+    try {
+      this.mod.HEAPU8.set(bytes, ptr);
+      this.mod._webx68k_mem_write(addr, ptr, bytes.length);
+    } finally {
+      this.mod._free(ptr);
+    }
   }
 
   /**

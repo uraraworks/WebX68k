@@ -450,6 +450,10 @@ if (workerParamRaw !== null && parsedWorkerMode === null) {
 }
 const urlWorkerMode = parsedWorkerMode ?? true;
 
+// `?hostfs=fake` : HostFS(feature/hostfs、配管のみ)を検証用FakeFs(HELLO.TXT/
+// WORLD.DOC固定)で有効化する。Worker経路(src/hostfs/worker-bridge.ts)専用。
+const hostfsParamRaw = new URLSearchParams(location.search).get('hostfs');
+
 // --- ∞MHz(ホスト次第): CPUクロックの自動調整 ---
 //
 // px68k_cpuspeed は「エミュレートされるX68000のCPUクロック」で、速度倍率(#btn-speed、
@@ -4088,6 +4092,9 @@ async function bootCore(): Promise<void> {
       const g = globalThis as Record<string, unknown>;
       g.__webx68kScsiOpfs = true;
       g.__webx68kScsiOpfsPath = `scsi/${scsiName}`;
+    }
+    if (hostfsParamRaw === 'fake') {
+      (globalThis as Record<string, unknown>).__webx68kHostFsMode = 'fake';
     }
     await bootWorkerCore();
     return;

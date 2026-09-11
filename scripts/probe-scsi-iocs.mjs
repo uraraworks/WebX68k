@@ -293,6 +293,9 @@ const HDD = args.hdd ?? null;
 // Worker側で成立するかを測るために足した。
 // 既定(未指定)はアプリ側の既定(=Worker)に任せる。--worker=0 で従来経路へ戻せる。
 const WORKER = args.worker === undefined ? null : String(args.worker);
+// HostFS (feature/hostfs) 検証用: --hostfs=fake で ?hostfs=fake をURLへ足す
+// (src/main.tsが拾い、globalThis.__webx68kHostFsModeとしてhostGlobals経由でWorkerへ渡す)。
+const HOSTFS = args.hostfs === undefined ? null : String(args.hostfs);
 // 本物の外部SCSIボードROMイメージ(8192バイト)。指定時のみ window.__webx68kScsiRomBytes
 // へ数値配列として置く。逆アセンブルはせず、本物を走らせて実測するためのオラクルとして使う。
 // 未指定なら従来と1文字も挙動が変わらない。
@@ -857,7 +860,8 @@ try {
   const fd1Query =
     (FD1 !== null ? `&fd1=${encodeURIComponent(FD1)}` : '') +
     (effectiveHdd !== null ? `&hdd=${encodeURIComponent(effectiveHdd)}` : '') +
-    (WORKER !== null ? `&worker=${encodeURIComponent(WORKER)}` : '');
+    (WORKER !== null ? `&worker=${encodeURIComponent(WORKER)}` : '') +
+    (HOSTFS !== null ? `&hostfs=${encodeURIComponent(HOSTFS)}` : '');
 
   // --scsi-ui: 製品のUI経路を通す。アプリを起動しないURL(run=1無し)へ先に行き、
   // OPFS上に scsi/<ファイル名> がまだ無ければ --image= の配信元からfetchして

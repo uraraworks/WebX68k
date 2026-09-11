@@ -114,6 +114,7 @@ import { MouseTracker } from './mouse-track';
 import { initialTrackerState, trackKeyBufWrite, type KeyBufWriteTrackerState } from './keybuf-attribution';
 import { WorkerMediaState, type DiskSlotId } from './worker-dirty-capture';
 import { setupScsiOpfs } from './scsi-opfs';
+import { installHostFsBridge } from './hostfs/worker-bridge';
 
 // --- DEV専用: 駆動ループ内訳プローブ (性能調査。既定off) --------------------------------
 //
@@ -859,6 +860,16 @@ async function handleInitialize(
       new Uint8Array(payload.biosCg),
       payload.sram ? new Uint8Array(payload.sram) : undefined,
       payload.coreBaseUrl,
+    );
+    // HostFS (feature/hostfs、配管のみ): __webx68kHostFsMode==='fake' のときだけ、
+    // globalThis.__webx68kHostFs (x68k/mem_wrap.cのHOSTFS_Write/Readが同期で叩く)を
+    // Worker自身へ生やす。ゲストメモリの読み書き(_webx68k_mem_read/write)を使うため
+    // newHost.init()でmodが確定した後に呼ぶ必要がある。
+    const hostfs = installHostFsBridge(newHost);
+    console.log(
+      hostfs.installed
+        ? '[WebX68k-worker] HostFS: 有効'
+        : `[WebX68k-worker] HostFS: 無効 (理由: ${hostfs.reason ?? '不明'})`,
     );
     // 初期ディスクのマウント(src/main.ts の bootCore() 末尾と同じ手順を Worker 内へ移した版)。
     // FDDホットマウント(実行中の差し替え。手順8でhandleHotSwapFddとして実装)とは違い、
