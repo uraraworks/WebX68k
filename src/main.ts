@@ -6209,6 +6209,19 @@ if (import.meta.env.DEV) {
     // ライブラリ一覧(sourceKey/name/size)を返す。作成直後のブランクディスクのキーを
     // 拾うのに使う。
     storageProbeListLibrary: () => listDisks(),
+    // P2b検証プローブ用: 「HostFSを組み込む」ボタンが同梱ディスクの行で実行するのと
+    // 同じ処理(installHostFsOnLibraryEntry)を、確認ダイアログはpage.on('dialog')で
+    // 自動acceptしてもらう前提で叩く。戻り値のsourceKeyをstorageProbeLoadFromLibraryへ
+    // 渡せばFDD0等へ挿入できる。
+    installHostFsOnBundled: () =>
+      installHostFsOnLibraryEntry({
+        sourceKey: BUNDLED_DISK_SOURCE_KEY,
+        name: BUNDLED_DISK_NAME,
+        displayName: t('bundledDiskDisplayName'),
+        size: null,
+        savedAt: null,
+        bundled: true,
+      }),
 
     // TVRAM の文字画面をテキストで読む(ゲームパッドのキー割当検証等、末端(ゲスト側の受信結果)を
     // 実測するためのフック。?bridge=1 のMCPブリッジと同じ host.readTextScreen() を使う)。
@@ -7107,14 +7120,21 @@ function isMountedWhileRunning(sourceKey: string): boolean {
  * 起動中にマウントしているディスクには書かない(isMountedWhileRunning)。
  * 同梱システムディスク(human302.xdf)そのものは書き換えず、まずライブラリへコピーを
  * 保存してから、そのコピーへ組み込む。
+ *
+ * 戻り値(成功時)は組み込み先のsourceKey/displayName。確認ダイアログで「いいえ」を
+ * 選んだ場合やエラー時はundefined(ボタンからの通常呼び出しは戻り値を見ないfire-and-
+ * forgetのままでよく、__webx68kDebug.installHostFsOnBundled()(検証プローブ用)が
+ * この戻り値を使ってFDD0への挿入先を得る)。
  */
-async function installHostFsOnLibraryEntry(entry: LibraryRowEntry): Promise<void> {
+async function installHostFsOnLibraryEntry(
+  entry: LibraryRowEntry,
+): Promise<{ sourceKey: string; displayName: string } | undefined> {
   try {
     let sourceKey = entry.sourceKey;
     let displayName = entry.displayName;
 
     if (entry.bundled) {
-      if (!confirm(t('installHostFsConfirmBundled'))) return;
+      if (!confirm(t('installHostFsConfirmBundled'))) return undefined;
       const bytes = await fetchBytes(BUNDLED_DISK_URL);
       if (!bytes) throw new Error('human302.xdfの取得に失敗しました');
       const stored = await listDisks();
@@ -7127,7 +7147,7 @@ async function installHostFsOnLibraryEntry(entry: LibraryRowEntry): Promise<void
       await saveDisk({ sourceKey, name, bytes: bytes.slice(), savedAt: Date.now() });
       displayName = name;
     } else {
-      if (!confirm(t('installHostFsConfirm', { name: entry.displayName }))) return;
+      if (!confirm(t('installHostFsConfirm', { name: entry.displayName }))) return undefined;
       if (isMountedWhileRunning(sourceKey)) {
         throw new Error(t('installHostFsLockedError'));
       }
@@ -7142,9 +7162,11 @@ async function installHostFsOnLibraryEntry(entry: LibraryRowEntry): Promise<void
 
     showToast(t('installHostFsDone', { name: displayName }));
     await refreshLibraryList();
+    return { sourceKey, displayName };
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
     showToast(t('installHostFsFailed', { message }));
+    return undefined;
   }
 }
 
