@@ -17,6 +17,12 @@ export function readU32BE(mem: GuestMemory, addr: number): number {
   return ((b[0] << 24) | (b[1] << 16) | (b[2] << 8) | b[3]) >>> 0;
 }
 
+/** ビッグエンディアンの符号付き32bit(シークの移動量など)を読む。 */
+export function readI32BE(mem: GuestMemory, addr: number): number {
+  const b = mem.read(addr, 4);
+  return (b[0] << 24) | (b[1] << 16) | (b[2] << 8) | b[3];
+}
+
 /** ビッグエンディアンの符号付き32bit(戻り値/DOSエラー用)を書く。 */
 export function writeI32BE(mem: GuestMemory, addr: number, value: number): void {
   const v = value | 0; // 32bit二の補数へ丸める

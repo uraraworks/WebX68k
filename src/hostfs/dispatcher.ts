@@ -25,7 +25,7 @@
 // 複数回開かれてしまう実測不具合があったため必須)。
 
 import type { GuestMemory } from './guest-memory';
-import { readU32BE, writeI32BE, writeU16BE, readU8 } from './guest-memory';
+import { readU32BE, readI32BE, writeI32BE, writeU16BE, readU8 } from './guest-memory';
 import { decodeNamests } from './namests';
 import { filbufPayload, FILBUF_WRITE_OFFSET, type FilbufEntry } from './filbuf';
 import type { HostFileSystem, HostFsFileEntry } from './filesystem';
@@ -38,6 +38,7 @@ const CMD_UNKNOWN_57 = 0x57;
 const CMD_OPEN = 0x4a;
 const CMD_READ = 0x4c;
 const CMD_CLOSE = 0x4b;
+const CMD_SEEK = 0x4e;
 
 const HDR_CMD_OFFSET = 2;
 const HDR_ATTR_OFFSET = 13;
@@ -49,6 +50,11 @@ const VOLUME_LABEL_ATTR = 0x08;
 
 const DOS_ERR_NOT_FOUND = -2;
 const DOS_ERR_NO_MORE_FILES = -18;
+const DOS_ERR_CANT_SEEK = -25; // 「指定の位置にはシークできません」(PRO-68Kマニュアル p.71)
+
+const SEEK_ORIGIN_START = 0;
+const SEEK_ORIGIN_CURRENT = 1;
+const SEEK_ORIGIN_END = 2;
 
 function toFilbufEntry(e: HostFsFileEntry): FilbufEntry {
   return { name: e.name, ext: e.ext, attr: e.attr, date: e.date, time: e.time, size: e.size };
@@ -68,6 +74,16 @@ function matchWildcard(queryName: string, queryExt: string, entryName: string, e
   return true;
 }
 
+/**
+ * 検索属性とエントリの属性を照合する(マニュアルp.184の実測どおり:
+ * 「2つ以上のビットを立てた場合は、そのどれかに当てはまればよい」)。
+ * 一致条件は (エントリの属性 & 検索属性) != 0。
+ * 普通のファイル($20)は、ディレクトリだけを探す検索($10)には一致しない。
+ */
+function matchAttr(entryAttr: number, queryAttr: number): boolean {
+  return (entryAttr & queryAttr) !== 0;
+}
+
 interface DirSearchState {
   entries: HostFsFileEntry[];
   index: number;
@@ -85,6 +101,7 @@ type PendingOperation =
       filbufPtr: number;
       queryName: string;
       queryExt: string;
+      queryAttr: number;
       entries?: HostFsFileEntry[];
     }
   | {
@@ -157,6 +174,9 @@ export class HostFsDispatcher {
       case CMD_CLOSE:
         this.handleClose(addr);
         break;
+      case CMD_SEEK:
+        this.handleSeek(addr);
+        break;
       case CMD_UNKNOWN_56:
       case CMD_UNKNOWN_57:
         // 意味は未確定。+18=0を返せばdirは完走する(親からの指示書のとおり)。
@@ -179,10 +199,10 @@ export class HostFsDispatcher {
 
     if (this.pending.kind === 'search') {
       if (this.pending.entries === undefined) return true; // まだ解決していない
-      const { addr, filbufPtr, queryName, queryExt, entries } = this.pending;
+      const { addr, filbufPtr, queryName, queryExt, queryAttr, entries } = this.pending;
       this.pending = null;
       this.stats.pollCompletedCount++;
-      this.finishSearchFirst(addr, filbufPtr, queryName, queryExt, entries);
+      this.finishSearchFirst(addr, filbufPtr, queryName, queryExt, queryAttr, entries);
       return false;
     }
 
@@ -211,7 +231,7 @@ export class HostFsDispatcher {
     const queryName = namests.name.toUpperCase();
     const queryExt = namests.ext.toUpperCase();
 
-    const pending: PendingOperation = { kind: 'search', addr, filbufPtr, queryName, queryExt };
+    const pending: PendingOperation = { kind: 'search', addr, filbufPtr, queryName, queryExt, queryAttr: attr };
     this.pending = pending;
 
     // 非同期経路を必ず通す(FakeFs.listDir はマクロタスク境界をまたいでから解決する)。
@@ -228,11 +248,15 @@ export class HostFsDispatcher {
     filbufPtr: number,
     queryName: string,
     queryExt: string,
+    queryAttr: number,
     allEntries: HostFsFileEntry[],
   ): void {
-    // 名前8+拡張子3を'?'ワイルドカードで照合し、一致したものだけを対象にする
-    // (一致しない全件を返すと、複数ファイルが同じ検索で見つかってしまう)。
-    const entries = allEntries.filter((e) => matchWildcard(queryName, queryExt, e.name, e.ext));
+    // 名前8+拡張子3を'?'ワイルドカードで照合し、かつ属性が一致したものだけを
+    // 対象にする(一致しない全件を返すと、複数ファイルが同じ検索で見つかって
+    // しまう。属性を無視して返すとcopyが失敗した実測不具合があったため必須)。
+    const entries = allEntries.filter(
+      (e) => matchWildcard(queryName, queryExt, e.name, e.ext) && matchAttr(e.attr, queryAttr),
+    );
     if (entries.length === 0) {
       writeI32BE(this.mem, addr + HDR_FILBUF_PTR_OFFSET, DOS_ERR_NOT_FOUND);
       return;
@@ -323,5 +347,45 @@ export class HostFsDispatcher {
     const fcbPtr = readU32BE(this.mem, addr + HDR_FCB_PTR_OFFSET);
     this.fcbStates.delete(fcbPtr);
     writeI32BE(this.mem, addr + HDR_FILBUF_PTR_OFFSET, 0);
+  }
+
+  /**
+   * $4e: シーク。同期。+13=起点(0=先頭/1=現在位置/2=末尾)、+18=移動量(符号付き)、
+   * +22=FCB。新しい位置を+18に返す(_SEEKのD0は新しい位置。PRO-68Kマニュアル
+   * p.163)。範囲外は-25(p.71)で、その場合は位置を変更しない。
+   */
+  private handleSeek(addr: number): void {
+    const origin = readU8(this.mem, addr + HDR_ATTR_OFFSET);
+    const delta = readI32BE(this.mem, addr + HDR_FILBUF_PTR_OFFSET);
+    const fcbPtr = readU32BE(this.mem, addr + HDR_FCB_PTR_OFFSET);
+    const state = this.fcbStates.get(fcbPtr);
+    if (!state) {
+      writeI32BE(this.mem, addr + HDR_FILBUF_PTR_OFFSET, DOS_ERR_CANT_SEEK);
+      return;
+    }
+
+    let base: number;
+    switch (origin) {
+      case SEEK_ORIGIN_START:
+        base = 0;
+        break;
+      case SEEK_ORIGIN_CURRENT:
+        base = state.pos;
+        break;
+      case SEEK_ORIGIN_END:
+        base = state.content.length;
+        break;
+      default:
+        writeI32BE(this.mem, addr + HDR_FILBUF_PTR_OFFSET, DOS_ERR_CANT_SEEK);
+        return;
+    }
+
+    const newPos = base + delta;
+    if (newPos < 0 || newPos > state.content.length) {
+      writeI32BE(this.mem, addr + HDR_FILBUF_PTR_OFFSET, DOS_ERR_CANT_SEEK);
+      return;
+    }
+    state.pos = newPos;
+    writeI32BE(this.mem, addr + HDR_FILBUF_PTR_OFFSET, newPos);
   }
 }
