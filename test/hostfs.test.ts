@@ -100,6 +100,10 @@ function readI32(ram: Uint8Array, addr: number): number {
   return (ram[addr] << 24) | (ram[addr + 1] << 16) | (ram[addr + 2] << 8) | ram[addr + 3];
 }
 
+function readU16(ram: Uint8Array, addr: number): number {
+  return (ram[addr] << 8) | ram[addr + 1];
+}
+
 describe('HostFsDispatcher: $47 -> $48 -> 終わり の一連の流れ', () => {
   const HDR_ADDR = 0x1000;
   const NAMESTS_ADDR = 0x2000;
@@ -170,14 +174,29 @@ describe('HostFsDispatcher: $47 -> $48 -> 終わり の一連の流れ', () => {
     expect(readI32(ram, HDR_ADDR + 18)).toBe(-2);
   });
 
-  it('$50(空き容量)は同期で完了し、+18=0を返す', () => {
+  it('$50(空き容量)は同期で完了し、+18に使用可能バイト数(使用可能クラスタ×セクタ×バイト)を返す', () => {
     const { mem, ram } = makeFakeGuestMemory();
     const outPtr = 0x4000;
     writeRequestHeader(ram, HDR_ADDR, { cmd: 0x50, argPtr: outPtr });
     const dispatcher = new HostFsDispatcher(mem, new FakeFs());
     const pending = dispatcher.request(HDR_ADDR);
     expect(pending).toBe(false);
-    expect(readI32(ram, HDR_ADDR + 18)).toBe(0);
+
+    // 8バイト構造: 使用可能クラスタ/総クラスタ/クラスタあたりセクタ/セクタあたりバイト。
+    const availableClusters = readU16(ram, outPtr + 0);
+    const totalClusters = readU16(ram, outPtr + 2);
+    const sectorsPerCluster = readU16(ram, outPtr + 4);
+    const bytesPerSector = readU16(ram, outPtr + 6);
+    expect(availableClusters).toBeGreaterThan(0);
+    expect(totalClusters).toBeGreaterThanOrEqual(availableClusters);
+    expect(sectorsPerCluster).toBeGreaterThan(0);
+    expect(bytesPerSector).toBeGreaterThan(0);
+
+    // +18(戻り値欄)は、master tools/x68/remote-probe.sのC8-b実験で確定したとおり
+    // 「使用可能バイト数」(_DSKFREのD0相当)を書く。dir集計行の「使用可能」欄はここから
+    // 来る(8バイト構造の使用可能クラスタ欄そのものではない)。
+    const availableBytes = readI32(ram, HDR_ADDR + 18);
+    expect(availableBytes).toBe(availableClusters * sectorsPerCluster * bytesPerSector);
   });
 
   it('$56/$57は同期で+18=0を返す', () => {

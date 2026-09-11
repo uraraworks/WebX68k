@@ -596,7 +596,11 @@ const urlWorkerMode = parsedWorkerMode ?? true;
 
 // `?hostfs=fake` : HostFS(feature/hostfs、配管のみ)を検証用FakeFs(HELLO.TXT/
 // WORLD.DOC固定)で有効化する。Worker経路(src/hostfs/worker-bridge.ts)専用。
-const hostfsParamRaw = new URLSearchParams(location.search).get('hostfs');
+// `?hostfs=opfs-test` : 利用者のOPFSへ検証用ファイル一式を作り、そのままATTACHする
+// (setupHostFsOpfsTest())。どちらも検証専用のURLパラメータなので、上の
+// urlDebugDisableAutosave等と同じ流儀でDEVビルド限定にする(本番で他人のOPFSに
+// 勝手にファイルを作ったり、本物のフォルダの代わりにFakeFsへ固定されては困るため)。
+const hostfsParamRaw = import.meta.env.DEV ? new URLSearchParams(location.search).get('hostfs') : null;
 // urlWorkerModeが確定した直後にHostFS行の初回描画を行う(TDZの都合。updateHostFsUi自体の
 // 定義箇所のコメント参照)。
 updateHostFsUi();
