@@ -64,7 +64,20 @@ C6_SUB set 1                    * A群: 1=V1(ヘッダのみ) 2=V2(D0のみ)
         endc
 
         ifnd REC_MAX
-REC_MAX set 20
+REC_MAX set 64                  * dir c:\sub\a*.txt まで収めるため20から引き上げ(C7)
+        endc
+        ifnd DSKFRE_MODE
+DSKFRE_MODE set 0               * C7: $56の返し方。0=ヘッダのみ成功(D0)、既定=旧C6-F3と同じ
+* 1=ヘッダ+14〜+21に空き容量8バイトを書いて成功(D1) 2=1に加えD0.Lにも使用可能バイト数(D2)
+        endc
+        ifnd C8_MODE
+C8_MODE set 0                   * C8: 親の仮説「戻り値は+18のロング」を試す。0=無効(C6/C7と同じ)
+* 1=C8-a 2=C8-b。有効時は $47/$48/$56/$57 のD0.L/ヘッダ状態(+3/+4)を常に0にし、
+* 戻り値を+18へロングで書く(+18は入力=パラメータポインタと兼用なので、
+* 入力として使い終えてから書き換える)。さらに$50を新規ハンドルする
+* (C8-a: +18=204800のみ。C8-b: それに加え+14がポインタらしければ8バイトの
+* _DSKFRE構造体をそこへ書く)。C8_MODE=0のときは1バイトも命令が増えない
+* (既存条件のバイナリに影響しない)。
         endc
 EXTRA_SIZE set 142
 ENTRY_SIZE set 170
@@ -122,6 +135,10 @@ interrupt:
         beq.w   cmd48_ok
         cmp.b   #$56,d0
         beq.w   cmd56_ok
+        ifne C8_MODE
+        cmp.b   #$50,d0
+        beq.w   cmd50_ok
+        endc
         endc
 
         ifne CMD5_SPECIAL
@@ -187,22 +204,61 @@ done:
 cmd57_ok:
         move.b  #$00,3(a0)
         move.b  #$00,4(a0)
+        ifne C8_MODE
+        move.l  #0,18(a0)               * C8: 戻り値は+18のロング
+        endc
         moveq   #0,d0
         bra.w   done
 
-* --- $56: 記録するだけ。応答欄には触れず、成功(D0=0)だけ返す ---
+* --- $56: DSKFRE_MODEに応じて返す(C7)。既定(0)は記録するだけで応答欄には
+* 触れず成功(D0=0)。1/2は_DSKFRE(PRO-68Kマニュアル)と同じ並びで、ヘッダ
+* +14〜+21へ空き容量8バイト(使用可能クラスタW/総クラスタW/1クラスタの
+* セクタ数W/1セクタのバイト数W)を書く。2はさらにD0.Lへ使用可能バイト数も
+* 入れる(D0が本当に無視されるかの再確認)。 ---
 cmd56_ok:
+        ifne C8_MODE
+* C8: 状態は常に0、戻り値+18=0
+        move.b  #$00,3(a0)
+        move.b  #$00,4(a0)
+        move.l  #0,18(a0)
+        moveq   #0,d0
+        bra.w   done
+        endc
+        ifeq DSKFRE_MODE-1
+        lea     14(a0),a1
+        move.w  #100,(a1)               * 使用可能クラスタ数
+        move.w  #200,2(a1)              * 総クラスタ数
+        move.w  #2,4(a1)                * 1クラスタのセクタ数
+        move.w  #1024,6(a1)             * 1セクタのバイト数
+        move.b  #$00,3(a0)
+        move.b  #$00,4(a0)
+        moveq   #0,d0
+        bra.w   done
+        endc
+        ifeq DSKFRE_MODE-2
+        lea     14(a0),a1
+        move.w  #100,(a1)
+        move.w  #200,2(a1)
+        move.w  #2,4(a1)
+        move.w  #1024,6(a1)
+        move.b  #$00,3(a0)
+        move.b  #$00,4(a0)
+        move.l  #204800,d0              * 使用可能バイト数(100クラスタ*2セクタ*1024バイト)
+        bra.w   done
+        endc
         moveq   #0,d0
         bra.w   done
 
-* --- $47: 検索。ヘッダ+13(検索属性)のbit3が立っていたら(ボリューム検索、
-* 推測)C6_MODE/C6_SUBに応じて返す。それ以外(本体検索)はFILBUFの+10〜+20・
+* --- $47: 検索。ヘッダ+13(検索属性)が$08ちょうどならボリューム検索
+* (dirの実測: ラベル検索=$08, 本体検索=$35。bit3判定だと$3F(_FILESの
+* attr=$3Fで実測)も誤ってボリューム扱いになったため、完全一致に直した)。
+* C6_MODE/C6_SUBに応じて返す。それ以外(本体検索)はFILBUFの+10〜+20・
 * +21以降だけ書いてHELLO.TXTを成功で返す(共通、+0〜+9は触らない)。 ---
 cmd47_ok:
         moveq   #0,d1
         move.b  13(a0),d1               * ヘッダ+13 = 検索属性
-        btst    #3,d1                   * bit3 = ボリューム検索(推測)
-        bne.s   cmd47_vol
+        cmp.b   #$08,d1                 * $08ちょうどのときだけボリューム検索
+        beq.s   cmd47_vol
 
         move.l  18(a0),a2               * a2 = FILBUFへの出力先(far pointer)
         lea     10(a2),a2               * +10から先だけ書く
@@ -213,10 +269,21 @@ cmd47_copy:
         dbra    d2,cmd47_copy
         move.b  #$00,3(a0)
         move.b  #$00,4(a0)
+        ifne C8_MODE
+        move.l  #0,18(a0)               * C8: FILBUFへ書き終えてから戻り値を上書き
+        endc
         moveq   #0,d0
         bra.w   done
 
 cmd47_vol:
+        ifne C8_MODE
+* C8: ラベル検索はFILBUFに書かず、+18=-2だけを返す
+        move.b  #$00,3(a0)
+        move.b  #$00,4(a0)
+        move.l  #-2,18(a0)
+        moveq   #0,d0
+        bra.w   done
+        endc
         ifeq C6_MODE-1
 * A群: FILBUFには何も書かず、エラーの伝え方だけをC6_SUBで振る
           ifeq C6_SUB-1
@@ -265,9 +332,16 @@ cmd48_ok:
 
         cmp.w   #6,d1
         blt.s   cmd48_notsafe
-* 安全弁: 6回目以降は常に両方-18を返し、印(safety_hit)を立てる
+* 安全弁: 6回目以降は常に「もう無い」を返し、印(safety_hit)を立てる
         lea     safety_hit(pc),a2
         move.b  #1,(a2)
+        ifne C8_MODE
+        move.b  #$00,3(a0)
+        move.b  #$00,4(a0)
+        move.l  #-18,18(a0)
+        moveq   #0,d0
+        bra.w   done
+        endc
         move.b  #$ee,3(a0)
         move.b  #$ff,4(a0)
         moveq   #-18,d0
@@ -286,10 +360,21 @@ cmd48_b_copy:
         dbra    d2,cmd48_b_copy
         move.b  #$00,3(a0)
         move.b  #$00,4(a0)
+        ifne C8_MODE
+        move.l  #0,18(a0)               * C8: FILBUFへ書き終えてから戻り値を上書き
+        endc
         moveq   #0,d0
         bra.w   done
 
 cmd48_notfirst:
+        ifne C8_MODE
+* C8: 2回目以降は常に+18=-18(状態は0)
+        move.b  #$00,3(a0)
+        move.b  #$00,4(a0)
+        move.l  #-18,18(a0)
+        moveq   #0,d0
+        bra.w   done
+        endc
 * 2〜5回目: 「もう無い」をC6_SUB(F1/F2/F3)で振る
           ifeq C6_SUB-1
         move.b  #$ee,3(a0)              * F1: ヘッダのみ
@@ -308,6 +393,32 @@ cmd48_notfirst:
         bra.w   done
           endc
         endc
+        endc
+
+        ifne C8_MODE
+* --- $50: C8のみで有効(既定はREC_MODE内の「その他」扱いで$1003のまま)。
+* 親の仮説「_DSKFREはここに来る」を受けて、+18へ空き容量バイト数を書く。
+* C8-a: +18=204800のみ。C8-b: それに加え、+14が実測(c7r-dskfree-final.json
+* の$50ヘッダ)で$00000007という小さな値だった(番地とは考えにくい)ことを
+* 踏まえ、+14が$00010000以上のときだけポインタとみなして_DSKFREの8バイト
+* (使用可能クラスタ100/総クラスタ200/1クラスタ2セクタ/1セクタ1024バイト)
+* をその先へ書く(閾値の根拠: 実測で見えた番地はどれも$016000台以上)。 ---
+cmd50_ok:
+        move.b  #$00,3(a0)
+        move.b  #$00,4(a0)
+        move.l  #204800,18(a0)          * 使用可能バイト数(100クラスタ*2セクタ*1024バイト)
+          ifeq C8_MODE-2
+        movea.l 14(a0),a2               * a2 = +14の値(ポインタかもしれない入力)
+        cmpa.l  #$00010000,a2
+        blo.s   cmd50_noptr
+        move.w  #100,(a2)
+        move.w  #200,2(a2)
+        move.w  #2,4(a2)
+        move.w  #1024,6(a2)
+cmd50_noptr:
+          endc
+        moveq   #0,d0
+        bra.w   done
         endc
 
         ifne REC_MODE

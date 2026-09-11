@@ -158,5 +158,32 @@ build_one "c6f3" 2000 -DCMD_INIT=\$40 -DREC_MODE=1 -DC6_MODE=2 -DC6_SUB=3
 build_device_variant "c6f3"
 print_rec_offsets "c6f3"
 
+echo "== C7-D0/D1/D2: 属性\$2000, 初期化=\$40。ラベル/HELLO.TXT/WORLD.DOC/\$48の"
+echo "   返し方はC6-F3(C6_MODE=2,C6_SUB=3)と同じ。\$56(推定: _DSKFRE)の返し方だけ"
+echo "   DSKFRE_MODEで振る。REC_MAXはソース既定の64(dir c:\\sub\\a*.txtまで収める) =="
+build_one "c7d0" 2000 -DCMD_INIT=\$40 -DREC_MODE=1 -DC6_MODE=2 -DC6_SUB=3 -DDSKFRE_MODE=0
+build_device_variant "c7d0"
+print_rec_offsets "c7d0"
+
+build_one "c7d1" 2000 -DCMD_INIT=\$40 -DREC_MODE=1 -DC6_MODE=2 -DC6_SUB=3 -DDSKFRE_MODE=1
+build_device_variant "c7d1"
+print_rec_offsets "c7d1"
+
+build_one "c7d2" 2000 -DCMD_INIT=\$40 -DREC_MODE=1 -DC6_MODE=2 -DC6_SUB=3 -DDSKFRE_MODE=2
+build_device_variant "c7d2"
+print_rec_offsets "c7d2"
+
+echo "== C8-a/C8-b: 属性\$2000, 初期化=\$40。親の仮説「戻り値は+18のロング」を試す。"
+echo "   \$47/\$48/\$56/\$57は状態(+3/+4)を常に0にし、戻り値を+18へ書く。\$50も新規"
+echo "   ハンドルする(C8-a: +18=204800のみ。C8-b: +14がポインタらしければ_DSKFREの"
+echo "   8バイトもそこへ書く) =="
+build_one "c8a" 2000 -DCMD_INIT=\$40 -DREC_MODE=1 -DC6_MODE=2 -DC6_SUB=3 -DC8_MODE=1
+build_device_variant "c8a"
+print_rec_offsets "c8a"
+
+build_one "c8b" 2000 -DCMD_INIT=\$40 -DREC_MODE=1 -DC6_MODE=2 -DC6_SUB=3 -DC8_MODE=2
+build_device_variant "c8b"
+print_rec_offsets "c8b"
+
 echo "== 完了 =="
-echo "$OUT_DIR/{c0,c1,c2,c1b,c3a,c3b,c6v1,c6v2,c6f1,c6f2,c6f3}.xdf を作成しました。"
+echo "$OUT_DIR/{c0,c1,c2,c1b,c3a,c3b,c6v1,c6v2,c6f1,c6f2,c6f3,c7d0,c7d1,c7d2,c8a,c8b}.xdf を作成しました。"
