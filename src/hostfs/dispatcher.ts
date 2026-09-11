@@ -389,8 +389,9 @@ export class HostFsDispatcher {
    */
   private handleCd(addr: number): boolean {
     const pathPtr = readU32BE(this.mem, addr + HDR_ARG_PTR_OFFSET);
-    // パス部分はNAMESTSのPATH_LEN(65バイト)以内(+NUL)という実測どおりの想定で読む。
-    const path = decodeCdPath(this.mem.read(pathPtr, 65));
+    // 先頭2バイト('?'の数+ドライブ番号) + パス本体(65バイト以内+NUL)。
+    // namests.tsのdecodeCdPathのコメント参照(実機実測で先頭2バイトの存在を確認)。
+    const path = decodeCdPath(this.mem.read(pathPtr, 67));
 
     const pending: PendingOperation = { kind: 'cd', addr };
     this.pending = pending;

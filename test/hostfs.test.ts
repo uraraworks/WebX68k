@@ -538,9 +538,15 @@ describe('HostFsDispatcher: $41(cd)', () => {
   const HDR_ADDR = 0x1000;
   const PATH_ADDR = 0x2000;
 
-  /** namests.tsのdecodeCdPathと同じ規約(区切り$09、NUL終端)で生パスを書く。 */
+  /**
+   * namests.tsのdecodeCdPathと同じ規約で書く: 先頭2バイト('?'の数+ドライブ番号、
+   * ここでは値は使わないのでどちらも0)+ 区切り$09・NUL終端のパス本体
+   * (実機実測: "cd c:\sub" は 00 02 09 73 75 62 09 00)。
+   */
   function writeCdPath(ram: Uint8Array, addr: number, segments: string[]): void {
-    let p = addr;
+    ram[addr] = 0; // '?'の数(未使用)
+    ram[addr + 1] = 0; // ドライブ番号(未使用)
+    let p = addr + 2;
     for (const seg of segments) {
       ram[p++] = 0x09;
       for (let i = 0; i < seg.length; i++) ram[p++] = seg.charCodeAt(i);
