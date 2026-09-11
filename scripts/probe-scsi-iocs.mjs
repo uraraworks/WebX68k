@@ -1209,6 +1209,66 @@ try {
     }
   }
 
+  // --scan=<16進バイト列>:<開始番地>:<終了番地> で、ゲストRAM上から指定バイト列を探す。
+  // 独自デバイスドライバの名前文字列(8バイト)など、番地が未知のものを見つけるための
+  // 調査用。dbg.peek はワード単位でしか読めないため、探索自体はページ内(evaluate)で
+  // 完結させ、往復のオーバーヘッドを避ける。--worker=0 前提(--peek と同じ制約)。
+  // 未指定なら1バイトも挙動を変えない。マッチは最大50件で打ち切る。
+  let scanMatches = null;
+  if (args.scan !== undefined) {
+    const spec = String(args.scan);
+    const m = /^([0-9a-fA-F]+):(.+):(.+)$/.exec(spec);
+    if (!m || m[1].length % 2 !== 0) {
+      throw new Error('--scan は <16進バイト列(偶数桁)>:<開始番地>:<終了番地> の形式です');
+    }
+    const needle = m[1].match(/../g).map((h) => parseInt(h, 16));
+    const start = parseRamWatchAddr(m[2]);
+    const end = parseRamWatchAddr(m[3]);
+    scanMatches = await page
+      .evaluate(
+        (needle, start, end) => {
+          const dbg = window.__webx68kDebug;
+          if (!dbg?.peek) return { error: 'peek がない' };
+          const matches = [];
+          const cache = new Map();
+          const readByte = (addr) => {
+            const wordAddr = addr & ~1;
+            let w = cache.get(wordAddr);
+            if (w === undefined) {
+              w = dbg.peek(wordAddr);
+              if (w === null) return null;
+              cache.set(wordAddr, w);
+              if (cache.size > 8192) cache.clear();
+            }
+            return addr % 2 === 0 ? (w >> 8) & 0xff : w & 0xff;
+          };
+          for (let a = start; a + needle.length <= end; a++) {
+            let ok = true;
+            for (let i = 0; i < needle.length; i++) {
+              if (readByte(a + i) !== needle[i]) {
+                ok = false;
+                break;
+              }
+            }
+            if (ok) {
+              matches.push(a);
+              if (matches.length >= 50) break;
+            }
+          }
+          return matches;
+        },
+        needle,
+        start,
+        end,
+      )
+      .catch((err) => ({ error: String(err) }));
+    const matchesOut = Array.isArray(scanMatches)
+      ? scanMatches.map((a) => `$${a.toString(16)}`)
+      : scanMatches;
+    console.error(`[probe] scan ${spec}: ${JSON.stringify(matchesOut)}`);
+    scanMatches = matchesOut;
+  }
+
   const entries = raw.map(parseLine).filter(Boolean);
   const byCmd = {};
   for (const e of entries) byCmd[e.cmd] = (byCmd[e.cmd] ?? 0) + 1;
@@ -1245,6 +1305,7 @@ try {
         scsiDebugSamples,
         dumps,
         peeks,
+        scanMatches,
         screenshot: shot,
         iocsVectors: vectors,
         scsiIocsVector: Array.isArray(vectors)
