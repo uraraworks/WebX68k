@@ -756,6 +756,29 @@
               ホスト上のバイト列をそのまま渡します。
             </p>
             <p>接続したフォルダのハンドルはブラウザに保存され、「再接続」で次回も使えます。</p>
+            <p>
+              <strong>覚え書き:</strong> File System Access API はフォルダの「名前」しか渡さず、
+              ホスト側のフルパス(どこにあるフォルダか)は分かりません。「つなぐ」ダイアログの
+              覚え書き欄(任意・60文字まで)にメモしておくと、行に
+              「フォルダ名 — 覚え書き」の形で表示されます(長いときは省略され、
+              マウスオーバーで全文を見られます)。行の鉛筆アイコンから後で編集できます。
+            </p>
+            <p>
+              <strong>ドライバ未組み込みの警告:</strong> フォルダをつないでいるのに、
+              起動したディスクにHostFSが組み込まれていない(ゲストのHOSTFS.SYSが
+              読み込まれていない)ときは、行に「⚠ ゲストで HOSTFS.SYS が読み込まれていません」
+              と出ます。上の「HostFSを組み込む」でHOSTFS.SYSを組み込んだディスクから
+              起動してください。読み込みが完了すると警告は消え、リセット・再起動すると
+              また知らせを待つ状態に戻ります。
+            </p>
+            <p>
+              <strong>表示していない名前の通知:</strong> 直近の一覧(<code>dir</code>等)で、
+              Human68kの8.3形式で表せず外した名前があると、行に
+              「N件の名前は表示していません」と出ます。マウスオーバーで、外した名前
+              (最大20件、それ以上は「ほかN件」)と対象ディレクトリを確認できます。
+              外れる条件は本節の上記のとおり(名前が18バイト超、ドットが2つ以上、
+              CP932で表せない文字を含む、拡張子が4文字以上など)です。
+            </p>
           </div>
           <div class="lang-en">
             <h2>HostFS (expose a local folder as a drive)</h2>
@@ -831,6 +854,28 @@
               host's byte stream is passed through as-is.
             </p>
             <p>The connected folder's handle is remembered by the browser; use "Reconnect" next time.</p>
+            <p>
+              <strong>Note:</strong> The File System Access API only hands you the folder's name, not
+              its full host-side path (where it actually lives). You can jot down a note (optional,
+              up to 60 characters) in the "Connect" dialog's note field; the row then shows
+              "folder name — note" (truncated with an ellipsis when long, with the full text in a
+              tooltip). Edit it later from the pencil icon on the row.
+            </p>
+            <p>
+              <strong>Driver-not-installed warning:</strong> If a folder is connected but the disk you
+              booted doesn't have HostFS installed (the guest's HOSTFS.SYS hasn't loaded), the row
+              shows "⚠ HOSTFS.SYS is not loaded in the guest". Boot from a disk that has HOSTFS.SYS
+              installed, using "Install HostFS" above. The warning clears once it loads, and a reset
+              or reboot puts it back into "waiting" state.
+            </p>
+            <p>
+              <strong>Hidden-name notice:</strong> If the most recent listing (<code>dir</code>, etc.)
+              had to drop names that don't fit Human68k's 8.3 format, the row shows "N name(s) not
+              shown". Hover to see the dropped names (up to 20, with "N more" beyond that) and which
+              directory they came from. The conditions for being dropped are the same as described
+              above in this section (name over 18 bytes, more than one dot, characters that don't fit
+              CP932, extension over 3 characters, etc.).
+            </p>
           </div>
         </section>
 
@@ -1945,6 +1990,48 @@
               ' stretches vertically (the correction always enlarges, so no dots are lost —' +
               ' interpolation only kicks in while this is on, giving a look closer to a real CRT).' +
               ' The default is 1:1 pixels, and your choice is saved in your browser.',
+          },
+          {
+            icon: 'M4 5h16v6H4z M4 13h16v6H4z M7 8h.01 M7 16h.01',
+            ja: 'HDD（SASI）を表示',
+            en: 'Show HDD (SASI)',
+            groupJa: '表示',
+            groupEn: 'Display',
+            descJa:
+              'ドライブ行のHDD(SASI)を表示/非表示します。既定は非表示です。ディスクが入っている' +
+              '(URLパラメータ経由の場合を含む)ときは、このトグルがOFFでも行が出ます。設定は' +
+              'ブラウザに保存されます。',
+            descEn:
+              'Shows/hides the HDD (SASI) drive row. Hidden by default. The row still shows while a' +
+              ' disk is loaded (including via a URL parameter), even with this toggle OFF. Saved in' +
+              ' your browser.',
+          },
+          {
+            icon: 'M4 4h16v4H4z M4 10h16v4H4z M4 16h16v4H4z M7 6h.01 M7 12h.01 M7 18h.01',
+            ja: 'SCSI-HDDを表示',
+            en: 'Show SCSI-HDD',
+            groupJa: '表示',
+            groupEn: 'Display',
+            descJa:
+              'ドライブ行のSCSI-HDDを表示/非表示します。既定は非表示です。ディスクが入っているときは' +
+              'このトグルがOFFでも行が出ます。設定はブラウザに保存されます。',
+            descEn:
+              'Shows/hides the SCSI-HDD drive row. Hidden by default. The row still shows while a' +
+              ' disk is loaded, even with this toggle OFF. Saved in your browser.',
+          },
+          {
+            icon: 'M3 7h6l2 2h10v9a1 1 0 0 1-1 1H3a1 1 0 0 1-1-1V8a1 1 0 0 1 1-1z M9 15l3-3 3 3 M12 12v6',
+            ja: 'HostFSを表示',
+            en: 'Show HostFS',
+            groupJa: '表示',
+            groupEn: 'Display',
+            descJa:
+              'ドライブ行のHostFSを表示/非表示します。既定は非表示です。フォルダがつながっている' +
+              '(再接続待ちを含む)ときはこのトグルがOFFでも行が出ます。設定はブラウザに保存されます。',
+            descEn:
+              'Shows/hides the HostFS row. Hidden by default. The row still shows while a folder is' +
+              ' connected (including a pending reconnect), even with this toggle OFF. Saved in your' +
+              ' browser.',
           },
           {
             icon: 'M12 3a6 6 0 0 1 6 6v6a6 6 0 0 1-12 0V9a6 6 0 0 1 6-6z M12 3v7 M12 7v3',

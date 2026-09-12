@@ -292,6 +292,19 @@ controlled from the "HostFS" row below the SCSI row.
   disk the core has mounted would go out of sync with what's in memory).
 - The connected folder's handle is remembered by the browser (IndexedDB);
   use "Reconnect" next time.
+- **Note**: the File System Access API only gives you the folder's name, not
+  its full host-side path, so the "Connect" dialog lets you jot down an
+  optional note (up to 60 characters). The row then shows "folder name —
+  note", editable later from the pencil icon.
+- **Driver-not-installed warning**: if a folder is connected but the guest's
+  HOSTFS.SYS hasn't loaded yet, the row shows "⚠ HOSTFS.SYS is not loaded in
+  the guest".
+- **Hidden-name notice**: if the most recent listing had to drop names that
+  don't fit the 8.3 format, the row shows "N name(s) not shown" (hover for
+  the actual names and the directory).
+- The HDD (SASI) / SCSI-HDD / HostFS rows are hidden by default; toggle them
+  from the "Display" group in the "…" menu (a row with content — a loaded
+  disk or a connected folder — shows automatically regardless of the toggle).
 
 ### Disk Library
 
