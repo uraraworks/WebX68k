@@ -103,6 +103,28 @@ build_device_variant() {
     --src="$OUT_DIR/${name}_pre.xdf" --out="$OUT_DIR/${name}.xdf" --line='DEVICE = \RPROBE.SYS'
 }
 
+# C12: write-test.s(WRITETST.X)をアセンブルし、build_device_variantで作った
+# xdfへ書き込んだうえで、AUTOEXEC.BATを「起動したら即WRITETSTを実行する」
+# 内容に差し替える(手でコマンドを打たず、起動だけでw1/w2/w3の記録が取れる
+# ようにするため)。write-test.sは-Dの条件を持たないので1回だけビルドする。
+build_write_test_once() {
+  if [ -f "$OUT_DIR/WRITETST.X" ]; then
+    return
+  fi
+  echo "== write-test.s(WRITETST.X)をアセンブル =="
+  "$VASM" -Fbin -m68000 -no-opt -o "$OUT_DIR/write-test_RAW.bin" "$REPO_DIR/tools/x68/write-test.s"
+  python3 "$REPO_DIR/tools/x68/hu_pack.py" "$OUT_DIR/write-test_RAW.bin" "$OUT_DIR/WRITETST.X"
+}
+
+# name: build_device_variantまで済ませたディスクの接頭辞
+add_write_test_autoexec() {
+  local name="$1"
+  build_write_test_once
+  python3 "$REPO_DIR/tools/x68/fatput.py" "$OUT_DIR/${name}.xdf" "WRITETST.X" "$OUT_DIR/WRITETST.X"
+  printf 'ECHO OFF\r\nPATH A:\\;A:\\SYS;A:\\BIN;A:\\ETC;\r\nWRITETST\r\n\032' > "$OUT_DIR/${name}_AUTOEXEC.BAT"
+  python3 "$REPO_DIR/tools/x68/fatput.py" "$OUT_DIR/${name}.xdf" "AUTOEXEC.BAT" "$OUT_DIR/${name}_AUTOEXEC.BAT"
+}
+
 echo "== C1相当の実体をビルド(C0/C1で共用) =="
 build_one "c1" 0000
 cp "$OUT_DIR/c1_RAW.SYS" "$OUT_DIR/c0_RAW.SYS"
@@ -230,5 +252,25 @@ build_one "c11r2" 2000 -DCMD_INIT=\$40 -DREC_MODE=1 -DC6_MODE=2 -DC6_SUB=3 -DC8_
 build_device_variant "c11r2"
 print_rec_offsets "c11r2"
 
+echo "== C12-w1: C11r2を土台に、+14/+18/+22ポインタ追従を88バイトへ広げ(書く"
+echo "   コマンドが渡したバッファの中身を確認するため)、未対応コマンドは"
+echo "   一律UNKNOWN_RESP=-19を返す。REC_MAXは64(ENTRY_SIZE=292のためlea"
+echo "   drv_end(pc)のワード変位に収める。write-test.s(WRITETST.X)を積み、"
+echo "   起動したら即実行する =="
+build_one "c12w1" 2000 -DCMD_INIT=\$40 -DREC_MODE=1 -DC6_MODE=2 -DC6_SUB=3 -DC8_MODE=2 -DC9_MODE=1 -DREC_MAX=64 -DCMD_OPEN=\$4a -DCMD_READ=\$4c -DCMD_CLOSE=\$4b -DCMD_READ_BUF_OFF=14 -DC10_MODE=1 -DC11_MODE=1 -DCMD_CD=\$41 -DC12_MODE=1 -DUNKNOWN_RESP=-19 -DC12_ECHO_WRITE=0
+build_device_variant "c12w1"
+add_write_test_autoexec "c12w1"
+print_rec_offsets "c12w1"
+
+echo "== C12-w2: C12-w1の実測(MKDIR=\$42 RMDIR=\$43 RENAME=\$44 DELETE=\$45"
+echo "   CHMOD=\$46 CREATE/NEWFILE=\$49共用 WRITE=\$4d、_FILEDATEはドライバへ"
+echo "   届かない)を受け、判明したコマンドはすべて成功(+18=0、WRITEだけ+18"
+echo "   に触れず長さをそのまま返す)を返すようにし、それ以外の未対応コマンド"
+echo "   はUNKNOWN_RESP=0にして後続のDOSコールまで届くようにする =="
+build_one "c12w2" 2000 -DCMD_INIT=\$40 -DREC_MODE=1 -DC6_MODE=2 -DC6_SUB=3 -DC8_MODE=2 -DC9_MODE=1 -DREC_MAX=64 -DCMD_OPEN=\$4a -DCMD_READ=\$4c -DCMD_CLOSE=\$4b -DCMD_READ_BUF_OFF=14 -DC10_MODE=1 -DC11_MODE=1 -DCMD_CD=\$41 -DC12_MODE=1 -DUNKNOWN_RESP=0 -DC12_ECHO_WRITE=0 -DCMD_MKDIR=\$42 -DCMD_RMDIR=\$43 -DCMD_RENAME=\$44 -DCMD_DELETE=\$45 -DCMD_CHMOD=\$46 -DCMD_CREATE=\$49 -DCMD_WRITE=\$4d
+build_device_variant "c12w2"
+add_write_test_autoexec "c12w2"
+print_rec_offsets "c12w2"
+
 echo "== 完了 =="
-echo "$OUT_DIR/{c0,c1,c2,c1b,c3a,c3b,c6v1,c6v2,c6f1,c6f2,c6f3,c7d0,c7d1,c7d2,c8a,c8b,c9r1,c9r2,c9r3,c10,c11r1,c11r2}.xdf を作成しました。"
+echo "$OUT_DIR/{c0,c1,c2,c1b,c3a,c3b,c6v1,c6v2,c6f1,c6f2,c6f3,c7d0,c7d1,c7d2,c8a,c8b,c9r1,c9r2,c9r3,c10,c11r1,c11r2,c12w1,c12w2}.xdf を作成しました。"
