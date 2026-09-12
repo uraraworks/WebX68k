@@ -633,6 +633,13 @@ async function setupHostFsOpfsTest(mode: HostFsConnectMode): Promise<void> {
     hostFsMode = mode;
     resetHostFsUiStatus();
     workerCoreProxy?.sendHostFsAttach(handle, mode);
+    // 覚え書きの検証(親からの指示書(e)): OPFSのhandleは毎回の起動でseedHostFsOpfsTest()が
+    // 新しいJSオブジェクトとして作り直すが、同じ`webx68k-hostfs`ストアへ毎回保存し直す
+    // ことで、以前このURLで付けた覚え書きをリロード後も復元できるようにする(OPFSは
+    // queryPermissionが無く常に許可済み扱いなので、実フォルダと違い自動でここまでできる)。
+    const previouslySaved = await loadHostFolderHandle().catch(() => null);
+    hostFsNote = previouslySaved?.note ?? null;
+    await saveHostFolderHandle(handle, mode, hostFsNote ?? undefined);
     console.log(`[HostFS] opfs-test: OPFSへ検証用ファイルを作り、ATTACH(${mode})した`);
   } catch (err) {
     console.error('[HostFS] opfs-test: セットアップに失敗しました', err);
