@@ -15,6 +15,7 @@ import {
   createCoreError,
   FLUSH_SCSI_KIND,
   HOSTFS_ATTACH_KIND,
+  HOSTFS_DEBUG_INJECT_UNKNOWN_KIND,
   HOSTFS_DETACH_KIND,
   type HostFsAttachMode,
   INPUT_UPDATE_KIND,
@@ -940,6 +941,21 @@ export class WorkerCoreProxy implements LibretroHostProxy {
   sendHostFsDetach(): void {
     if (this.disposed || this.failed) return;
     this.worker.postMessage({ kind: HOSTFS_DETACH_KIND });
+  }
+
+  /**
+   * HostFS未知コマンド診断: DEV限定の検証用フック(利用者の決定・実地確認手順のとおり)。
+   * main.ts の __webx68kDebug からのみ呼ぶ想定。import.meta.env.DEVの定数畳み込みにより
+   * 本番buildからは呼び出し元ごと消える(core-protocol.tsのHOSTFS_DEBUG_INJECT_UNKNOWN_KIND
+   * コメント参照)。
+   */
+  sendHostFsDebugInjectUnknown(cmd: number): void {
+    // import.meta.env.DEVをガードの先頭に置き、本番buildでは`if(false){...}`として
+    // 丸ごと畳み込まれてメッセージ種別文字列(HOSTFS_DEBUG_INJECT_UNKNOWN_KIND)ごと
+    // distから消えるようにする(core-worker.ts側の同種のコメント参照)。
+    if (!import.meta.env.DEV) return;
+    if (this.disposed || this.failed) return;
+    this.worker.postMessage({ kind: HOSTFS_DEBUG_INJECT_UNKNOWN_KIND, cmd });
   }
 
   /**

@@ -308,6 +308,28 @@ export function isHostFsDetachMessage(message: unknown): message is HostFsDetach
   );
 }
 
+// --- HostFS 未知コマンド診断: DEV限定の検証用フック(本番には出さない) -----------------
+//
+// main.ts側の __webx68kDebug(import.meta.env.DEVでのみ生える)から、Worker内の
+// HostFsDispatcherへ合成の未知コマンドを1回流すためだけのメッセージ。実ゲストRAMには
+// 一切触れない(dispatcher.ts の debugInjectSyntheticUnknownCommand() 参照)。
+// vite の import.meta.env.DEV 定数畳み込みにより、本番buildではこのkindを送る側
+// (main.ts)ごと消える。受け手(core-worker.ts)側もDEVガード済み。
+export const HOSTFS_DEBUG_INJECT_UNKNOWN_KIND = 'hostfsDebugInjectUnknown' as const;
+
+export interface HostFsDebugInjectUnknownMessage {
+  kind: typeof HOSTFS_DEBUG_INJECT_UNKNOWN_KIND;
+  cmd: number;
+}
+
+export function isHostFsDebugInjectUnknownMessage(message: unknown): message is HostFsDebugInjectUnknownMessage {
+  return (
+    typeof message === 'object' &&
+    message !== null &&
+    (message as { kind?: unknown }).kind === HOSTFS_DEBUG_INJECT_UNKNOWN_KIND
+  );
+}
+
 // --- HostFS 状態通知(ドライバ未組み込み警告・非表示名の通知、追加分) -----------------
 //
 // Worker側(dispatcher.getDriverStatus() / HostFolderFsのgetRejectedSummary())が持つ状態を
@@ -333,6 +355,23 @@ export interface HostFsUiStatus {
    * (rejectedCountは切り詰めても実数のまま)。
    */
   rejectedPaths: string[];
+  /**
+   * 利用者の決定分: 未知コマンドの警告・診断情報コピー用。dispatcher.ts の
+   * HostFsDispatcher.getUnknownCommandsSummary() をそのまま運ぶ(コマンド番号順、
+   * 最大16種)。ファイル名・覚え書き・ホストのパスはここには一切乗らない
+   * (ヘッダ・ゲストRAMのバイト列とコマンド番号・回数のみ)。
+   */
+  unknownCommands: HostFsUnknownCommandInfo[];
+}
+
+/** ページ側UI(main.ts)が使う、未知コマンド1種類ぶんの診断情報。 */
+export interface HostFsUnknownCommandInfo {
+  cmd: number;
+  count: number;
+  /** 初回に受信したヘッダ+0..+25、16進(小文字・区切りなし・52文字)。 */
+  headerHex: string;
+  /** +14/+18のどちらかがゲストRAMを指すポインタらしければ、その先32バイトの16進。無ければnull。 */
+  ptrDumpHex: string | null;
 }
 
 export const HOSTFS_STATUS_EVENT = 'hostfsStatus' as const;

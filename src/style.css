@@ -984,7 +984,8 @@ main {
  * 使うと本来のフォルダ名(覚え書き込み)の表示幅を奪ってしまうため、こちらは
  * 内容ぶんの幅に留める(flex-grow/shrinkしない、こちらだけ縮めて省略させる)。 */
 .hostfs-warning,
-.hostfs-rejected {
+.hostfs-rejected,
+.hostfs-unknown {
   flex: 0 1 auto;
   max-width: 40%;
 }
@@ -995,6 +996,29 @@ main {
 .hostfs-rejected {
   color: var(--footer-text-dim);
   font-style: italic;
+}
+/* 未対応の要求(未知コマンド)の警告(feature/hostfs 追加分)。クリックで診断情報をコピー
+ * できる押しボタン相当なので、下線点線+ポインタカーソルでクリック可能を示す。 */
+.hostfs-unknown {
+  color: var(--status-warn, #e0a030);
+  font-weight: 600;
+  cursor: pointer;
+  text-decoration: underline dotted;
+  background: none;
+  border: none;
+  padding: 0;
+}
+.hostfs-unknown:hover,
+.hostfs-unknown:focus-visible {
+  opacity: 0.8;
+}
+
+.hostfs-diag-textarea {
+  width: 100%;
+  box-sizing: border-box;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 11px;
+  resize: vertical;
 }
 
 .fd-slot .icon-btn {

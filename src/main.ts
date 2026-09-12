@@ -220,6 +220,12 @@ import type { HostFsConnectMode } from './hostfs/filesystem';
 // バックエンドの書き込みAPIをOPFSのhandleへ直接叩いて確かめる(DEV限定)。
 import { HostFolderFs } from './hostfs/host-folder-fs';
 import { buildRejectedTooltipLines } from './hostfs/rejected-tooltip';
+import {
+  buildHostFsDiagText,
+  buildUnknownCommandTooltipLines,
+  formatUnknownCommandCode,
+  summarizeUnknownCommandLabel,
+} from './hostfs/diag-report';
 import { shouldShowDriveRow } from './drive-visibility';
 import { SharpView } from './sharp-view';
 
@@ -393,6 +399,7 @@ interface HostFsElements {
   name: HTMLElement;
   warning: HTMLElement;
   rejected: HTMLElement;
+  unknown: HTMLElement;
   editNoteBtn: HTMLButtonElement;
   connectBtn: HTMLButtonElement;
   reconnectBtn: HTMLButtonElement;
@@ -404,11 +411,21 @@ const hostFsElements: HostFsElements = {
   name: document.getElementById('name-hostfs') as HTMLElement,
   warning: document.getElementById('hostfs-warning') as HTMLElement,
   rejected: document.getElementById('hostfs-rejected') as HTMLElement,
+  // 未知コマンドの警告(利用者の決定分)。クリックで診断情報をコピーできる、
+  // 押しボタン相当の行(下のクリックハンドラ配線・rejected/warningと並んでも
+  // 崩れないよう.hostfs-warning/.hostfs-rejectedと同じ.fd-name系のクラスを使う)。
+  unknown: document.getElementById('hostfs-unknown') as HTMLElement,
   editNoteBtn: document.getElementById('btn-edit-hostfs-note') as HTMLButtonElement,
   connectBtn: document.getElementById('btn-connect-hostfs') as HTMLButtonElement,
   reconnectBtn: document.getElementById('btn-reconnect-hostfs') as HTMLButtonElement,
   disconnectBtn: document.getElementById('btn-disconnect-hostfs') as HTMLButtonElement,
 };
+
+// 診断情報コピー失敗時(clipboard未対応など)のテキスト選択ダイアログ(意匠は既存の
+// .rom-modal系、hostfs-mode-backdropと同じ流儀。利用者の決定どおり)。
+const hostFsDiagBackdrop = document.getElementById('hostfs-diag-backdrop') as HTMLDivElement;
+const hostFsDiagTextarea = document.getElementById('hostfs-diag-textarea') as HTMLTextAreaElement;
+const hostFsDiagCloseBtn = document.getElementById('hostfs-diag-close') as HTMLButtonElement;
 
 const hostFsModeBackdrop = document.getElementById('hostfs-mode-backdrop') as HTMLDivElement;
 const hostFsModeReadonlyBtn = document.getElementById('hostfs-mode-readonly') as HTMLButtonElement;
@@ -448,11 +465,18 @@ let hostFsUiStatus: HostFsUiStatus = {
   driveNumber: null,
   rejectedCount: 0,
   rejectedPaths: [],
+  unknownCommands: [],
 };
 
 /** HostFsUiStatusを初期状態へ戻す(新しいWorkerコアの起動直後、通知が届く前の一時表示用)。 */
 function resetHostFsUiStatus(): void {
-  hostFsUiStatus = { driverDetected: false, driveNumber: null, rejectedCount: 0, rejectedPaths: [] };
+  hostFsUiStatus = {
+    driverDetected: false,
+    driveNumber: null,
+    rejectedCount: 0,
+    rejectedPaths: [],
+    unknownCommands: [],
+  };
 }
 
 /** HostFS行に「つながっている」とみなす行の表示切替向け判定(再接続待ちも含む、親からの指示書のとおり)。 */
@@ -509,7 +533,66 @@ function updateHostFsUi(): void {
     hostFsElements.rejected.title = lines.join('\n');
   }
 
+  // 未対応の要求(未知コマンド)の警告(利用者の決定分)。フォルダの接続有無に関係なく、
+  // 記録が1件でもあれば出す(dispatcher.tsが記録するのはコマンド番号・回数・ヘッダ・
+  // ポインタ先だけで私的情報を含まないため、warning/rejected行のように接続前提にする
+  // 必要が無い。実際には$40等の初期化を経ないと未知コマンドは飛んでこないので、
+  // 通常は接続後にしか出ない)。
+  const unknownSummary = summarizeUnknownCommandLabel(hostFsUiStatus.unknownCommands);
+  hostFsElements.unknown.hidden = unknownSummary === null;
+  if (unknownSummary) {
+    const code = formatUnknownCommandCode(unknownSummary.cmd);
+    hostFsElements.unknown.textContent =
+      unknownSummary.extraKinds > 0
+        ? t('hostfsUnknownCommandLabelMore', { code, extra: unknownSummary.extraKinds })
+        : t('hostfsUnknownCommandLabel', { code });
+    const lines = buildUnknownCommandTooltipLines(
+      hostFsUiStatus.unknownCommands,
+      (cmd, count) => t('hostfsUnknownCommandCountLine', { code: formatUnknownCommandCode(cmd), count }),
+      t('hostfsUnknownCommandCopyHint'),
+    );
+    hostFsElements.unknown.title = lines.join('\n');
+  }
+
   updateDriveRowVisibility();
+}
+
+/** クリップボードへ書けなかったとき用、テキストを選択できる小さなダイアログ(利用者の決定どおり)。 */
+function openHostFsDiagFallbackDialog(text: string): void {
+  hostFsDiagTextarea.value = text;
+  hostFsDiagBackdrop.classList.remove('hidden');
+  hostFsDiagTextarea.focus();
+  hostFsDiagTextarea.select();
+}
+function closeHostFsDiagFallbackDialog(): void {
+  hostFsDiagBackdrop.classList.add('hidden');
+}
+
+/**
+ * HostFS行の「⚠ 未対応の要求」をクリックしたときの診断情報コピー(利用者の決定分)。
+ * 含めるのはビルド刻印・userAgent・未知コマンドの番号/回数/ヘッダ/ポインタ先・HostFSの状態
+ * だけで、フォルダの中のファイル名・覚え書きの本文・ホストの実際のパスは一切含めない
+ * (buildHostFsDiagText参照)。
+ */
+async function copyHostFsDiagnostics(): Promise<void> {
+  const buildStamp = document.getElementById('footer-version')?.textContent ?? '';
+  const text = buildHostFsDiagText({
+    buildStamp,
+    userAgent: navigator.userAgent,
+    unknownCommands: hostFsUiStatus.unknownCommands,
+    driverDetected: hostFsUiStatus.driverDetected,
+    driveNumber: hostFsUiStatus.driveNumber,
+    folderConnected: hostFsHasContent(),
+    mode: hostFsMode === 'readwrite' ? 'readwrite' : hostFsMode === 'read' ? 'readonly' : null,
+  });
+  try {
+    if (!navigator.clipboard?.writeText) throw new Error('navigator.clipboard.writeText unavailable');
+    await navigator.clipboard.writeText(text);
+    showToast(t('statusHostFsDiagCopied'));
+  } catch (err) {
+    console.warn('[HostFS] 診断情報のクリップボードコピーに失敗しました', err);
+    openHostFsDiagFallbackDialog(text);
+  }
 }
 
 function openHostFsModeDialog(): void {
@@ -658,6 +741,19 @@ hostFsElements.connectBtn.addEventListener('click', () => openHostFsModeDialog()
 hostFsElements.disconnectBtn.addEventListener('click', disconnectHostFsFolder);
 hostFsElements.reconnectBtn.addEventListener('click', () => void reconnectHostFsFolder());
 hostFsElements.editNoteBtn.addEventListener('click', () => openHostFsNoteDialog());
+// 未対応の要求(未知コマンド)行のクリックで診断情報をコピー(利用者の決定分)。
+// role="button" tabindex="0"(index.html)なので、キーボード操作(Enter/Space)にも対応する。
+hostFsElements.unknown.addEventListener('click', () => void copyHostFsDiagnostics());
+hostFsElements.unknown.addEventListener('keydown', (e) => {
+  if (e.key === 'Enter' || e.key === ' ') {
+    e.preventDefault();
+    void copyHostFsDiagnostics();
+  }
+});
+hostFsDiagCloseBtn.addEventListener('click', () => closeHostFsDiagFallbackDialog());
+hostFsDiagBackdrop.addEventListener('click', (e) => {
+  if (e.target === hostFsDiagBackdrop) closeHostFsDiagFallbackDialog();
+});
 hostFsModeReadonlyBtn.addEventListener('click', () => void pickHostFsFolder('read'));
 hostFsModeReadwriteBtn.addEventListener('click', () => void pickHostFsFolder('readwrite'));
 hostFsModeCancelBtn.addEventListener('click', () => closeHostFsModeDialog());
@@ -5126,6 +5222,9 @@ function applyDocumentStrings(): void {
   document.getElementById('hostfs-note-input-label')!.textContent = t('hostfsNoteLabel');
   hostFsNoteCancelBtn.textContent = t('hostfsModeDialogCancel');
   hostFsNoteSaveBtn.textContent = t('hostfsNoteDialogSave');
+  document.getElementById('hostfs-diag-title')!.textContent = t('hostfsDiagDialogTitle');
+  document.getElementById('hostfs-diag-description')!.textContent = t('hostfsDiagDialogDescription');
+  hostFsDiagCloseBtn.textContent = t('hostfsDiagDialogClose');
   updateDriveToggleButtonsUi();
   updateHostFsUi();
 
@@ -6901,6 +7000,11 @@ if (import.meta.env.DEV) {
       rejectedCount: hostFsUiStatus.rejectedCount,
       rejectedPaths: hostFsUiStatus.rejectedPaths,
       rejectedTitle: hostFsElements.rejected.title,
+      // 未対応の要求(未知コマンド)の実地確認用(利用者の決定分)。
+      unknownCommands: hostFsUiStatus.unknownCommands,
+      unknownHidden: hostFsElements.unknown.hidden,
+      unknownLabel: hostFsElements.unknown.textContent,
+      unknownTitle: hostFsElements.unknown.title,
       showHddPref,
       showScsiPref,
       showHostfsPref,
@@ -6908,6 +7012,17 @@ if (import.meta.env.DEV) {
       rowScsiHidden: rowScsi.hidden,
       rowHostfsHidden: rowHostfs.hidden,
     }),
+    // HostFS未知コマンド診断: DEV限定の検証用フック(利用者の決定・実地確認手順のとおり)。
+    // 実ゲストRAMには一切触れず、dispatcher.ts経由の合成要求をWorkerへ1回流す
+    // (worker-bridge.ts の debugInjectSyntheticUnknownCommand 参照)。urlWorkerMode
+    // (?worker=1、既定)でだけ意味を持つ(HostFsDispatcher自体がWorker内にしか無いため)。
+    injectHostFsUnknownCommand: (cmd: number) => {
+      if (!urlWorkerMode) {
+        console.warn('[HostFS] injectHostFsUnknownCommandは?worker=1(既定)でのみ使える');
+        return;
+      }
+      workerCoreProxy?.sendHostFsDebugInjectUnknown(cmd);
+    },
   };
 }
 

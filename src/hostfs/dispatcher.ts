@@ -103,6 +103,48 @@ const SEEK_ORIGIN_START = 0;
 const SEEK_ORIGIN_CURRENT = 1;
 const SEEK_ORIGIN_END = 2;
 
+// --- 未知コマンドの診断記録(利用者の決定分: HostFS行に警告を出し、クリックで
+// 診断情報をコピーできるようにするための下ごしらえ)。
+//
+// 記録するのは「何が起きたか」の裏取りに要る最小限だけ。フォルダの中のファイル名・
+// 覚え書きの本文・ホストのパスは、この記録経路には一切乗らない
+// (ヘッダ・ゲストRAMのバイト列とコマンド番号・回数のみ)。
+
+/** 未知コマンドとして記録する種類数の上限(利用者の決定どおり)。 */
+const MAX_UNKNOWN_COMMAND_KINDS = 16;
+/** 初回に保存するヘッダの長さ(+0..+25、実測で使っている全フィールドを含む)。 */
+const UNKNOWN_HEADER_DUMP_LEN = 26;
+/** +14/+18がゲストRAMを指すポインタらしいときに保存する先のバイト数(利用者の決定どおり)。 */
+const UNKNOWN_PTR_DUMP_LEN = 32;
+/** ゲストRAMの上限(X68000は最大12MB)。この範囲内の偶数番地だけポインタとして扱う。 */
+const GUEST_RAM_LIMIT = 0xc00000;
+
+/** 未知コマンド1種類ぶんの記録(初回のヘッダ・ポインタ先だけを保持、以後は回数だけ増やす)。 */
+interface UnknownCommandRecord {
+  count: number;
+  /** 初回のヘッダ+0..+25、16進(小文字・区切りなし)。 */
+  headerHex: string;
+  /** +14/+18のどちらかがゲストRAMを指すポインタらしければ、その先32バイトの16進。無ければnull。 */
+  ptrDumpHex: string | null;
+}
+
+/** 診断テキスト組み立て用(main.ts側のdiag-report.tsへそのまま渡す)。 */
+export interface HostFsUnknownCommandInfo {
+  cmd: number;
+  count: number;
+  headerHex: string;
+  ptrDumpHex: string | null;
+}
+
+function bytesToHex(bytes: Uint8Array): string {
+  return Array.from(bytes, (b) => b.toString(16).padStart(2, '0')).join('');
+}
+
+/** +14/+18の値がゲストRAMを指すポインタらしいか(0より大きく$C00000未満の偶数、利用者の決定どおり)。 */
+function looksLikeGuestPointer(value: number): boolean {
+  return value > 0 && value < GUEST_RAM_LIMIT && value % 2 === 0;
+}
+
 function toFilbufEntry(e: HostFsFileEntry): FilbufEntry {
   return { name: e.name, ext: e.ext, attr: e.attr, date: e.date, time: e.time, size: e.size };
 }
@@ -205,11 +247,13 @@ export interface HostFsDriverStatus {
 }
 
 export class HostFsDispatcher {
-  private readonly mem: GuestMemory;
+  // DEV限定フック(debugInjectSyntheticUnknownCommand)が一時的に差し替えるためreadonlyにしない。
+  private mem: GuestMemory;
   private readonly fs: HostFileSystem;
   private readonly dirStates = new Map<number, DirSearchState>(); // key: filbufPtr
   private readonly fcbStates = new Map<number, FcbState>(); // key: FCBポインタ
-  private readonly seenUnknownCommands = new Set<number>();
+  /** 未知コマンドの診断記録(利用者の決定分)。key: コマンド番号。最大MAX_UNKNOWN_COMMAND_KINDS種。 */
+  private readonly unknownCommands = new Map<number, UnknownCommandRecord>();
   private pending: PendingOperation | null = null;
   /**
    * 非同期処理(listDir/readFile)がPromise解決した"その場"で呼ばれる通知。
@@ -244,6 +288,88 @@ export class HostFsDispatcher {
    * UIそのものは今回は作らない(親からの追加指示)。 */
   getDriverStatus(): HostFsDriverStatus {
     return { ...this.driverStatus };
+  }
+
+  /**
+   * 利用者の決定分: HostFS行の警告・診断情報コピー用に、これまで受けた未知コマンドの
+   * 一覧を返す(コマンド番号順)。再起動でこのインスタンスごと作り直されるため、
+   * 明示的なresetメソッドは持たない(driverStatusと同じ流儀。フォルダのつなぎ替え
+   * では消えない、利用者の決定どおり)。
+   */
+  getUnknownCommandsSummary(): HostFsUnknownCommandInfo[] {
+    return Array.from(this.unknownCommands.entries())
+      .sort((a, b) => a[0] - b[0])
+      .map(([cmd, rec]) => ({ cmd, count: rec.count, headerHex: rec.headerHex, ptrDumpHex: rec.ptrDumpHex }));
+  }
+
+  /**
+   * DEV限定の検証用フック(利用者の決定・実地確認手順のとおり)。合成した未知コマンドの
+   * 要求を、実ゲストRAMには一切触れずrequest()の本経路にそのまま1回流す。
+   * 使い捨てのスクラッチバッファへ this.mem を一時的に差し替えて呼び、終わったら必ず
+   * 元へ戻す(実行中のゲストの状態には影響しない)。本番buildには含めない
+   * (main.ts側の呼び出し元がimport.meta.env.DEVでガードしているため、
+   * vite の定数畳み込みで呼び出し自体が本番から消える)。
+   */
+  debugInjectSyntheticUnknownCommand(cmd: number): void {
+    const scratch = new Uint8Array(4096);
+    const scratchMem: GuestMemory = {
+      read: (addr, len) => scratch.slice(addr, addr + len),
+      write: (addr, bytes) => scratch.set(bytes, addr),
+    };
+    const PTR_ADDR = 256;
+    const header = new Uint8Array(32);
+    header[HDR_CMD_OFFSET] = cmd & 0xff;
+    const dv = new DataView(header.buffer);
+    dv.setUint32(HDR_ARG_PTR_OFFSET, PTR_ADDR); // +14をポインタらしい値にして、ポインタ先ダンプ経路も試す
+    scratchMem.write(0, header);
+    scratchMem.write(
+      PTR_ADDR,
+      Uint8Array.from({ length: UNKNOWN_PTR_DUMP_LEN }, (_, i) => i), // 私的情報を含まない既知パターン
+    );
+    const realMem = this.mem;
+    this.mem = scratchMem;
+    try {
+      this.request(0);
+    } finally {
+      this.mem = realMem;
+    }
+  }
+
+  /**
+   * 未知コマンドの記録(利用者の決定分)。初回だけヘッダ26バイトと、+14/+18が
+   * ゲストRAMを指すポインタらしければその先32バイトを保存する。2回目以降は
+   * 回数だけ増やす。種類数がMAX_UNKNOWN_COMMAND_KINDSに達したら、新しい種類は
+   * 記録しない(戻り値(-2)は今までどおり変えない、既存のwriteI32BEは呼び出し元のまま)。
+   */
+  private recordUnknownCommand(cmd: number, addr: number): void {
+    const existing = this.unknownCommands.get(cmd);
+    if (existing) {
+      existing.count++;
+      return;
+    }
+    if (this.unknownCommands.size >= MAX_UNKNOWN_COMMAND_KINDS) {
+      return;
+    }
+    let headerHex = '';
+    let ptrDumpHex: string | null = null;
+    try {
+      headerHex = bytesToHex(this.mem.read(addr, UNKNOWN_HEADER_DUMP_LEN));
+      const argPtr = readU32BE(this.mem, addr + HDR_ARG_PTR_OFFSET); // +14
+      const filbufOrRetval = readU32BE(this.mem, addr + HDR_FILBUF_PTR_OFFSET); // +18
+      const ptrCandidate = looksLikeGuestPointer(argPtr)
+        ? argPtr
+        : looksLikeGuestPointer(filbufOrRetval)
+          ? filbufOrRetval
+          : null;
+      if (ptrCandidate !== null) {
+        ptrDumpHex = bytesToHex(this.mem.read(ptrCandidate, UNKNOWN_PTR_DUMP_LEN));
+      }
+    } catch (err) {
+      // 診断記録の失敗でdispatcher本体を壊さない(安全側)。ヘッダだけでも残す。
+      console.warn(`[HostFS] 未知コマンド$${cmd.toString(16)}の診断記録に失敗`, err);
+    }
+    this.unknownCommands.set(cmd, { count: 1, headerHex, ptrDumpHex });
+    console.warn(`[HostFS] 未知のコマンド: $${cmd.toString(16)} (初回、-2で応答)`);
   }
 
   /**
@@ -323,10 +449,7 @@ export class HostFsDispatcher {
         // 初めて見たコマンドだけログに出す(親からの指示書: 未知コマンドは今までどおり、
         // ただし記録は残す)。書き込み系と判明したコマンドを見つけたら、ここを
         // DOS_ERR_WRITE_PROTECTED(-19)を返す専用caseへ切り出すこと。
-        if (!this.seenUnknownCommands.has(cmd)) {
-          this.seenUnknownCommands.add(cmd);
-          console.warn(`[HostFS] 未知のコマンド: $${cmd.toString(16)} (初回、-2で応答)`);
-        }
+        this.recordUnknownCommand(cmd, addr);
         writeI32BE(this.mem, addr + HDR_FILBUF_PTR_OFFSET, DOS_ERR_NOT_FOUND);
         break;
     }

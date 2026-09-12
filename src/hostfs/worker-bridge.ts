@@ -45,6 +45,11 @@ export interface HostFsBridgeResult {
    * (installed=falseやmode==='fake'では常にNotConnectedFs/FakeFs相当のnull/0を返せば十分)。
    */
   getStatus?: () => HostFsUiStatus;
+  /**
+   * DEV限定の検証用フック(利用者の決定・実地確認手順のとおり、本番には含めない)。
+   * mode==='real'のときだけ入る。dispatcher.debugInjectSyntheticUnknownCommand()参照。
+   */
+  debugInjectUnknownCommand?: (cmd: number) => void;
 }
 
 /**
@@ -157,7 +162,12 @@ export function installHostFsBridge(host: GuestMemoryHost): HostFsBridgeResult {
         driveNumber: driver.driveNumber,
         rejectedCount: summary.totalCount,
         rejectedPaths: summary.paths,
+        unknownCommands: dispatcher.getUnknownCommandsSummary(),
       };
     },
+    // DEV限定(本番buildでは import.meta.env.DEV の畳み込みでこの分岐ごと消える)。
+    debugInjectUnknownCommand: import.meta.env.DEV
+      ? (cmd: number) => dispatcher.debugInjectSyntheticUnknownCommand(cmd)
+      : undefined,
   };
 }

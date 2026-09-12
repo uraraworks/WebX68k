@@ -149,6 +149,20 @@ interface Dict {
    */
   hostfsRejectedNamesLabel(args: { count: number }): string;
   hostfsRejectedNamesMore(args: { count: number }): string;
+  /**
+   * 未対応の要求(未知コマンド)の警告(利用者の決定分)。行のラベル・ツールチップ・
+   * クリックで開く代替ダイアログに使う。診断テキスト本体(クリップボードへコピーする
+   * 内容)は言語非依存(英字ラベル固定)にしているため、専用のtフォーマッタは持たない
+   * (src/hostfs/diag-report.tsのbuildHostFsDiagText参照)。
+   */
+  hostfsUnknownCommandLabel(args: { code: string }): string;
+  hostfsUnknownCommandLabelMore(args: { code: string; extra: number }): string;
+  hostfsUnknownCommandCountLine(args: { code: string; count: number }): string;
+  hostfsUnknownCommandCopyHint(): string;
+  statusHostFsDiagCopied(): string;
+  hostfsDiagDialogTitle(): string;
+  hostfsDiagDialogDescription(): string;
+  hostfsDiagDialogClose(): string;
   /** ドライブ行の表示切替トグル(「…」メニュー、feature/hostfs 追加分)。 */
   toolbarToggleHdd(): string;
   toolbarToggleScsi(): string;
@@ -668,6 +682,14 @@ const STRINGS: Record<Lang, Dict> = {
       'ディスクライブラリの「このディスクにHostFSを組み込む」で組み込んだディスクから起動してください',
     hostfsRejectedNamesLabel: ({ count }) => `${count}件の名前は表示していません`,
     hostfsRejectedNamesMore: ({ count }) => `ほか${count}件`,
+    hostfsUnknownCommandLabel: ({ code }) => `⚠ 未対応の要求（${code}）`,
+    hostfsUnknownCommandLabelMore: ({ code, extra }) => `⚠ 未対応の要求（${code} ほか${extra}種）`,
+    hostfsUnknownCommandCountLine: ({ code, count }) => `${code} ×${count}`,
+    hostfsUnknownCommandCopyHint: () => 'クリックで診断情報をコピー',
+    statusHostFsDiagCopied: () => '診断情報をコピーしました',
+    hostfsDiagDialogTitle: () => '診断情報',
+    hostfsDiagDialogDescription: () => 'クリップボードにコピーできませんでした。下の内容を選択してコピーしてください。',
+    hostfsDiagDialogClose: () => '閉じる',
     toolbarToggleHdd: () => 'HDD（SASI）を表示',
     toolbarToggleScsi: () => 'SCSI-HDDを表示',
     toolbarToggleHostfs: () => 'HostFSを表示',
@@ -1084,6 +1106,14 @@ const STRINGS: Record<Lang, Dict> = {
       'Boot from a disk with HostFS installed, using "Install HostFS onto this disk" in the disk library',
     hostfsRejectedNamesLabel: ({ count }) => `${count} name(s) not shown`,
     hostfsRejectedNamesMore: ({ count }) => `${count} more`,
+    hostfsUnknownCommandLabel: ({ code }) => `⚠ Unsupported request (${code})`,
+    hostfsUnknownCommandLabelMore: ({ code, extra }) => `⚠ Unsupported request (${code}, +${extra} more kinds)`,
+    hostfsUnknownCommandCountLine: ({ code, count }) => `${code} ×${count}`,
+    hostfsUnknownCommandCopyHint: () => 'Click to copy diagnostic info',
+    statusHostFsDiagCopied: () => 'Copied diagnostic info',
+    hostfsDiagDialogTitle: () => 'Diagnostic info',
+    hostfsDiagDialogDescription: () => "Couldn't copy to the clipboard. Select the text below and copy it manually.",
+    hostfsDiagDialogClose: () => 'Close',
     toolbarToggleHdd: () => 'Show HDD (SASI)',
     toolbarToggleScsi: () => 'Show SCSI-HDD',
     toolbarToggleHostfs: () => 'Show HostFS',

@@ -274,6 +274,16 @@
               <!-- 非表示名の通知(feature/hostfs 追加分)。直近の一覧でHuman68kで表せず
                    外した名前があるときだけ出す。ツールチップに実際の名前一覧を出す。 -->
               <span id="hostfs-rejected" class="fd-name hostfs-rejected" hidden></span>
+              <!-- 未対応の要求(未知コマンド)の警告(feature/hostfs 追加分、利用者の決定)。
+                   クリックすると診断情報をクリップボードへコピーする。ツールチップ(title)に
+                   届いた未知コマンドの内訳と「クリックで診断情報をコピー」を出す。 -->
+              <span
+                id="hostfs-unknown"
+                class="fd-name hostfs-unknown"
+                role="button"
+                tabindex="0"
+                hidden
+              ></span>
               <button id="btn-edit-hostfs-note" type="button" class="icon-btn" title="覚え書きを編集" aria-label="覚え書きを編集" hidden>
                 <svg class="btn-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 20h4l10.5-10.5-4-4L4 16v4z M14 6l4 4"/></svg>
               </button>
@@ -452,6 +462,22 @@
       <div class="rom-modal-footer">
         <button id="hostfs-note-cancel" type="button" class="rom-close-btn">キャンセル</button>
         <button id="hostfs-note-save" type="button" class="rom-close-btn">保存</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- 診断情報コピーの代替ダイアログ(feature/hostfs 追加分、利用者の決定)。
+       navigator.clipboard.writeText() が使えない環境向けに、テキストを選択できる
+       小さなダイアログを出す(意匠は既存の.rom-modal系)。 -->
+  <div id="hostfs-diag-backdrop" class="rom-modal-backdrop hidden">
+    <div class="rom-modal" role="dialog" aria-modal="true" aria-labelledby="hostfs-diag-title">
+      <h2 id="hostfs-diag-title" class="rom-modal-title">診断情報</h2>
+      <p id="hostfs-diag-description" class="rom-modal-description">
+        クリップボードにコピーできませんでした。下の内容を選択してコピーしてください。
+      </p>
+      <textarea id="hostfs-diag-textarea" class="hostfs-diag-textarea" readonly rows="12"></textarea>
+      <div class="rom-modal-footer">
+        <button id="hostfs-diag-close" type="button" class="rom-close-btn">閉じる</button>
       </div>
     </div>
   </div>

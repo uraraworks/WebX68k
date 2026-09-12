@@ -823,6 +823,22 @@
               上記のとおりです(拡張子が4文字以上/名前が18バイト超/ドットが2つ以上/
               ドットで始まる/使えない記号を含む/CP932で表せない文字を含む)。
             </p>
+            <p>
+              <strong>未対応の要求の警告:</strong> 常駐ソフトなど、こちらでまだ解読していない
+              HostFSへの要求が来ると、行に「⚠ 未対応の要求（$xx）」(複数の種類があれば
+              「⚠ 未対応の要求（$xx ほかN種）」)と出ます。<strong>この警告が出た場合は、
+              行をクリックすると診断情報がクリップボードにコピーされるので、それを添えて
+              <a href="https://github.com/uraraworks/WebX68k" target="_blank" rel="noopener"
+                >GitHub</a
+              >のIssue等で報告してください。</strong>
+              コピーされる内容はビルド刻印・ブラウザのUser-Agent・届いた要求の番号/回数/
+              先頭26バイトのヘッダ・(該当すれば)ポインタ先32バイト・HostFSの状態
+              (ドライバ検出有無・ドライブ番号・フォルダ接続有無・モード)だけで、
+              <strong>フォルダの中のファイル名・覚え書きの本文・ホストの実際のパスは
+              一切含まれません。</strong>
+              クリップボードが使えない環境では、代わりにテキストを選択してコピーできる
+              小さなダイアログが開きます。リセット・再起動すると記録は消えます。
+            </p>
           </div>
           <div class="lang-en">
             <h2>HostFS (expose a local folder as a drive)</h2>
@@ -937,6 +953,23 @@
               described above in this section (extension 4+ characters, name over 18 bytes, more
               than one dot, starts with a dot, a disallowed symbol, or a character that doesn't fit
               CP932).
+            </p>
+            <p>
+              <strong>Unsupported-request warning:</strong> If a resident program or similar sends
+              HostFS a request we haven't decoded yet, the row shows "⚠ Unsupported request ($xx)"
+              (or "⚠ Unsupported request ($xx, +N more kinds)" when more than one kind has been
+              seen). <strong>If you see this warning, please click the row to copy diagnostic info
+              to the clipboard, and attach it when reporting the issue on
+              <a href="https://github.com/uraraworks/WebX68k" target="_blank" rel="noopener"
+                >GitHub</a
+              >.</strong>
+              The copied text only contains the build stamp, the browser's User-Agent, the
+              request number/count/first 26-byte header/[if applicable] the 32 bytes at the
+              pointer it carries, and HostFS's own state (driver detected, drive number, folder
+              connected, mode). <strong>It never includes file names inside the folder, the note
+              text, or the folder's actual host-side path.</strong> On environments without
+              clipboard access, a small dialog opens instead with the text ready to select and
+              copy. A reset or reboot clears the recorded requests.
             </p>
           </div>
         </section>

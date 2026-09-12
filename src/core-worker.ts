@@ -76,6 +76,7 @@ import {
   isCoreOptionUpdateMessage,
   isFlushScsiMessage,
   isHostFsAttachMessage,
+  isHostFsDebugInjectUnknownMessage,
   isHostFsDetachMessage,
   isInputUpdateMessage,
   isMouseTrackResyncMessage,
@@ -280,7 +281,16 @@ function hostfsStatusEquals(a: HostFsUiStatus, b: HostFsUiStatus): boolean {
     a.driveNumber === b.driveNumber &&
     a.rejectedCount === b.rejectedCount &&
     a.rejectedPaths.length === b.rejectedPaths.length &&
-    a.rejectedPaths.every((path, i) => path === b.rejectedPaths[i])
+    a.rejectedPaths.every((path, i) => path === b.rejectedPaths[i]) &&
+    a.unknownCommands.length === b.unknownCommands.length &&
+    a.unknownCommands.every(
+      (u, i) =>
+        b.unknownCommands[i] !== undefined &&
+        u.cmd === b.unknownCommands[i].cmd &&
+        u.count === b.unknownCommands[i].count &&
+        u.headerHex === b.unknownCommands[i].headerHex &&
+        u.ptrDumpHex === b.unknownCommands[i].ptrDumpHex,
+    )
   );
 }
 let coreModuleLoaded = false;
@@ -1282,6 +1292,16 @@ ctx.onmessage = (ev) => {
     } else {
       console.log('[WebX68k-worker] HostFS DETACH を受信したが、real モードが有効でないため無視した');
     }
+    return;
+  }
+  // HostFS未知コマンド診断: DEV限定の検証用フック(利用者の決定・実地確認手順のとおり、
+  // 本番には含めない)。import.meta.env.DEVをif全体の先頭条件にしておくことで、
+  // 本番buildでは`false && ...`としてビルド時に畳み込まれ、isHostFsDebugInjectUnknownMessage
+  // の呼び出し・importごとdistから消える(内側だけDEVガードすると、外側のkind判定
+  // 自体はどのbuildでも生き残ってしまい、dist grep でメッセージ種別文字列が
+  // 見つかる。実際に旧実装でこれを踏んだので、必ず外側から畳み込む形にすること)。
+  if (import.meta.env.DEV && isHostFsDebugInjectUnknownMessage(data)) {
+    hostFsBridge?.debugInjectUnknownCommand?.(data.cmd);
     return;
   }
   const cmd = data as CoreCommand;
