@@ -6853,6 +6853,7 @@ if (import.meta.env.DEV) {
       note: hostFsNote,
       connected: hostFsHandle !== null,
       driverDetected: hostFsUiStatus.driverDetected,
+      driveNumber: hostFsUiStatus.driveNumber,
       rejectedCount: hostFsUiStatus.rejectedCount,
       rejectedNames: hostFsUiStatus.rejectedNames,
       rejectedPath: hostFsUiStatus.rejectedPath,

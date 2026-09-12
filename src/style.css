@@ -975,6 +975,15 @@ main {
   flex: 0 0 auto;
 }
 
+/* 上の display:inline-flex(author スタイル)が、UAスタイルの `[hidden] { display: none }` を
+ * 常に上書きしてしまい、`el.hidden = true` にしても見た目上は消えないバグが元々あった
+ * (実測: #btn-reconnect-hostfs。feature/hostfs で #btn-edit-hostfs-note を追加した際に発覚)。
+ * オリジンの優先順位(author > user-agent)によりauthor側のdisplay指定は常に勝つため、
+ * こちらもauthor側で明示的に上書きする必要がある。 */
+.fd-slot .icon-btn[hidden] {
+  display: none;
+}
+
 .fd-slot .icon-btn:hover:not(:disabled) {
   background: var(--footer-btn-bg-hover);
 }
