@@ -74,6 +74,7 @@ import {
   LocalCoreProxy,
   WorkerCoreProxy,
   toOwnedArrayBuffer,
+  copyArrayBuffer,
   type InitialDiskInput,
   type LibretroHostProxy,
 } from './core-proxy';
@@ -2653,9 +2654,21 @@ async function workerHotSwapFdd(
   if (!workerCoreProxy) return;
   let result: { previousImage: ArrayBuffer | null; mountedPath: string | null };
   try {
+    // copyArrayBuffer()を使うこと(toOwnedArrayBuffer()にしない): image.data は呼び出し元
+    // (insertDiskBytes())が slots[slot].data として直後に代入し、以後も持ち続ける実体その
+    // ものである。toOwnedArrayBuffer()は「バッファ全体を覆っているUint8Arrayならコピーせず
+    // bytesをそのまま返す」ため、それがcollectTransferables()のtransfer listに載って
+    // 実際にdetachされると、slots[slot].dataも道連れでdetachされる。次にリセット
+    // (restartCore()→bootCore())が同じslots[slot].dataをinitialDisksとして
+    // WorkerCoreProxy#init()へ渡すと、init()側のcopyArrayBuffer(d.bytes)が
+    // detach済みのbufferに対して.slice()を呼び、
+    // `Cannot perform ArrayBuffer.prototype.slice on a detached ArrayBuffer`で失敗する
+    // (実測: 起動中にライブラリからFDD0へ挿入→リセットで毎回再現。init()側は同種の
+    // 使い回しバグを2026-08-31に既にcopyArrayBuffer化して塞いでいた(このファイル上方の
+    // init()呼び出しコメント参照)が、挿入(hotSwapFdd)経路だけが直し残されていた)。
     result = await workerCoreProxy.hotSwapFdd({
       drive,
-      image: image ? { name: sanitizeFileName(image.name), bytes: toOwnedArrayBuffer(image.data) } : null,
+      image: image ? { name: sanitizeFileName(image.name), bytes: copyArrayBuffer(image.data) } : null,
     });
   } catch (err) {
     console.error('Worker経路のFDDホットマウントに失敗しました。', err);

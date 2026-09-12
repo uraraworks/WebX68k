@@ -331,6 +331,71 @@ describe('LocalCoreProxy: main.tsの呼び出し形(toOwnedArrayBuffer経由)で
   });
 });
 
+describe('main.tsのworkerHotSwapFdd呼び出し形 — 挿入後もslots[].dataがdetachされないこと', () => {
+  // 2026-09-12 修正: main.ts の workerHotSwapFdd() が image.bytes を toOwnedArrayBuffer() で
+  // 作っていたため、hotSwapFdd command が postMessage の transfer list に載って実際に
+  // Worker へ転送されると、image.data(= main.ts が insertDiskBytes() で slots[slot].data
+  // として代入し、以後も保持し続ける実体そのもの)まで detach されていた。次にリセット
+  // (restartCore() → bootCore())が同じ slots[slot].data を initialDisks として
+  // WorkerCoreProxy#init() へ渡すと、init() 側の copyArrayBuffer() が detach 済みの
+  // buffer に対して .slice() を呼び、`Cannot perform ArrayBuffer.prototype.slice on a
+  // detached ArrayBuffer` で失敗する(実測: 起動中にディスクライブラリから FDD0 へ挿入 →
+  // リセットで毎回再現。init() 側は同種の使い回しバグを 2026-08-31 に既に copyArrayBuffer()
+  // 化して塞いでいた(上の「main.tsの呼び出し形」節、および core-proxy.ts の init()
+  // コメント参照)が、挿入(hotSwapFdd)経路だけが直し残されていた)。
+  //
+  // ここでは実 Worker を起こさず、WorkerCoreProxy#dispatchCommand() が実ブラウザで行うのと
+  // 同じ効果(transfer list に載った ArrayBuffer の即時 detach)を
+  // structuredClone(buf, { transfer: [buf] })(このファイル上方の takeOwnership と同じ手段。
+  // 「手順3の肝」節のコメント参照)で模す。
+
+  function simulatePostMessageTransfer(buf: ArrayBuffer): void {
+    structuredClone(buf, { transfer: [buf] });
+  }
+
+  it('修正後(copyArrayBuffer): 挿入後もslots[].dataは無傷で、次のリセット相当の処理も成功する', () => {
+    // main.tsのinsertDiskBytes(): slots[slot] = { name, data } (同じUint8Array実体を保持)。
+    const slots = { fdd0: { name: 'a.xdf', data: new Uint8Array([1, 2, 3, 4]) } };
+    const image = { name: slots.fdd0.name, data: slots.fdd0.data };
+
+    // main.tsのworkerHotSwapFdd()相当(修正後)。
+    const payloadBytes = copyArrayBuffer(image.data);
+    simulatePostMessageTransfer(payloadBytes); // Workerへ実際に転送されたのと同じ効果
+
+    // 挿入後もslots[].dataは無傷(byteLengthが保たれ、sliceできる)。
+    expect(slots.fdd0.data.byteLength).toBe(4);
+    expect(() => slots.fdd0.data.buffer.slice(0)).not.toThrow();
+
+    // 次のリセット(main.tsのbootCore())が同じslots[].dataをinitialDisksとして
+    // proxy.init()へ渡す。init()はcopyArrayBuffer()を使うため、detachされていなければ成功する。
+    expect(() => copyArrayBuffer(slots.fdd0.data)).not.toThrow();
+  });
+
+  it('故障注入: 修正を戻す(toOwnedArrayBuffer経由)と、slots[].dataがdetachされ、次のリセットが実測どおりのエラーで失敗する', () => {
+    // 陽性対照。上のテストが「結線を見ている」ことの確認: 修正前の実装(toOwnedArrayBuffer)
+    // に差し替えると、呼び出し元(main.ts)が保持し続けるUint8Arrayがdetachされ、次のリセット
+    // が実測どおりのエラーで失敗することを確認する。これが確認できて初めて、上のテストが
+    // 本不具合を検出できると言える。
+    const slots = { fdd0: { name: 'a.xdf', data: new Uint8Array([1, 2, 3, 4]) } };
+    const image = { name: slots.fdd0.name, data: slots.fdd0.data };
+
+    // 修正前の実装(バグ): toOwnedArrayBuffer()はバッファ全体を覆うUint8Arrayをコピーせず
+    // そのままbufferを返すため、それがtransferされるとimage.data(=slots.fdd0.data)本体が
+    // detachされる。
+    const payloadBytes = toOwnedArrayBuffer(image.data);
+    simulatePostMessageTransfer(payloadBytes);
+
+    // slots[].dataは道連れでdetachされる。
+    expect(slots.fdd0.data.byteLength).toBe(0);
+
+    // 次のリセットでinit()側のcopyArrayBuffer()がdetach済みbufferに対して.slice()を呼び、
+    // 実測した通りのエラーで失敗する(利用者報告のalert文言と同じメッセージ)。
+    expect(() => copyArrayBuffer(slots.fdd0.data)).toThrow(
+      /Cannot perform ArrayBuffer\.prototype\.slice on a detached ArrayBuffer/,
+    );
+  });
+});
+
 describe('LocalCoreProxy: unserialize失敗時にエラーコードを握り潰さない', () => {
   it('host.unserialize()がfalseを返す場合、falseがそのまま透過する(以前の状態を握り潰した成功扱いにしない)', async () => {
     const host = createMockHost();
