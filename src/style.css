@@ -43,6 +43,16 @@
   box-sizing: border-box;
 }
 
+/* UAスタイルの `[hidden] { display: none }` は詳細度が低く、`display: flex` 等を
+ * 指定するauthorスタイル(.fd-slot, .fd-slot .icon-btn 等)に負けて、`el.hidden = true`
+ * にしても実際には消えないことがある(実測: #btn-reconnect-hostfs、続けて
+ * HDD(SASI)/SCSI-HDD/HostFS行の.fd-slot自体でも再発)。個別に上書きし続けると
+ * 直し漏れが起きるため、ここでhidden属性そのものを最優先(!important)にして
+ * 「hidden属性が付いたものは必ず消える」を保証する。 */
+[hidden] {
+  display: none !important;
+}
+
 html {
   height: 100%;
   /* iOS の overscroll(ラバーバンド)で覗く地色も body と揃える。html に色が無いと
