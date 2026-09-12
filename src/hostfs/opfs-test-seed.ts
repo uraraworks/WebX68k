@@ -28,12 +28,17 @@ function makeNumberedLines(totalBytes: number): string {
 }
 
 /**
- * OPFS の hostfs-test/ 配下へ検証用ファイル一式を作り、そのDirectoryHandleを返す。
+ * OPFS の hostfs-test/ (既定) 配下へ検証用ファイル一式を作り、そのDirectoryHandleを返す。
  * 既存のOPFS内容(前回実行分)は残っていてもよい(上書きされるため)。
+ *
+ * dirName: 使い方ページのスクリーンショット撮影用(`scripts/capture-help-shots.mjs`)に、
+ * 行に表示されるフォルダ名を`my-project`等の説明として自然な名前にしたいときだけ、
+ * DEV限定のURLパラメータ(`?hostfsDirName=`、`src/main.ts`参照)経由で渡す。
+ * 省略時は従来どおり`hostfs-test`。
  */
-export async function seedHostFsOpfsTest(): Promise<FileSystemDirectoryHandle> {
+export async function seedHostFsOpfsTest(dirName = 'hostfs-test'): Promise<FileSystemDirectoryHandle> {
   const opfsRoot = await navigator.storage.getDirectory();
-  const testRoot = await opfsRoot.getDirectoryHandle('hostfs-test', { create: true });
+  const testRoot = await opfsRoot.getDirectoryHandle(dirName, { create: true });
 
   await writeFile(testRoot, 'hello.txt', makeNumberedLines(3000));
   await writeFile(testRoot, 'readme.doc', 'HostFS opfs-test: readme.doc\r\n');

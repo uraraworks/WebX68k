@@ -23,6 +23,20 @@
 // 撮影後すぐに撤去する(IndexedDBのサンプル注入と同じ「直前に入れて直後に消す」作法)。
 // 撮影用プロファイルは毎回捨てるので、手元のブラウザ環境にもOPFSにも影響しない。
 //
+// HostFS(feature/hostfs)についても同様に、撮影用プロファイルは毎回まっさらで実フォルダを
+// 選ぶ操作は自動化できない(showDirectoryPickerはユーザー操作起点でしか開けない)。そこで
+// 既存のDEV限定URLパラメータ `?hostfs=opfs-test`(OPFSの`hostfs-test/`をそのままATTACHする、
+// src/main.tsのhostfsParamRaw参照)を使う。行に表示される名前が使い方ページの説明として
+// 不自然にならないよう、このスクリプト専用にDEV限定パラメータ `?hostfsDirName=` を追加した
+// (src/hostfs/opfs-test-seed.tsのseedHostFsOpfsTest()、src/main.tsのhostfsDirNameParam参照。
+// 本番ビルドではimport.meta.env.DEVがfalseになりデッドコード除去されるため、distには残らない
+// —— 詳細は本ファイル末尾のコメントと `npm run build` 後の `grep -r hostfsDirName dist/` 確認手順)。
+// 覚え書き(note)は自動化不要の実機能なので、鉛筆ボタン→編集ダイアログを実際に操作して付ける。
+// overview は「HostFSが組み込まれ、警告が出ていない」状態を見せたいため、同梱ディスクの
+// コピーへ実際に「HostFSを組み込む」処理(既存の検証プローブ`__webx68kDebug.
+// installHostFsOnBundled()`、DEV限定)を通してからFDD0へ挿入し、そのディスクで起動する
+// (「そのまま起動」ボタン、libraryショットの「組み込みボタン」と同じ処理の再利用)。
+//
 // 既知の落とし穴: headless だと requestAnimationFrame がスロットルされ、
 // エミュレータ画面が真っ黒なまま撮影されてしまう。そのため headless: false で
 // 起動し、bringToFront() でタブを前面に出したうえで、#screen canvas の
@@ -41,6 +55,11 @@ const OUT_DIR = new URL('../public/help/', import.meta.url).pathname;
 const REPO_ROOT = new URL('..', import.meta.url).pathname;
 // library/overview ショット用のSCSI検体ファイル名。説明ページに載っても不自然でない名前にする。
 const SCSI_SAMPLE_NAME = 'sample_scsi.hds';
+// HostFS(opfs-test)撮影用: 行に表示される名前と覚え書き。説明ページとして自然に見える
+// 架空の値にする(フルパスが分からない、という機能の説明と噛み合うよう、覚え書きに
+// Windows側のフルパスを書いた体にする)。
+const HOSTFS_DIR_NAME = 'my-project';
+const HOSTFS_NOTE = 'Win の D:\\dev\\my-project';
 
 /** 既存のスクリーンショットと同じ寸法になるビューポート(いずれも2倍解像度で保存する)。 */
 const VIEWPORT = { width: 900, height: 700, deviceScaleFactor: 2 };
@@ -308,6 +327,53 @@ async function removeFakeGamepad(page) {
 }
 
 /**
+ * HostFS(feature/hostfs)撮影用: 同梱システムディスクのコピーへ「HostFSを組み込む」を
+ * 実行し(既存の検証プローブ window.__webx68kDebug.installHostFsOnBundled()、DEV限定。
+ * ライブラリ行の「HostFSを組み込む」ボタンと同じ処理)、できたコピーをFDD0へ挿入する。
+ * 確認ダイアログ(confirm())はrun()側で登録した page.on('dialog') が自動acceptする前提。
+ * このディスクで起動すると、CONFIG.SYSにDEVICE=\HOSTFS.SYSが入っているため、起動画面に
+ * 割り当てバナーが出て、行の「⚠ HOSTFS.SYSが読み込まれていません」警告も出ない
+ * (overviewショットを「組み込み済みで正常につながっている」状態にするための下準備)。
+ */
+async function installHostFsOntoFdd0(page) {
+  const installed = await page.evaluate(async () => {
+    const dbg = window.__webx68kDebug;
+    if (!dbg?.installHostFsOnBundled) throw new Error('__webx68kDebug.installHostFsOnBundled not found');
+    return await dbg.installHostFsOnBundled();
+  });
+  if (!installed) throw new Error('installHostFsOnBundled() returned undefined (confirm dialog dismissed?)');
+  await page.evaluate(async (sourceKey) => {
+    const dbg = window.__webx68kDebug;
+    await dbg.storageProbeLoadFromLibrary(sourceKey, 'fdd0');
+  }, installed.sourceKey);
+}
+
+/**
+ * HostFS行の鉛筆ボタン(覚え書きを編集)を実際に操作して覚え書きを付ける。
+ * DEVフックではなく、利用者が使う本物のUI操作(ダイアログを開く→入力→保存)。
+ */
+async function setHostFsNote(page, note) {
+  await page.evaluate(() => {
+    const btn = document.getElementById('btn-edit-hostfs-note');
+    if (!btn) throw new Error('btn-edit-hostfs-note not found');
+    btn.click();
+  });
+  await sleep(300);
+  await page.evaluate((text) => {
+    const input = document.getElementById('hostfs-note-input');
+    if (!input) throw new Error('hostfs-note-input not found');
+    input.value = text;
+    input.dispatchEvent(new Event('input', { bubbles: true }));
+  }, note);
+  await page.evaluate(() => {
+    const btn = document.getElementById('hostfs-note-save');
+    if (!btn) throw new Error('hostfs-note-save not found');
+    btn.click();
+  });
+  await sleep(300);
+}
+
+/**
  * `scripts/_gen-scsi-blank.mts` を子プロセスとして呼び、1MiBのブランクSCSIイメージ(FAT16
  * フォーマット済み)を生成する(scripts/verify-scsi-persistence.mjs の genFixture() と同じ
  * 「生成スクリプトをvite-node経由で子プロセス呼び出し」パターン)。
@@ -432,12 +498,64 @@ async function run() {
       const page = await browser.newPage();
       await page.setViewport(VIEWPORT);
       await page.bringToFront();
+      // installHostFsOnBundled()(HostFS組み込み)はconfirm()を挟む。このページでは他に
+      // confirm()を伴う操作をしないため、以降ずっと自動acceptしてよい。
+      page.on('dialog', (dialog) => {
+        dialog.accept().catch(() => {});
+      });
+      // ドライブ行の表示切替(feature/hostfs 追加分)はHDD(SASI)/SCSI-HDD/HostFSとも既定で
+      // 非表示。overview/menuショットにHDD/SCSI行も写す(alt文の説明と合わせる)ため、
+      // このプロファイル内だけ表示ONにしておく(本物の利用者のブラウザには影響しない)。
+      // main.tsはlocalStorageの値を起動時に一度だけ読むので、ページ読み込み前に
+      // evaluateOnNewDocumentで仕込む必要がある。HostFS行自体はフォルダ接続で自動的に
+      // 出るため、ここではHDD/SCSIだけ設定する。
+      await page.evaluateOnNewDocument(() => {
+        try {
+          localStorage.setItem('webx68k.showHdd', 'true');
+          localStorage.setItem('webx68k.showScsi', 'true');
+        } catch {
+          // 無視(プライベートモード等でlocalStorageが使えない場合)
+        }
+      });
 
       // --- overlay: 起動前オーバーレイ ---
-      await page.goto(`${BASE_URL}/?lang=${lang}`, { waitUntil: 'networkidle2' });
+      // HostFS用パラメータ(?hostfs=opfs-test&hostfsDirName=)はDEVビルド限定の裏フラグで、
+      // 実際にHostFSがATTACHされるのは起動ボタンを押してbootCore()が呼ばれた瞬間なので、
+      // ここで付けておいても起動前オーバーレイの見た目には影響しない(以降のreloadでも
+      // 同じURLを保つため、overview撮影のタイミングまでこのまま持ち越す)。
+      await page.goto(
+        `${BASE_URL}/?lang=${lang}&hostfs=opfs-test&hostfsDirName=${HOSTFS_DIR_NAME}`,
+        { waitUntil: 'networkidle2' },
+      );
       await page.bringToFront();
       await sleep(1200);
       await shoot(page, '.console-card', `overlay${suffix}.png`);
+
+      // --- hostfs: 「つなぐ」ダイアログ(HostFS行のフォルダ接続モード選択+覚え書き欄) ---
+      // 実フォルダの選択(showDirectoryPicker)はユーザー操作起点でしか開けず自動化できない
+      // ため、モード選択ボタンは押さず、ダイアログを開いて覚え書き欄に記入した状態だけを
+      // 撮ってキャンセルで閉じる(接続前なのでHostFS行の表示切替状態に関係なく開ける)。
+      await page.evaluate(() => {
+        const btn = document.getElementById('btn-connect-hostfs');
+        if (!btn) throw new Error('btn-connect-hostfs not found');
+        btn.click();
+      });
+      await sleep(300);
+      await page.evaluate((note) => {
+        const input = document.getElementById('hostfs-mode-note');
+        if (!input) throw new Error('hostfs-mode-note not found');
+        input.value = note;
+        input.dispatchEvent(new Event('input', { bubbles: true }));
+      }, HOSTFS_NOTE);
+      await shootUnion(page, ['#hostfs-mode-backdrop .rom-modal'], `hostfs${suffix}.png`, 12, {
+        captureBeyondViewport: false,
+      });
+      await page.evaluate(() => {
+        const btn = document.getElementById('hostfs-mode-cancel');
+        if (!btn) throw new Error('hostfs-mode-cancel not found');
+        btn.click();
+      });
+      await sleep(300);
 
       // --- library: ディスクライブラリ(同梱システムディスク human302.xdf に加え、
       //     アーカイブ由来フォルダの見え方を説明どおり撮るため撮影直前だけサンプルを注入する) ---
@@ -463,6 +581,19 @@ async function run() {
       // --- filemanager: ファイル転送ダイアログ(対象はライブラリの human302.xdf) ---
       await clickToolbarButton(page, 'btn-file-manager');
       await sleep(800);
+      // このスクリプトは同じブラウザプロファイルをja/en両方の周回で使い回すため、
+      // 前の周回のoverviewショット(HostFSを組み込んだ同梱ディスクのコピーをライブラリへ
+      // 保存する)が残っていると、対象セレクトの既定選択(先頭の編集可能な項目)が
+      // そのコピーにずれてしまう(2026-09-12に実際に発覚。HostFSと無関係なこの節の絵に
+      // CONFIG.SYSが増えた同梱ディスクのコピーが写ってしまっていた)。この節はHostFSと
+      // 無関係なので、元々の(何も選ばれていない)FDD0(未挿入)の状態に固定し直してから撮る。
+      await page.evaluate(() => {
+        const select = document.querySelector('#file-manager-root .fm-target-select');
+        if (!select) throw new Error('fm-target-select not found');
+        select.selectedIndex = 0; // FDD0(未挿入) — 常に先頭のスロット項目
+        select.dispatchEvent(new Event('change', { bubbles: true }));
+      });
+      await sleep(400);
       const fmModal = await page.$('#file-manager-root .fm-modal');
       if (!fmModal) throw new Error('file manager modal not found');
       await fmModal.screenshot({ path: join(OUT_DIR, `filemanager${suffix}.png`) });
@@ -519,13 +650,18 @@ async function run() {
       await sleep(400);
       await removeFakeGamepad(page);
 
-      // --- overview: 「システムディスクで起動」でHuman68kを起動した実行中の画面 ---
+      // --- overview: HostFSを組み込んだ同梱ディスクのコピーで起動した実行中の画面 ---
+      // 「システムディスクで起動」(HOSTFS未組み込みの同梱ディスクそのまま)ではなく、
+      // 「HostFSを組み込む」→「そのまま起動」にする。CONFIG.SYSにDEVICE=\HOSTFS.SYSが
+      // 入っているため、起動画面に割り当てバナーが出て、行に「⚠ HOSTFS.SYSが読み込まれて
+      // いません」警告も出ない、組み込み済みの正常な状態を撮れる。
       await page.reload({ waitUntil: 'networkidle2' });
       await page.bringToFront();
       await sleep(1200);
+      await installHostFsOntoFdd0(page);
       await page.evaluate(() => {
-        const btn = document.getElementById('btn-boot-system');
-        if (!btn) throw new Error('btn-boot-system not found');
+        const btn = document.getElementById('btn-boot-plain');
+        if (!btn) throw new Error('btn-boot-plain not found');
         btn.click();
       });
       // まず何か描画され始めたか(真っ黒に固まっていないか)を短時間で確認し、
@@ -533,6 +669,23 @@ async function run() {
       // 起動メッセージ表示中の途中の絵で止まってしまうため(waitForBootPrompt参照)。
       await waitForScreenPainted(page, 40000);
       await waitForBootPrompt(page, 45000);
+      // HostFS(opfs-test)は起動時のbootCore()内でATTACHされる。覚え書きは実際のUI操作
+      // (鉛筆ボタン)で付ける。
+      await setHostFsNote(page, HOSTFS_NOTE);
+      // ガード: overviewショットが「組み込み済み・警告なし・覚え書き付き」の狙いどおりの
+      // 状態になっているかを確かめてから撮る(黙って違う絵を保存しないため)。
+      await page.evaluate((dirName) => {
+        const row = document.getElementById('slot-hostfs');
+        if (!row || row.hidden) throw new Error('hostfs row is not visible for overview shot');
+        const warning = document.getElementById('hostfs-warning');
+        if (warning && !warning.hidden) {
+          throw new Error('hostfs-warning is still shown (HOSTFS.SYS not detected) for overview shot');
+        }
+        const name = document.getElementById('name-hostfs');
+        if (!name || !name.textContent || !name.textContent.includes(dirName)) {
+          throw new Error(`hostfs row does not show the expected folder name: ${name?.textContent}`);
+        }
+      }, HOSTFS_DIR_NAME);
       await shoot(page, '.console-card', `overview${suffix}.png`);
 
       // --- menu: 「…」オーバーフローメニュー(overviewで起動済みのHuman68k画面を流用)。

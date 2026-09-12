@@ -1798,8 +1798,25 @@ WebX68kのHostFSはこの読み方に基づき、空き約1GBでどの欄もワ�
 ### ホスト側ファイル名の変換
 
 `src/hostfs/name-convert.ts`。ASCIIはそのまま、日本語等はCP932へ符号化。名前は
-18文字(8+10)まで、拡張子は3文字まで。ドットが2つ以上ある名前、Human68kで使えない
-文字を含む名前、CP932で表せない文字を含む名前は一覧に出さない。改行コードは変換しない。
+18文字(8+10)まで、拡張子は3文字まで(いずれもUnicode文字数とCP932変換後のバイト数の
+両方でこの上限を超えたら弾く)。次のいずれかに当てはまる名前も一覧に出さない:
+ドットが2つ以上/ドットで始まる(本体が空になるため)/制御文字または
+`" * + , / : ; < = > ? [ ] |`のいずれかを含む/CP932で表せない文字を含む。改行コードは
+変換しない。
+
+### 表示していない名前の集計(P2b追加分)
+
+`HostFolderFs`(`src/hostfs/host-folder-fs.ts`)は、`listDir()`のたびに変換できな
+かった名前を`rejectedNamesByDir`(ディレクトリ相対パス→名前配列)と
+`rejectedCountByDir`に積む。あるディレクトリを一覧し直すとそのディレクトリ分だけ
+最新の内容に置き換わり(0件なら`Map`から消す)、際限のない肥大を防ぐ。
+`getRejectedSummary()`が全ディレクトリ分を接続フォルダからの相対パス
+(`/サブフォルダ/名前`)にまとめてパス文字列順に返し、`REJECTED_PATHS_LIMIT`件を
+超える分は`totalCount`にだけ反映して`paths`からは切り詰める。Worker→ページの通知
+(`src/hostfs/worker-bridge.ts`の`getStatus()`)経由で`src/main.ts`の
+`updateHostFsUi()`がドライブ行に「N件の名前は表示していません」を出し、ツールチップ
+本文の組み立て(20行超は「ほかN件」にまとめる)は純粋関数
+`buildRejectedTooltipLines()`(`src/hostfs/rejected-tooltip.ts`)に切り出してある。
 
 ### 「このディスクにHostFSを組み込む」ボタン(P2b)
 

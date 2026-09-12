@@ -629,9 +629,9 @@ async function tryReattachHostFsFolder(): Promise<void> {
  * - `opfs-test`    : 読み取り専用でATTACH(既定。読み取り専用モードの実地確認に使う)。
  * - `opfs-test-rw` : 書き込み可能でATTACH(W2b: 書き込みAPIの実地確認に使う)。
  */
-async function setupHostFsOpfsTest(mode: HostFsConnectMode): Promise<void> {
+async function setupHostFsOpfsTest(mode: HostFsConnectMode, dirName?: string): Promise<void> {
   try {
-    const handle = await seedHostFsOpfsTest();
+    const handle = await seedHostFsOpfsTest(dirName);
     hostFsHandle = handle;
     hostFsMode = mode;
     resetHostFsUiStatus();
@@ -852,6 +852,12 @@ const urlWorkerMode = parsedWorkerMode ?? true;
 // DEVビルド限定にする(本番で他人のOPFSに勝手にファイルを作ったり、本物のフォルダの
 // 代わりにFakeFsへ固定されては困るため)。
 const hostfsParamRaw = import.meta.env.DEV ? new URLSearchParams(location.search).get('hostfs') : null;
+// help.htmlのスクリーンショット撮影(scripts/capture-help-shots.mjs)専用: opfs-test/
+// opfs-test-rwが作るOPFSディレクトリの名前を、行に表示される名前として自然なものに
+// 差し替えたいときだけ渡す。上のhostfsParamRawと同じ理由でDEVビルド限定。
+const hostfsDirNameParam = import.meta.env.DEV
+  ? new URLSearchParams(location.search).get('hostfsDirName')
+  : null;
 // urlWorkerModeが確定した直後にHostFS行の初回描画を行う(TDZの都合。updateHostFsUi自体の
 // 定義箇所のコメント参照)。
 updateHostFsUi();
@@ -4551,9 +4557,9 @@ async function bootCore(): Promise<void> {
     (globalThis as Record<string, unknown>).__webx68kHostFsMode = hostfsParamRaw === 'fake' ? 'fake' : 'real';
     await bootWorkerCore();
     if (hostfsParamRaw === 'opfs-test') {
-      await setupHostFsOpfsTest('read');
+      await setupHostFsOpfsTest('read', hostfsDirNameParam ?? undefined);
     } else if (hostfsParamRaw === 'opfs-test-rw') {
-      await setupHostFsOpfsTest('readwrite');
+      await setupHostFsOpfsTest('readwrite', hostfsDirNameParam ?? undefined);
     } else {
       await tryReattachHostFsFolder();
     }

@@ -210,6 +210,9 @@ drop targets).
   (boot code), so it can't boot on its own — boot Human68k from a floppy and
   use it as a data drive (confirmed on real hardware: booting the system
   disk picks it up as `C:`, and `DIR C:` reports "40779K Byte 使用可能").
+- **The HDD row is hidden by default.** Show it from "Show HDD (SASI)" in
+  the "Display" group of the "…" menu (it also appears automatically
+  whenever a disk is loaded).
 
 ### SCSI hard disk
 
@@ -246,6 +249,9 @@ be mounted at the same time.
   Worker holds an exclusive lock on it) or when it's **larger than 256MB**
   (the implementation loads the whole image into memory). A non-inserted
   SCSI image can still be read and written while running.
+- **The SCSI-HDD row is hidden by default.** Show it from "Show SCSI-HDD"
+  in the "Display" group of the "…" menu (it also appears automatically
+  whenever a disk is loaded).
 
 ### HostFS (expose a local folder as a drive)
 
@@ -277,14 +283,19 @@ controlled from the "HostFS" row below the SCSI row.
 - Supported on **Chrome-family browsers on PC and Android** (anything with
   `showDirectoryPicker`). **Not supported on iPhone (Safari) or Firefox.**
 - Host file names are converted to Human68k's 8.3 format (8-char name +
-  3-char extension, at most one dot); names over 18 characters, names with
-  more than one dot, or names containing characters not representable in
-  CP932 are omitted. Line endings are **not** converted — bytes are passed
-  through as-is.
+  3-char extension, at most one dot). A name is omitted if any of: extension
+  4+ characters, name over 18 bytes (Japanese characters are 2 bytes each),
+  more than one dot, starts with a dot, contains one of
+  `" * + , / : ; < = > ? [ ] |`, or contains a character not representable
+  in CP932 (spaces are fine). Line endings are **not** converted — bytes are
+  passed through as-is.
 - The "Install HostFS" button writes `HOSTFS.SYS` to the disk's root and
   adds `DEVICE = \HOSTFS.SYS` to `CONFIG.SYS` (appended if it exists,
   created new otherwise; it won't add the line twice). It's available on
-  HDD rows and FD rows that can be handled as FAT12/16.
+  HDD rows and FD rows that can be handled as FAT12/16. At boot, the guest
+  prints "`HostFS version 1.00 (WebX68k)`" followed by a Japanese line
+  meaning "host folder assigned to drive C:", naming whichever drive letter
+  was actually assigned (e.g. `D:` if a HDD is present).
 - **The bundled system disk (`human302.xdf`) is never modified** — pressing
   the button on its row makes a copy in the library first and installs
   onto that copy.

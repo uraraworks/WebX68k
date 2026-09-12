@@ -443,7 +443,10 @@
               ライブラリのダイアログ</strong>に落とした場合は、スロットには入れずライブラリへの
               登録だけを行います(挿入先はこれから選ぶ、という文脈のため)。
             </p>
-            <img src="./help/overview.png" alt="プレイヤー全体像。上部にツールバー、下部にFDD0/FDD1/HDD/SCSIのスロット行" />
+            <img
+              src="./help/overview.png"
+              alt="プレイヤー全体像。上部にツールバー、下部にFDD0/FDD1/HDD/SCSI/HostFSのスロット行。HostFS行にはフォルダ名と覚え書きが表示されている"
+            />
             <ul>
               <li>FDD対応拡張子: <code>.xdf</code> <code>.dim</code> <code>.d88</code> <code>.hdm</code> <code>.img</code> <code>.2hd</code></li>
               <li>HDD対応拡張子: <code>.hdf</code> <code>.dup</code></li>
@@ -490,7 +493,10 @@
               file(s) into the library without inserting into any slot, since opening the library
               means you're about to choose a destination yourself.
             </p>
-            <img src="./help/overview-en.png" alt="Player overview with the toolbar on top and FDD0/FDD1/HDD/SCSI slot rows below" />
+            <img
+              src="./help/overview-en.png"
+              alt="Player overview with the toolbar on top and FDD0/FDD1/HDD/SCSI/HostFS slot rows below; the HostFS row shows a folder name and a note"
+            />
             <ul>
               <li>FDD extensions: <code>.xdf</code> <code>.dim</code> <code>.d88</code> <code>.hdm</code> <code>.img</code> <code>.2hd</code></li>
               <li>HDD extensions: <code>.hdf</code> <code>.dup</code></li>
@@ -551,6 +557,11 @@
               (システムディスクで起動すると <code>C:</code> として認識されます)。
               いずれもHDDの作成・セットができるのは起動前だけです。
             </p>
+            <div class="note-box">
+              <strong>HDD行が見当たらないとき:</strong> ドライブ行のHDD(SASI)は既定で
+              非表示です。「…」メニューの「表示」グループの「HDD（SASI）を表示」トグルで
+              出せます(ディスクが入っていれば自動的に表示されます)。
+            </div>
           </div>
           <div class="lang-en">
             <h2>Disk Library</h2>
@@ -579,6 +590,11 @@
               Human68k from a floppy and use it as a data drive (the system disk picks it up as
               <code>C:</code>). Creating or setting a HDD is only possible before boot.
             </p>
+            <div class="note-box">
+              <strong>Don't see the HDD row?</strong> The HDD (SASI) drive row is hidden by
+              default. Show it from "Show HDD (SASI)" in the "Display" group of the "…" menu (it
+              also appears automatically whenever a disk is loaded).
+            </div>
           </div>
         </section>
 
@@ -591,6 +607,11 @@
               挿した状態で使えます。画面下部のSCSIスロット行へドラッグ&ドロップするか、
               挿入ボタン、または「ライブラリから挿入」から読み込ませます。
             </p>
+            <div class="note-box">
+              <strong>SCSI-HDD行が見当たらないとき:</strong> ドライブ行のSCSI-HDDは既定で
+              非表示です。「…」メニューの「表示」グループの「SCSI-HDDを表示」トグルで
+              出せます(ディスクが入っていれば自動的に表示されます)。
+            </div>
             <div class="note-box">
               <strong>SCSIからは起動できません。</strong> WebX68kのSCSI実装はHLE(高水準
               エミュレーション)で、SCSIボードROMの「起動エントリ」を実装していません。
@@ -637,6 +658,11 @@
               used at the same time. Drag & drop a file onto the SCSI slot row at the bottom of the
               player, use its insert button, or "Insert from Library".
             </p>
+            <div class="note-box">
+              <strong>Don't see the SCSI-HDD row?</strong> The SCSI-HDD drive row is hidden by
+              default. Show it from "Show SCSI-HDD" in the "Display" group of the "…" menu (it
+              also appears automatically whenever a disk is loaded).
+            </div>
             <div class="note-box">
               <strong>You can't boot from SCSI.</strong> WebX68k's SCSI implementation is HLE
               (high-level emulation) and doesn't implement the SCSI board ROM's "boot entry
@@ -689,6 +715,16 @@
               フォルダの中身をそのまま<code>dir</code>や<code>type</code>、コピーで
               扱えます。画面下部のSCSI行の下にある「HostFS」行から操作します。
             </p>
+            <img
+              src="./help/hostfs.png"
+              alt="「フォルダをつなぐ」ダイアログ。読み取り専用/書き込みも許可の選択ボタンと、覚え書き欄に記入した状態"
+            />
+            <div class="note-box">
+              <strong>HostFS行が見当たらないとき:</strong> ドライブ行のHostFSは既定で
+              非表示です。「…」メニューの「表示」グループの「HostFSを表示」トグルで
+              出せます(フォルダがつながっていれば、再接続待ちの状態でも自動的に
+              表示されます)。
+            </div>
             <ol>
               <li>
                 「つなぐ」ボタンを押すと、読み取り専用/書き込みも許可のどちらでつなぐか選ぶ
@@ -729,8 +765,11 @@
               <strong>「HostFSを組み込む」</strong>ボタンを押すと、その行のディスクへ
               自動的に<code>HOSTFS.SYS</code>を書き込み、CONFIG.SYSにこの行を追加します
               (すでにCONFIG.SYSがあれば末尾に追記、無ければ新規作成。同じ行が既にあれば
-              二重には追加しません)。起動すると、起動画面に実際に割り当てられた
-              ドライブ名(<code>C:</code>等)が案内表示されます。古い版のHOSTFS.SYSで
+              二重には追加しません)。起動すると、起動画面に
+              「<code>HostFS version 1.00 (WebX68k)</code>」
+              「<code>ホストのフォルダを C: に割り当てました</code>」のように、実際に
+              割り当てられたドライブ名(HDDがあれば<code>D:</code>等になることもあります)
+              が案内表示されます。古い版のHOSTFS.SYSで
               組み込み済みのディスクへ「HostFSを組み込む」を再度押すと、HOSTFS.SYS
               だけ新しい版に置き換わります(CONFIG.SYSの行は増えません)。
             </p>
@@ -751,8 +790,10 @@
             </p>
             <p>
               ホスト側のファイル名は、Human68kの8.3形式(名前8文字+拡張子3文字、ドットは
-              1つまで)に変換して見せます。18文字を超える名前、ドットが2つ以上ある名前、
-              CP932で表せない文字を含む名前は一覧に出ません。改行コードは変換せず、
+              1つまで)に変換して見せます。次のいずれかに当てはまる名前は一覧に出ません。
+              拡張子が4文字以上/名前が18バイト超(日本語は1文字2バイト)/ドットが2つ以上/
+              ドットで始まる/<code>" * + , / : ; &lt; = &gt; ? [ ] |</code>のいずれかを含む/
+              CP932で表せない文字を含む(空白は使えます)。改行コードは変換せず、
               ホスト上のバイト列をそのまま渡します。
             </p>
             <p>接続したフォルダのハンドルはブラウザに保存され、「再接続」で次回も使えます。</p>
@@ -779,8 +820,8 @@
               相対パス付き(<code>/サブフォルダ/名前</code>の形、1行に1つ)で確認できます
               (最大20行、それ以上は「ほかN件」)。あるフォルダをもう一度一覧すると、
               そのフォルダの分だけ最新の内容に入れ替わります。外れる条件は本節の
-              上記のとおり(名前が18バイト超、ドットが2つ以上、CP932で表せない文字を
-              含む、拡張子が4文字以上など)です。
+              上記のとおりです(拡張子が4文字以上/名前が18バイト超/ドットが2つ以上/
+              ドットで始まる/使えない記号を含む/CP932で表せない文字を含む)。
             </p>
           </div>
           <div class="lang-en">
@@ -791,6 +832,16 @@
               <code>dir</code>, <code>type</code>, and copy files straight out of that folder.
               Use the "HostFS" row below the SCSI row at the bottom of the player.
             </p>
+            <img
+              src="./help/hostfs-en.png"
+              alt="The 'Connect a folder' dialog: read-only / allow-writes choice buttons, with a note filled in"
+            />
+            <div class="note-box">
+              <strong>Don't see the HostFS row?</strong> The HostFS drive row is hidden by
+              default. Show it from "Show HostFS" in the "Display" group of the "…" menu (it also
+              appears automatically whenever a folder is connected, including a pending
+              reconnect).
+            </div>
             <ol>
               <li>
                 Click "Connect" — a dialog asks whether to connect read-only or with writes
@@ -828,8 +879,11 @@
               each disk library row (HDD, or an FD that can be handled as FAT12/16) writes
               <code>HOSTFS.SYS</code> to that disk and adds this line to CONFIG.SYS
               automatically (appended if CONFIG.SYS already exists, created new otherwise; it
-              won't be added twice if the line is already there). At boot, the startup screen
-              shows the drive letter that was actually assigned (e.g. <code>C:</code>). Pressing
+              won't be added twice if the line is already there). At boot, the startup screen shows
+              "<code>HostFS version 1.00 (WebX68k)</code>" followed by a Japanese line meaning
+              "host folder assigned to drive C:" (the driver's messages are Japanese regardless of
+              this page's language), naming the drive letter that was actually assigned — it can be
+              <code>D:</code>, etc., if an HDD is present. Pressing
               "Install HostFS" again on a disk that already has an older HOSTFS.SYS replaces just
               that file with the new version (the CONFIG.SYS line is not duplicated).
             </p>
@@ -851,9 +905,11 @@
             </p>
             <p>
               Host file names are converted to Human68k's 8.3 format (8-character name + 3-character
-              extension, at most one dot) before being shown. Names longer than 18 characters,
-              names with more than one dot, and names containing characters that can't be
-              represented in CP932 are omitted from listings. Line endings are not converted — the
+              extension, at most one dot) before being shown. A name is omitted from listings if
+              any of the following hold: extension is 4+ characters / name is over 18 bytes
+              (Japanese characters are 2 bytes each) / more than one dot / starts with a dot /
+              contains any of <code>" * + , / : ; &lt; = &gt; ? [ ] |</code> / contains a character
+              not representable in CP932 (spaces are fine). Line endings are not converted — the
               host's byte stream is passed through as-is.
             </p>
             <p>The connected folder's handle is remembered by the browser; use "Reconnect" next time.</p>
@@ -878,8 +934,9 @@
               to the connected folder (<code>/subfolder/name</code>, one per line; up to 20 lines,
               with "N more" beyond that). Listing a given folder again replaces just that folder's
               entries with the latest contents. The conditions for being dropped are the same as
-              described above in this section (name over 18 bytes, more than one dot, characters that
-              don't fit CP932, extension over 3 characters, etc.).
+              described above in this section (extension 4+ characters, name over 18 bytes, more
+              than one dot, starts with a dot, a disallowed symbol, or a character that doesn't fit
+              CP932).
             </p>
           </div>
         </section>
