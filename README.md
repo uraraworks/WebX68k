@@ -253,14 +253,27 @@ HostFS lets a folder you pick in the browser appear to the guest as a
 single drive (e.g. `C:`), without going through a disk image. It's
 controlled from the "HostFS" row below the SCSI row.
 
-1. Click "Connect" and pick the folder to expose.
+1. Click "Connect" — a dialog asks whether to connect **read-only** or
+   **with writes allowed** — then pick the folder to expose.
 2. Install HostFS onto the disk (FD/HDD) you want to boot, using the
    **"Install HostFS"** button on that disk's row in the Disk Library.
 3. Reload the page if needed, then boot.
 4. From the guest, use it like `dir c:`.
 
-- **Read-only** — the guest cannot create, overwrite, or delete files in
-  the folder.
+- **Writes only happen if you chose "allow writes" when connecting.** With
+  a read-only connection, creating, overwriting, deleting, renaming, or
+  changing attributes of a file all fail (the guest sees DOS errors such as
+  "write protected").
+- **Deletes and overwrites are applied directly — there is no trash.** A
+  file removed with `del`, or content overwritten via `copy` / `echo >`,
+  cannot be recovered.
+- Written content is flushed to the real file **only when the file is
+  closed** — it doesn't appear on the host side while still open/mid-write.
+- Timestamps and attributes (e.g. the read-only flag) are **not** stored on
+  the host: `_FILEDATE` (get/set a file's date/time) always fails (`-6`).
+  Renaming a **folder** (`ren`) also fails on browsers that don't support
+  the File System Access API's directory `move()` (renaming a file works
+  regardless).
 - Supported on **Chrome-family browsers on PC and Android** (anything with
   `showDirectoryPicker`). **Not supported on iPhone (Safari) or Firefox.**
 - Host file names are converted to Human68k's 8.3 format (8-char name +

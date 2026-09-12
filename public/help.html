@@ -690,7 +690,10 @@
               扱えます。画面下部のSCSI行の下にある「HostFS」行から操作します。
             </p>
             <ol>
-              <li>「つなぐ」ボタンでフォルダ選択ダイアログを開き、見せたいフォルダを選ぶ。</li>
+              <li>
+                「つなぐ」ボタンを押すと、読み取り専用/書き込みも許可のどちらでつなぐか選ぶ
+                ダイアログが出るので選んでからフォルダを選ぶ。
+              </li>
               <li>
                 起動したいディスク(FD/HDD)に、下記の「組み込みボタン」でHostFSを組み込む。
               </li>
@@ -698,8 +701,26 @@
               <li>起動後、ゲスト側で <code>dir c:</code> のように使う。</li>
             </ol>
             <div class="note-box">
-              <strong>読み取り専用です。</strong> ゲストからフォルダの中身を書き換えることは
-              できません(ファイルの新規作成・上書き・削除は不可)。
+              <strong>書き込みは、つなぐときに「書き込みも許可」を選んだときだけ行えます。</strong>
+              読み取り専用でつないだ場合、ファイルの新規作成・上書き・削除・改名・
+              属性変更はすべて失敗します(ゲストには「書き込み禁止です」等のエラーとして
+              表示されます)。
+            </div>
+            <div class="note-box">
+              <strong>削除・上書きはそのまま反映されます(ゴミ箱はありません)。</strong>
+              <code>del</code>で消したファイルや、<code>copy</code>・
+              <code>echo &gt;</code>等で上書きした内容は元に戻せません。
+            </div>
+            <div class="note-box">
+              書き込んだ内容は、<strong>ファイルを閉じたとき</strong>にまとめてホスト側の
+              実体へ反映されます(開いたまま・書き込んだままではホスト側にまだ現れません)。
+            </div>
+            <div class="note-box">
+              日時・属性(読み取り専用フラグ等)はホスト側に保存されません。
+              <code>_FILEDATE</code>(ファイルの日時取得・設定)は常に失敗(-6)します。
+              また、フォルダの改名(<code>ren</code>)は、ブラウザがフォルダの
+              改名操作(File System Access APIの<code>move()</code>)に対応していない環境では
+              失敗します(ファイルの改名は対応環境を問わず行えます)。
             </div>
             <p>
               ゲストがHostFSを使うには、起動ディスクのCONFIG.SYSに
@@ -742,14 +763,35 @@
               Use the "HostFS" row below the SCSI row at the bottom of the player.
             </p>
             <ol>
-              <li>Click "Connect" to open the folder picker and choose the folder to expose.</li>
+              <li>
+                Click "Connect" — a dialog asks whether to connect read-only or with writes
+                allowed — then choose the folder to expose.
+              </li>
               <li>Install HostFS onto the disk (FD/HDD) you want to boot, using the button below.</li>
               <li>(If needed) reload the page, then boot.</li>
               <li>After boot, use it from the guest with e.g. <code>dir c:</code>.</li>
             </ol>
             <div class="note-box">
-              <strong>Read-only.</strong> The guest cannot modify the folder's contents (no
-              creating, overwriting, or deleting files).
+              <strong>Writes only happen if you chose "allow writes" when connecting.</strong>
+              If connected read-only, creating, overwriting, deleting, renaming, or changing
+              attributes of a file all fail (the guest sees errors such as "write protected").
+            </div>
+            <div class="note-box">
+              <strong>Deletes and overwrites are applied directly — there is no trash.</strong>
+              A file removed with <code>del</code>, or content overwritten via
+              <code>copy</code> / <code>echo &gt;</code>, cannot be recovered.
+            </div>
+            <div class="note-box">
+              Written content is only flushed to the real file <strong>when the file is
+              closed</strong> — it does not appear on the host side while the file is still
+              open or mid-write.
+            </div>
+            <div class="note-box">
+              Timestamps and attributes (e.g. read-only flag) are not stored on the host.
+              <code>_FILEDATE</code> (get/set the file's date/time) always fails (-6).
+              Renaming a folder (<code>ren</code>) also fails on browsers that don't support
+              the File System Access API's directory <code>move()</code> (renaming a file works
+              regardless of that).
             </div>
             <p>
               For the guest to use HostFS, the boot disk's CONFIG.SYS needs the line

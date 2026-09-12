@@ -29,12 +29,21 @@ import { readU32BE, readI32BE, writeI32BE, writeU16BE, readU8 } from './guest-me
 import { decodeNamests, decodeCdPath } from './namests';
 import { filbufPayload, FILBUF_WRITE_OFFSET, type FilbufEntry } from './filbuf';
 import type { HostFileSystem, HostFsFileEntry } from './filesystem';
+import { FS_OK } from './filesystem';
 
 // $41 = cd(カレントディレクトリの変更、master側C11実験で解読・親からの指示書で確定)。
 // +14 = パス(_NAMESTS全体ではなく、区切り$09・NUL終端のパス部分だけの生バッファ。
 // namests.tsのdecodeCdPath参照)。相対パス・'..'はHuman68k側で絶対パスへ解決済みで
 // 届くため、ドライバ(TS)側でカレントディレクトリを持つ必要は無い。
 const CMD_CD = 0x41;
+// --- W2b: 書き込み系(親からの指示書・master側remote-probe C12実験で確定) ---
+const CMD_MKDIR = 0x42; // _MKDIR: +14=_NAMESTS
+const CMD_RMDIR = 0x43; // _RMDIR: +14=_NAMESTS
+const CMD_RENAME = 0x44; // _RENAME: +14=元の名前の_NAMESTS、+18=新しい名前の_NAMESTS
+const CMD_DELETE = 0x45; // _DELETE: +14=_NAMESTS
+const CMD_CHMOD = 0x46; // _CHMOD: +13=属性($FFなら取得)、+14=_NAMESTS
+const CMD_CREATE = 0x49; // _CREATE/_NEWFILE共用: +13=属性、+14=_NAMESTS、+18=フラグ(入力)、+22=FCB
+const CMD_WRITE = 0x4d; // _WRITE: +14=バッファ、+18=長さ(入力)/書けたバイト数(出力)、+22=FCB
 const CMD_SEARCH_FIRST = 0x47;
 const CMD_SEARCH_NEXT = 0x48;
 const CMD_FREE_SPACE = 0x50;
@@ -55,14 +64,13 @@ const VOLUME_LABEL_ATTR = 0x08;
 
 const DOS_ERR_NOT_FOUND = -2;
 const DOS_ERR_NO_MORE_FILES = -18;
-/**
- * 「書き込み禁止です」(PRO-68Kマニュアルp.71)。書き込み系コマンドの番号は
- * 今回未確定のため、ディスパッチャ内では未使用のままexportだけしておく
- * (未知コマンドが実際に書き込み系だと判明した時点で、専用caseから使う)。
- */
+/** 「書き込み禁止です」(PRO-68Kマニュアルp.71)。読み取り専用モードでの書き込み系コマンドに使う。 */
 export const DOS_ERR_WRITE_PROTECTED = -19;
 const DOS_ERR_DIR_NOT_FOUND = -3; // 「ディレクトリが見つかりません」(cd、親からの指示書のとおり)
 const DOS_ERR_CANT_SEEK = -25; // 「指定の位置にはシークできません」(PRO-68Kマニュアルp.71)
+
+const ATTR_DIRECTORY = 0x10; // _CHMOD取得・$44(rename)のisDir判定に使う(host-folder-fs.tsと同じ値)。
+const CHMOD_GET_ATTR = 0xff; // $46: +13がこの値のときは取得(それ以外は設定)。
 
 const SEEK_ORIGIN_START = 0;
 const SEEK_ORIGIN_CURRENT = 1;
@@ -101,9 +109,19 @@ interface DirSearchState {
   index: number;
 }
 
-interface FcbReadState {
+/**
+ * W2b: $4a(開く)/$49(作る)いずれの経路で開いても、以後の$4c(読む)/$4d(書く)/$4e(シーク)は
+ * 同じローカルバッファ(content)に対して行う。書き込みはこのバッファへ直接反映し、
+ * $4b(閉じる)のときだけ dirty なら実体へ反映する(親からの指示書どおり「閉じたときに
+ * まとめて反映」)。path/name/ext は close時にfs.openWrite()を呼び直すために持つ。
+ */
+interface FcbState {
+  path: string;
+  name: string;
+  ext: string;
   content: Uint8Array;
   pos: number;
+  dirty: boolean;
 }
 
 type PendingOperation =
@@ -120,12 +138,24 @@ type PendingOperation =
       kind: 'open';
       addr: number;
       fcbPtr: number;
+      path: string;
+      name: string;
+      ext: string;
       content?: Uint8Array | null;
     }
   | {
       kind: 'cd';
       addr: number;
       exists?: boolean;
+    }
+  | {
+      // W2b: 書き込み系コマンド(mkdir/rmdir/rename/delete/chmod/create/close)共通の
+      // 非同期完了待ち。finishは結果(戻り値、あるいはFS_OK/DOSエラー)を受け取り、
+      // ヘッダへの書き込み・fcbStates更新など各コマンド固有の後処理を行う。
+      kind: 'async';
+      addr: number;
+      finish: (result: number) => void;
+      result?: number;
     };
 
 /** 観測用カウンタ。probeのjson(allLogs)へ載せる値の裏取り用に外から読める。 */
@@ -140,7 +170,7 @@ export class HostFsDispatcher {
   private readonly mem: GuestMemory;
   private readonly fs: HostFileSystem;
   private readonly dirStates = new Map<number, DirSearchState>(); // key: filbufPtr
-  private readonly fcbStates = new Map<number, FcbReadState>(); // key: FCBポインタ
+  private readonly fcbStates = new Map<number, FcbState>(); // key: FCBポインタ
   private readonly seenUnknownCommands = new Set<number>();
   private pending: PendingOperation | null = null;
   /**
@@ -191,6 +221,24 @@ export class HostFsDispatcher {
       if (isPending) this.stats.pendingReturnedCount++;
       return isPending;
     }
+    if (cmd === CMD_CLOSE) {
+      // W2b: dirty(書き込みあり)なら実体反映が非同期になるため、保留経路へ回す。
+      const isPending = this.handleClose(addr);
+      if (isPending) this.stats.pendingReturnedCount++;
+      return isPending;
+    }
+    if (
+      cmd === CMD_MKDIR ||
+      cmd === CMD_RMDIR ||
+      cmd === CMD_RENAME ||
+      cmd === CMD_DELETE ||
+      cmd === CMD_CHMOD ||
+      cmd === CMD_CREATE
+    ) {
+      const isPending = this.handleWriteCommand(cmd, addr);
+      if (isPending) this.stats.pendingReturnedCount++;
+      return isPending;
+    }
 
     switch (cmd) {
       case CMD_SEARCH_NEXT:
@@ -202,8 +250,8 @@ export class HostFsDispatcher {
       case CMD_READ:
         this.handleRead(addr);
         break;
-      case CMD_CLOSE:
-        this.handleClose(addr);
+      case CMD_WRITE:
+        this.handleWrite(addr);
         break;
       case CMD_SEEK:
         this.handleSeek(addr);
@@ -247,10 +295,19 @@ export class HostFsDispatcher {
 
     if (this.pending.kind === 'open') {
       if (this.pending.content === undefined) return true;
-      const { addr, fcbPtr, content } = this.pending;
+      const { addr, fcbPtr, path, name, ext, content } = this.pending;
       this.pending = null;
       this.stats.pollCompletedCount++;
-      this.finishOpen(addr, fcbPtr, content);
+      this.finishOpen(addr, fcbPtr, path, name, ext, content);
+      return false;
+    }
+
+    if (this.pending.kind === 'async') {
+      if (this.pending.result === undefined) return true;
+      const { finish, result } = this.pending;
+      this.pending = null;
+      this.stats.pollCompletedCount++;
+      finish(result);
       return false;
     }
 
@@ -261,6 +318,27 @@ export class HostFsDispatcher {
     this.stats.pollCompletedCount++;
     this.finishCd(addr, exists);
     return false;
+  }
+
+  /**
+   * W2b: 書き込み系コマンド共通の非同期完了待ちを登録する。promiseが解決した"その場"で
+   * 完了処理まで行う(既存のsearch/open/cdと同じ流儀。pollを外部から呼ばれるのを待たない)。
+   * finishは、成功時の戻り値(FS_OK/エントリの属性など)とDOSエラー(負数)の両方を受け取り、
+   * ヘッダ+18への書き込みや、必要ならfcbStatesの更新まで行う。
+   */
+  private beginAsync(addr: number, promise: Promise<number>, finish: (result: number) => void): boolean {
+    const pending: PendingOperation = { kind: 'async', addr, finish };
+    this.pending = pending;
+    promise.then((result) => {
+      // 別のrequest()が割り込んでいたら(通常は起きない想定)、古い結果は捨てる。
+      if (this.pending !== pending) return;
+      pending.result = result;
+      this.pending = null;
+      this.stats.pollCompletedCount++;
+      finish(result);
+      this.notifyComplete?.();
+    });
+    return true;
   }
 
   /** $47: 検索・初回。ボリュームラベル検索は同期でエラーを返す。 */
@@ -388,33 +466,48 @@ export class HostFsDispatcher {
     writeI32BE(this.mem, addr + HDR_FILBUF_PTR_OFFSET, availableBytes);
   }
 
-  /** $4a: 開く。ワイルドカード無しの厳密一致。非同期(内容取得までpoll待ち)。 */
+  /**
+   * $4a: 開く。ワイルドカード無しの厳密一致。非同期(内容取得までpoll待ち)。
+   * 実測どおりヘッダに読み書きのモードは載っていない(+13は0)ため、開いたファイルは
+   * 常に読み書き両用として扱う(親からの指示書のとおり)。以後の$4c/$4d/$4eは、
+   * ここで読み込んだ内容をそのままローカルバッファ(FcbState.content)として使い回す。
+   */
   private handleOpen(addr: number): boolean {
     const namestsPtr = readU32BE(this.mem, addr + HDR_ARG_PTR_OFFSET);
     const fcbPtr = readU32BE(this.mem, addr + HDR_FCB_PTR_OFFSET);
     const namests = decodeNamests(this.mem.read(namestsPtr, 88));
+    const path = namests.path;
+    const name = namests.name.toUpperCase();
+    const ext = namests.ext.toUpperCase();
 
-    const pending: PendingOperation = { kind: 'open', addr, fcbPtr };
+    const pending: PendingOperation = { kind: 'open', addr, fcbPtr, path, name, ext };
     this.pending = pending;
 
-    this.fs.readFile(namests.path, namests.name.toUpperCase(), namests.ext.toUpperCase()).then((content) => {
+    this.fs.readFile(path, name, ext).then((content) => {
       if (this.pending !== pending) return;
       pending.content = content;
       this.pending = null;
       this.stats.pollCompletedCount++;
-      this.finishOpen(addr, fcbPtr, content ?? null);
+      this.finishOpen(addr, fcbPtr, path, name, ext, content ?? null);
       this.notifyComplete?.();
     });
 
     return true;
   }
 
-  private finishOpen(addr: number, fcbPtr: number, content: Uint8Array | null): void {
+  private finishOpen(
+    addr: number,
+    fcbPtr: number,
+    path: string,
+    name: string,
+    ext: string,
+    content: Uint8Array | null,
+  ): void {
     if (content === null) {
       writeI32BE(this.mem, addr + HDR_FILBUF_PTR_OFFSET, DOS_ERR_NOT_FOUND);
       return;
     }
-    this.fcbStates.set(fcbPtr, { content, pos: 0 });
+    this.fcbStates.set(fcbPtr, { path, name, ext, content, pos: 0, dirty: false });
     writeI32BE(this.mem, addr + HDR_FILBUF_PTR_OFFSET, 0);
   }
 
@@ -467,17 +560,207 @@ export class HostFsDispatcher {
     writeI32BE(this.mem, addr + HDR_FILBUF_PTR_OFFSET, n);
   }
 
-  /** $4b: 閉じる。同期。 */
-  private handleClose(addr: number): void {
+  /**
+   * $4d: 書く。同期(実I/Oは行わず、開いている(または$49で作った)ファイルのローカル
+   * バッファへ反映するだけ。実体への反映は$4b(閉じる)でまとめて行う。親からの指示書の
+   * とおり、読み取り専用モードならこのFCBが何であれ-19を返す)。
+   * +14=バッファ、+18=長さ(入力)→書けたバイト数(出力)、+22=FCB。
+   */
+  private handleWrite(addr: number): void {
+    const bufPtr = readU32BE(this.mem, addr + HDR_ARG_PTR_OFFSET);
+    const reqLen = readU32BE(this.mem, addr + HDR_FILBUF_PTR_OFFSET);
     const fcbPtr = readU32BE(this.mem, addr + HDR_FCB_PTR_OFFSET);
     const state = this.fcbStates.get(fcbPtr);
+    if (!state) {
+      // 開いていないFCBへの書き込み: -2(ファイルが見つからない)で安全側に倒す。
+      writeI32BE(this.mem, addr + HDR_FILBUF_PTR_OFFSET, DOS_ERR_NOT_FOUND);
+      return;
+    }
+    if (!this.fs.isWritable()) {
+      writeI32BE(this.mem, addr + HDR_FILBUF_PTR_OFFSET, DOS_ERR_WRITE_PROTECTED);
+      return;
+    }
+    const data = this.mem.read(bufPtr, reqLen);
+    const end = state.pos + reqLen;
+    if (end > state.content.length) {
+      const grown = new Uint8Array(end); // 0埋め(伸ばした分)
+      grown.set(state.content);
+      state.content = grown;
+    }
+    state.content.set(data, state.pos);
+    state.pos += reqLen;
+    state.dirty = true;
+    writeI32BE(this.mem, addr + HDR_FILBUF_PTR_OFFSET, reqLen);
+  }
+
+  /**
+   * $4b: 閉じる。書き込みが無ければ同期即完了。書き込みがあれば(dirty)、
+   * fs.openWrite()→write()→close()で実体へ反映してから完了する(親からの指示書の
+   * とおり「閉じたときにまとめて反映」)。反映は非同期なので、既存の保留→ポーリングの
+   * 経路(beginAsync)をそのまま使う。
+   */
+  private handleClose(addr: number): boolean {
+    const fcbPtr = readU32BE(this.mem, addr + HDR_FCB_PTR_OFFSET);
+    const state = this.fcbStates.get(fcbPtr);
+    this.fcbStates.delete(fcbPtr);
     if (state) {
       // 検証用(probe): シークせずに最後まで読み切った場合、この値が元ファイルの
       // サイズと一致するはず。type c:hello.txtが3000バイト全部出るかの裏取りに使う。
-      console.log(`[HostFS] close: pos=${state.pos} content=${state.content.length}バイト`);
+      console.log(`[HostFS] close: pos=${state.pos} content=${state.content.length}バイト dirty=${state.dirty}`);
     }
-    this.fcbStates.delete(fcbPtr);
-    writeI32BE(this.mem, addr + HDR_FILBUF_PTR_OFFSET, 0);
+    if (!state || !state.dirty) {
+      writeI32BE(this.mem, addr + HDR_FILBUF_PTR_OFFSET, 0);
+      return false;
+    }
+
+    const flush = this.fs.openWrite(state.path, state.name, state.ext).then(async (handleOrErr) => {
+      if (typeof handleOrErr === 'number') return handleOrErr; // エラー(読み取り専用化・削除済み等)
+      handleOrErr.write(0, state.content);
+      await handleOrErr.close();
+      return FS_OK;
+    });
+    return this.beginAsync(addr, flush, (result) => {
+      writeI32BE(this.mem, addr + HDR_FILBUF_PTR_OFFSET, result);
+    });
+  }
+
+  /**
+   * W2b: $42/$43/$44/$45/$46/$49共通の入口。読み取り専用モードでの書き込み系はすべて
+   * ここで-19に倒す(親からの指示書のとおり)。ただし$46の「取得」($FF)だけは読み取り
+   * 操作なので、writable判定より前に個別対応する(handleChmod内)。
+   */
+  private handleWriteCommand(cmd: number, addr: number): boolean {
+    switch (cmd) {
+      case CMD_MKDIR:
+        return this.handleMkdir(addr);
+      case CMD_RMDIR:
+        return this.handleRmdir(addr);
+      case CMD_RENAME:
+        return this.handleRename(addr);
+      case CMD_DELETE:
+        return this.handleDelete(addr);
+      case CMD_CHMOD:
+        return this.handleChmod(addr);
+      case CMD_CREATE:
+        return this.handleCreate(addr);
+      default:
+        // ここには来ない想定(request()側で列挙済み)。安全側で-19即完了にする。
+        writeI32BE(this.mem, addr + HDR_FILBUF_PTR_OFFSET, DOS_ERR_WRITE_PROTECTED);
+        return false;
+    }
+  }
+
+  private readNamestsAt(ptr: number): { path: string; name: string; ext: string } {
+    const namests = decodeNamests(this.mem.read(ptr, 88));
+    return { path: namests.path, name: namests.name.toUpperCase(), ext: namests.ext.toUpperCase() };
+  }
+
+  /** $42: _MKDIR。+14=_NAMESTS(親パス+新規ディレクトリ名)。 */
+  private handleMkdir(addr: number): boolean {
+    if (!this.fs.isWritable()) {
+      writeI32BE(this.mem, addr + HDR_FILBUF_PTR_OFFSET, DOS_ERR_WRITE_PROTECTED);
+      return false;
+    }
+    const { path, name } = this.readNamestsAt(readU32BE(this.mem, addr + HDR_ARG_PTR_OFFSET));
+    return this.beginAsync(addr, this.fs.mkdir(path, name), (result) => {
+      writeI32BE(this.mem, addr + HDR_FILBUF_PTR_OFFSET, result);
+    });
+  }
+
+  /** $43: _RMDIR。+14=_NAMESTS(親パス+削除するディレクトリ名)。 */
+  private handleRmdir(addr: number): boolean {
+    if (!this.fs.isWritable()) {
+      writeI32BE(this.mem, addr + HDR_FILBUF_PTR_OFFSET, DOS_ERR_WRITE_PROTECTED);
+      return false;
+    }
+    const { path, name } = this.readNamestsAt(readU32BE(this.mem, addr + HDR_ARG_PTR_OFFSET));
+    return this.beginAsync(addr, this.fs.rmdir(path, name), (result) => {
+      writeI32BE(this.mem, addr + HDR_FILBUF_PTR_OFFSET, result);
+    });
+  }
+
+  /** $45: _DELETE。+14=_NAMESTS。 */
+  private handleDelete(addr: number): boolean {
+    if (!this.fs.isWritable()) {
+      writeI32BE(this.mem, addr + HDR_FILBUF_PTR_OFFSET, DOS_ERR_WRITE_PROTECTED);
+      return false;
+    }
+    const { path, name, ext } = this.readNamestsAt(readU32BE(this.mem, addr + HDR_ARG_PTR_OFFSET));
+    return this.beginAsync(addr, this.fs.deleteFile(path, name, ext), (result) => {
+      writeI32BE(this.mem, addr + HDR_FILBUF_PTR_OFFSET, result);
+    });
+  }
+
+  /**
+   * $46: _CHMOD。+13=属性($FFなら取得、それ以外は設定)、+14=_NAMESTS。
+   * 取得はwritable判定より前に行う(読み取り操作のため、読み取り専用モードでも許す)。
+   */
+  private handleChmod(addr: number): boolean {
+    const attrField = readU8(this.mem, addr + HDR_ATTR_OFFSET);
+    const { path, name, ext } = this.readNamestsAt(readU32BE(this.mem, addr + HDR_ARG_PTR_OFFSET));
+
+    if (attrField === CHMOD_GET_ATTR) {
+      return this.beginAsync(addr, this.fs.getAttr(path, name, ext), (result) => {
+        writeI32BE(this.mem, addr + HDR_FILBUF_PTR_OFFSET, result);
+      });
+    }
+    if (!this.fs.isWritable()) {
+      writeI32BE(this.mem, addr + HDR_FILBUF_PTR_OFFSET, DOS_ERR_WRITE_PROTECTED);
+      return false;
+    }
+    return this.beginAsync(addr, this.fs.setAttr(path, name, ext, attrField), (result) => {
+      writeI32BE(this.mem, addr + HDR_FILBUF_PTR_OFFSET, result);
+    });
+  }
+
+  /**
+   * $44: _RENAME。+14=元の名前の_NAMESTS、+18=新しい名前の_NAMESTS(どちらもポインタ)。
+   * ヘッダにisDir相当の情報が無いため、まずgetAttrで元エントリの属性を調べてから
+   * fs.rename()を呼ぶ(ディレクトリのrenameはmove()が使える環境だけ、という判断は
+   * host-folder-fs.ts側が持つ)。
+   */
+  private handleRename(addr: number): boolean {
+    if (!this.fs.isWritable()) {
+      writeI32BE(this.mem, addr + HDR_FILBUF_PTR_OFFSET, DOS_ERR_WRITE_PROTECTED);
+      return false;
+    }
+    const oldPtr = readU32BE(this.mem, addr + HDR_ARG_PTR_OFFSET);
+    const newPtr = readU32BE(this.mem, addr + HDR_FILBUF_PTR_OFFSET);
+    const oldNs = this.readNamestsAt(oldPtr);
+    const newNs = this.readNamestsAt(newPtr);
+
+    const combined = this.fs.getAttr(oldNs.path, oldNs.name, oldNs.ext).then((attrOrErr) => {
+      if (attrOrErr < 0) return attrOrErr;
+      const isDir = attrOrErr === ATTR_DIRECTORY;
+      return this.fs.rename(oldNs.path, oldNs.name, oldNs.ext, newNs.name, newNs.ext, isDir);
+    });
+    return this.beginAsync(addr, combined, (result) => {
+      writeI32BE(this.mem, addr + HDR_FILBUF_PTR_OFFSET, result);
+    });
+  }
+
+  /**
+   * $49: _CREATE/_NEWFILE共用。+13=属性、+14=_NAMESTS、+18=フラグ(入力。実測: _CREATEは1、
+   * _NEWFILEは0)、+22=FCB(出力)。成功すれば、以後この FCB を$4d/$4c/$4e/$4bで使う
+   * 書き込み用ファイルとして登録する(ローカルバッファは空から始める。$49は常に
+   * 新規=空ファイルを作る操作のため)。
+   */
+  private handleCreate(addr: number): boolean {
+    if (!this.fs.isWritable()) {
+      writeI32BE(this.mem, addr + HDR_FILBUF_PTR_OFFSET, DOS_ERR_WRITE_PROTECTED);
+      return false;
+    }
+    const { path, name, ext } = this.readNamestsAt(readU32BE(this.mem, addr + HDR_ARG_PTR_OFFSET));
+    const fcbPtr = readU32BE(this.mem, addr + HDR_FCB_PTR_OFFSET);
+    const flagIn = readU32BE(this.mem, addr + HDR_FILBUF_PTR_OFFSET);
+    const failIfExists = flagIn === 0; // 親の解釈(推測、実測で確認中): 1=_CREATE(上書き)、0=_NEWFILE(既存なら-80)
+
+    return this.beginAsync(addr, this.fs.createFile(path, name, ext, failIfExists), (result) => {
+      if (result === FS_OK) {
+        this.fcbStates.set(fcbPtr, { path, name, ext, content: new Uint8Array(0), pos: 0, dirty: false });
+      }
+      writeI32BE(this.mem, addr + HDR_FILBUF_PTR_OFFSET, result);
+    });
   }
 
   /**

@@ -507,17 +507,19 @@ async function tryReattachHostFsFolder(): Promise<void> {
 }
 
 /**
- * `?hostfs=opfs-test` 専用: OPFSへ検証用ファイル一式を作り、そのままATTACHする。
- * OPFSはrequestPermissionが無く常に許可済み扱いのため、W2a検証(書き込みAPIの実地確認)も
- * 兼ねて書き込み可能モードでATTACHする。
+ * `?hostfs=opfs-test` / `?hostfs=opfs-test-rw` 専用: OPFSへ検証用ファイル一式を作り、
+ * そのままATTACHする。OPFSはrequestPermissionが無く常に許可済み扱いのため、モードの
+ * 選択ダイアログを介さずここで直接決める。
+ * - `opfs-test`    : 読み取り専用でATTACH(既定。読み取り専用モードの実地確認に使う)。
+ * - `opfs-test-rw` : 書き込み可能でATTACH(W2b: 書き込みAPIの実地確認に使う)。
  */
-async function setupHostFsOpfsTest(): Promise<void> {
+async function setupHostFsOpfsTest(mode: HostFsConnectMode): Promise<void> {
   try {
     const handle = await seedHostFsOpfsTest();
     hostFsHandle = handle;
-    hostFsMode = 'readwrite';
-    workerCoreProxy?.sendHostFsAttach(handle, 'readwrite');
-    console.log('[HostFS] opfs-test: OPFSへ検証用ファイルを作り、ATTACH(readwrite)した');
+    hostFsMode = mode;
+    workerCoreProxy?.sendHostFsAttach(handle, mode);
+    console.log(`[HostFS] opfs-test: OPFSへ検証用ファイルを作り、ATTACH(${mode})した`);
   } catch (err) {
     console.error('[HostFS] opfs-test: セットアップに失敗しました', err);
   }
@@ -638,10 +640,13 @@ const urlWorkerMode = parsedWorkerMode ?? true;
 
 // `?hostfs=fake` : HostFS(feature/hostfs、配管のみ)を検証用FakeFs(HELLO.TXT/
 // WORLD.DOC固定)で有効化する。Worker経路(src/hostfs/worker-bridge.ts)専用。
-// `?hostfs=opfs-test` : 利用者のOPFSへ検証用ファイル一式を作り、そのままATTACHする
-// (setupHostFsOpfsTest())。どちらも検証専用のURLパラメータなので、上の
-// urlDebugDisableAutosave等と同じ流儀でDEVビルド限定にする(本番で他人のOPFSに
-// 勝手にファイルを作ったり、本物のフォルダの代わりにFakeFsへ固定されては困るため)。
+// `?hostfs=opfs-test` : 利用者のOPFSへ検証用ファイル一式を作り、読み取り専用でATTACHする
+// (setupHostFsOpfsTest('read'))。
+// `?hostfs=opfs-test-rw` : 同じOPFSファイル一式を、今度は書き込み可能でATTACHする(W2b:
+// 書き込みAPIの実地確認用)。
+// いずれも検証専用のURLパラメータなので、上のurlDebugDisableAutosave等と同じ流儀で
+// DEVビルド限定にする(本番で他人のOPFSに勝手にファイルを作ったり、本物のフォルダの
+// 代わりにFakeFsへ固定されては困るため)。
 const hostfsParamRaw = import.meta.env.DEV ? new URLSearchParams(location.search).get('hostfs') : null;
 // urlWorkerModeが確定した直後にHostFS行の初回描画を行う(TDZの都合。updateHostFsUi自体の
 // 定義箇所のコメント参照)。
@@ -4309,7 +4314,9 @@ async function bootCore(): Promise<void> {
     (globalThis as Record<string, unknown>).__webx68kHostFsMode = hostfsParamRaw === 'fake' ? 'fake' : 'real';
     await bootWorkerCore();
     if (hostfsParamRaw === 'opfs-test') {
-      await setupHostFsOpfsTest();
+      await setupHostFsOpfsTest('read');
+    } else if (hostfsParamRaw === 'opfs-test-rw') {
+      await setupHostFsOpfsTest('readwrite');
     } else {
       await tryReattachHostFsFolder();
     }
