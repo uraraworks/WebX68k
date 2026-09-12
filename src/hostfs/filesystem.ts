@@ -9,6 +9,7 @@
 // ここに列挙する(HostFsErrorCode参照)。
 
 import type { FakeFsDate, FakeFsTime } from './filbuf';
+import { packDateTime } from './dos-datetime';
 
 /** 正常終了。 */
 export const FS_OK = 0;
@@ -131,6 +132,14 @@ export interface HostFileSystem {
   setFileDate(path: string, name: string, ext: string): Promise<number>;
 
   /**
+   * _FILEDATE相当: 最終更新日時の取得。DATETIME形式(上位ワード=日付・下位ワード=時刻、
+   * dos-datetime.tsのpackDateTime参照)のロングを返す。見つからなければ
+   * FS_ERR_FILE_NOT_FOUND(-2)(ディレクトリならFS_ERR_DIR_NOT_FOUND(-3))。
+   * 取得は読み取り操作のため、読み取り専用モードでも許す(getAttrと同じ扱い)。
+   */
+  getFileDate(path: string, name: string, ext: string): Promise<number>;
+
+  /**
    * _CHMOD(取得)相当: 属性を返す。ディレクトリは0x10、ファイルは0x20。
    * 見つからなければFS_ERR_FILE_NOT_FOUND(-2)(ディレクトリならFS_ERR_DIR_NOT_FOUND(-3))。
    */
@@ -224,6 +233,9 @@ export class NotConnectedFs implements HostFileSystem {
   setFileDate(): Promise<number> {
     return Promise.resolve(FS_ERR_FILE_NOT_FOUND);
   }
+  getFileDate(): Promise<number> {
+    return Promise.resolve(FS_ERR_FILE_NOT_FOUND);
+  }
   getAttr(): Promise<number> {
     return Promise.resolve(FS_ERR_FILE_NOT_FOUND);
   }
@@ -273,6 +285,9 @@ export class SwitchableFs implements HostFileSystem {
   }
   setFileDate(path: string, name: string, ext: string): Promise<number> {
     return this.current.setFileDate(path, name, ext);
+  }
+  getFileDate(path: string, name: string, ext: string): Promise<number> {
+    return this.current.getFileDate(path, name, ext);
   }
   getAttr(path: string, name: string, ext: string): Promise<number> {
     return this.current.getAttr(path, name, ext);
@@ -331,6 +346,12 @@ export class FakeFs implements HostFileSystem {
   }
   setFileDate(): Promise<number> {
     return Promise.resolve(FS_ERR_WRITE_PROTECTED);
+  }
+  getFileDate(_path: string, name: string, ext: string): Promise<number> {
+    const entry = FAKE_ENTRIES.find(
+      (e) => e.name.toUpperCase() === name.toUpperCase() && e.ext.toUpperCase() === ext.toUpperCase(),
+    );
+    return Promise.resolve(entry ? packDateTime(entry.date, entry.time) : FS_ERR_FILE_NOT_FOUND);
   }
   getAttr(_path: string, name: string, ext: string): Promise<number> {
     const entry = FAKE_ENTRIES.find(

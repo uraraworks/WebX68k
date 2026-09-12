@@ -67,6 +67,14 @@ describe('HostFolderFs', () => {
     expect(fs.rejectedCount).toBe(2); // 長すぎる名前 + ドット2つ
   });
 
+  it('rejectedCountは累計ではなく直近のlistDir()呼び出し1回ぶん(dirのたびに際限なく伸びない)', async () => {
+    const fs = new HostFolderFs(makeRoot() as unknown as FileSystemDirectoryHandle);
+    await fs.listDir(''); // 1回目: 出せない名前が2件
+    expect(fs.rejectedCount).toBe(2);
+    await fs.listDir(''); // 2回目: 同じ内容なので、累計なら4になってしまうところ
+    expect(fs.rejectedCount).toBe(2);
+  });
+
   it('listDir: ディレクトリの属性は0x10、ファイルは0x20', async () => {
     const fs = new HostFolderFs(makeRoot() as unknown as FileSystemDirectoryHandle);
     const entries = await fs.listDir('');

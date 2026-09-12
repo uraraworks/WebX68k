@@ -267,6 +267,21 @@ describe('HostFolderFs (W2a: 書き込みAPI)', () => {
     expect(await readonlyFs.setAttr('', 'A', 'TXT', 0x20)).toBe(FS_ERR_WRITE_PROTECTED);
   });
 
+  it('getFileDate: lastModifiedをDOS形式(上位ワード=日付・下位ワード=時刻)へ詰めて返す。読み取り専用でも成功', async () => {
+    const root = makeRoot();
+    root.addFile('a.txt', 'x'); // 既定lastModified = 2026-09-11 12:34:56(MockFileHandleの既定値)
+    const fs = new HostFolderFs(root as unknown as FileSystemDirectoryHandle, false); // 読み取り専用
+    // (2026-1980)<<9 | 9<<5 | 11 = 23851 = 0x5d2b、12<<11 | 34<<5 | (56>>1) = 25692 = 0x645c。
+    expect(await fs.getFileDate('', 'A', 'TXT')).toBe(0x5d2b645c);
+  });
+
+  it('getFileDate: 見つからなければFS_ERR_FILE_NOT_FOUND、ディレクトリが無ければFS_ERR_DIR_NOT_FOUND', async () => {
+    const root = makeRoot();
+    const fs = new HostFolderFs(root as unknown as FileSystemDirectoryHandle, true);
+    expect(await fs.getFileDate('', 'NOSUCH', 'TXT')).toBe(FS_ERR_FILE_NOT_FOUND);
+    expect(await fs.getFileDate('NOSUCHDIR', 'A', 'TXT')).toBe(FS_ERR_DIR_NOT_FOUND);
+  });
+
   it('読み取り専用モード: 書き込み系はすべて-19', async () => {
     const root = makeRoot();
     root.addFile('a.txt', 'x');

@@ -55,11 +55,12 @@ function padRight(s: string, len: number): Uint8Array {
   return out;
 }
 
-function encodeDate(d: FakeFsDate): number {
+/** $4f(_FILEDATE)でも同じ形を使うため外へ出す(dos-datetime.tsのpackDateTime参照)。 */
+export function encodeDate(d: FakeFsDate): number {
   return (((d.year - 1980) & 0x7f) << 9) | ((d.month & 0x0f) << 5) | (d.day & 0x1f);
 }
 
-function encodeTime(t: FakeFsTime): number {
+export function encodeTime(t: FakeFsTime): number {
   return ((t.hour & 0x1f) << 11) | ((t.minute & 0x3f) << 5) | ((t.second >> 1) & 0x1f);
 }
 

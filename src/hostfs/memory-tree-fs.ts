@@ -19,7 +19,7 @@ import {
   FS_ERR_RENAME_TARGET_EXISTS,
   FS_ERR_FILE_EXISTS,
 } from './filesystem';
-import { DIRECTORY_DATE, DIRECTORY_TIME } from './dos-datetime';
+import { DIRECTORY_DATE, DIRECTORY_TIME, packDateTime } from './dos-datetime';
 
 const ATTR_DIRECTORY = 0x10;
 const ATTR_FILE = 0x20;
@@ -217,6 +217,19 @@ export class MemoryTreeFs implements HostFileSystem {
 
   async setFileDate(_path: string, _name: string, _ext: string): Promise<number> {
     return this.writableFlag ? FS_OK : FS_ERR_WRITE_PROTECTED;
+  }
+
+  /**
+   * $4f(_FILEDATE、取得)相当。MemoryTreeFsは実日時を持たないため、listDirと同じく
+   * 常にDIRECTORY_DATE/TIME(1980-01-01 00:00)を返す。読み取り操作なので書き込み
+   * 可否は問わない(getAttrと同じ扱い)。
+   */
+  async getFileDate(path: string, name: string, ext: string): Promise<number> {
+    const dir = this.resolveDir(path);
+    if (!dir) return FS_ERR_DIR_NOT_FOUND;
+    const node = dir.children.get(fullName(name, ext).toUpperCase());
+    if (!node) return FS_ERR_FILE_NOT_FOUND;
+    return packDateTime(DIRECTORY_DATE, DIRECTORY_TIME);
   }
 
   async getAttr(path: string, name: string, ext: string): Promise<number> {

@@ -49,8 +49,8 @@ class MockDirHandle {
   readonly kind = 'directory' as const;
   children = new Map<string, MockFileHandle | MockDirHandle>();
   constructor(public name: string) {}
-  addFile(name: string, content: string): MockFileHandle {
-    const h = new MockFileHandle(name, content);
+  addFile(name: string, content: string, lastModified?: number): MockFileHandle {
+    const h = new MockFileHandle(name, content, lastModified);
     this.children.set(name, h);
     return h;
   }
@@ -438,6 +438,76 @@ describe('HostFsDispatcher: $44(rename)、中身のあるファイルをrename�
     await pollUntilDone(dispatcher);
     expect(readI32(ram, HDR_ADDR + 18)).toBe(-19);
     expect(root.children.has('SUBDIR')).toBe(true); // 変わっていない
+  });
+});
+
+describe('HostFsDispatcher: $4f(_FILEDATE)', () => {
+  it('DATETIME=0(取得)は開いたファイルのlastModifiedをDOS形式で返す(読み取り専用でも成功)', async () => {
+    const root = new MockDirHandle('root');
+    // 2026-09-12 09:23:12 相当(dos-datetime.tsのpackDateTimeと同じエンコードで裏取りする)。
+    const lastModified = new Date(2026, 8, 12, 9, 23, 12).getTime();
+    root.addFile('A.TXT', 'hello', lastModified);
+    const fs = new HostFolderFs(root as unknown as FileSystemDirectoryHandle, false); // 読み取り専用
+    const { mem, ram } = makeFakeGuestMemory();
+    const dispatcher = new HostFsDispatcher(mem, fs);
+
+    writeNamests(ram, NAMESTS_ADDR, '', 'A', 'TXT');
+    writeHeader(ram, HDR_ADDR, { cmd: 0x4a, argPtr: NAMESTS_ADDR, fcbPtr: FCB_ADDR });
+    dispatcher.request(HDR_ADDR);
+    await pollUntilDone(dispatcher);
+    expect(readI32(ram, HDR_ADDR + 18)).toBe(0);
+
+    writeHeader(ram, HDR_ADDR, { cmd: 0x4f, filbufPtr: 0, fcbPtr: FCB_ADDR }); // DATETIME=0
+    expect(dispatcher.request(HDR_ADDR)).toBe(true);
+    await pollUntilDone(dispatcher);
+    // (2026-1980)<<9 | 9<<5 | 12 = 23852 = 0x5d2c、9<<11 | 23<<5 | (12>>1) = 19174 = 0x4ae6。
+    expect(readI32(ram, HDR_ADDR + 18)).toBe(0x5d2c4ae6);
+  });
+
+  it('DATETIME!=0(設定)は書き込み可能モードでは成功しDATETIMEをそのまま返す、読み取り専用は-19', async () => {
+    const root = new MockDirHandle('root');
+    root.addFile('A.TXT', 'hello');
+    const fsRw = new HostFolderFs(root as unknown as FileSystemDirectoryHandle, true);
+    const { mem, ram } = makeFakeGuestMemory();
+    const dispatcher = new HostFsDispatcher(mem, fsRw);
+
+    writeNamests(ram, NAMESTS_ADDR, '', 'A', 'TXT');
+    writeHeader(ram, HDR_ADDR, { cmd: 0x4a, argPtr: NAMESTS_ADDR, fcbPtr: FCB_ADDR });
+    dispatcher.request(HDR_ADDR);
+    await pollUntilDone(dispatcher);
+
+    const DATETIME = 0x5d2c4ae6;
+    writeHeader(ram, HDR_ADDR, { cmd: 0x4f, filbufPtr: DATETIME, fcbPtr: FCB_ADDR });
+    expect(dispatcher.request(HDR_ADDR)).toBe(true);
+    await pollUntilDone(dispatcher);
+    // ホストへは反映できないため、成功時は入力のDATETIMEをそのまま返す(親からの指示書のとおり)。
+    expect(readI32(ram, HDR_ADDR + 18)).toBe(DATETIME);
+
+    // 読み取り専用モード
+    const root2 = new MockDirHandle('root');
+    root2.addFile('A.TXT', 'hello');
+    const fsRo = new HostFolderFs(root2 as unknown as FileSystemDirectoryHandle, false);
+    const dispatcher2 = new HostFsDispatcher(mem, fsRo);
+    writeNamests(ram, NAMESTS_ADDR, '', 'A', 'TXT');
+    writeHeader(ram, HDR_ADDR, { cmd: 0x4a, argPtr: NAMESTS_ADDR, fcbPtr: FCB_ADDR });
+    dispatcher2.request(HDR_ADDR);
+    await pollUntilDone(dispatcher2);
+
+    writeHeader(ram, HDR_ADDR, { cmd: 0x4f, filbufPtr: DATETIME, fcbPtr: FCB_ADDR });
+    expect(dispatcher2.request(HDR_ADDR)).toBe(true);
+    await pollUntilDone(dispatcher2);
+    expect(readI32(ram, HDR_ADDR + 18)).toBe(-19);
+  });
+
+  it('開いていないFCBは-2', async () => {
+    const root = new MockDirHandle('root');
+    const fs = new HostFolderFs(root as unknown as FileSystemDirectoryHandle, true);
+    const { mem, ram } = makeFakeGuestMemory();
+    const dispatcher = new HostFsDispatcher(mem, fs);
+
+    writeHeader(ram, HDR_ADDR, { cmd: 0x4f, filbufPtr: 0, fcbPtr: FCB_ADDR });
+    expect(dispatcher.request(HDR_ADDR)).toBe(false);
+    expect(readI32(ram, HDR_ADDR + 18)).toBe(-2);
   });
 });
 

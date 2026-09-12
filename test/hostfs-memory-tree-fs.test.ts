@@ -122,6 +122,14 @@ describe('MemoryTreeFs (W2a: 書き込みAPIの契約テスト)', () => {
     expect(await fs.setAttr('', 'A', 'TXT', 0x20)).toBe(FS_OK);
   });
 
+  it('getFileDate: 実日時を持たないため常にDIRECTORY_DATE/TIME(1980-01-01 00:00)、無ければ-2', async () => {
+    const fs = new MemoryTreeFs(true);
+    await fs.createFile('', 'A', 'TXT', false);
+    // (1980-1980)<<9|1<<5|1=33=0x21、0<<11|0<<5|0=0。
+    expect(await fs.getFileDate('', 'A', 'TXT')).toBe(0x00210000);
+    expect(await fs.getFileDate('', 'NOPE', 'TXT')).toBe(FS_ERR_FILE_NOT_FOUND);
+  });
+
   it('読み取り専用モード: 書き込み系はすべて-19', async () => {
     const fs = new MemoryTreeFs(false);
     expect(fs.isWritable()).toBe(false);

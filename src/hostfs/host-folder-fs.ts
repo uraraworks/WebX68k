@@ -21,7 +21,7 @@ import {
   FS_ERR_FILE_EXISTS,
 } from './filesystem';
 import { convertHostNameToHuman68k, convertGuestNameToHostFileName } from './name-convert';
-import { DIRECTORY_DATE, DIRECTORY_TIME, dateFromMillis, timeFromMillis } from './dos-datetime';
+import { DIRECTORY_DATE, DIRECTORY_TIME, dateFromMillis, timeFromMillis, packDateTime } from './dos-datetime';
 
 const ATTR_DIRECTORY = 0x10;
 const ATTR_FILE = 0x20;
@@ -132,7 +132,11 @@ export class HostFolderFs implements HostFileSystem {
   private readonly root: FileSystemDirectoryHandle;
   /** つなぐときに選んだモード(readwriteならtrue)。書き込み系はこれがfalseなら全部-19。 */
   private readonly writableFlag: boolean;
-  /** 出さなかった名前の件数(ログ用、テストからも読めるようpublicにする)。 */
+  /**
+   * 直近のlistDir()呼び出し1回ぶんで出さなかった名前の件数(ログ用、テストからも
+   * 読めるようpublicにする)。累計にすると2→4→…と際限なく伸びてdirのたびに
+   * 増えているように見えてしまうため、呼び出しごとに0へ戻す。
+   */
   rejectedCount = 0;
 
   constructor(root: FileSystemDirectoryHandle, writable: boolean) {
@@ -154,6 +158,10 @@ export class HostFolderFs implements HostFileSystem {
     const dir = await this.resolveDir(path);
     if (!dir) return [];
 
+    // dirのたびに件数を初期化する(累計だと2→4→…と際限なく伸びて紛らわしいうえ、
+    // 「今回の一覧で何件出さなかったか」という肝心の情報を隠してしまうため。
+    // rejectedCountは「直近のlistDir呼び出し1回ぶんの件数」という意味に変える)。
+    this.rejectedCount = 0;
     const entries: HostFsFileEntry[] = [];
     const it = (dir as unknown as { entries(): AsyncIterable<[string, FileSystemHandle]> }).entries();
     for await (const [childName, handle] of it) {
@@ -381,6 +389,23 @@ export class HostFolderFs implements HostFileSystem {
    */
   async setFileDate(_path: string, _name: string, _ext: string): Promise<number> {
     return this.writableFlag ? FS_OK : FS_ERR_WRITE_PROTECTED;
+  }
+
+  /**
+   * $4f(_FILEDATE、取得)相当。読み取り操作なので書き込み可否は問わない
+   * (getAttrと同じ扱い)。ディレクトリはlastModifiedが無いためDIRECTORY_DATE/TIME
+   * (1980-01-01 00:00)を返す(listDirと同じ扱い)。
+   */
+  async getFileDate(path: string, name: string, ext: string): Promise<number> {
+    const dir = await this.resolveDir(path);
+    if (!dir) return FS_ERR_DIR_NOT_FOUND;
+    const existing = await findExistingByGuestName(dir, name, ext);
+    if (!existing) return FS_ERR_FILE_NOT_FOUND;
+    if (existing.handle.kind === 'directory') {
+      return packDateTime(DIRECTORY_DATE, DIRECTORY_TIME);
+    }
+    const file = await (existing.handle as FileSystemFileHandle).getFile();
+    return packDateTime(dateFromMillis(file.lastModified), timeFromMillis(file.lastModified));
   }
 
   async getAttr(path: string, name: string, ext: string): Promise<number> {

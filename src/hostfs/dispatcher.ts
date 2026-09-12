@@ -7,14 +7,20 @@
 //   +14     : $47/$4aのときは_NAMESTSへのポインタ / $50/$4cのときは出力先・
 //             バッファへのポインタ
 //   +18     : $47/$48のときはFILBUFへのポインタ(入力)/ $4cのときは要求長
-//             (入力)/実際に読んだバイト数(出力) / それ以外は戻り値(出力、ロング)
-//   +22     : $4a/$4c/$4bのときはFCBへのポインタ
+//             (入力)/実際に読んだバイト数(出力) / $4fのときはDATETIME(入力=0で
+//             取得・非0で設定/出力=結果) / それ以外は戻り値(出力、ロング)
+//   +22     : $4a/$4c/$4b/$4fのときはFCBへのポインタ
 // $40(初期化)はドライバ内で処理される想定でここには来ない。
 //
 // 実測で追加確定した読み取り系コマンド(親からの指示書、C9実験の裏取り済み):
 //   $4a 開く  : +14=_NAMESTS, +22=FCBポインタ。成功なら+18=0。
 //   $4c 読む  : +14=バッファポインタ, +18=要求長(入力)→読んだバイト数(出力,0=EOF), +22=FCB。
 //   $4b 閉じる: +22=FCB。+18=0。
+//   $4f _FILEDATE: +18=DATETIME(0=取得/非0=設定、$4cと同じ入出力兼用の番地)、+22=FCB。
+//     PRO-68Kマニュアルp.195のフォーマット(上位ワード=日付、下位ワード=時刻)のまま。
+//     実測(w2c調査、COPYコマンドが自分で作った書き込み先ファイルに対して呼ぶ)では
+//     常にDATETIME!=0(設定、値はゲストの現在時刻とみられる)で、DATETIME=0(取得)の
+//     経路は実測できていない(推測を含む実装。docs/DESIGN.md参照)。
 //
 // $47(検索・初回)と$4a(開く)だけを非同期(Promise)にする。それ以外は同期で
 // 即座に完了扱いにする。「保留→ポーリング→完了」の経路を必ず1回は通すのが
@@ -53,6 +59,13 @@ const CMD_OPEN = 0x4a;
 const CMD_READ = 0x4c;
 const CMD_CLOSE = 0x4b;
 const CMD_SEEK = 0x4e;
+// $4f = _FILEDATE(実測・親からの指示書のC13実験で確定)。
+// +18(戻り値欄と同じ番地、$4c同様の入出力兼用)=DATETIME: 0なら取得、非0なら設定
+// (PRO-68Kマニュアルp.195のフォーマットそのまま。上位ワード=日付、下位ワード=時刻)。
+// +22=FCB。実測(w2c調査、w2b-b1のCOPYで観測): 取得は起きず、常にDATETIME!=0の
+// 設定(値はガストの現在時刻とみられる、推測)で来た。取得経路は実機での再現待ちのため
+// 未確認(このコミットの実装は資料どおりの解釈で、実測はしていない)。
+const CMD_FILEDATE = 0x4f;
 
 const HDR_CMD_OFFSET = 2;
 const HDR_ATTR_OFFSET = 13;
@@ -236,6 +249,11 @@ export class HostFsDispatcher {
       cmd === CMD_CREATE
     ) {
       const isPending = this.handleWriteCommand(cmd, addr);
+      if (isPending) this.stats.pendingReturnedCount++;
+      return isPending;
+    }
+    if (cmd === CMD_FILEDATE) {
+      const isPending = this.handleFiledate(addr);
       if (isPending) this.stats.pendingReturnedCount++;
       return isPending;
     }
@@ -801,5 +819,34 @@ export class HostFsDispatcher {
     }
     state.pos = newPos;
     writeI32BE(this.mem, addr + HDR_FILBUF_PTR_OFFSET, newPos);
+  }
+
+  /**
+   * $4f: _FILEDATE。+18=DATETIME(0なら取得/非0なら設定、$4cと同じ入出力兼用の番地)、
+   * +22=FCB。取得はfs.getFileDate()(読み取り操作なので書き込み可否を問わない)、
+   * 設定はfs.setFileDate()(既存の$4x書き込み系と同じく読み取り専用モードは-19)。
+   * 設定が成功した場合は、ホストへは反映できないため入力のDATETIMEをそのまま
+   * 返す(マニュアルのD0.Lフォーマット=DATETIMEと同じ形、という記述に合わせた)。
+   * fcbStatesに無いFCB(想定外)は検索/読み書きと同様にDOS_ERR_NOT_FOUND(-2)。
+   */
+  private handleFiledate(addr: number): boolean {
+    const fcbPtr = readU32BE(this.mem, addr + HDR_FCB_PTR_OFFSET);
+    const datetimeIn = readU32BE(this.mem, addr + HDR_FILBUF_PTR_OFFSET);
+    const state = this.fcbStates.get(fcbPtr);
+    if (!state) {
+      writeI32BE(this.mem, addr + HDR_FILBUF_PTR_OFFSET, DOS_ERR_NOT_FOUND);
+      return false;
+    }
+
+    if (datetimeIn !== 0) {
+      // 設定。
+      return this.beginAsync(addr, this.fs.setFileDate(state.path, state.name, state.ext), (result) => {
+        writeI32BE(this.mem, addr + HDR_FILBUF_PTR_OFFSET, result === FS_OK ? datetimeIn : result);
+      });
+    }
+    // 取得。
+    return this.beginAsync(addr, this.fs.getFileDate(state.path, state.name, state.ext), (result) => {
+      writeI32BE(this.mem, addr + HDR_FILBUF_PTR_OFFSET, result);
+    });
   }
 }
