@@ -219,6 +219,7 @@ import type { HostFsConnectMode } from './hostfs/filesystem';
 // W2a検証プローブ(__webx68kDebug.hostFsW2aProbe)専用: dispatcherを経由せず、
 // バックエンドの書き込みAPIをOPFSのhandleへ直接叩いて確かめる(DEV限定)。
 import { HostFolderFs } from './hostfs/host-folder-fs';
+import { buildRejectedTooltipLines } from './hostfs/rejected-tooltip';
 import { shouldShowDriveRow } from './drive-visibility';
 
 const canvas = document.getElementById('screen') as HTMLCanvasElement;
@@ -442,13 +443,12 @@ let hostFsUiStatus: HostFsUiStatus = {
   driverDetected: false,
   driveNumber: null,
   rejectedCount: 0,
-  rejectedNames: [],
-  rejectedPath: '',
+  rejectedPaths: [],
 };
 
 /** HostFsUiStatusを初期状態へ戻す(新しいWorkerコアの起動直後、通知が届く前の一時表示用)。 */
 function resetHostFsUiStatus(): void {
-  hostFsUiStatus = { driverDetected: false, driveNumber: null, rejectedCount: 0, rejectedNames: [], rejectedPath: '' };
+  hostFsUiStatus = { driverDetected: false, driveNumber: null, rejectedCount: 0, rejectedPaths: [] };
 }
 
 /** HostFS行に「つながっている」とみなす行の表示切替向け判定(再接続待ちも含む、親からの指示書のとおり)。 */
@@ -490,16 +490,19 @@ function updateHostFsUi(): void {
     hostFsElements.warning.title = t('hostfsDriverWarningTooltip');
   }
 
-  // 非表示名の通知: 直近の一覧で外した名前が1件以上あるときだけ出す。
+  // 非表示名の通知: これまでlistDir()した全ディレクトリぶんをまとめた「表示していない名前」が
+  // 1件以上あるときだけ出す(利用者からの指示書のとおり、複数ディレクトリにまたがってまとめる)。
+  // 一覧はWorker側(HostFolderFs.getRejectedSummary())で既にパス文字列順・相対パス付きに
+  // 整えてあるので、ここでは20行を超えた分を「ほかN件」にまとめるだけでよい。
   const rejectedCount = hostFsUiStatus.rejectedCount;
   hostFsElements.rejected.hidden = rejectedCount === 0;
   if (rejectedCount > 0) {
     hostFsElements.rejected.textContent = t('hostfsRejectedNamesLabel', { count: rejectedCount });
-    const shown = hostFsUiStatus.rejectedNames;
-    const extra = rejectedCount - shown.length;
-    const namesLine = extra > 0 ? [...shown, t('hostfsRejectedNamesMore', { count: extra })].join(', ') : shown.join(', ');
-    const pathLabel = hostFsUiStatus.rejectedPath === '' ? '\\' : hostFsUiStatus.rejectedPath;
-    hostFsElements.rejected.title = t('hostfsRejectedNamesTooltip', { path: pathLabel, names: namesLine });
+    const HOSTFS_REJECTED_TOOLTIP_LINE_LIMIT = 20; // ツールチップが縦に伸びすぎないための行数上限
+    const lines = buildRejectedTooltipLines(hostFsUiStatus.rejectedPaths, rejectedCount, HOSTFS_REJECTED_TOOLTIP_LINE_LIMIT, (extra) =>
+      t('hostfsRejectedNamesMore', { count: extra }),
+    );
+    hostFsElements.rejected.title = lines.join('\n');
   }
 
   updateDriveRowVisibility();
@@ -6862,8 +6865,8 @@ if (import.meta.env.DEV) {
       driverDetected: hostFsUiStatus.driverDetected,
       driveNumber: hostFsUiStatus.driveNumber,
       rejectedCount: hostFsUiStatus.rejectedCount,
-      rejectedNames: hostFsUiStatus.rejectedNames,
-      rejectedPath: hostFsUiStatus.rejectedPath,
+      rejectedPaths: hostFsUiStatus.rejectedPaths,
+      rejectedTitle: hostFsElements.rejected.title,
       showHddPref,
       showScsiPref,
       showHostfsPref,

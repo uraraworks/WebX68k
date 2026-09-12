@@ -279,9 +279,8 @@ function hostfsStatusEquals(a: HostFsUiStatus, b: HostFsUiStatus): boolean {
     a.driverDetected === b.driverDetected &&
     a.driveNumber === b.driveNumber &&
     a.rejectedCount === b.rejectedCount &&
-    a.rejectedPath === b.rejectedPath &&
-    a.rejectedNames.length === b.rejectedNames.length &&
-    a.rejectedNames.every((name, i) => name === b.rejectedNames[i])
+    a.rejectedPaths.length === b.rejectedPaths.length &&
+    a.rejectedPaths.every((path, i) => path === b.rejectedPaths[i])
   );
 }
 let coreModuleLoaded = false;

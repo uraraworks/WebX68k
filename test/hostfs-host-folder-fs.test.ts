@@ -56,7 +56,7 @@ function makeRoot(): MockDirHandle {
 
 describe('HostFolderFs', () => {
   it('listDir: 出るべき名前が出て、出ないはずのもの(長すぎる名前・ドット2つ)は出ない', async () => {
-    const fs = new HostFolderFs(makeRoot() as unknown as FileSystemDirectoryHandle);
+    const fs = new HostFolderFs(makeRoot() as unknown as FileSystemDirectoryHandle, false);
     const entries = await fs.listDir('');
     const names = entries.map((e) => (e.ext ? `${e.name}.${e.ext}` : e.name));
     expect(names).toContain('hello.txt');
@@ -64,44 +64,85 @@ describe('HostFolderFs', () => {
     expect(names).toContain('sub');
     expect(names.some((n) => n.startsWith('this_name_is_way_too_long'))).toBe(false);
     expect(names).not.toContain('a.b.c');
-    expect(fs.rejectedCount).toBe(2); // 長すぎる名前 + ドット2つ
+    expect(fs.getRejectedSummary().totalCount).toBe(2); // 長すぎる名前 + ドット2つ
   });
 
-  it('rejectedCountは累計ではなく直近のlistDir()呼び出し1回ぶん(dirのたびに際限なく伸びない)', async () => {
-    const fs = new HostFolderFs(makeRoot() as unknown as FileSystemDirectoryHandle);
-    await fs.listDir(''); // 1回目: 出せない名前が2件
-    expect(fs.rejectedCount).toBe(2);
-    await fs.listDir(''); // 2回目: 同じ内容なので、累計なら4になってしまうところ
-    expect(fs.rejectedCount).toBe(2);
-  });
-
-  it('listDir: 出さなかった名前そのものをrejectedNamesに残す(通知用、追加分)', async () => {
-    const fs = new HostFolderFs(makeRoot() as unknown as FileSystemDirectoryHandle);
+  it('getRejectedSummary: 出さなかった名前を接続フォルダからの相対パス付き(パス文字列順)で返す', async () => {
+    const fs = new HostFolderFs(makeRoot() as unknown as FileSystemDirectoryHandle, false);
     await fs.listDir('');
-    expect(fs.rejectedNames).toContain('this_name_is_way_too_long_for_human68k.txt');
-    expect(fs.rejectedNames).toContain('a.b.c');
-    expect(fs.rejectedNames.length).toBe(2);
-    expect(fs.lastListedPath).toBe('');
+    const summary = fs.getRejectedSummary();
+    expect(summary.totalCount).toBe(2);
+    expect(summary.paths).toEqual(['/a.b.c', '/this_name_is_way_too_long_for_human68k.txt']);
   });
 
-  it('listDir: rejectedNamesも直近1回ぶんに戻る(累計しない)', async () => {
-    const fs = new HostFolderFs(makeRoot() as unknown as FileSystemDirectoryHandle);
+  it('getRejectedSummary: 複数のディレクトリにまたがってまとまる', async () => {
+    const root = new MockDirHandle('root');
+    root.addFile('hogehote.json', 'x'); // ドット2つ → ルートで弾かれる
+    const sub = root.addDir('sub'); // 'sub'自体は正しく変換できる名前
+    sub.addFile('hogehoge2.ppppp', 'x'); // 拡張子5文字 → subで弾かれる
+    const fs = new HostFolderFs(root as unknown as FileSystemDirectoryHandle, false);
     await fs.listDir('');
-    await fs.listDir('');
-    expect(fs.rejectedNames.length).toBe(2);
+    await fs.listDir('\\SUB');
+    const summary = fs.getRejectedSummary();
+    expect(summary.totalCount).toBe(2);
+    expect(summary.paths).toEqual(['/hogehote.json', '/sub/hogehoge2.ppppp']);
   });
 
-  it('listDir: rejectedNamesは上限20件までしか保持しない(rejectedCountは実数のまま)', async () => {
+  it('getRejectedSummary: 同じディレクトリを再listDir()したら、その分だけ入れ替わる', async () => {
+    const root = new MockDirHandle('root');
+    root.addFile('a.b.c', 'x'); // ルートで弾かれる
+    root.addDir('sub').addFile('b.c.d', 'x'); // subでも1件弾かれる
+    const fs = new HostFolderFs(root as unknown as FileSystemDirectoryHandle, false);
+    await fs.listDir('');
+    await fs.listDir('\\SUB');
+    expect(fs.getRejectedSummary().paths).toEqual(['/a.b.c', '/sub/b.c.d']);
+
+    // ホスト側でsub配下の名前を直した(ドット2つの名前が正しい名前に変わった)ことを、
+    // 同じ'sub'キーへ新しいMockDirHandleを差し替えることで模す。root.addDir()は
+    // Map.set()と同じ挙動(同じキーなら置き換わる)なので、これだけでよい。
+    root.addDir('sub').addFile('fixed.txt', 'x'); // 弾かれない名前だけになった
+    await fs.listDir('\\SUB');
+    // subの分は消え、ルート('/a.b.c')の分だけ残る。
+    expect(fs.getRejectedSummary().paths).toEqual(['/a.b.c']);
+    expect(fs.getRejectedSummary().totalCount).toBe(1);
+  });
+
+  it('getRejectedSummary: つなぎ替えると新しいHostFolderFsインスタンスになるので消える', async () => {
+    const fs1 = new HostFolderFs(makeRoot() as unknown as FileSystemDirectoryHandle, false);
+    await fs1.listDir('');
+    expect(fs1.getRejectedSummary().totalCount).toBe(2);
+
+    // worker-bridge.ts の attach()/detach() は毎回 new HostFolderFs() するため、
+    // 別インスタンスは当然ながら前の記憶を持たない。
+    const fs2 = new HostFolderFs(makeRoot() as unknown as FileSystemDirectoryHandle, false);
+    expect(fs2.getRejectedSummary().totalCount).toBe(0);
+    expect(fs2.getRejectedSummary().paths).toEqual([]);
+  });
+
+  it('getRejectedSummary: 表示用の一覧が20行を超える分はUI側(main.ts)で「ほかN件」にまとめる想定なので、ここではpathsを切り詰めない(REJECTED_PATHS_LIMIT=200件まではそのまま返す)', async () => {
     const root = new MockDirHandle('root');
     for (let i = 0; i < 25; i++) {
-      // 拡張子なしで19文字超(本体8文字制限超え)にして必ず弾かれる名前にする。
-      root.addFile(`too_long_rejected_name_${i}`, 'x');
+      // ドット2つにして必ず弾かれる名前にする(25 > 20行のUI表示上限を超える件数)。
+      root.addFile(`too.many.${i}`, 'x');
     }
-    const fs = new HostFolderFs(root as unknown as FileSystemDirectoryHandle);
+    const fs = new HostFolderFs(root as unknown as FileSystemDirectoryHandle, false);
     const entries = await fs.listDir('');
     expect(entries.length).toBe(0);
-    expect(fs.rejectedCount).toBe(25);
-    expect(fs.rejectedNames.length).toBe(20);
+    const summary = fs.getRejectedSummary();
+    expect(summary.totalCount).toBe(25);
+    expect(summary.paths.length).toBe(25); // 200件未満なので切り詰められない
+  });
+
+  it('getRejectedSummary: 1ディレクトリでREJECTED_PATHS_LIMIT(200件)を超えたら、超えた分は件数だけになる', async () => {
+    const root = new MockDirHandle('root');
+    for (let i = 0; i < 210; i++) {
+      root.addFile(`too.many.${i}`, 'x');
+    }
+    const fs = new HostFolderFs(root as unknown as FileSystemDirectoryHandle, false);
+    await fs.listDir('');
+    const summary = fs.getRejectedSummary();
+    expect(summary.totalCount).toBe(210);
+    expect(summary.paths.length).toBe(200);
   });
 
   it('listDir: ディレクトリの属性は0x10、ファイルは0x20', async () => {

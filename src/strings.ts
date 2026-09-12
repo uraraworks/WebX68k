@@ -141,10 +141,14 @@ interface Dict {
   hostfsNoteDialogSave(): string;
   /** ドライバ未組み込み警告: フォルダ接続済みなのにHOSTFS.SYSの初期化通知がまだ来ていないとき。 */
   hostfsDriverWarningTooltip(): string;
-  /** 表示していない名前の通知(行のラベルとツールチップ)。 */
+  /**
+   * 表示していない名前の通知(行のラベルとツールチップ)。ツールチップ本文は
+   * これまでlistDir()した全ディレクトリぶんをまとめた「/相対パス/名前」を
+   * 1行ずつtitle属性へ改行(\n)区切りで並べるだけなので、テンプレート文字列は
+   * main.ts側で直接組み立てる(専用のtフォーマッタは持たない)。
+   */
   hostfsRejectedNamesLabel(args: { count: number }): string;
   hostfsRejectedNamesMore(args: { count: number }): string;
-  hostfsRejectedNamesTooltip(args: { path: string; names: string }): string;
   /** ドライブ行の表示切替トグル(「…」メニュー、feature/hostfs 追加分)。 */
   toolbarToggleHdd(): string;
   toolbarToggleScsi(): string;
@@ -664,7 +668,6 @@ const STRINGS: Record<Lang, Dict> = {
       'ディスクライブラリの「このディスクにHostFSを組み込む」で組み込んだディスクから起動してください',
     hostfsRejectedNamesLabel: ({ count }) => `${count}件の名前は表示していません`,
     hostfsRejectedNamesMore: ({ count }) => `ほか${count}件`,
-    hostfsRejectedNamesTooltip: ({ path, names }) => `${path} の一覧: ${names}`,
     toolbarToggleHdd: () => 'HDD（SASI）を表示',
     toolbarToggleScsi: () => 'SCSI-HDDを表示',
     toolbarToggleHostfs: () => 'HostFSを表示',
@@ -1081,7 +1084,6 @@ const STRINGS: Record<Lang, Dict> = {
       'Boot from a disk with HostFS installed, using "Install HostFS onto this disk" in the disk library',
     hostfsRejectedNamesLabel: ({ count }) => `${count} name(s) not shown`,
     hostfsRejectedNamesMore: ({ count }) => `${count} more`,
-    hostfsRejectedNamesTooltip: ({ path, names }) => `Listing of ${path}: ${names}`,
     toolbarToggleHdd: () => 'Show HDD (SASI)',
     toolbarToggleScsi: () => 'Show SCSI-HDD',
     toolbarToggleHostfs: () => 'Show HostFS',

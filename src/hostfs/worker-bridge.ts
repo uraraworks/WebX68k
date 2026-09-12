@@ -40,8 +40,8 @@ export interface HostFsBridgeResult {
   attach?: (dirHandle: FileSystemDirectoryHandle, mode: HostFsConnectMode) => void;
   detach?: () => void;
   /**
-   * ページ側UIの警告・通知(追加分)用: ドライバ検出状態と、直近のlistDir()で
-   * 出さなかった名前を1つにまとめて返す。mode==='real'のときだけ入る
+   * ページ側UIの警告・通知(追加分)用: ドライバ検出状態と、これまでlistDir()した
+   * 全ディレクトリぶんをまとめた「出さなかった名前」を1つにまとめて返す。mode==='real'のときだけ入る
    * (installed=falseやmode==='fake'では常にNotConnectedFs/FakeFs相当のnull/0を返せば十分)。
    */
   getStatus?: () => HostFsUiStatus;
@@ -150,13 +150,13 @@ export function installHostFsBridge(host: GuestMemoryHost): HostFsBridgeResult {
     getStatus: (): HostFsUiStatus => {
       const driver = dispatcher.getDriverStatus();
       const current = (switchable as SwitchableFs).current;
-      const rejected = current instanceof HostFolderFs ? current : null;
+      const summary =
+        current instanceof HostFolderFs ? current.getRejectedSummary() : { totalCount: 0, paths: [] };
       return {
         driverDetected: driver.detected,
         driveNumber: driver.driveNumber,
-        rejectedCount: rejected?.rejectedCount ?? 0,
-        rejectedNames: rejected?.rejectedNames ?? [],
-        rejectedPath: rejected?.lastListedPath ?? '',
+        rejectedCount: summary.totalCount,
+        rejectedPaths: summary.paths,
       };
     },
   };

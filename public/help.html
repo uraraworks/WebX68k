@@ -772,12 +772,15 @@
               また知らせを待つ状態に戻ります。
             </p>
             <p>
-              <strong>表示していない名前の通知:</strong> 直近の一覧(<code>dir</code>等)で、
-              Human68kの8.3形式で表せず外した名前があると、行に
-              「N件の名前は表示していません」と出ます。マウスオーバーで、外した名前
-              (最大20件、それ以上は「ほかN件」)と対象ディレクトリを確認できます。
-              外れる条件は本節の上記のとおり(名前が18バイト超、ドットが2つ以上、
-              CP932で表せない文字を含む、拡張子が4文字以上など)です。
+              <strong>表示していない名前の通知:</strong> Human68kの8.3形式で表せず
+              一覧(<code>dir</code>等)から外した名前があると、行に
+              「N件の名前は表示していません」と出ます。マウスオーバーで、
+              これまでに一覧を取ったフォルダの分をまとめて、つないだフォルダからの
+              相対パス付き(<code>/サブフォルダ/名前</code>の形、1行に1つ)で確認できます
+              (最大20行、それ以上は「ほかN件」)。あるフォルダをもう一度一覧すると、
+              そのフォルダの分だけ最新の内容に入れ替わります。外れる条件は本節の
+              上記のとおり(名前が18バイト超、ドットが2つ以上、CP932で表せない文字を
+              含む、拡張子が4文字以上など)です。
             </p>
           </div>
           <div class="lang-en">
@@ -869,12 +872,14 @@
               or reboot puts it back into "waiting" state.
             </p>
             <p>
-              <strong>Hidden-name notice:</strong> If the most recent listing (<code>dir</code>, etc.)
-              had to drop names that don't fit Human68k's 8.3 format, the row shows "N name(s) not
-              shown". Hover to see the dropped names (up to 20, with "N more" beyond that) and which
-              directory they came from. The conditions for being dropped are the same as described
-              above in this section (name over 18 bytes, more than one dot, characters that don't fit
-              CP932, extension over 3 characters, etc.).
+              <strong>Hidden-name notice:</strong> If a listing (<code>dir</code>, etc.) had to drop
+              names that don't fit Human68k's 8.3 format, the row shows "N name(s) not shown". Hover
+              to see the combined list from every folder listed so far, each shown as a path relative
+              to the connected folder (<code>/subfolder/name</code>, one per line; up to 20 lines,
+              with "N more" beyond that). Listing a given folder again replaces just that folder's
+              entries with the latest contents. The conditions for being dropped are the same as
+              described above in this section (name over 18 bytes, more than one dot, characters that
+              don't fit CP932, extension over 3 characters, etc.).
             </p>
           </div>
         </section>

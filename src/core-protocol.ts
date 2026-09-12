@@ -310,7 +310,7 @@ export function isHostFsDetachMessage(message: unknown): message is HostFsDetach
 
 // --- HostFS 状態通知(ドライバ未組み込み警告・非表示名の通知、追加分) -----------------
 //
-// Worker側(dispatcher.getDriverStatus() / HostFolderFsのrejectedNames)が持つ状態を
+// Worker側(dispatcher.getDriverStatus() / HostFolderFsのgetRejectedSummary())が持つ状態を
 // ページ側(main.ts)のUIへ届けるための専用イベント。frame eventへの相乗りにせず
 // 専用にしたのは、変化した瞬間だけ送ればよく(毎フレーム送る必要が無い)、
 // FrameSnapshotの必須フィールドを増やしたくないため。
@@ -321,12 +321,18 @@ export interface HostFsUiStatus {
   driverDetected: boolean;
   /** 割り当てられたドライブ番号(0=A:)。driverDetected=falseならnull。 */
   driveNumber: number | null;
-  /** 直近のlistDir()呼び出し1回ぶんで、Human68kで表せず出さなかった名前の件数。 */
+  /**
+   * これまでlistDir()した全ディレクトリぶんを合わせた、Human68kで表せず出さなかった
+   * 名前の実数(HostFolderFs.getRejectedSummary()のtotalCountをそのまま運ぶ)。
+   */
   rejectedCount: number;
-  /** 上記のうち先頭最大20件の名前そのもの(通知のツールチップ用)。 */
-  rejectedNames: string[];
-  /** rejectedNamesがどのディレクトリの一覧だったか(Human68k側パス、ルートは''）。 */
-  rejectedPath: string;
+  /**
+   * 上記のうち、接続したフォルダからの相対パス付き('/'区切り、ホスト側の実際の名前)で
+   * 表した一覧(パス文字列順、通知のツールチップ用)。メッセージが際限なく肥大しない
+   * よう最大HostFolderFs.REJECTED_PATHS_LIMIT件までに切り詰めてある
+   * (rejectedCountは切り詰めても実数のまま)。
+   */
+  rejectedPaths: string[];
 }
 
 export const HOSTFS_STATUS_EVENT = 'hostfsStatus' as const;

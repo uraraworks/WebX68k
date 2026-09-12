@@ -86,6 +86,27 @@ async function findChild(
 }
 
 /**
+ * findChild()と同じ大文字小文字無視の検索だが、見つかったホスト側の実際の名前
+ * (Unicodeそのまま)も一緒に返す。「表示していない名前」の通知(rejectedNamesByDir)は
+ * Human68k側のパス(大文字化・8.3形式)ではなく、利用者がホスト側フォルダで実際に
+ * 目にする名前でパスを組み立てたいため、resolveDirWithRealPath()専用に用意する
+ * (findChild()の呼び出し元11箇所の戻り値型を変えて書き換えるよりも安全なため)。
+ */
+async function findChildEntry(
+  dir: FileSystemDirectoryHandle,
+  name: string,
+): Promise<{ name: string; handle: FileSystemDirectoryHandle | FileSystemFileHandle } | null> {
+  const upper = name.toUpperCase();
+  const it = (dir as unknown as { entries(): AsyncIterable<[string, FileSystemHandle]> }).entries();
+  for await (const [childName, handle] of it) {
+    if (childName.toUpperCase() === upper) {
+      return { name: childName, handle: handle as FileSystemDirectoryHandle | FileSystemFileHandle };
+    }
+  }
+  return null;
+}
+
+/**
  * dirの直下から、ゲストの名前+拡張子(CP932疑似文字列)と大文字小文字無視で一致する
  * エントリを探す(name-convert.tsのconvertHostNameToHuman68kと同じ「CP932疑似文字列
  * 空間」で比較する。readFileと同じ流儀)。W2a(書き込み)の各操作で共通に使う。
@@ -133,22 +154,35 @@ export class HostFolderFs implements HostFileSystem {
   /** つなぐときに選んだモード(readwriteならtrue)。書き込み系はこれがfalseなら全部-19。 */
   private readonly writableFlag: boolean;
   /**
-   * 直近のlistDir()呼び出し1回ぶんで出さなかった名前の件数(ログ用、テストからも
-   * 読めるようpublicにする)。累計にすると2→4→…と際限なく伸びてdirのたびに
-   * 増えているように見えてしまうため、呼び出しごとに0へ戻す。
+   * これまでlistDir()した各ディレクトリごとに、Human68kで表せず出さなかった
+   * ホスト側の実際の名前(Unicodeそのまま、REJECTED_PATHS_LIMIT件まで)を持つ
+   * (利用者向け通知用、追加分。「version.jsonが出ない理由が分からない」を防ぐため、
+   * UI側でツールチップに出す)。
+   *
+   * キーは接続したフォルダからの相対パスをホスト側の実名で'/'区切りにしたもの
+   * (ルート直下は''。Human68k側のパス文字列ではない。8.3形式へ丸めてしまうと
+   * 利用者がホスト側フォルダで実際に目にする綴りと一致しなくなるため)。
+   * 同じディレクトリを再度listDir()したら、そのキーだけ丸ごと入れ替える
+   * (ホスト側で名前を直せば一覧から消える、という利用者の直感に合わせるため)。
+   *
+   * フォルダを外す/つなぎ替えるとこのHostFolderFsインスタンスごと捨てられる
+   * (src/hostfs/worker-bridge.tsのattach/detachは毎回new HostFolderFs()する)ので、
+   * ここで明示的にclear()する必要はない。コアのリセットではインスタンスを
+   * 作り直さないため、ここは自然に残る(ホスト側フォルダの実際の状態は
+   * コアのリセットと無関係、という利用者からの指示書のとおり)。
    */
-  rejectedCount = 0;
+  private readonly rejectedNamesByDir = new Map<string, string[]>();
+  /** 上記と対のディレクトリごとの実数(REJECTED_PATHS_LIMITで切り詰めても実数のまま持つ)。 */
+  private readonly rejectedCountByDir = new Map<string, number>();
   /**
-   * 直近のlistDir()呼び出し1回ぶんで出さなかった名前そのもの(利用者向け通知用、追加分)。
-   * 「version.jsonが出ない理由が分からない」を防ぐため、UI側でツールチップに出す。
-   * 上限20件までしか保持しない(rejectedCountは実数のまま増える。「ほかN件」の
-   * 表示はrejectedCount - rejectedNames.lengthで求める)。
+   * 1ディレクトリあたり保持する名前の上限、かつgetRejectedSummary()が返す
+   * 全ディレクトリ合算の一覧の上限。後者はWorker→ページへ送るメッセージ
+   * (frame eventへの相乗り)が際限なく肥大しないための保険で、ページ側の
+   * ツールチップ表示自体はさらに手前の20行で切っている(main.ts)。
+   * 200としたのは、通常この経路に来る名前(拡張子4文字以上など)は少数のはずで、
+   * 極端に荒れたフォルダでもメッセージサイズが問題にならない範囲という目安。
    */
-  rejectedNames: string[] = [];
-  /** rejectedNames/rejectedCountがどのディレクトリの一覧結果かを示す(Human68k側パス、ルートは''）。 */
-  lastListedPath = '';
-  /** rejectedNamesを何件まで保持するか。 */
-  static readonly REJECTED_NAMES_LIMIT = 20;
+  static readonly REJECTED_PATHS_LIMIT = 200;
 
   constructor(root: FileSystemDirectoryHandle, writable: boolean) {
     this.root = root;
@@ -165,23 +199,47 @@ export class HostFolderFs implements HostFileSystem {
     return cur;
   }
 
-  async listDir(path: string): Promise<HostFsFileEntry[]> {
-    const dir = await this.resolveDir(path);
-    if (!dir) return [];
+  /**
+   * resolveDir()と同じ大文字小文字無視の解決だが、たどった各セグメントの
+   * ホスト側の実際の名前(Unicode)も一緒に返す。listDir()専用
+   * (rejectedNamesByDirのキー・表示パスをホスト側の実名で作るため)。
+   * 走査コストはパスの深さぶんだけで軽いため、resolveDir()と処理が重複するのは
+   * 許容し、既存11箇所のresolveDir()呼び出しの戻り値型は変えない。
+   */
+  private async resolveDirWithRealPath(
+    path: string,
+  ): Promise<{ dir: FileSystemDirectoryHandle; realSegments: string[] } | null> {
+    let cur: FileSystemDirectoryHandle = this.root;
+    const realSegments: string[] = [];
+    for (const seg of splitPath(path)) {
+      const found = await findChildEntry(cur, seg);
+      if (!found || found.handle.kind !== 'directory') return null;
+      cur = found.handle as FileSystemDirectoryHandle;
+      realSegments.push(found.name);
+    }
+    return { dir: cur, realSegments };
+  }
 
-    // dirのたびに件数を初期化する(累計だと2→4→…と際限なく伸びて紛らわしいうえ、
-    // 「今回の一覧で何件出さなかったか」という肝心の情報を隠してしまうため。
-    // rejectedCountは「直近のlistDir呼び出し1回ぶんの件数」という意味に変える)。
-    this.rejectedCount = 0;
-    this.rejectedNames = [];
-    this.lastListedPath = path;
+  async listDir(path: string): Promise<HostFsFileEntry[]> {
+    const resolved = await this.resolveDirWithRealPath(path);
+    if (!resolved) return [];
+    const { dir, realSegments } = resolved;
+    // ホスト側の実名を'/'区切りにしたキー(ルート直下は'')。getRejectedSummary()での
+    // 表示パス組み立てにもこのまま使う。
+    const dirKey = realSegments.join('/');
+
     const entries: HostFsFileEntry[] = [];
+    // このディレクトリぶんだけをこの呼び出しでまとめ、最後に丸ごと入れ替える
+    // (同じディレクトリを再度listDir()したら、そのキーの分だけ消える/更新される
+    // ようにするため。累計しない)。
+    const rejectedNames: string[] = [];
+    let rejectedCount = 0;
     const it = (dir as unknown as { entries(): AsyncIterable<[string, FileSystemHandle]> }).entries();
     for await (const [childName, handle] of it) {
       const conv = convertHostNameToHuman68k(childName);
       if (!conv) {
-        this.rejectedCount++;
-        if (this.rejectedNames.length < HostFolderFs.REJECTED_NAMES_LIMIT) this.rejectedNames.push(childName);
+        rejectedCount++;
+        if (rejectedNames.length < HostFolderFs.REJECTED_PATHS_LIMIT) rejectedNames.push(childName);
         continue;
       }
       if (handle.kind === 'directory') {
@@ -206,10 +264,40 @@ export class HostFolderFs implements HostFileSystem {
         });
       }
     }
-    if (this.rejectedCount > 0) {
-      console.warn(`[HostFS] 8.3形式へ変換できず出さなかった名前: ${this.rejectedCount}件`);
+    if (rejectedCount > 0) {
+      this.rejectedNamesByDir.set(dirKey, rejectedNames);
+      this.rejectedCountByDir.set(dirKey, rejectedCount);
+      console.warn(`[HostFS] 8.3形式へ変換できず出さなかった名前: ${rejectedCount}件 (/${dirKey})`);
+    } else {
+      // 0件になった(=ホスト側で直された)ら、そのディレクトリ分はMapから消す
+      // (Mapが際限なく肥大するのを防ぐ)。
+      this.rejectedNamesByDir.delete(dirKey);
+      this.rejectedCountByDir.delete(dirKey);
     }
     return entries;
+  }
+
+  /**
+   * これまでlistDir()した全ディレクトリぶんをまとめた「表示していない名前」の一覧を返す
+   * (Worker→ページの通知、src/hostfs/worker-bridge.tsのgetStatus()から使う)。
+   * パスは接続したフォルダからの相対パス('/'区切り、ルート直下は'/名前')で、
+   * ホスト側の実際の名前(Unicode)をそのまま使う。並びはパス文字列順
+   * (利用者からの指示書のとおり)。
+   *
+   * totalCountは全ディレクトリの実数の合計(pathsを切り詰めても正しい値のまま)。
+   * pathsはREJECTED_PATHS_LIMIT件までに切り詰める(コメント参照)。
+   */
+  getRejectedSummary(): { totalCount: number; paths: string[] } {
+    const all: string[] = [];
+    let totalCount = 0;
+    for (const [dirKey, names] of this.rejectedNamesByDir) {
+      totalCount += this.rejectedCountByDir.get(dirKey) ?? names.length;
+      for (const name of names) {
+        all.push(dirKey === '' ? `/${name}` : `/${dirKey}/${name}`);
+      }
+    }
+    all.sort();
+    return { totalCount, paths: all.slice(0, HostFolderFs.REJECTED_PATHS_LIMIT) };
   }
 
   /** $41(cd)用: パスが実在するディレクトリか。ルート('')は常にtrue。 */
