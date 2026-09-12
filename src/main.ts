@@ -731,7 +731,10 @@ btnToggleHostfs.addEventListener('click', () => {
   updateDriveRowVisibility();
 });
 updateDriveToggleButtonsUi();
-updateDriveRowVisibility();
+// updateDriveRowVisibility()の初回呼び出しはここでは行わない: slots/scsiNameの宣言(この下方)
+// より前に実行されるとTDZ(ReferenceError)で落ちる。初回描画はupdateHostFsUi()の初回呼び出し
+// (urlWorkerMode宣言直後、slots/scsiNameの宣言より後)に任せる(updateHostFsUi()の末尾で
+// updateDriveRowVisibility()を呼んでいる)。
 
 // iOS の Chrome ではファイル選択ダイアログが accept 属性の拡張子を UTI(Uniform Type
 // Identifier)へ変換して候補を絞る。.xdf/.hdf/.dup/.hdm/.2hd/.dim のような拡張子は
@@ -3852,6 +3855,11 @@ const OVERFLOW_MENU_LABEL_OVERRIDES = new Map<HTMLButtonElement, () => string>([
   [btnAspect, () => t('toolbarMenuAspect43')],
   [btnMouseCapture, () => t('toolbarMenuMouseCapture')],
   [btnLang, () => t('toolbarLanguage')],
+  // ドライブ行の表示切替トグル(feature/hostfs 追加分)も aria-pressed 由来の行なので、
+  // 切替先ではなく状態名(「HDD（SASI）を表示」)をそのままラベルに使う。
+  [btnToggleHdd, () => t('toolbarToggleHdd')],
+  [btnToggleScsi, () => t('toolbarToggleScsi')],
+  [btnToggleHostfs, () => t('toolbarToggleHostfs')],
 ]);
 
 /**
@@ -3872,7 +3880,7 @@ interface OverflowGroup {
 const OVERFLOW_GROUP_ORDER: OverflowGroupId[] = ['display', 'input', 'disk', 'state'];
 
 const OVERFLOW_GROUPS: Record<OverflowGroupId, OverflowGroup> = {
-  display: { title: () => t('toolbarGroupDisplay'), actions: [btnAspect] },
+  display: { title: () => t('toolbarGroupDisplay'), actions: [btnAspect, btnToggleHdd, btnToggleScsi, btnToggleHostfs] },
   input: { title: () => t('toolbarGroupInput'), actions: [btnMouseCapture, btnMouseResync, btnGamepad, btnHostKey] },
   disk: { title: () => t('toolbarGroupDisk'), actions: [btnDiskLibrary, btnFileManager] },
   state: { title: () => t('toolbarGroupState'), actions: [btnSaveState, btnLoadState] },
@@ -6839,6 +6847,22 @@ if (import.meta.env.DEV) {
     // HostFS W2a検証プローブ(上のhostFsW2aProbe参照)。dispatcherを経由せず、
     // OPFS上でバックエンドの書き込みAPIを直接叩いて結果をJSONで返す。
     hostFsW2aProbe: () => hostFsW2aProbe(),
+    // 検証用(feature/hostfs 追加分): 覚え書き・警告・非表示名通知・行表示切替の実地確認
+    // (report.mdの手順(a)〜(f))から状態を読むためのフック。DEV限定、本番buildには含まれない。
+    hostfsUiState: () => ({
+      note: hostFsNote,
+      connected: hostFsHandle !== null,
+      driverDetected: hostFsUiStatus.driverDetected,
+      rejectedCount: hostFsUiStatus.rejectedCount,
+      rejectedNames: hostFsUiStatus.rejectedNames,
+      rejectedPath: hostFsUiStatus.rejectedPath,
+      showHddPref,
+      showScsiPref,
+      showHostfsPref,
+      rowHddHidden: rowHdd.hidden,
+      rowScsiHidden: rowScsi.hidden,
+      rowHostfsHidden: rowHostfs.hidden,
+    }),
   };
 }
 
