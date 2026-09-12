@@ -308,6 +308,29 @@ export function isHostFsDetachMessage(message: unknown): message is HostFsDetach
   );
 }
 
+// --- HostFS 状態通知(ドライバ未組み込み警告・非表示名の通知、追加分) -----------------
+//
+// Worker側(dispatcher.getDriverStatus() / HostFolderFsのrejectedNames)が持つ状態を
+// ページ側(main.ts)のUIへ届けるための専用イベント。frame eventへの相乗りにせず
+// 専用にしたのは、変化した瞬間だけ送ればよく(毎フレーム送る必要が無い)、
+// FrameSnapshotの必須フィールドを増やしたくないため。
+
+/** ページ側のHostFS行に出す警告・通知に必要な状態をまとめたもの。 */
+export interface HostFsUiStatus {
+  /** ゲストのHOSTFS.SYSが初期化($40)を知らせてきたか。 */
+  driverDetected: boolean;
+  /** 割り当てられたドライブ番号(0=A:)。driverDetected=falseならnull。 */
+  driveNumber: number | null;
+  /** 直近のlistDir()呼び出し1回ぶんで、Human68kで表せず出さなかった名前の件数。 */
+  rejectedCount: number;
+  /** 上記のうち先頭最大20件の名前そのもの(通知のツールチップ用)。 */
+  rejectedNames: string[];
+  /** rejectedNamesがどのディレクトリの一覧だったか(Human68k側パス、ルートは''）。 */
+  rejectedPath: string;
+}
+
+export const HOSTFS_STATUS_EVENT = 'hostfsStatus' as const;
+
 // --- シリアル(SCCチャネルA / Web Serial、master取り込み後のWorker配線の穴の是正) -------
 //
 // WebSerialTransport(src/serial.ts)はnavigator.serialを使うためメインスレッド専用で、
@@ -485,7 +508,8 @@ export type CoreEvent =
       keyRepeat?: KeyRepeatConfig;
     }
   | { kind: 'event'; generation: Generation; event: 'fatal'; error: CoreError }
-  | { kind: 'event'; generation: Generation; event: 'mouseTrackDisabled' };
+  | { kind: 'event'; generation: Generation; event: 'mouseTrackDisabled' }
+  | { kind: 'event'; generation: Generation; event: typeof HOSTFS_STATUS_EVENT; status: HostFsUiStatus };
 
 export interface KeyRepeatConfig {
   delayMs: number;
@@ -985,6 +1009,7 @@ export function collectTransferables(
     case 'ready':
     case 'fatal':
     case 'mouseTrackDisabled':
+    case HOSTFS_STATUS_EVENT:
       break;
     default: {
       const _exhaustive: never = message;

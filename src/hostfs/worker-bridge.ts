@@ -12,6 +12,7 @@ import type { GuestMemory } from './guest-memory';
 import { HostFsDispatcher, type HostFsStats } from './dispatcher';
 import { FakeFs, SwitchableFs, NotConnectedFs, type HostFsConnectMode } from './filesystem';
 import { HostFolderFs } from './host-folder-fs';
+import type { HostFsUiStatus } from '../core-protocol';
 
 /** LibretroHost が実際に持っていれば十分(循環import回避のため構造的に受け取る)。 */
 export interface GuestMemoryHost {
@@ -38,6 +39,12 @@ export interface HostFsBridgeResult {
    */
   attach?: (dirHandle: FileSystemDirectoryHandle, mode: HostFsConnectMode) => void;
   detach?: () => void;
+  /**
+   * ページ側UIの警告・通知(追加分)用: ドライバ検出状態と、直近のlistDir()で
+   * 出さなかった名前を1つにまとめて返す。mode==='real'のときだけ入る
+   * (installed=falseやmode==='fake'では常にNotConnectedFs/FakeFs相当のnull/0を返せば十分)。
+   */
+  getStatus?: () => HostFsUiStatus;
 }
 
 /**
@@ -139,6 +146,18 @@ export function installHostFsBridge(host: GuestMemoryHost): HostFsBridgeResult {
     detach: () => {
       (switchable as SwitchableFs).current = new NotConnectedFs();
       console.log('[WebX68k-worker] HostFS: フォルダを切断した');
+    },
+    getStatus: (): HostFsUiStatus => {
+      const driver = dispatcher.getDriverStatus();
+      const current = (switchable as SwitchableFs).current;
+      const rejected = current instanceof HostFolderFs ? current : null;
+      return {
+        driverDetected: driver.detected,
+        driveNumber: driver.driveNumber,
+        rejectedCount: rejected?.rejectedCount ?? 0,
+        rejectedNames: rejected?.rejectedNames ?? [],
+        rejectedPath: rejected?.lastListedPath ?? '',
+      };
     },
   };
 }

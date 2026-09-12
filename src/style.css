@@ -943,6 +943,23 @@ main {
   opacity: 0.85;
 }
 
+/* HostFS行の警告・通知(feature/hostfs 追加分)。.fd-nameのflex:1 1 autoをそのまま
+ * 使うと本来のフォルダ名(覚え書き込み)の表示幅を奪ってしまうため、こちらは
+ * 内容ぶんの幅に留める(flex-grow/shrinkしない、こちらだけ縮めて省略させる)。 */
+.hostfs-warning,
+.hostfs-rejected {
+  flex: 0 1 auto;
+  max-width: 40%;
+}
+.hostfs-warning {
+  color: var(--status-warn, #e0a030);
+  font-weight: 600;
+}
+.hostfs-rejected {
+  color: var(--footer-text-dim);
+  font-style: italic;
+}
+
 .fd-slot .icon-btn {
   display: inline-flex;
   align-items: center;

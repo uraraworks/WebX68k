@@ -87,10 +87,12 @@ import {
   isSerialStateMessage,
   isSpeedUpdateMessage,
   WORKER_BOOT_ACK_KIND,
+  HOSTFS_STATUS_EVENT,
   type CoreCommand,
   type CoreError,
   type FrameSnapshot,
   type Generation,
+  type HostFsUiStatus,
   type InputUpdate,
   type WorkerToMain,
 } from './core-protocol';
@@ -265,6 +267,23 @@ let proxy: LocalCoreProxy | null = null;
 let host: LibretroHost | null = null;
 /** HostFS(feature/hostfs) P2a #3: mode==='real'のときだけattach/detachが入る。 */
 let hostFsBridge: ReturnType<typeof installHostFsBridge> | null = null;
+/**
+ * 直近にpost()した HOSTFS_STATUS_EVENT の中身(変化検出用、追加分)。handleInitialize()
+ * (起動・リセットの両方でここを通る)の頭でnullへ戻し、次のsendFrame()が
+ * 「未検出」を必ず1回はpostするようにする(ページ側の警告表示をリセットで戻すため)。
+ */
+let lastSentHostfsStatus: HostFsUiStatus | null = null;
+
+function hostfsStatusEquals(a: HostFsUiStatus, b: HostFsUiStatus): boolean {
+  return (
+    a.driverDetected === b.driverDetected &&
+    a.driveNumber === b.driveNumber &&
+    a.rejectedCount === b.rejectedCount &&
+    a.rejectedPath === b.rejectedPath &&
+    a.rejectedNames.length === b.rejectedNames.length &&
+    a.rejectedNames.every((name, i) => name === b.rejectedNames[i])
+  );
+}
 let coreModuleLoaded = false;
 /** 現在の generation。initialize command から受け取ったものをそのまま event に載せ続ける。 */
 let currentGeneration: Generation = 0;
@@ -799,6 +818,15 @@ function sendFrame(
   post({ kind: 'event', generation: currentGeneration, event: 'frame', snapshot });
   const postEnd = onProbe ? ctx.performance.now() : 0;
   if (onProbe) onProbe(convertEnd - convertStart, postEnd - postStart);
+
+  // HostFS状態通知(追加分): 変化したときだけ専用イベントを送る(毎フレーム送らない)。
+  // frame eventの後に置くのは、上のpost()の可否判定(video解像度未確定時のearly return)に
+  // 巻き込まれたくないため、というほどの意味は無く単に既存のframe post直後が自然な位置。
+  const status = hostFsBridge?.getStatus?.();
+  if (status && (!lastSentHostfsStatus || !hostfsStatusEquals(lastSentHostfsStatus, status))) {
+    lastSentHostfsStatus = status;
+    post({ kind: 'event', generation: currentGeneration, event: HOSTFS_STATUS_EVENT, status });
+  }
 }
 
 async function handleInitialize(
@@ -871,6 +899,10 @@ async function handleInitialize(
     // newHost.init()でmodが確定した後に呼ぶ必要がある。
     const hostfs = installHostFsBridge(newHost);
     hostFsBridge = hostfs;
+    // リセット・再起動のたびにここを通る(handleInitializeは起動/リセット共通)。
+    // 新しいdispatcherは未検出から始まるため、ページ側の警告表示も必ず戻す
+    // (次のsendFrame()で「未検出」状態を確実に1回postするため)。
+    lastSentHostfsStatus = null;
     console.log(
       hostfs.installed
         ? '[WebX68k-worker] HostFS: 有効'

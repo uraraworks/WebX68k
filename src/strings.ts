@@ -134,6 +134,21 @@ interface Dict {
   hostfsModeDialogReadonly(): string;
   hostfsModeDialogReadwrite(): string;
   hostfsModeDialogCancel(): string;
+  /** 覚え書き(feature/hostfs 追加分): つなぐダイアログの入力欄ラベル・編集ダイアログ共通。 */
+  hostfsNoteLabel(): string;
+  hostfsNotePlaceholder(): string;
+  hostfsNoteDialogTitle(): string;
+  hostfsNoteDialogSave(): string;
+  /** ドライバ未組み込み警告: フォルダ接続済みなのにHOSTFS.SYSの初期化通知がまだ来ていないとき。 */
+  hostfsDriverWarningTooltip(): string;
+  /** 表示していない名前の通知(行のラベルとツールチップ)。 */
+  hostfsRejectedNamesLabel(args: { count: number }): string;
+  hostfsRejectedNamesMore(args: { count: number }): string;
+  hostfsRejectedNamesTooltip(args: { path: string; names: string }): string;
+  /** ドライブ行の表示切替トグル(「…」メニュー、feature/hostfs 追加分)。 */
+  toolbarToggleHdd(): string;
+  toolbarToggleScsi(): string;
+  toolbarToggleHostfs(): string;
   /** 実行中にFDを排出しようとしたときの確認(誤タップでゲストがフリーズする事故の防止)。 */
   slotEjectConfirmRunning(): string;
   /** ドライブアクセスランプのスクリーンリーダー向けラベル。 */
@@ -641,6 +656,18 @@ const STRINGS: Record<Lang, Dict> = {
     hostfsModeDialogReadonly: () => '読み取り専用でつなぐ',
     hostfsModeDialogReadwrite: () => '書き込みも許可してつなぐ',
     hostfsModeDialogCancel: () => 'キャンセル',
+    hostfsNoteLabel: () => '覚え書き(任意)',
+    hostfsNotePlaceholder: () => '例: Desktop/資料/共有フォルダ',
+    hostfsNoteDialogTitle: () => '覚え書きを編集',
+    hostfsNoteDialogSave: () => '保存',
+    hostfsDriverWarningTooltip: () =>
+      'ディスクライブラリの「このディスクにHostFSを組み込む」で組み込んだディスクから起動してください',
+    hostfsRejectedNamesLabel: ({ count }) => `${count}件の名前は表示していません`,
+    hostfsRejectedNamesMore: ({ count }) => `ほか${count}件`,
+    hostfsRejectedNamesTooltip: ({ path, names }) => `${path} の一覧: ${names}`,
+    toolbarToggleHdd: () => 'HDD（SASI）を表示',
+    toolbarToggleScsi: () => 'SCSI-HDDを表示',
+    toolbarToggleHostfs: () => 'HostFSを表示',
     statusScsiBlankCreated: ({ name, sizeMiB }) =>
       `ブランクSCSIディスク「${name}」(${sizeMiB}MB)を作成しました。次回の起動から使えます`,
     slotEjectConfirmRunning: () =>
@@ -1046,6 +1073,18 @@ const STRINGS: Record<Lang, Dict> = {
     hostfsModeDialogReadonly: () => 'Connect read-only',
     hostfsModeDialogReadwrite: () => 'Connect with writing allowed',
     hostfsModeDialogCancel: () => 'Cancel',
+    hostfsNoteLabel: () => 'Note (optional)',
+    hostfsNotePlaceholder: () => 'e.g. Desktop/Docs/Shared folder',
+    hostfsNoteDialogTitle: () => 'Edit note',
+    hostfsNoteDialogSave: () => 'Save',
+    hostfsDriverWarningTooltip: () =>
+      'Boot from a disk with HostFS installed, using "Install HostFS onto this disk" in the disk library',
+    hostfsRejectedNamesLabel: ({ count }) => `${count} name(s) not shown`,
+    hostfsRejectedNamesMore: ({ count }) => `${count} more`,
+    hostfsRejectedNamesTooltip: ({ path, names }) => `Listing of ${path}: ${names}`,
+    toolbarToggleHdd: () => 'Show HDD (SASI)',
+    toolbarToggleScsi: () => 'Show SCSI-HDD',
+    toolbarToggleHostfs: () => 'Show HostFS',
     statusScsiBlankCreated: ({ name, sizeMiB }) =>
       `Created blank SCSI disk "${name}" (${sizeMiB}MB). It will be used from the next boot.`,
     slotEjectConfirmRunning: () =>

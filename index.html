@@ -143,6 +143,19 @@
             <button id="btn-aspect" type="button" class="icon-btn" title="4:3表示" aria-label="4:3表示" aria-pressed="false">
               <svg class="btn-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M2 5h20v14H2z M9 21h6 M12 19v2"/></svg>
             </button>
+            <!-- ドライブ行の表示切替(feature/hostfs 追加分)。HDD(SASI)/SCSI-HDD/HostFSの3行は
+                 初期値で非表示にするため、「…」メニューにbtn-aspectと同じ作り(aria-pressed)の
+                 トグルを3つ並べる。アイコンは互いに見分けがつくよう別形状にする
+                 (2段の皿=HDD、3段のラック=SCSI、フォルダ=HostFS)。 -->
+            <button id="btn-toggle-hdd" type="button" class="icon-btn" title="HDD（SASI）を表示" aria-label="HDD（SASI）を表示" aria-pressed="false">
+              <svg class="btn-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 5h16v6H4z M4 13h16v6H4z M7 8h.01 M7 16h.01"/></svg>
+            </button>
+            <button id="btn-toggle-scsi" type="button" class="icon-btn" title="SCSI-HDDを表示" aria-label="SCSI-HDDを表示" aria-pressed="false">
+              <svg class="btn-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 4h16v4H4z M4 10h16v4H4z M4 16h16v4H4z M7 6h.01 M7 12h.01 M7 18h.01"/></svg>
+            </button>
+            <button id="btn-toggle-hostfs" type="button" class="icon-btn" title="HostFSを表示" aria-label="HostFSを表示" aria-pressed="false">
+              <svg class="btn-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M3 7h6l2 2h10v9a1 1 0 0 1-1 1H3a1 1 0 0 1-1-1V8a1 1 0 0 1 1-1z M9 15l3-3 3 3 M12 12v6"/></svg>
+            </button>
             <button id="btn-gamepad" type="button" class="icon-btn" title="ジョイスティック設定" aria-label="ジョイスティック設定">
               <svg class="btn-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M6 9h12a3 3 0 0 1 3 3l1 4a2 2 0 0 1-3.6 1.2L17 15H7l-1.4 2.2A2 2 0 0 1 2 16l1-4a3 3 0 0 1 3-3z M7 12v3 M5.5 13.5h3 M15.5 12.5h.01 M18 14.5h.01"/></svg>
             </button>
@@ -255,6 +268,15 @@
               <span id="lamp-hostfs" class="fd-lamp" role="img" aria-label="ホストフォルダ アクセスランプ"></span>
               <span id="label-hostfs" class="fd-label" title="ホストフォルダ(HostFS)">HostFS</span>
               <span id="name-hostfs" class="fd-name">未接続</span>
+              <!-- ドライバ未組み込み警告(feature/hostfs 追加分)。フォルダはつながっているが
+                   ゲストのHOSTFS.SYSからまだ初期化$40の知らせが来ていないときだけ出す。 -->
+              <span id="hostfs-warning" class="fd-name hostfs-warning" hidden>⚠ ゲストで HOSTFS.SYS が読み込まれていません</span>
+              <!-- 非表示名の通知(feature/hostfs 追加分)。直近の一覧でHuman68kで表せず
+                   外した名前があるときだけ出す。ツールチップに実際の名前一覧を出す。 -->
+              <span id="hostfs-rejected" class="fd-name hostfs-rejected" hidden></span>
+              <button id="btn-edit-hostfs-note" type="button" class="icon-btn" title="覚え書きを編集" aria-label="覚え書きを編集" hidden>
+                <svg class="btn-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 20h4l10.5-10.5-4-4L4 16v4z M14 6l4 4"/></svg>
+              </button>
               <button id="btn-connect-hostfs" type="button" class="icon-btn" title="フォルダをつなぐ" aria-label="ホストフォルダをつなぐ">
                 <svg class="btn-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 16h13l3-3V6a1 1 0 0 0-1-1H4a1 1 0 0 0-1 1v9a1 1 0 0 0 1 1z M4 20h13a3 3 0 0 0 3-3"/></svg>
               </button>
@@ -404,10 +426,32 @@
       <p id="hostfs-mode-description" class="rom-modal-description">
         書き込みを許可すると、ゲストからの削除・上書きがそのままホスト側のフォルダに反映されます(ゴミ箱はありません)。
       </p>
+      <!-- 覚え書き(利用者が決めたこと、追加分): File System Access API はフォルダの名前しか
+           渡さずホスト側のフルパスが分からないため、利用者がメモできる欄を足す(任意・60字まで)。 -->
+      <div class="field-row">
+        <label id="hostfs-mode-note-label" for="hostfs-mode-note">覚え書き(任意)</label>
+        <input id="hostfs-mode-note" type="text" maxlength="60" placeholder="例: Desktop/資料/共有フォルダ" />
+      </div>
       <div class="rom-modal-footer">
         <button id="hostfs-mode-cancel" type="button" class="rom-close-btn">キャンセル</button>
         <button id="hostfs-mode-readonly" type="button" class="rom-close-btn">読み取り専用でつなぐ</button>
         <button id="hostfs-mode-readwrite" type="button" class="rom-close-btn">書き込みも許可してつなぐ</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- 覚え書きの編集専用ダイアログ(feature/hostfs 追加分)。接続済みのフォルダに対して
+       あとから覚え書きだけ直せるようにする(意匠はhostfs-mode-backdropと同じ.rom-modal系)。 -->
+  <div id="hostfs-note-backdrop" class="rom-modal-backdrop hidden">
+    <div class="rom-modal" role="dialog" aria-modal="true" aria-labelledby="hostfs-note-title">
+      <h2 id="hostfs-note-title" class="rom-modal-title">覚え書きを編集</h2>
+      <div class="field-row">
+        <label id="hostfs-note-input-label" for="hostfs-note-input">覚え書き(任意)</label>
+        <input id="hostfs-note-input" type="text" maxlength="60" />
+      </div>
+      <div class="rom-modal-footer">
+        <button id="hostfs-note-cancel" type="button" class="rom-close-btn">キャンセル</button>
+        <button id="hostfs-note-save" type="button" class="rom-close-btn">保存</button>
       </div>
     </div>
   </div>

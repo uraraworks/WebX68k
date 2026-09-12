@@ -78,13 +78,15 @@ import {
   type InitialDiskInput,
   type LibretroHostProxy,
 } from './core-proxy';
-import type {
-  CoreEvent,
-  FrameSnapshot,
-  HostGlobalValue,
-  KeyBufFrameProbe,
-  MouseTrackFrameProbe,
-  ScsiDebugFrameProbe,
+import {
+  HOSTFS_STATUS_EVENT,
+  type CoreEvent,
+  type FrameSnapshot,
+  type HostFsUiStatus,
+  type HostGlobalValue,
+  type KeyBufFrameProbe,
+  type MouseTrackFrameProbe,
+  type ScsiDebugFrameProbe,
 } from './core-protocol';
 import { collectHostGlobals } from './host-globals';
 import { sliceKeyBufSnapshot } from './keybuf-probe';
@@ -204,17 +206,20 @@ import {
 import { applySerialRxQueueReport, routeSerialReceive } from './serial-worker-bridge';
 import {
   clearHostFolderHandle,
+  HOSTFS_NOTE_MAX_LENGTH,
   isDirectoryPickerSupported,
   loadHostFolderHandle,
   queryHostFolderPermission,
   requestHostFolderPermission,
   saveHostFolderHandle,
+  updateHostFolderNote,
 } from './hostfs/host-folder-store';
 import { seedHostFsOpfsTest } from './hostfs/opfs-test-seed';
 import type { HostFsConnectMode } from './hostfs/filesystem';
 // W2a検証プローブ(__webx68kDebug.hostFsW2aProbe)専用: dispatcherを経由せず、
 // バックエンドの書き込みAPIをOPFSのhandleへ直接叩いて確かめる(DEV限定)。
 import { HostFolderFs } from './hostfs/host-folder-fs';
+import { shouldShowDriveRow } from './drive-visibility';
 
 const canvas = document.getElementById('screen') as HTMLCanvasElement;
 const bootOverlay = document.getElementById('boot-overlay') as HTMLDivElement;
@@ -381,6 +386,9 @@ const scsiElements: ScsiElements = {
 interface HostFsElements {
   lamp: HTMLElement;
   name: HTMLElement;
+  warning: HTMLElement;
+  rejected: HTMLElement;
+  editNoteBtn: HTMLButtonElement;
   connectBtn: HTMLButtonElement;
   reconnectBtn: HTMLButtonElement;
   disconnectBtn: HTMLButtonElement;
@@ -389,6 +397,9 @@ interface HostFsElements {
 const hostFsElements: HostFsElements = {
   lamp: document.getElementById('lamp-hostfs') as HTMLElement,
   name: document.getElementById('name-hostfs') as HTMLElement,
+  warning: document.getElementById('hostfs-warning') as HTMLElement,
+  rejected: document.getElementById('hostfs-rejected') as HTMLElement,
+  editNoteBtn: document.getElementById('btn-edit-hostfs-note') as HTMLButtonElement,
   connectBtn: document.getElementById('btn-connect-hostfs') as HTMLButtonElement,
   reconnectBtn: document.getElementById('btn-reconnect-hostfs') as HTMLButtonElement,
   disconnectBtn: document.getElementById('btn-disconnect-hostfs') as HTMLButtonElement,
@@ -398,21 +409,69 @@ const hostFsModeBackdrop = document.getElementById('hostfs-mode-backdrop') as HT
 const hostFsModeReadonlyBtn = document.getElementById('hostfs-mode-readonly') as HTMLButtonElement;
 const hostFsModeReadwriteBtn = document.getElementById('hostfs-mode-readwrite') as HTMLButtonElement;
 const hostFsModeCancelBtn = document.getElementById('hostfs-mode-cancel') as HTMLButtonElement;
+const hostFsModeNoteInput = document.getElementById('hostfs-mode-note') as HTMLInputElement;
+
+// 覚え書きの編集専用ダイアログ(利用者が決めたこと: File System Access API はフォルダ名しか
+// 渡さずホスト側のフルパスが分からないため、利用者がメモできるようにする)。
+const hostFsNoteBackdrop = document.getElementById('hostfs-note-backdrop') as HTMLDivElement;
+const hostFsNoteInput = document.getElementById('hostfs-note-input') as HTMLInputElement;
+const hostFsNoteSaveBtn = document.getElementById('hostfs-note-save') as HTMLButtonElement;
+const hostFsNoteCancelBtn = document.getElementById('hostfs-note-cancel') as HTMLButtonElement;
 
 let hostFsHandle: FileSystemDirectoryHandle | null = null;
 let hostFsMode: HostFsConnectMode | null = null;
-/** queryPermission()が'prompt'を返した保存済みハンドル(モード込み)。再接続ボタン用。 */
-let hostFsReconnectCandidate: { handle: FileSystemDirectoryHandle; mode: HostFsConnectMode } | null = null;
+/** 覚え書き(任意)。未接続、または覚え書き未設定ならnull。 */
+let hostFsNote: string | null = null;
+/** queryPermission()が'prompt'を返した保存済みハンドル(モード込み・覚え書き込み)。再接続ボタン用。 */
+let hostFsReconnectCandidate: { handle: FileSystemDirectoryHandle; mode: HostFsConnectMode; note?: string } | null =
+  null;
+
+/**
+ * Worker側(src/hostfs/dispatcher.ts)からのHOSTFS_STATUS_EVENTをそのまま保持するだけの状態。
+ * 「フォルダが未接続のときは警告を出さない」はupdateHostFsUi()側で見るhostFsHandleとの
+ * 組み合わせで判定するため、ここでは素直にWorkerから届いた値を持つだけでよい。
+ * リセット・再起動でWorker側が作り直されるとdriverDetected:falseへ戻る通知が必ず届く
+ * (src/core-worker.tsのlastSentHostfsStatusリセット参照)ので、ここも自然に追従する。
+ *
+ * メインスレッド経路(`?worker=0`)では、この状態を更新するイベント自体が存在しない
+ * (HostFsDispatcherはWorker内にしか無い)。hostFsHandleも常にnull(接続ボタンが無効化
+ * されているため)なので、updateHostFsUi()のガード(!hostFsHandleなら警告非表示)により
+ * 警告は自動的に出ない。専用の分岐は不要と判断した。
+ */
+let hostFsUiStatus: HostFsUiStatus = {
+  driverDetected: false,
+  driveNumber: null,
+  rejectedCount: 0,
+  rejectedNames: [],
+  rejectedPath: '',
+};
+
+/** HostFsUiStatusを初期状態へ戻す(新しいWorkerコアの起動直後、通知が届く前の一時表示用)。 */
+function resetHostFsUiStatus(): void {
+  hostFsUiStatus = { driverDetected: false, driveNumber: null, rejectedCount: 0, rejectedNames: [], rejectedPath: '' };
+}
+
+/** HostFS行に「つながっている」とみなす行の表示切替向け判定(再接続待ちも含む、親からの指示書のとおり)。 */
+function hostFsHasContent(): boolean {
+  return hostFsHandle !== null || hostFsReconnectCandidate !== null;
+}
 
 function updateHostFsUi(): void {
   const supported = urlWorkerMode && isDirectoryPickerSupported();
-  hostFsElements.name.textContent = hostFsHandle
-    ? `${hostFsHandle.name}${hostFsMode === 'readwrite' ? t('hostfsModeReadwriteSuffix') : t('hostfsModeReadonlySuffix')}`
+  const modeSuffix = hostFsMode === 'readwrite' ? t('hostfsModeReadwriteSuffix') : t('hostfsModeReadonlySuffix');
+  const fullLabel = hostFsHandle
+    ? hostFsNote
+      ? `${hostFsHandle.name} — ${hostFsNote}${modeSuffix}`
+      : `${hostFsHandle.name}${modeSuffix}`
     : !urlWorkerMode
       ? t('hostfsWorkerOnly')
       : !isDirectoryPickerSupported()
         ? t('hostfsUnavailable')
         : t('hostfsEmpty');
+  hostFsElements.name.textContent = fullLabel;
+  // 長いときはCSS側(fd-name、既存のtext-overflow: ellipsis)で省略されるので、
+  // titleに全文を入れてツールチップで見せる(親からの指示書のとおり)。
+  hostFsElements.name.title = fullLabel;
   hostFsElements.connectBtn.disabled = !supported;
   hostFsElements.connectBtn.title = supported
     ? t('hostfsConnect')
@@ -421,16 +480,61 @@ function updateHostFsUi(): void {
       : t('hostfsUnavailable');
   hostFsElements.disconnectBtn.disabled = !supported || !hostFsHandle;
   hostFsElements.reconnectBtn.hidden = !supported || !hostFsReconnectCandidate;
+  hostFsElements.editNoteBtn.hidden = !hostFsHandle;
+
+  // ドライバ未組み込み警告(利用者が決めたこと): フォルダが接続済みなのに、まだ$40の
+  // 初期化通知が来ていないときだけ出す。未接続時は出さない(親からの指示書のとおり)。
+  const showWarning = hostFsHandle !== null && !hostFsUiStatus.driverDetected;
+  hostFsElements.warning.hidden = !showWarning;
+  if (showWarning) {
+    hostFsElements.warning.title = t('hostfsDriverWarningTooltip');
+  }
+
+  // 非表示名の通知: 直近の一覧で外した名前が1件以上あるときだけ出す。
+  const rejectedCount = hostFsUiStatus.rejectedCount;
+  hostFsElements.rejected.hidden = rejectedCount === 0;
+  if (rejectedCount > 0) {
+    hostFsElements.rejected.textContent = t('hostfsRejectedNamesLabel', { count: rejectedCount });
+    const shown = hostFsUiStatus.rejectedNames;
+    const extra = rejectedCount - shown.length;
+    const namesLine = extra > 0 ? [...shown, t('hostfsRejectedNamesMore', { count: extra })].join(', ') : shown.join(', ');
+    const pathLabel = hostFsUiStatus.rejectedPath === '' ? '\\' : hostFsUiStatus.rejectedPath;
+    hostFsElements.rejected.title = t('hostfsRejectedNamesTooltip', { path: pathLabel, names: namesLine });
+  }
+
+  updateDriveRowVisibility();
 }
 
 function openHostFsModeDialog(): void {
+  hostFsModeNoteInput.value = '';
   hostFsModeBackdrop.classList.remove('hidden');
 }
 function closeHostFsModeDialog(): void {
   hostFsModeBackdrop.classList.add('hidden');
 }
 
+function openHostFsNoteDialog(): void {
+  hostFsNoteInput.value = hostFsNote ?? '';
+  hostFsNoteBackdrop.classList.remove('hidden');
+  hostFsNoteInput.focus();
+}
+function closeHostFsNoteDialog(): void {
+  hostFsNoteBackdrop.classList.add('hidden');
+}
+async function saveHostFsNote(): Promise<void> {
+  const note = hostFsNoteInput.value.trim().slice(0, HOSTFS_NOTE_MAX_LENGTH);
+  hostFsNote = note || null;
+  closeHostFsNoteDialog();
+  updateHostFsUi();
+  try {
+    await updateHostFolderNote(note);
+  } catch (err) {
+    console.warn('[HostFS] 覚え書きの保存に失敗しました', err);
+  }
+}
+
 async function pickHostFsFolder(mode: HostFsConnectMode): Promise<void> {
+  const note = hostFsModeNoteInput.value.trim().slice(0, HOSTFS_NOTE_MAX_LENGTH);
   closeHostFsModeDialog();
   try {
     const picker = (globalThis as Record<string, unknown>).showDirectoryPicker as (opts?: {
@@ -439,9 +543,11 @@ async function pickHostFsFolder(mode: HostFsConnectMode): Promise<void> {
     const handle = await picker({ mode });
     hostFsHandle = handle;
     hostFsMode = mode;
+    hostFsNote = note || null;
     hostFsReconnectCandidate = null;
+    resetHostFsUiStatus();
     workerCoreProxy?.sendHostFsAttach(handle, mode);
-    await saveHostFolderHandle(handle, mode);
+    await saveHostFolderHandle(handle, mode, note || undefined);
     showToast(t('statusHostFsConnected', { name: handle.name }));
   } catch (err) {
     // ユーザーがキャンセルした場合(AbortError)は黙って何もしない。
@@ -454,7 +560,9 @@ async function pickHostFsFolder(mode: HostFsConnectMode): Promise<void> {
 function disconnectHostFsFolder(): void {
   hostFsHandle = null;
   hostFsMode = null;
+  hostFsNote = null;
   hostFsReconnectCandidate = null;
+  resetHostFsUiStatus();
   workerCoreProxy?.sendHostFsDetach();
   void clearHostFolderHandle();
   showToast(t('statusHostFsDisconnected'));
@@ -471,7 +579,9 @@ async function reconnectHostFsFolder(): Promise<void> {
   }
   hostFsHandle = candidate.handle;
   hostFsMode = candidate.mode;
+  hostFsNote = candidate.note ?? null;
   hostFsReconnectCandidate = null;
+  resetHostFsUiStatus();
   workerCoreProxy?.sendHostFsAttach(candidate.handle, candidate.mode);
   showToast(t('statusHostFsConnected', { name: candidate.handle.name }));
   updateHostFsUi();
@@ -497,6 +607,8 @@ async function tryReattachHostFsFolder(): Promise<void> {
     if (permission === 'granted') {
       hostFsHandle = saved.handle;
       hostFsMode = saved.mode;
+      hostFsNote = saved.note ?? null;
+      resetHostFsUiStatus();
       workerCoreProxy?.sendHostFsAttach(saved.handle, saved.mode);
     } else {
       hostFsReconnectCandidate = saved;
@@ -519,6 +631,7 @@ async function setupHostFsOpfsTest(mode: HostFsConnectMode): Promise<void> {
     const handle = await seedHostFsOpfsTest();
     hostFsHandle = handle;
     hostFsMode = mode;
+    resetHostFsUiStatus();
     workerCoreProxy?.sendHostFsAttach(handle, mode);
     console.log(`[HostFS] opfs-test: OPFSへ検証用ファイルを作り、ATTACH(${mode})した`);
   } catch (err) {
@@ -530,18 +643,95 @@ async function setupHostFsOpfsTest(mode: HostFsConnectMode): Promise<void> {
 hostFsElements.connectBtn.addEventListener('click', () => openHostFsModeDialog());
 hostFsElements.disconnectBtn.addEventListener('click', disconnectHostFsFolder);
 hostFsElements.reconnectBtn.addEventListener('click', () => void reconnectHostFsFolder());
+hostFsElements.editNoteBtn.addEventListener('click', () => openHostFsNoteDialog());
 hostFsModeReadonlyBtn.addEventListener('click', () => void pickHostFsFolder('read'));
 hostFsModeReadwriteBtn.addEventListener('click', () => void pickHostFsFolder('readwrite'));
 hostFsModeCancelBtn.addEventListener('click', () => closeHostFsModeDialog());
 hostFsModeBackdrop.addEventListener('click', (e) => {
   if (e.target === hostFsModeBackdrop) closeHostFsModeDialog();
 });
+hostFsNoteSaveBtn.addEventListener('click', () => void saveHostFsNote());
+hostFsNoteCancelBtn.addEventListener('click', () => closeHostFsNoteDialog());
+hostFsNoteBackdrop.addEventListener('click', (e) => {
+  if (e.target === hostFsNoteBackdrop) closeHostFsNoteDialog();
+});
 window.addEventListener('keydown', (e) => {
-  if (e.key === 'Escape' && !hostFsModeBackdrop.classList.contains('hidden')) closeHostFsModeDialog();
+  if (e.key !== 'Escape') return;
+  if (!hostFsModeBackdrop.classList.contains('hidden')) closeHostFsModeDialog();
+  if (!hostFsNoteBackdrop.classList.contains('hidden')) closeHostFsNoteDialog();
 });
 // 初回描画は urlWorkerMode(このファイル下方でconst宣言、TDZの都合でここでは呼べない)の
 // 宣言直後で行う(このすぐ下のコメント「SCSIスロット(手順4)」より前の位置を探すのではなく、
 // urlWorkerMode宣言のコメント参照)。
+
+// --- ドライブ行の表示切替(feature/hostfs 追加分) -------------------------------------
+// 利用者が決めたこと: HDD(SASI)/SCSI-HDD/HostFSの3行は初期値で非表示にし、「…」メニューの
+// btn-aspectと同じ作り(aria-pressed)のトグル3つで出し入れする(FDDの2行は常に表示)。
+// 表示可否そのものの判定はsrc/drive-visibility.tsの純関数shouldShowDriveRow()に切り出し、
+// 単体テスト済み(DOM/localStorageに触れない)。ここでは「利用者の希望(localStorage)」と
+// 「その行に既に中身があるか」を渡して結果をhidden属性へ反映するだけ。
+const SHOW_HDD_KEY = 'webx68k.showHdd';
+const SHOW_SCSI_KEY = 'webx68k.showScsi';
+const SHOW_HOSTFS_KEY = 'webx68k.showHostfs';
+let showHddPref = localStorage.getItem(SHOW_HDD_KEY) === 'true';
+let showScsiPref = localStorage.getItem(SHOW_SCSI_KEY) === 'true';
+let showHostfsPref = localStorage.getItem(SHOW_HOSTFS_KEY) === 'true';
+
+const rowHdd = document.getElementById('slot-hdd') as HTMLDivElement;
+const rowScsi = document.getElementById('slot-scsi') as HTMLDivElement;
+const rowHostfs = document.getElementById('slot-hostfs') as HTMLDivElement;
+const btnToggleHdd = document.getElementById('btn-toggle-hdd') as HTMLButtonElement;
+const btnToggleScsi = document.getElementById('btn-toggle-scsi') as HTMLButtonElement;
+const btnToggleHostfs = document.getElementById('btn-toggle-hostfs') as HTMLButtonElement;
+
+/**
+ * 3行の実際の表示/非表示(hidden属性)を、利用者の希望と中身の有無から再計算する。
+ * 既存の行の処理(updateScsiControls等)を壊さないよう、行要素へhidden属性を付け外し
+ * するだけに留める(親からの指示書のとおり)。ディスク挿入(slots.hdd/scsiNameの変化)や
+ * HostFS接続状態の変化のたびに呼ぶ(updateScsiControls/updateHostFsUi/updateSlotUiの
+ * 各末尾を参照)。
+ */
+function updateDriveRowVisibility(): void {
+  rowHdd.hidden = !shouldShowDriveRow(showHddPref, slots.hdd !== null);
+  rowScsi.hidden = !shouldShowDriveRow(showScsiPref, scsiName !== null);
+  rowHostfs.hidden = !shouldShowDriveRow(showHostfsPref, hostFsHasContent());
+}
+
+/** トグルボタン自体の見た目(aria-pressed/タイトル)を、利用者の希望(表示切替の設定)に合わせる。
+ * 実際に行が見えているか(shouldShowDriveRow込みの結果)ではなく、素の希望を反映する
+ * (中身があって強制表示されている間もボタンはOFF表示のままにして、押せば消せることを示す)。 */
+function updateDriveToggleButtonsUi(): void {
+  const apply = (btn: HTMLButtonElement, pref: boolean, label: string): void => {
+    btn.classList.toggle('active', pref);
+    btn.setAttribute('aria-pressed', pref ? 'true' : 'false');
+    btn.title = label;
+    btn.setAttribute('aria-label', label);
+  };
+  apply(btnToggleHdd, showHddPref, t('toolbarToggleHdd'));
+  apply(btnToggleScsi, showScsiPref, t('toolbarToggleScsi'));
+  apply(btnToggleHostfs, showHostfsPref, t('toolbarToggleHostfs'));
+}
+
+btnToggleHdd.addEventListener('click', () => {
+  showHddPref = !showHddPref;
+  localStorage.setItem(SHOW_HDD_KEY, String(showHddPref));
+  updateDriveToggleButtonsUi();
+  updateDriveRowVisibility();
+});
+btnToggleScsi.addEventListener('click', () => {
+  showScsiPref = !showScsiPref;
+  localStorage.setItem(SHOW_SCSI_KEY, String(showScsiPref));
+  updateDriveToggleButtonsUi();
+  updateDriveRowVisibility();
+});
+btnToggleHostfs.addEventListener('click', () => {
+  showHostfsPref = !showHostfsPref;
+  localStorage.setItem(SHOW_HOSTFS_KEY, String(showHostfsPref));
+  updateDriveToggleButtonsUi();
+  updateDriveRowVisibility();
+});
+updateDriveToggleButtonsUi();
+updateDriveRowVisibility();
 
 // iOS の Chrome ではファイル選択ダイアログが accept 属性の拡張子を UTI(Uniform Type
 // Identifier)へ変換して候補を絞る。.xdf/.hdf/.dup/.hdm/.2hd/.dim のような拡張子は
@@ -2326,6 +2516,7 @@ function updateScsiControls(): void {
     scsiElements.ejectBtn.disabled = true;
     scsiElements.downloadBtn.disabled = true;
     scsiElements.name.textContent = t('scsiUnavailable');
+    updateDriveRowVisibility();
     return;
   }
   const locked = isScsiLocked();
@@ -2345,6 +2536,7 @@ function updateScsiControls(): void {
   scsiElements.downloadBtn.title = t('slotDownload');
 
   scsiElements.name.textContent = scsiName ?? t('scsiEmpty');
+  updateDriveRowVisibility();
 }
 
 /**
@@ -4014,6 +4206,13 @@ async function bootWorkerCore(): Promise<void> {
   recomputeSpeedMultiplier();
   updateSpeedButtonUi();
 
+  // HostFS状態通知(追加分): 新しいWorkerコアの起動直後は「まだ何も分かっていない」状態
+  // なので、前回の警告/通知を引きずらないようここで一旦リセットする。実際の状態は
+  // Worker側が新しいdispatcherを作った直後に必ず1回HOSTFS_STATUS_EVENTで送ってくる
+  // (src/core-worker.tsのlastSentHostfsStatusリセット参照)ので、すぐ追従する。
+  resetHostFsUiStatus();
+  updateHostFsUi();
+
   if (workerCoreProxy) {
     const previous = workerCoreProxy;
     workerCoreProxy = null;
@@ -4211,6 +4410,13 @@ async function bootWorkerCore(): Promise<void> {
       // Worker側の閉ループが追従を諦めた(手順6後半)。既定経路(stepMouseTracking)と同じ
       // 通知を出す。無言で死なせないこと(docs/STORAGE-SCSI.md「ワーカー移行 手順6後半」参照)。
       showToast(t('mouseTrackUnavailable'));
+      return;
+    }
+    if (event.event === HOSTFS_STATUS_EVENT) {
+      // ドライバ未組み込み警告・非表示名の通知(feature/hostfs 追加分)。変化したときだけ
+      // 届く(src/core-worker.tsのsendFrame()参照)ので、そのまま状態へ入れて描画し直すだけ。
+      hostFsUiStatus = event.status;
+      updateHostFsUi();
       return;
     }
     // 'ready'/'sramChanged' はこの経路では特に処理しない
@@ -4879,9 +5085,16 @@ function applyDocumentStrings(): void {
 
   document.getElementById('hostfs-mode-title')!.textContent = t('hostfsModeDialogTitle');
   document.getElementById('hostfs-mode-description')!.textContent = t('hostfsModeDialogDescription');
+  document.getElementById('hostfs-mode-note-label')!.textContent = t('hostfsNoteLabel');
+  hostFsModeNoteInput.placeholder = t('hostfsNotePlaceholder');
   hostFsModeCancelBtn.textContent = t('hostfsModeDialogCancel');
   hostFsModeReadonlyBtn.textContent = t('hostfsModeDialogReadonly');
   hostFsModeReadwriteBtn.textContent = t('hostfsModeDialogReadwrite');
+  document.getElementById('hostfs-note-title')!.textContent = t('hostfsNoteDialogTitle');
+  document.getElementById('hostfs-note-input-label')!.textContent = t('hostfsNoteLabel');
+  hostFsNoteCancelBtn.textContent = t('hostfsModeDialogCancel');
+  hostFsNoteSaveBtn.textContent = t('hostfsNoteDialogSave');
+  updateDriveToggleButtonsUi();
   updateHostFsUi();
 
   document.getElementById('settings-title')!.textContent = t('settingsTitle');
