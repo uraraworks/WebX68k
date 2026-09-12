@@ -106,6 +106,60 @@ CMD_READ_BUF_OFF set 18         * C9: 読み込みバッファへの far pointer
 CMD_CD set $ff                  * C11: 「cd」とみなすコマンドコード。$ffは無効(一致しない)
         endc
 
+        ifnd C12_MODE
+C12_MODE set 0                  * C12: 0=無効。1にするとC11の上に以下を足す(C11_MODE=1
+* かつC10_MODE=1・C9_MODE=1が前提):
+* ・record_requestの+14/+18/+22ポインタ追従を64/64/96バイトから88/88/88
+*   バイトへ広げる(ENTRY_SIZEは292へ拡張)。「書くコマンドが渡したバッファの
+*   中身を確認する」ため、追従自体はコマンド番号を問わず今まで通り常に行う
+*   (ここが書き込みバッファの記録を兼ねる)。
+* ・未対応コマンドの応答をcmd12_unknown_respへ委譲する。UNKNOWN_RESPで
+*   固定値を切り替えられる(w1=-19, w2=0)。C12_ECHO_WRITEを1にすると、
+*   「+14がRAMポインタらしく、+18が0〜65535の範囲(長さらしい)」という
+*   形のときだけ+18に触れず(渡された長さをそのまま成功として返す)、それ
+*   以外はUNKNOWN_RESPを返す(w1はC12_ECHO_WRITE=0のまま、w2で1にする)。
+        endc
+        ifnd UNKNOWN_RESP
+UNKNOWN_RESP set -19            * C12: 未対応コマンドの応答(+18)。w1=-19、w2=0を想定
+        endc
+        ifnd C12_ECHO_WRITE
+C12_ECHO_WRITE set 0            * C12: 0=無効(常にUNKNOWN_RESPを返す)。1で「書くコマンド」
+* らしい形を自動判定し、該当すれば+18に触れない(w2で使う)
+        endc
+
+* C12-w1の実測(write-test.s実行、REC_MAX=64で全44件を記録)で判明した
+* コマンド番号。$ffは無効(一致しない)のままなので、w1ビルドでは指定せず
+* cmd12_unknown_resp(-19)に落とす。w2で実際の値を渡して有効化する。
+*   $42=MKDIR(+14=NAMESTS)               $43=RMDIR(+14=NAMESTS)
+*   $44=RENAME(+14=OLD NAMESTS,+18=NEW NAMESTS)
+*   $45=DELETE(+14=NAMESTS)              $46=CHMOD(+13=ATR,+14=NAMESTS)
+*   $49=CREATE/NEWFILE共用(+13=ATR,+14=NAMESTS,+22=FCB出力)
+*   $4d=WRITE(+14=バッファ,+18=長さ,+22=FCB)
+* _FILEDATE($FF57)はここに来ない(Human68kがドライバへ届ける前に-6を
+* 返して打ち切る。実測: d6を閉じたハンドルで呼んでも開いたハンドルの
+* 想定でも同じ-6だった)。
+        ifnd CMD_MKDIR
+CMD_MKDIR set $ff
+        endc
+        ifnd CMD_RMDIR
+CMD_RMDIR set $ff
+        endc
+        ifnd CMD_RENAME
+CMD_RENAME set $ff
+        endc
+        ifnd CMD_DELETE
+CMD_DELETE set $ff
+        endc
+        ifnd CMD_CHMOD
+CMD_CHMOD set $ff
+        endc
+        ifnd CMD_CREATE
+CMD_CREATE set $ff
+        endc
+        ifnd CMD_WRITE
+CMD_WRITE set $ff
+        endc
+
         ifnd C10_MODE
 C10_MODE set 0                  * C10: 0=無効。1にするとC9の上に以下を足す(C9_MODE=1と併用が前提):
 * ・$47/$48が_NAMESTSの名前8+拡張子3を'?'をワイルドカードとしてfake_file/
@@ -134,13 +188,33 @@ C11_MODE set 0                  * C11: 0=無効。1にするとC10の上に以�
         endc
 
 EXTRA_SIZE set 142
-        ifne C10_MODE
-ENTRY_SIZE set 252              * C10: 2(cmd)+26(hdr)+64(+14先)+64(+18先)+96(+22先=FCB候補)
+        ifne C12_MODE
+ENTRY_SIZE set 292              * C12: 2(cmd)+26(hdr)+88(+14先)+88(+18先)+88(+22先)
+P14_OFF set 28
+P14_LEN set 88
+P18_OFF set 116
+P18_LEN set 88
+P22_OFF set 204
+P22_LEN set 88
         else
-          ifne C9_MODE
-ENTRY_SIZE set 156              * C9: 2(cmd)+26(hdr)+64(+14先)+64(+18先)
+          ifne C10_MODE
+ENTRY_SIZE set 252              * C10: 2(cmd)+26(hdr)+64(+14先)+64(+18先)+96(+22先=FCB候補)
+P14_OFF set 28
+P14_LEN set 64
+P18_OFF set 92
+P18_LEN set 64
+P22_OFF set 156
+P22_LEN set 96
           else
+            ifne C9_MODE
+ENTRY_SIZE set 156              * C9: 2(cmd)+26(hdr)+64(+14先)+64(+18先)
+P14_OFF set 28
+P14_LEN set 64
+P18_OFF set 92
+P18_LEN set 64
+            else
 ENTRY_SIZE set 170
+            endc
           endc
         endc
 
@@ -184,7 +258,14 @@ interrupt:
         endc
 
         cmp.b   #CMD_INIT,d0
+        ifne C12_MODE
+* C12はcmd_mkdir_ok等の分岐を7件足すため、既存の.s(短い変位)ではcmd_init
+* まで届かなくなる(実測: 「branch destination out of range」)。C12_MODE=0
+* の他条件は.sのまま変えない(バイナリ不変の要件を保つため)。
+        beq.w   cmd_init
+        else
         beq.s   cmd_init
+        endc
 
         ifne REC_MODE
 * ハンドラ本体はdone:より後ろ(record_requestの近く)に置くので、遠くへ
@@ -212,6 +293,25 @@ interrupt:
         cmp.b   #CMD_CD,d0
         beq.w   cmd_cd_ok
         endc
+        ifne C12_MODE
+* --- C12-w1の実測で判明したコマンド番号。すべてw2(UNKNOWN_RESP=0)で
+* 初めて意味を持つ(w1では-DCMD_xxx未指定=$ffのままなので、この分岐には
+* 入らずcmd12_unknown_respへ落ちる=-19を返す)。 ---
+        cmp.b   #CMD_MKDIR,d0
+        beq.w   cmd_mkdir_ok
+        cmp.b   #CMD_RMDIR,d0
+        beq.w   cmd_rmdir_ok
+        cmp.b   #CMD_RENAME,d0
+        beq.w   cmd_rename_ok
+        cmp.b   #CMD_DELETE,d0
+        beq.w   cmd_delete_ok
+        cmp.b   #CMD_CHMOD,d0
+        beq.w   cmd_chmod_ok
+        cmp.b   #CMD_CREATE,d0
+        beq.w   cmd_create_ok
+        cmp.b   #CMD_WRITE,d0
+        beq.w   cmd_write_ok
+        endc
         endc
         endc
 
@@ -222,14 +322,19 @@ interrupt:
         endc
 
         ifne C9_MODE
-* --- C9: 未対応コマンドは状態0・+18=-2(ファイルが見つからない)を返す。
-* C11は-3(ディレクトリが見つからない)に変える(cd等の未知コマンドの解読用)。 ---
+* --- C9/C11: 未対応コマンドの応答。C12はcmd12_unknown_respへ委譲し、
+* ヘッダの形から「書くコマンド」らしいかを自動判定する。C12を使わない
+* ときは従来通り固定値(C11=-3、それ以前=-2)。 ---
         move.b  #$00,3(a0)
         move.b  #$00,4(a0)
-        ifne C11_MODE
-        move.l  #-3,18(a0)
+        ifne C12_MODE
+        bsr.w   cmd12_unknown_resp
         else
+          ifne C11_MODE
+        move.l  #-3,18(a0)
+          else
         move.l  #-2,18(a0)
+          endc
         endc
         moveq   #0,d0
         bra.w   done
@@ -933,6 +1038,63 @@ cmd11_cd_bad:
         endc
         endc
 
+        ifne C12_MODE
+* --- C12-w2: C12-w1で判明したコマンドへの個別応答。いずれも状態0を返す。
+* MKDIR/RMDIR/RENAME/DELETEは+18=0(成功)。CHMODも簡略化して常に+18=0
+* (取得/設定の区別はh13だけでは省略し、両方成功扱いにする)。CREATEは
+* OPEN(cmd_open_ok)と同様+18=0(実ハンドル番号はHuman68k側が採番する)。
+* WRITEは+18に触れない(渡された長さをそのまま「全部書けた」として返す)。 ---
+cmd_mkdir_ok:
+cmd_rmdir_ok:
+cmd_rename_ok:
+cmd_delete_ok:
+cmd_chmod_ok:
+cmd_create_ok:
+        move.b  #$00,3(a0)
+        move.b  #$00,4(a0)
+        move.l  #0,18(a0)
+        moveq   #0,d0
+        bra.w   done
+
+cmd_write_ok:
+        move.b  #$00,3(a0)
+        move.b  #$00,4(a0)
+        moveq   #0,d0
+        bra.w   done
+        endc
+
+        ifne C12_MODE
+* -----------------------------------------------------------------------
+* cmd12_unknown_resp -- C12: 未対応コマンドの応答を決める。
+* 呼び出し前提: a0=リクエストヘッダ(状態+3/+4は呼び出し元で既に0にして
+* ある)。C12_ECHO_WRITE=1のときだけ、「+14が0<val<$C00000かつ偶数(RAM
+* ポインタらしい)、かつ+18が0以上65536未満(長さらしい)」という形を見て、
+* 一致すれば+18に一切触れずrtsする(渡された長さをそのまま成功として
+* 返す=全部書けたことにする)。一致しない、またはC12_ECHO_WRITE=0のときは
+* +18へUNKNOWN_RESPを書く。破壊: d1-d2。
+* -----------------------------------------------------------------------
+cmd12_unknown_resp:
+        ifne C12_ECHO_WRITE
+        move.l  14(a0),d1
+        beq.s   cmd12_ur_noecho         * 0はポインタとみなさない
+        cmp.l   #$00c00000,d1
+        bhs.s   cmd12_ur_noecho
+        move.l  d1,d2
+        and.l   #1,d2
+        bne.s   cmd12_ur_noecho         * 奇数番地はポインタとみなさない
+
+        move.l  18(a0),d1
+        bmi.s   cmd12_ur_noecho         * 負は長さとみなさない
+        cmp.l   #65536,d1
+        bhs.s   cmd12_ur_noecho
+* 「書く」らしい形: +18はそのまま(呼び出し元が置いた長さを成功として返す)
+        rts
+cmd12_ur_noecho:
+        endc
+        move.l  #UNKNOWN_RESP,18(a0)
+        rts
+        endc
+
         ifne REC_MODE
 * -----------------------------------------------------------------------
 * record_request -- 要求が来るたびに記録領域へ追記するサブルーチン。
@@ -987,8 +1149,8 @@ rec_c9_p14_lo:
         and.l   #1,d2
         bne.s   rec_c9_p14_skip          * 奇数番地はポインタとみなさない
         movea.l d1,a4
-        lea     28(a2),a3
-        moveq   #64-1,d3
+        lea     P14_OFF(a2),a3
+        moveq   #P14_LEN-1,d3
 rec_c9_p14_copy:
         move.b  (a4)+,(a3)+
         dbra    d3,rec_c9_p14_copy
@@ -1004,8 +1166,8 @@ rec_c9_p18_lo:
         and.l   #1,d2
         bne.s   rec_c9_p18_skip
         movea.l d1,a4
-        lea     92(a2),a3
-        moveq   #64-1,d3
+        lea     P18_OFF(a2),a3
+        moveq   #P18_LEN-1,d3
 rec_c9_p18_copy:
         move.b  (a4)+,(a3)+
         dbra    d3,rec_c9_p18_copy
@@ -1022,8 +1184,8 @@ rec_c10_p22_lo:
         and.l   #1,d2
         bne.s   rec_c10_p22_skip
         movea.l d1,a4
-        lea     156(a2),a3
-        moveq   #96-1,d3
+        lea     P22_OFF(a2),a3
+        moveq   #P22_LEN-1,d3
 rec_c10_p22_copy:
         move.b  (a4)+,(a3)+
         dbra    d3,rec_c10_p22_copy
