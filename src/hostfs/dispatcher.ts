@@ -10,7 +10,14 @@
 //             (入力)/実際に読んだバイト数(出力) / $4fのときはDATETIME(入力=0で
 //             取得・非0で設定/出力=結果) / それ以外は戻り値(出力、ロング)
 //   +22     : $4a/$4c/$4b/$4fのときはFCBへのポインタ
-// $40(初期化)はドライバ内で処理される想定でここには来ない。
+//
+// $40(初期化)は、ドライバ(tools/x68/hostfs.s)が自分の応答(+13/+14/+18/+3/+4)を
+// 書く前に「初期化要求が来た」ことをまず通知として転送してくる(親からの追加指示)。
+// ここでは通知としてだけ扱い、ヘッダには一切書き込まない(+3/+4/+13/+14/+18のどれも
+// 触らない)。すぐ完了扱い(保留にしない)で返す。ドライバ検出フラグと、+22(実測で
+// 確定: 割り当てられたドライブ番号、0=A:)を記録するだけ。再起動(restartCore()での
+// 丸ごと作り直し)でHostFsDispatcherのインスタンス自体が新しく作られるため、記録は
+// 自然に消える(worker-bridge.tsのinstallHostFsBridge呼び出し箇所参照)。
 //
 // 実測で追加確定した読み取り系コマンド(親からの指示書、C9実験の裏取り済み):
 //   $4a 開く  : +14=_NAMESTS, +22=FCBポインタ。成功なら+18=0。
@@ -66,8 +73,15 @@ const CMD_SEEK = 0x4e;
 // 設定(値はガストの現在時刻とみられる、推測)で来た。取得経路は実機での再現待ちのため
 // 未確認(このコミットの実装は資料どおりの解釈で、実測はしていない)。
 const CMD_FILEDATE = 0x4f;
+// $40 = 初期化(ドライバ組み込み)。親からの追加指示: ドライバは応答を書く前に
+// この通知を転送してくる。ヘッダは一切書き換えず、+22(下記)だけ読む。
+const CMD_INIT = 0x40;
 
 const HDR_CMD_OFFSET = 2;
+// $40のときだけ: 初期化要求ヘッダの+22(実測で確定: 割り当てられたドライブ番号、
+// 0=A:、入力のみ)。HDR_FCB_PTR_OFFSETと同じオフセットだが、コマンドごとに意味が
+// 違うため別名を与える。
+const HDR_INIT_DRIVE_OFFSET = 22;
 const HDR_ATTR_OFFSET = 13;
 const HDR_ARG_PTR_OFFSET = 14; // $47/$4a: NAMESTS or path / $50/$4c: 出力・バッファポインタ
 const HDR_FILBUF_PTR_OFFSET = 18; // $47/$48: FILBUFポインタ(兼戻り値) / $4c: 要求長(兼読んだ長さ)
@@ -179,6 +193,17 @@ export interface HostFsStats {
   pollCompletedCount: number;
 }
 
+/**
+ * 親からの追加指示: 「ゲストでHOSTFS.SYSが読み込まれたか」を画面側(UI、今回は
+ * 対象外)から読めるようにするための土台。$40(初期化)通知を受け取ったときだけ
+ * 更新する。detected=falseのときdriveNumberは意味を持たない(null)。
+ */
+export interface HostFsDriverStatus {
+  detected: boolean;
+  /** +22(実測で確定: 割り当てられたドライブ番号、0=A:)。未検出ならnull。 */
+  driveNumber: number | null;
+}
+
 export class HostFsDispatcher {
   private readonly mem: GuestMemory;
   private readonly fs: HostFileSystem;
@@ -201,6 +226,10 @@ export class HostFsDispatcher {
     pollCompletedCount: 0,
   };
 
+  /** $40通知で更新するだけの状態(親からの追加指示)。再起動でインスタンスごと
+   * 作り直されるため、明示的なresetメソッドは持たない(worker-bridge.ts参照)。 */
+  private driverStatus: HostFsDriverStatus = { detected: false, driveNumber: null };
+
   constructor(mem: GuestMemory, fs: HostFileSystem, notifyComplete?: () => void) {
     this.mem = mem;
     this.fs = fs;
@@ -211,6 +240,12 @@ export class HostFsDispatcher {
     return { ...this.stats };
   }
 
+  /** Worker側の他のコード(例えば起動画面表示のためのブリッジ)から読むための土台。
+   * UIそのものは今回は作らない(親からの追加指示)。 */
+  getDriverStatus(): HostFsDriverStatus {
+    return { ...this.driverStatus };
+  }
+
   /**
    * ポートのトリガ(+4書き込み)から呼ばれる。戻り値: true=保留(pollを待つ)、
    * false=このまま完了(ヘッダの+18に戻り値を書き終えている)。
@@ -219,6 +254,10 @@ export class HostFsDispatcher {
     this.stats.requestCount++;
     const cmd = readU8(this.mem, addr + HDR_CMD_OFFSET);
 
+    if (cmd === CMD_INIT) {
+      this.handleInit(addr);
+      return false;
+    }
     if (cmd === CMD_SEARCH_FIRST) {
       const isPending = this.handleSearchFirst(addr);
       if (isPending) this.stats.pendingReturnedCount++;
@@ -357,6 +396,18 @@ export class HostFsDispatcher {
       this.notifyComplete?.();
     });
     return true;
+  }
+
+  /**
+   * $40: 初期化(ドライバ組み込み)の通知。ドライバ(tools/x68/hostfs.s)が自分の
+   * 応答を書く前に転送してくるだけなので、ヘッダには一切書き込まない。
+   * +22(割り当てられたドライブ番号、0=A:)を記録し、すぐ完了で返す(保留にしない)。
+   */
+  private handleInit(addr: number): void {
+    const driveNumber = readU8(this.mem, addr + HDR_INIT_DRIVE_OFFSET);
+    this.driverStatus = { detected: true, driveNumber };
+    const driveLetter = String.fromCharCode('A'.charCodeAt(0) + driveNumber);
+    console.log(`[HostFS] 初期化通知を受信: ドライブ=${driveLetter}: (driveNumber=${driveNumber})`);
   }
 
   /** $47: 検索・初回。ボリュームラベル検索は同期でエラーを返す。 */

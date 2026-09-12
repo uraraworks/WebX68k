@@ -119,4 +119,24 @@ describe('installHostFsIntoVolume', () => {
     const occurrences = configAfterSecond.split('HOSTFS.SYS').length - 1;
     expect(occurrences).toBe(1);
   });
+
+  it('組み込み済みディスクへ新しい版のHOSTFS.SYSでもう一度実行すると、中身が新しい版に置き換わる', () => {
+    // 「このディスクにHostFSを組み込む」ボタンを、既に組み込み済みのディスクへ
+    // もう一度押した場合の確認(親からの指示書)。CONFIG.SYSのDEVICE行は増えず、
+    // HOSTFS.SYSの中身だけが新しい版へ差し替わることを見る。
+    const image = createFormattedFd();
+    const vol = openDiskImage(image, 'blank.xdf');
+    const oldBytes = new Uint8Array([1, 2, 3, 4, 5]); // 「古い版」のつもり
+    const newBytes = new Uint8Array([9, 8, 7, 6, 5, 4, 3, 2, 1, 0]); // 「新しい版」のつもり(長さも変える)
+
+    installHostFsIntoVolume(vol, oldBytes);
+    expect(fatReadFile(vol, '\\HOSTFS.SYS')).toEqual(oldBytes);
+
+    const result = installHostFsIntoVolume(vol, newBytes);
+    expect(result.configLineAdded).toBe(false); // DEVICE行は増やさない
+
+    expect(fatReadFile(vol, '\\HOSTFS.SYS')).toEqual(newBytes); // 新しい版に置き換わっている
+    const config = bytesToLatin1(fatReadFile(vol, '\\CONFIG.SYS'));
+    expect(config.split('HOSTFS.SYS').length - 1).toBe(1); // DEVICE行は重複していない
+  });
 });

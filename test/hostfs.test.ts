@@ -603,3 +603,52 @@ describe('HostFsDispatcher: $41(cd)', () => {
     expect(readI32(ram, HDR_ADDR + 18)).toBe(-3);
   });
 });
+
+describe('HostFsDispatcher: $40(初期化)は通知だけで、ヘッダに触れない', () => {
+  const HDR_ADDR = 0x1000;
+
+  /** ヘッダを既知の値(全バイト0xAAで埋める)で用意し、$40後に変化していないことを見る。 */
+  function makeInitHeader(ram: Uint8Array, addr: number, driveNumber: number): void {
+    ram.fill(0xaa, addr, addr + 26);
+    ram[addr + 2] = 0x40; // コマンドコード
+    ram[addr + 22] = driveNumber; // 割り当てられたドライブ番号(0=A:)
+  }
+
+  it('$40はヘッダ(+3/+4/+13/+14/+18)を一切書き換えず、すぐ完了(保留にしない)で返る', () => {
+    const { mem, ram } = makeFakeGuestMemory();
+    makeInitHeader(ram, HDR_ADDR, 2); // C:
+
+    const before = ram.slice(HDR_ADDR, HDR_ADDR + 26);
+    const dispatcher = new HostFsDispatcher(mem, new FakeFs());
+    const pending = dispatcher.request(HDR_ADDR);
+
+    expect(pending).toBe(false);
+    const after = ram.slice(HDR_ADDR, HDR_ADDR + 26);
+    expect(after).toEqual(before); // ヘッダはドライバ自身が書くので、ここでは1バイトも変えない
+  });
+
+  it('$40を受けるとドライバ検出フラグと、+22のドライブ番号が記録される', () => {
+    const { mem, ram } = makeFakeGuestMemory();
+    makeInitHeader(ram, HDR_ADDR, 2); // C: (0=A:, 1=B:, 2=C:)
+
+    const dispatcher = new HostFsDispatcher(mem, new FakeFs());
+    expect(dispatcher.getDriverStatus()).toEqual({ detected: false, driveNumber: null });
+
+    dispatcher.request(HDR_ADDR);
+    expect(dispatcher.getDriverStatus()).toEqual({ detected: true, driveNumber: 2 });
+  });
+
+  it('記録は新しいHostFsDispatcherインスタンス(=再起動でのコア丸ごと作り直し相当)では引き継がれない', () => {
+    const { mem, ram } = makeFakeGuestMemory();
+    makeInitHeader(ram, HDR_ADDR, 3); // D:
+
+    const first = new HostFsDispatcher(mem, new FakeFs());
+    first.request(HDR_ADDR);
+    expect(first.getDriverStatus()).toEqual({ detected: true, driveNumber: 3 });
+
+    // 再起動(restartCore())はHostFsDispatcherをinstallHostFsBridge経由で新規に作り直す
+    // (worker-bridge.ts参照)。新しいインスタンスは前回の記録を持たない。
+    const second = new HostFsDispatcher(mem, new FakeFs());
+    expect(second.getDriverStatus()).toEqual({ detected: false, driveNumber: null });
+  });
+});

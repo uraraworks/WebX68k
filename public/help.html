@@ -729,7 +729,10 @@
               <strong>「HostFSを組み込む」</strong>ボタンを押すと、その行のディスクへ
               自動的に<code>HOSTFS.SYS</code>を書き込み、CONFIG.SYSにこの行を追加します
               (すでにCONFIG.SYSがあれば末尾に追記、無ければ新規作成。同じ行が既にあれば
-              二重には追加しません)。
+              二重には追加しません)。起動すると、起動画面に実際に割り当てられた
+              ドライブ名(<code>C:</code>等)が案内表示されます。古い版のHOSTFS.SYSで
+              組み込み済みのディスクへ「HostFSを組み込む」を再度押すと、HOSTFS.SYS
+              だけ新しい版に置き換わります(CONFIG.SYSの行は増えません)。
             </p>
             <div class="note-box">
               <strong>同梱システムディスク(human302.xdf)は書き換えません。</strong>
@@ -799,7 +802,10 @@
               each disk library row (HDD, or an FD that can be handled as FAT12/16) writes
               <code>HOSTFS.SYS</code> to that disk and adds this line to CONFIG.SYS
               automatically (appended if CONFIG.SYS already exists, created new otherwise; it
-              won't be added twice if the line is already there).
+              won't be added twice if the line is already there). At boot, the startup screen
+              shows the drive letter that was actually assigned (e.g. <code>C:</code>). Pressing
+              "Install HostFS" again on a disk that already has an older HOSTFS.SYS replaces just
+              that file with the new version (the CONFIG.SYS line is not duplicated).
             </p>
             <div class="note-box">
               <strong>The bundled system disk (human302.xdf) is never modified.</strong>
