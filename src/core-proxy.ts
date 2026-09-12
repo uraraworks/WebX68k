@@ -451,11 +451,25 @@ export interface WorkerCoreProxyOptions {
   /** 起動中(最初のframe eventを受け取るまで)の応答timeoutミリ秒(既定
    * STARTUP_RESPONSE_TIMEOUT_MS)。テストで短縮するために公開する。 */
   startupResponseTimeoutMs?: number;
+  /** テスト用: 時計を差し替える。省略時は performance.now()。「timerが実際に経過した時間」と
+   * 「本物の時計が指す経過時間」を切り離してテストできるようにする(下記 lastWorkerMessageAtMs
+   * / 生存判定のコメント参照)。 */
+  now?: () => number;
+  /** 「動作中とみなして待機を延長する」回数の上限(既定 MAX_SLOW_EXTENSIONS)。テストで
+   * 短縮するために公開する。 */
+  maxSlowExtensions?: number;
 }
 
 const DEFAULT_RESPONSE_TIMEOUT_MS = 10_000;
 /** 起動中(最初のframe eventを受け取るまで)専用の応答timeout。startupSettledのコメント参照。 */
 const STARTUP_RESPONSE_TIMEOUT_MS = 120_000;
+/** 「Workerは生きているが遅い」と判定したとき、待機を延長できる回数の既定上限。
+ * responseTimeoutMs(既定10秒)との組み合わせで、起動後の1コマンドが最大で
+ * 待てる時間は概ね responseTimeoutMs×(MAX_SLOW_EXTENSIONS+1)(既定60秒)になる。
+ * (2026-09-13実測: 負荷平均12〜25の高負荷下で、Workerはtickごとにframe eventを送り
+ * 続けながらもcommandの応答が遅れることがあり、固定10秒timeoutだと生きているWorkerを
+ * 誤って異常終了扱いにしていた。下記 onTimeoutExpired 参照。) */
+const MAX_SLOW_EXTENSIONS = 5;
 
 function defaultCreateWorker(): WorkerLike {
   // 実測(docs/STORAGE-SCSI.md 手順4参照): vite dev server はクラシックworker指定でも
@@ -475,6 +489,21 @@ interface PendingRequest {
    * 起動中ぶんを全部通常timeoutへ張り直す(WorkerCoreProxyクラスのstartupSettledコメント
    * 参照)。 */
   timeoutHandle: ReturnType<typeof setTimeout>;
+  /** timeout失敗メッセージに載せる表示名。通常はcommand.op。armPendingTimeouts()で
+   * 起動後の通常timeoutへ張り直された最初のtimerだけは、従来通り
+   * '(起動完了後に計時開始)' のまま(onTimeoutExpiredコメント参照)。 */
+  label: string;
+  /** 直近に(再)武装した時点のthis.now()。「timerが実際どれだけ遅れて発火したか」
+   * (=メインスレッド自体が止まっていた疑い)を判定するのに使う。 */
+  armedAtMs: number;
+  /** dispatchCommand()でこのrequestを実際に送信した時点(起動完了後に張り直された場合は
+   * armPendingTimeouts()がその時点)のthis.now()。rearmTimeout()やextendOrFail()の
+   * 延長では更新しない。「動作中だが遅い」警告・cap失敗メッセージの経過表示に使う
+   * (armedAtMsは延長のたびにリセットされ通算の経過時間を表せないため別に持つ)。 */
+  dispatchedAtMs: number;
+  /** 「Workerは動作中(生きている)」と判定して待機を延長した回数。maxSlowExtensionsに
+   * 達したら、動作中であっても諦めて異常終了扱いにする(無限に待ち続けないための上限)。 */
+  slowExtensions: number;
 }
 
 export class WorkerCoreProxy implements LibretroHostProxy {
@@ -522,10 +551,20 @@ export class WorkerCoreProxy implements LibretroHostProxy {
    * ため、起動中は短い方(DEFAULT_RESPONSE_TIMEOUT_MS)ではなく長い方
    * (STARTUP_RESPONSE_TIMEOUT_MS)のtimeoutを張る。起動後の挙動は一切変えない。 */
   private startupSettled = false;
+  private readonly now: () => number;
+  private readonly maxSlowExtensions: number;
+  /** Workerから何らかのメッセージ(response/event/boot ack/dev probe応答、種類を問わない)を
+   * 最後に受け取った時刻(this.now()基準)。handleMessage()の先頭で毎回更新する。
+   * 「commandの応答は遅れているが、Worker自体はtickを回し続けている」(2026-09-13実測、
+   * 負荷平均12〜25)場合に、これで生死を見分ける(onTimeoutExpired参照)。 */
+  private lastWorkerMessageAtMs: number;
 
   constructor(opts?: WorkerCoreProxyOptions) {
     this.responseTimeoutMs = opts?.responseTimeoutMs ?? DEFAULT_RESPONSE_TIMEOUT_MS;
     this.startupResponseTimeoutMs = opts?.startupResponseTimeoutMs ?? STARTUP_RESPONSE_TIMEOUT_MS;
+    this.now = opts?.now ?? (() => performance.now());
+    this.maxSlowExtensions = opts?.maxSlowExtensions ?? MAX_SLOW_EXTENSIONS;
+    this.lastWorkerMessageAtMs = this.now();
     // 手順9(再生成)はスコープ外なので、この proxy 1インスタンス = generation 0 固定。
     this.generation = 0;
     this.worker = (opts?.createWorker ?? defaultCreateWorker)();
@@ -549,6 +588,9 @@ export class WorkerCoreProxy implements LibretroHostProxy {
   }
 
   private handleMessage(message: WorkerToMain): void {
+    // どんな種類のメッセージでも(boot ack・dev probe応答含め)、Workerが生きている証拠として
+    // まず時刻を記録する(onTimeoutExpiredの生死判定で使う。他のどの分岐よりも先に行う)。
+    this.lastWorkerMessageAtMs = this.now();
     // DEV専用の計測プローブ応答(core-worker.ts の '__devTickProbeData')。generation を
     // 持たない生メッセージで、CoreCommand/WorkerToMainのunionには含めていないため、
     // 他のどの分岐よりも先に見て早期returnする(devPostRawMessage/setDevMessageHandler参照)。
@@ -689,26 +731,113 @@ export class WorkerCoreProxy implements LibretroHostProxy {
     // startupSettled===false(起動中、最初のframe eventをまだ受け取っていない)の間は
     // 長い方のstartupResponseTimeoutMsで張る(無タイマにはしない。クラス冒頭の
     // startupSettledコメント参照)。initializeコマンド自身もこの分岐を通る。
+    // 起動中/起動後どちらのtimerも同じonTimeoutExpired()を経由させる(「動作中は待機を
+    // 延長する」ルールを起動中のtimerにも一貫して適用する。手間が同じため区別しない)。
     const timeoutMs = this.startupSettled ? this.responseTimeoutMs : this.startupResponseTimeoutMs;
-    const timeoutHandle = setTimeout(() => {
-      this.handleWorkerFailure(`応答timeout(${timeoutMs}ms): ${command.op}`, undefined);
-    }, timeoutMs);
-    this.pending.set(command.requestId, { resolve, reject, timeoutHandle });
+    const requestId = command.requestId;
+    this.pending.set(requestId, {
+      resolve,
+      reject,
+      label: command.op,
+      armedAtMs: this.now(),
+      dispatchedAtMs: this.now(),
+      slowExtensions: 0,
+      timeoutHandle: setTimeout(() => this.onTimeoutExpired(requestId, timeoutMs), timeoutMs),
+    });
     this.worker.postMessage(command, collectTransferables(command));
   }
 
   /** 起動完了(最初のframe eventを受け取った瞬間)に呼ぶ。それまでの間にdispatchCommand()
    * されてstartupResponseTimeoutMsの長いタイマが張られたまま取り残されているpendingを、
    * この時点を起点として通常のresponseTimeoutMsへ張り直す。これをしないと、起動中に
-   * 投げられてまだ応答が返っていないコマンドが、起動後もずっと長いタイマのままになる。 */
+   * 投げられてまだ応答が返っていないコマンドが、起動後もずっと長いタイマのままになる。
+   * 表示名は従来通り '(起動完了後に計時開始)' 固定(command.opが分からないため)にし、
+   * slowExtensionsは0から数え直す。 */
   private armPendingTimeouts(): void {
     for (const [requestId, req] of this.pending.entries()) {
       clearTimeout(req.timeoutHandle);
-      req.timeoutHandle = setTimeout(() => {
-        this.handleWorkerFailure(`応答timeout(${this.responseTimeoutMs}ms): (起動完了後に計時開始)`, undefined);
-      }, this.responseTimeoutMs);
+      req.label = '(起動完了後に計時開始)';
+      req.armedAtMs = this.now();
+      req.dispatchedAtMs = this.now();
+      req.slowExtensions = 0;
+      req.timeoutHandle = setTimeout(
+        () => this.onTimeoutExpired(requestId, this.responseTimeoutMs),
+        this.responseTimeoutMs,
+      );
       this.pending.set(requestId, req);
     }
+  }
+
+  /**
+   * timerが実際に発火した時点で呼ばれる、高負荷下の誤判定対策の中枢(2026-09-13実測、
+   * 負荷平均12〜25で発生: Workerはtickごとにframe eventを送り続けて生きているのに、
+   * commandの応答だけが遅れて固定10秒timeoutに引っかかり、異常終了・画面停止になっていた)。
+   * dispatchCommand・armPendingTimeoutsの両方のtimerが、これを共通の判定先にする。
+   *
+   * 判定は3段階(呼び出し元の指示通りの優先順位):
+   *   a) timerの実発火が「張った時刻+timeoutMs×1.5」より遅れている場合、メインスレッド
+   *      自体がsleep/バックグラウンドタブのスロットリング等で止まっていた疑いが強く、
+   *      Workerの生死について何も結論できない。カウントに入れず単純に張り直す。
+   *   b) 直近timeoutMs以内にWorkerから何らかのメッセージ(response/event問わず)が
+   *      届いていれば「動作中だが遅い」とみなし、待機を延長する(maxSlowExtensionsが上限)。
+   *   c) それ以外(直近timeoutMs以内に何も届いていない=沈黙)は、即断せず1マクロタスクだけ
+   *      待って(handleMessageがまだキュー上にあるかもしれないメッセージを先に処理する
+   *      機会を与える)から再判定し、それでも沈黙なら異常終了とする。
+   */
+  private onTimeoutExpired(requestId: RequestId, timeoutMs: number): void {
+    const req = this.pending.get(requestId);
+    if (!req) return; // 既に応答が返る等で片付いたrequestId。
+    const now = this.now();
+    if (now - req.armedAtMs > timeoutMs * 1.5) {
+      this.rearmTimeout(requestId, req, timeoutMs);
+      return;
+    }
+    if (now - this.lastWorkerMessageAtMs <= timeoutMs) {
+      this.extendOrFail(requestId, req, timeoutMs, now);
+      return;
+    }
+    // 沈黙: 既にイベントループのキューに積まれているだけのWorkerメッセージを取りこぼして
+    // 誤判定しないよう、1マクロタスクだけ待ってから再判定する。
+    setTimeout(() => {
+      const stillPending = this.pending.get(requestId);
+      if (!stillPending) return;
+      const now2 = this.now();
+      if (now2 - this.lastWorkerMessageAtMs <= timeoutMs) {
+        this.extendOrFail(requestId, stillPending, timeoutMs, now2);
+        return;
+      }
+      this.handleWorkerFailure(`応答timeout(${timeoutMs}ms): ${stillPending.label}`, undefined);
+    }, 0);
+  }
+
+  /** timerを同じtimeoutMsで張り直す(カウントには影響しない。ルールa用)。 */
+  private rearmTimeout(requestId: RequestId, req: PendingRequest, timeoutMs: number): void {
+    req.armedAtMs = this.now();
+    req.timeoutHandle = setTimeout(() => this.onTimeoutExpired(requestId, timeoutMs), timeoutMs);
+    this.pending.set(requestId, req);
+  }
+
+  /** 「動作中だが遅い」(ルールb、および沈黙からの再判定で結局動作中だった場合)の処理。
+   * maxSlowExtensionsを使い切っていれば、動作中であっても諦めて異常終了にする。 */
+  private extendOrFail(requestId: RequestId, req: PendingRequest, timeoutMs: number, now: number): void {
+    const total = Math.round(now - req.dispatchedAtMs);
+    if (req.slowExtensions >= this.maxSlowExtensions) {
+      this.handleWorkerFailure(
+        `応答timeout(${timeoutMs}ms×${req.slowExtensions + 1}、経過${total}ms、Workerは動作中): ${req.label}`,
+        undefined,
+      );
+      return;
+    }
+    req.slowExtensions += 1;
+    // 同一requestの延長のうち最初の1回(0→1)だけ警告する。以後の延長は静かに続ける
+    // (毎回警告すると高負荷時に連投され、コンソールが埋まるため)。
+    if (req.slowExtensions === 1) {
+      console.warn(
+        `[worker] 応答が遅れています(${req.label}, 経過${total}ms)。` +
+          'Workerは動作中のため待機を延長します',
+      );
+    }
+    this.rearmTimeout(requestId, req, timeoutMs);
   }
 
   private issue<T>(op: CoreCommand['op'], payload: unknown): Promise<T> {

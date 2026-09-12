@@ -1,4 +1,4 @@
-node_modules/
+node_modules
 dist/
 public/bios/
 # 検証用の実機ROM/HDDイメージ(非配布。public/配下に置くとdistへコピーされてしまうため隔離)

@@ -6,7 +6,7 @@
 // - 応答timeoutが WORKER_FAILURE になること
 // を確認する。故障注入(陽性対照)は本ファイルではなく作業報告に記録した手順で
 // 一時的にソースを壊して実施した(このファイル自体は正常経路の検査のみを持つ)。
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import {
   CORE_OPTION_UPDATE_KIND,
   INPUT_UPDATE_KIND,
@@ -499,6 +499,151 @@ describe('WorkerCoreProxy', () => {
 
       const initPromise = proxy.init(biosIpl, biosCg);
       await expect(initPromise).rejects.toMatchObject({ coreError: { code: 'WORKER_FAILURE' } });
+      expect(worker.terminated).toBe(true);
+      expect(failures).toHaveLength(1);
+    });
+  });
+
+  describe('高負荷下の生存判定(動作中なら待機を延長し、沈黙のときだけ異常終了にする)', () => {
+    // 2026-09-13実測: 負荷平均12〜25の高負荷下で、Workerはtickごとにframe eventを
+    // 送り続けて生きているのに、commandの応答だけが遅れて固定10秒timeoutに引っかかり、
+    // 「応答timeout(10000ms): readTextScreen」で異常終了・画面停止になっていた。
+    // src/core-proxy.ts の WorkerCoreProxy#onTimeoutExpired 参照。
+
+    /** intervalMsごとにtimes回、frame eventを送り続ける(Workerが生きている証拠)。 */
+    function pumpFrames(worker: FakeWorker, intervalMs: number, times: number): void {
+      for (let i = 1; i <= times; i++) {
+        setTimeout(() => worker.emit(makeFrameEvent()), intervalMs * i);
+      }
+    }
+
+    it('動作中だが遅い場合はtimeoutにならず待機を延長し、応答が届けば解決する', async () => {
+      const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      try {
+        const worker = new FakeWorker();
+        worker.respond = (cmd) => (cmd.op === 'initialize' ? defaultAutoResponder(cmd) : []);
+        const proxy = new WorkerCoreProxy({
+          createWorker: () => worker,
+          responseTimeoutMs: 20,
+          maxSlowExtensions: 20, // 上限に達しないよう十分大きくしておく
+        });
+        const { biosIpl, biosCg } = makeBios();
+        await proxy.init(biosIpl, biosCg);
+        worker.emit(makeFrameEvent()); // 起動完了(startupSettled=true)
+
+        const p = proxy.fetchAvInfo();
+        let pSettled = false;
+        void p.then(
+          () => (pSettled = true),
+          () => (pSettled = true),
+        );
+
+        // 5msごとに約120ms分、frame eventを送り続ける(=Workerは生きている)。
+        pumpFrames(worker, 5, 24);
+        await new Promise((resolve) => setTimeout(resolve, 130));
+
+        expect(pSettled).toBe(false);
+        expect(worker.terminated).toBe(false);
+
+        // 複数回延長されたはずだが、警告は最初の1回(0→1)だけ出る。
+        expect(warnSpy).toHaveBeenCalledTimes(1);
+
+        // ここで初めて応答を返す。延長された待機のまま解決するはず。
+        const cmd = worker.sent.find((c) => c.op === 'fetchAvInfo');
+        expect(cmd).toBeDefined();
+        worker.emit({ kind: 'response', generation: 0, requestId: cmd!.requestId, ok: true, completedFrameNo: 0, result: AV_INFO });
+
+        await expect(p).resolves.toEqual(AV_INFO);
+      } finally {
+        warnSpy.mockRestore();
+      }
+    });
+
+    it('陽性対照: 一切メッセージが来ない(死んでいる)場合は従来通りWORKER_FAILUREになる', async () => {
+      const worker = new FakeWorker();
+      worker.respond = (cmd) => (cmd.op === 'initialize' ? defaultAutoResponder(cmd) : []);
+      const proxy = new WorkerCoreProxy({ createWorker: () => worker, responseTimeoutMs: 20 });
+      const { biosIpl, biosCg } = makeBios();
+
+      const failures: string[] = [];
+      proxy.setFailureHandler((message) => failures.push(message));
+
+      await proxy.init(biosIpl, biosCg);
+      worker.emit(makeFrameEvent()); // 起動完了
+
+      // 以後、frame eventも含め一切メッセージを送らない(=死んでいる)。
+      const p = proxy.fetchAvInfo();
+      await expect(p).rejects.toMatchObject({ coreError: { code: 'WORKER_FAILURE' } });
+      expect(worker.terminated).toBe(true);
+      expect(failures).toHaveLength(1);
+    });
+
+    it('動作中でも延長回数の上限(maxSlowExtensions)を超えたら諦めてWORKER_FAILUREになる', async () => {
+      const worker = new FakeWorker();
+      worker.respond = (cmd) => (cmd.op === 'initialize' ? defaultAutoResponder(cmd) : []);
+      const proxy = new WorkerCoreProxy({
+        createWorker: () => worker,
+        responseTimeoutMs: 20,
+        maxSlowExtensions: 2,
+      });
+      const { biosIpl, biosCg } = makeBios();
+
+      const failures: string[] = [];
+      proxy.setFailureHandler((message) => failures.push(message));
+
+      await proxy.init(biosIpl, biosCg);
+      worker.emit(makeFrameEvent()); // 起動完了
+
+      const p = proxy.fetchAvInfo();
+      // 5msごとに約110ms分、frame eventを送り続ける(=maxSlowExtensions(2)を超える
+      // 回数のtimeout満了(20ms×5〜6回分)をまたいでも生きている状態を保つ)。
+      pumpFrames(worker, 5, 22);
+
+      await expect(p).rejects.toMatchObject({ coreError: { code: 'WORKER_FAILURE' } });
+      expect(worker.terminated).toBe(true);
+      expect(failures).toHaveLength(1);
+      expect(failures[0]).toContain('Workerは動作中');
+    });
+
+    it('メインスレッド自体が止まっていた疑いがある場合(timerの実発火が大幅に遅れた)は、沈黙していても最初の満了では失敗にせず張り直す', async () => {
+      let nowValue = 0;
+      const worker = new FakeWorker();
+      worker.respond = (cmd) => (cmd.op === 'initialize' ? defaultAutoResponder(cmd) : []);
+      const proxy = new WorkerCoreProxy({
+        createWorker: () => worker,
+        responseTimeoutMs: 20,
+        now: () => nowValue,
+      });
+      const { biosIpl, biosCg } = makeBios();
+
+      const failures: string[] = [];
+      proxy.setFailureHandler((message) => failures.push(message));
+
+      await proxy.init(biosIpl, biosCg);
+      worker.emit(makeFrameEvent()); // 起動完了。この時点のnowValue(0)がlastWorkerMessageAtMsになる。
+
+      const p = proxy.fetchAvInfo(); // armedAtMs = nowValue(0)で武装
+      let pSettled = false;
+      void p.then(
+        () => (pSettled = true),
+        () => (pSettled = true),
+      );
+
+      // 武装直後にnowValueを timeoutMs(20)×10 だけ進める(=timerの実発火がその分
+      // 遅れて見える、sleep/バックグラウンドタブのスロットリング等を模す)。
+      // 以後は一切メッセージを送らない・nowValueも進めない(=本当は沈黙のまま)。
+      nowValue = 20 * 10;
+
+      // 1回目の実timer満了(約20ms後、2回目の約40ms後より前)の時点: ルールa(実発火の遅れ)
+      // によりtimeoutにならず張り直されているはず。
+      await new Promise((resolve) => setTimeout(resolve, 28));
+      expect(pSettled).toBe(false);
+      expect(worker.terminated).toBe(false);
+      expect(failures).toHaveLength(0);
+
+      // 2回目の実timer満了: 今度はnowValueが進んでいない(=見かけ上の遅れが無い)ため
+      // 通常判定に入り、沈黙(直近timeoutMs以内にメッセージ無し)なのでWORKER_FAILUREになる。
+      await expect(p).rejects.toMatchObject({ coreError: { code: 'WORKER_FAILURE' } });
       expect(worker.terminated).toBe(true);
       expect(failures).toHaveLength(1);
     });
