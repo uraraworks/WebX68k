@@ -746,18 +746,21 @@ export class HostFsDispatcher {
    *   - 8バイト構造の「使用可能クラスタ」欄(+0)自体は、この2つの表示には使われていない
    *     模様(C8-bでは+0=100だが、表示に使われたのは+18の204800の方)。
    *
-   * この読み方に基づき、空き約1GBでどの欄もワード(0-65535)に収まる値を作る:
-   *   使用可能クラスタ32000・総クラスタ65535・クラスタあたり64セクタ・
-   *   セクタあたり512バイト(クラスタ=32768B)。
-   *   総バイト数 = 65535×32768 = 2,147,450,880B
-   *   使用可能バイト数(+18) = 32000×32768 = 1,048,576,000B(=1,024,000K、約1GB)
-   *   表示される「使用中」= 2,147,450,880 − 1,048,576,000 = 1,098,874,880B(=1,073,120K)
+   * ホストの実際の空き容量はブラウザから取得できないため、これらは名目上の値であり、
+   * FDXファイラの表示欄(9桁)に収まる最大値「999,997,440」がカンスト表示されるように選ぶ
+   * (FDXで実測: 2026-09-13、10桁の1,048,576,000/2,147,450,880では先頭桁が欠けて
+   * 「Total 147,450,880 / Free 048,576,000」と表示された)。
+   * 総クラスタ=使用可能クラスタ=61035(使用中0にする)・クラスタあたり32セクタ・
+   * セクタあたり512バイト(クラスタ=16384B)。
+   *   使用可能バイト数(+18) = 61035×16384 = 999,997,440B(9桁)
    */
   private handleFreeSpace(addr: number): void {
     const outPtr = readU32BE(this.mem, addr + HDR_ARG_PTR_OFFSET);
-    const AVAILABLE_CLUSTERS = 32000;
-    const TOTAL_CLUSTERS = 65535;
-    const SECTORS_PER_CLUSTER = 64;
+    // FDXファイラの9桁表示欄に収まる最大値(999,997,440)を返すための名目値。
+    // 使用中0(=総クラスタと同値)にして「カンスト」した表示にする。
+    const AVAILABLE_CLUSTERS = 61035;
+    const TOTAL_CLUSTERS = 61035;
+    const SECTORS_PER_CLUSTER = 32;
     const BYTES_PER_SECTOR = 512;
     const availableBytes = AVAILABLE_CLUSTERS * SECTORS_PER_CLUSTER * BYTES_PER_SECTOR;
     writeU16BE(this.mem, outPtr + 0, AVAILABLE_CLUSTERS);
