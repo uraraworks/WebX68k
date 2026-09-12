@@ -82,7 +82,7 @@ export function buildHostFsDiagText(input: HostFsDiagInput): string {
   lines.push(`folder: connected=${input.folderConnected} mode=${input.folderConnected ? (input.mode ?? '-') : '-'}`);
   lines.push(`unknown commands (${input.unknownCommands.length}):`);
   for (const u of input.unknownCommands) {
-    lines.push(`  ${formatUnknownCommandCode(u.cmd)} x${u.count}`);
+    lines.push(`  ${formatUnknownCommandCode(u.cmd)} x${u.count} verify=${u.verify ? 'on' : 'off'}`);
     lines.push(`    header[+0..+25]: ${u.headerHex}`);
     lines.push(`    ptrDump[+14/+18 target, 32 bytes]: ${u.ptrDumpHex ?? '(none)'}`);
   }

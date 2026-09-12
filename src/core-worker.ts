@@ -289,7 +289,8 @@ function hostfsStatusEquals(a: HostFsUiStatus, b: HostFsUiStatus): boolean {
         u.cmd === b.unknownCommands[i].cmd &&
         u.count === b.unknownCommands[i].count &&
         u.headerHex === b.unknownCommands[i].headerHex &&
-        u.ptrDumpHex === b.unknownCommands[i].ptrDumpHex,
+        u.ptrDumpHex === b.unknownCommands[i].ptrDumpHex &&
+        u.verify === b.unknownCommands[i].verify,
     )
   );
 }

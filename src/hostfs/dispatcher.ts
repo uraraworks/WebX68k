@@ -77,6 +77,14 @@ const CMD_FILEDATE = 0x4f;
 // この通知を転送してくる。ヘッダは一切書き換えず、+22(下記)だけ読む。
 const CMD_INIT = 0x40;
 
+// VERIFY ON(CONFIG.SYSでの設定)のとき、Human68kはリモートデバイスへ送るコマンド番号の
+// 最上位ビット($80)を立てて送ってくる(実測: master `_local/hostfs-verify/v1〜v3*.json`。
+// dir→$d7,$c1,$c7,$d0 / type→$d7,$c1,$c7,$ca。$80を外すと$57/$41/$47/$50/$4aという、
+// どれも処理済みのコマンドと一致する)。PRO-68Kマニュアル第6章のブロックデバイスで
+// VERIFY ON時に書き込みコマンドが8→9になるのと同じ役割とみられる。ヘッダの実際の
+// 値そのものは書き換えず、request()の入口で読んだ値からその場で外すだけにする。
+const CMD_VERIFY_BIT = 0x80;
+
 const HDR_CMD_OFFSET = 2;
 // $40のときだけ: 初期化要求ヘッダの+22(実測で確定: 割り当てられたドライブ番号、
 // 0=A:、入力のみ)。HDR_FCB_PTR_OFFSETと同じオフセットだが、コマンドごとに意味が
@@ -126,6 +134,8 @@ interface UnknownCommandRecord {
   headerHex: string;
   /** +14/+18のどちらかがゲストRAMを指すポインタらしければ、その先32バイトの16進。無ければnull。 */
   ptrDumpHex: string | null;
+  /** 初回受信時、コマンド番号の最上位ビット($80、VERIFY ONの印)が立っていたか。 */
+  verify: boolean;
 }
 
 /** 診断テキスト組み立て用(main.ts側のdiag-report.tsへそのまま渡す)。 */
@@ -134,6 +144,8 @@ export interface HostFsUnknownCommandInfo {
   count: number;
   headerHex: string;
   ptrDumpHex: string | null;
+  /** 初回受信時、VERIFY ONの印($80)付きで届いたか。 */
+  verify: boolean;
 }
 
 function bytesToHex(bytes: Uint8Array): string {
@@ -299,7 +311,13 @@ export class HostFsDispatcher {
   getUnknownCommandsSummary(): HostFsUnknownCommandInfo[] {
     return Array.from(this.unknownCommands.entries())
       .sort((a, b) => a[0] - b[0])
-      .map(([cmd, rec]) => ({ cmd, count: rec.count, headerHex: rec.headerHex, ptrDumpHex: rec.ptrDumpHex }));
+      .map(([cmd, rec]) => ({
+        cmd,
+        count: rec.count,
+        headerHex: rec.headerHex,
+        ptrDumpHex: rec.ptrDumpHex,
+        verify: rec.verify,
+      }));
   }
 
   /**
@@ -341,7 +359,7 @@ export class HostFsDispatcher {
    * 回数だけ増やす。種類数がMAX_UNKNOWN_COMMAND_KINDSに達したら、新しい種類は
    * 記録しない(戻り値(-2)は今までどおり変えない、既存のwriteI32BEは呼び出し元のまま)。
    */
-  private recordUnknownCommand(cmd: number, addr: number): void {
+  private recordUnknownCommand(cmd: number, addr: number, verify: boolean): void {
     const existing = this.unknownCommands.get(cmd);
     if (existing) {
       existing.count++;
@@ -368,8 +386,8 @@ export class HostFsDispatcher {
       // 診断記録の失敗でdispatcher本体を壊さない(安全側)。ヘッダだけでも残す。
       console.warn(`[HostFS] 未知コマンド$${cmd.toString(16)}の診断記録に失敗`, err);
     }
-    this.unknownCommands.set(cmd, { count: 1, headerHex, ptrDumpHex });
-    console.warn(`[HostFS] 未知のコマンド: $${cmd.toString(16)} (初回、-2で応答)`);
+    this.unknownCommands.set(cmd, { count: 1, headerHex, ptrDumpHex, verify });
+    console.warn(`[HostFS] 未知のコマンド: $${cmd.toString(16)} (初回、-2で応答、verify=${verify ? 'on' : 'off'})`);
   }
 
   /**
@@ -378,7 +396,11 @@ export class HostFsDispatcher {
    */
   request(addr: number): boolean {
     this.stats.requestCount++;
-    const cmd = readU8(this.mem, addr + HDR_CMD_OFFSET);
+    const rawCmd = readU8(this.mem, addr + HDR_CMD_OFFSET);
+    // VERIFY ONのとき最上位ビット($80)が立って届く(ファイル冒頭のコメント参照)。
+    // 外した後の番号で以後すべて処理する。ヘッダそのものは書き換えない。
+    const verify = (rawCmd & CMD_VERIFY_BIT) !== 0;
+    const cmd = rawCmd & ~CMD_VERIFY_BIT;
 
     if (cmd === CMD_INIT) {
       this.handleInit(addr);
@@ -449,7 +471,7 @@ export class HostFsDispatcher {
         // 初めて見たコマンドだけログに出す(親からの指示書: 未知コマンドは今までどおり、
         // ただし記録は残す)。書き込み系と判明したコマンドを見つけたら、ここを
         // DOS_ERR_WRITE_PROTECTED(-19)を返す専用caseへ切り出すこと。
-        this.recordUnknownCommand(cmd, addr);
+        this.recordUnknownCommand(cmd, addr, verify);
         writeI32BE(this.mem, addr + HDR_FILBUF_PTR_OFFSET, DOS_ERR_NOT_FOUND);
         break;
     }
@@ -757,6 +779,11 @@ export class HostFsDispatcher {
    * バッファへ反映するだけ。実体への反映は$4b(閉じる)でまとめて行う。親からの指示書の
    * とおり、読み取り専用モードならこのFCBが何であれ-19を返す)。
    * +14=バッファ、+18=長さ(入力)→書けたバイト数(出力)、+22=FCB。
+   *
+   * VERIFY ONの印(最上位ビット)はrequest()の入口で既に外している。ここでは印を
+   * 受け取るだけで、書いた内容を読み返す処理はしない: ホスト側の書き込みは
+   * fs.openWrite()/write()(ブラウザのファイル書き込みAPI)で完結しており、
+   * ブロックデバイスの実ディスクのような「書いた直後に取りこぼす」経路が無いため。
    */
   private handleWrite(addr: number): void {
     const bufPtr = readU32BE(this.mem, addr + HDR_ARG_PTR_OFFSET);

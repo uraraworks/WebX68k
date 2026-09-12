@@ -372,6 +372,8 @@ export interface HostFsUnknownCommandInfo {
   headerHex: string;
   /** +14/+18のどちらかがゲストRAMを指すポインタらしければ、その先32バイトの16進。無ければnull。 */
   ptrDumpHex: string | null;
+  /** 初回受信時、VERIFY ONの印(コマンド番号の最上位ビット$80)付きで届いたか。 */
+  verify: boolean;
 }
 
 export const HOSTFS_STATUS_EVENT = 'hostfsStatus' as const;

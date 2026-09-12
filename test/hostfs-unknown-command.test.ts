@@ -170,10 +170,95 @@ function readI32(ram: Uint8Array, addr: number): number {
   return (ram[addr] << 24) | (ram[addr + 1] << 16) | (ram[addr + 2] << 8) | ram[addr + 3];
 }
 
+const HDR_ARG_PTR_OFFSET = 14;
+const HDR_FILBUF_PTR_OFFSET = 18;
+
+describe('HostFsDispatcher: VERIFY ON(コマンド番号の最上位ビット$80)の扱い', () => {
+  it('$50(空き容量)と$d0(印付き)は同じ結果を返す', () => {
+    const { mem: memPlain, ram: ramPlain } = makeFakeGuestMemory();
+    const { mem: memVerify, ram: ramVerify } = makeFakeGuestMemory();
+    const dPlain = new HostFsDispatcher(memPlain, new FakeFs());
+    const dVerify = new HostFsDispatcher(memVerify, new FakeFs());
+
+    const OUT_PTR = 0x3000;
+    ramPlain[HDR_ADDR + 2] = 0x50;
+    writeU32(ramPlain, HDR_ADDR, 14, OUT_PTR);
+    dPlain.request(HDR_ADDR);
+
+    ramVerify[HDR_ADDR + 2] = 0xd0; // 0x50 | 0x80
+    writeU32(ramVerify, HDR_ADDR, 14, OUT_PTR);
+    dVerify.request(HDR_ADDR);
+
+    // outPtr先(+0..+7、ワード4つ)と+18(使用可能バイト数)が一致すること。
+    expect(ramVerify.slice(OUT_PTR, OUT_PTR + 8)).toEqual(ramPlain.slice(OUT_PTR, OUT_PTR + 8));
+    expect(readI32(ramVerify, HDR_ADDR + HDR_FILBUF_PTR_OFFSET)).toBe(
+      readI32(ramPlain, HDR_ADDR + HDR_FILBUF_PTR_OFFSET),
+    );
+    // 未知コマンドとしては記録されない(処理済みのコマンドとして扱われた証拠)。
+    expect(dPlain.getUnknownCommandsSummary()).toHaveLength(0);
+    expect(dVerify.getUnknownCommandsSummary()).toHaveLength(0);
+  });
+
+  it('$c7/$ca/$cc/$cd(印付きの$47/$4a/$4c/$4d)も未知コマンドにならない', () => {
+    // $47(検索・非同期)・$4a(開く・非同期)は非同期系なのでpendingがtrueになるだけで
+    // よい(=処理済みコマンドとして振り分けられた証拠。未知コマンド記録が無いことも見る)。
+    const known = [0x47, 0x4a, 0x4c, 0x4d];
+    for (const cmd of known) {
+      const { mem, ram } = makeFakeGuestMemory();
+      const dispatcher = new HostFsDispatcher(mem, new FakeFs());
+      ram[HDR_ADDR + 2] = cmd | 0x80;
+      dispatcher.request(HDR_ADDR);
+      expect(dispatcher.getUnknownCommandsSummary()).toHaveLength(0);
+    }
+  });
+
+  it('$d1(印付きの$51、未対応)は未知コマンド$51として記録され、verify=trueが残る', () => {
+    const { mem, ram } = makeFakeGuestMemory();
+    const dispatcher = new HostFsDispatcher(mem, new FakeFs());
+    ram[HDR_ADDR + 2] = 0xd1; // 0x51 | 0x80
+    dispatcher.request(HDR_ADDR);
+
+    const summary = dispatcher.getUnknownCommandsSummary();
+    expect(summary).toHaveLength(1);
+    expect(summary[0].cmd).toBe(0x51); // 印を外した後の番号で記録される
+    expect(summary[0].verify).toBe(true);
+  });
+
+  it('印なしの未知コマンドはverify=falseで記録される', () => {
+    const { mem, ram } = makeFakeGuestMemory();
+    const dispatcher = new HostFsDispatcher(mem, new FakeFs());
+    ram[HDR_ADDR + 2] = 0x51;
+    dispatcher.request(HDR_ADDR);
+
+    const summary = dispatcher.getUnknownCommandsSummary();
+    expect(summary).toHaveLength(1);
+    expect(summary[0].cmd).toBe(0x51);
+    expect(summary[0].verify).toBe(false);
+  });
+
+  it('診断テキストにverify=on/offが1項目として出る', () => {
+    const { mem, ram } = makeFakeGuestMemory();
+    const dispatcher = new HostFsDispatcher(mem, new FakeFs());
+    ram[HDR_ADDR + 2] = 0xd2; // 0x52 | 0x80、未対応コマンド
+    dispatcher.request(HDR_ADDR);
+
+    const text = buildHostFsDiagText({
+      buildStamp: 'vTest',
+      userAgent: 'UA',
+      unknownCommands: dispatcher.getUnknownCommandsSummary(),
+      driverDetected: false,
+      driveNumber: null,
+      folderConnected: false,
+      mode: null,
+    });
+    expect(text).toContain('$52 x1 verify=on');
+  });
+});
+
 describe('diag-report: 未対応の要求のラベル・ツールチップ・診断テキスト組み立て', () => {
   const sample: HostFsUnknownCommandInfo[] = [
-    { cmd: 0x4f, count: 3, headerHex: 'aa'.repeat(26), ptrDumpHex: 'bb'.repeat(32) },
-    { cmd: 0x5a, count: 1, headerHex: 'cc'.repeat(26), ptrDumpHex: null },
+    { cmd: 0x4f, count: 3, headerHex: 'aa'.repeat(26), ptrDumpHex: 'bb'.repeat(32), verify: false },
+    { cmd: 0x5a, count: 1, headerHex: 'cc'.repeat(26), ptrDumpHex: null, verify: true },
   ];
 
   it('formatUnknownCommandCode: 2桁16進(小文字)の$付き表記', () => {
@@ -213,10 +298,10 @@ describe('diag-report: 未対応の要求のラベル・ツールチップ・診
     expect(text).toContain('drive=C:');
     expect(text).toContain('connected=true');
     expect(text).toContain('mode=readonly');
-    expect(text).toContain('$4f x3');
+    expect(text).toContain('$4f x3 verify=off');
     expect(text).toContain('aa'.repeat(26));
     expect(text).toContain('bb'.repeat(32));
-    expect(text).toContain('$5a x1');
+    expect(text).toContain('$5a x1 verify=on');
     expect(text).toContain('(none)'); // ptrDumpHex=nullのとき
   });
 
