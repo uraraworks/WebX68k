@@ -124,6 +124,11 @@ export class MemoryTreeFs implements HostFileSystem {
     return this.resolveDir(path) !== null;
   }
 
+  // メモリ上に木を持つ実体なので常に接続済み扱い(検証用バックエンド)。
+  isConnected(): boolean {
+    return true;
+  }
+
   isWritable(): boolean {
     return this.writableFlag;
   }

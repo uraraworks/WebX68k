@@ -60,6 +60,20 @@ const CMD_WRITE = 0x4d; // _WRITE: +14=バッファ、+18=長さ(入力)/書け�
 const CMD_SEARCH_FIRST = 0x47;
 const CMD_SEARCH_NEXT = 0x48;
 const CMD_FREE_SPACE = 0x50;
+// $51 = _DRVCTRL(ドライブの状態問い合わせ/制御。実測: 2026-09-13、親からの指示書)。
+// MODE = MD*256+DRIVE。ヘッダ+13=MD、+18=戻り値(呼び出し元へD0.Lとして返る)。
+// MD=0(状態問い合わせ)はXC20プログラマーズマニュアルp.97-98のビット定義に従う
+// (D01=メディア挿入、D02=NOT READY、D03=WRITE PROTECT、D06=イジェクト禁止、他省略)。
+// 実測(実ドライブ): 準備できたSASI HD=$42(D06|D01)、空のフロッピー=$0C。
+// この実装では、フォルダ未接続=空フロッピーと同じNOT READY成分だけの$04、
+// フォルダ接続・書き込みモード=SASI HDと同じ形の$42、フォルダ接続・読み取り専用モード=
+// それにWRITE PROTECT(D03)を足した$4Aとして返す(下のDRVCTRL_STATUS_*参照)。
+// MD>=1(イジェクト等の制御系)はマニュアルに戻り値の規定が無く、実装もしない
+// (+18=0を返すだけの成功扱い)。FDXファイラの_DRVCTRL(MD=0)呼び出しに正しい状態を
+// 返せるようにする、というのが今回の目的(実測: MD=0固定で呼ばれる)。
+// $52(_GETDPB)はDPBの中身(リモートドライブでどう埋めるか)を未計測のため、意図的に
+// 未実装のまま残す(defaultのunknown-command経路で従来どおり-2を返す)。
+const CMD_DRVCTRL = 0x51;
 const CMD_UNKNOWN_56 = 0x56;
 const CMD_UNKNOWN_57 = 0x57;
 const CMD_OPEN = 0x4a;
@@ -91,9 +105,25 @@ const HDR_CMD_OFFSET = 2;
 // 違うため別名を与える。
 const HDR_INIT_DRIVE_OFFSET = 22;
 const HDR_ATTR_OFFSET = 13;
+// $51のときだけ: MD(HDR_ATTR_OFFSETと同じ番地だが、コマンドごとに意味が違うため別名)。
+const HDR_DRVCTRL_MD_OFFSET = 13;
 const HDR_ARG_PTR_OFFSET = 14; // $47/$4a: NAMESTS or path / $50/$4c: 出力・バッファポインタ
 const HDR_FILBUF_PTR_OFFSET = 18; // $47/$48: FILBUFポインタ(兼戻り値) / $4c: 要求長(兼読んだ長さ)
 const HDR_FCB_PTR_OFFSET = 22; // $4a/$4c/$4b: FCBへのポインタ
+
+// $51(_DRVCTRL、MD=0)の戻り値ビット(XC20プログラマーズマニュアルp.97-98)。
+// このドライバで使う3ビットだけを定義する。
+const DRVCTRL_BIT_MEDIA_INSERTED = 0x02; // D01: メディア挿入
+const DRVCTRL_BIT_NOT_READY = 0x04; // D02: NOT READY
+const DRVCTRL_BIT_WRITE_PROTECT = 0x08; // D03: WRITE PROTECT
+const DRVCTRL_BIT_EJECT_PROHIBITED = 0x40; // D06: イジェクト禁止
+/** フォルダ未接続: 実測の空フロッピー($0C)からNOT READY成分だけを使う。 */
+const DRVCTRL_STATUS_NOT_CONNECTED = DRVCTRL_BIT_NOT_READY; // $04
+/** フォルダ接続・書き込みモード: 実測の準備できたSASI HDと同じ形($42)。 */
+const DRVCTRL_STATUS_CONNECTED_WRITABLE = DRVCTRL_BIT_EJECT_PROHIBITED | DRVCTRL_BIT_MEDIA_INSERTED; // $42
+/** フォルダ接続・読み取り専用モード: 上記にWRITE PROTECT(D03)を足したもの($4A)。 */
+const DRVCTRL_STATUS_CONNECTED_READONLY =
+  DRVCTRL_BIT_EJECT_PROHIBITED | DRVCTRL_BIT_WRITE_PROTECT | DRVCTRL_BIT_MEDIA_INSERTED; // $4A
 
 const VOLUME_LABEL_ATTR = 0x08;
 
@@ -393,10 +423,51 @@ export class HostFsDispatcher {
   /**
    * ポートのトリガ(+4書き込み)から呼ばれる。戻り値: true=保留(pollを待つ)、
    * false=このまま完了(ヘッダの+18に戻り値を書き終えている)。
+   *
+   * DEV限定トレース(`?hostfsTrace=1`、worker-bridge.ts経由でsetTrace()される)用に、
+   * 実際の振り分け(dispatchCommand)と、その結果に応じたトレース出力を分けてある。
+   * 同期完了ならここで即ログし、非同期(保留)ならrawCmdをpendingTraceへ預けて、
+   * 実際にヘッダへ書き終えた4箇所(finishSearchFirst/finishOpen/finishCd呼び出し後、
+   * およびbeginAsyncのfinish呼び出し後)でログする。
    */
   request(addr: number): boolean {
     this.stats.requestCount++;
     const rawCmd = readU8(this.mem, addr + HDR_CMD_OFFSET);
+    const isPending = this.dispatchCommand(rawCmd, addr);
+    if (isPending) {
+      this.pendingTrace = { addr, rawCmd };
+    } else {
+      this.traceIfEnabled(addr, rawCmd);
+    }
+    return isPending;
+  }
+
+  /** `?hostfsTrace=1`のときだけtrue(既定off)。setTrace()参照。 */
+  private trace = false;
+
+  /**
+   * DEV限定: `?hostfsTrace=1`のときだけworker-bridge.tsから呼ばれる。既定offで
+   * 呼ばれなければ何もログを出さない(ゼロコスト)。
+   */
+  setTrace(enabled: boolean): void {
+    this.trace = enabled;
+  }
+
+  /** requestTraceのうち、非同期(保留)で返した1件ぶんの記録。1件しか同時に保留しない前提。 */
+  private pendingTrace: { addr: number; rawCmd: number } | null = null;
+
+  private traceIfEnabled(addr: number, rawCmd: number): void {
+    if (!this.trace) return;
+    const cmd = rawCmd & ~CMD_VERIFY_BIT;
+    const verify = (rawCmd & CMD_VERIFY_BIT) !== 0;
+    const ret = readI32BE(this.mem, addr + HDR_FILBUF_PTR_OFFSET);
+    const retHex = (ret < 0 ? ret >>> 0 : ret).toString(16);
+    console.log(
+      `[HostFS] trace: cmd=$${cmd.toString(16)}(verify=${verify ? 'on' : 'off'}) ret=${ret}($${retHex})`,
+    );
+  }
+
+  private dispatchCommand(rawCmd: number, addr: number): boolean {
     // VERIFY ONのとき最上位ビット($80)が立って届く(ファイル冒頭のコメント参照)。
     // 外した後の番号で以後すべて処理する。ヘッダそのものは書き換えない。
     const verify = (rawCmd & CMD_VERIFY_BIT) !== 0;
@@ -452,6 +523,9 @@ export class HostFsDispatcher {
       case CMD_FREE_SPACE:
         this.handleFreeSpace(addr);
         break;
+      case CMD_DRVCTRL:
+        this.handleDrvCtrl(addr);
+        break;
       case CMD_READ:
         this.handleRead(addr);
         break;
@@ -492,6 +566,7 @@ export class HostFsDispatcher {
       this.pending = null;
       this.stats.pollCompletedCount++;
       this.finishSearchFirst(addr, filbufPtr, queryName, queryExt, queryAttr, entries);
+      this.resolvePendingTrace(addr);
       return false;
     }
 
@@ -501,15 +576,17 @@ export class HostFsDispatcher {
       this.pending = null;
       this.stats.pollCompletedCount++;
       this.finishOpen(addr, fcbPtr, path, name, ext, content);
+      this.resolvePendingTrace(addr);
       return false;
     }
 
     if (this.pending.kind === 'async') {
       if (this.pending.result === undefined) return true;
-      const { finish, result } = this.pending;
+      const { addr, finish, result } = this.pending;
       this.pending = null;
       this.stats.pollCompletedCount++;
       finish(result);
+      this.resolvePendingTrace(addr);
       return false;
     }
 
@@ -519,7 +596,16 @@ export class HostFsDispatcher {
     this.pending = null;
     this.stats.pollCompletedCount++;
     this.finishCd(addr, exists);
+    this.resolvePendingTrace(addr);
     return false;
+  }
+
+  /** requestTraceのうち、非同期(保留)で返した1件が実際にヘッダへ書き終えた瞬間に呼ぶ。 */
+  private resolvePendingTrace(addr: number): void {
+    if (!this.pendingTrace || this.pendingTrace.addr !== addr) return;
+    const { rawCmd } = this.pendingTrace;
+    this.pendingTrace = null;
+    this.traceIfEnabled(addr, rawCmd);
   }
 
   /**
@@ -538,6 +624,7 @@ export class HostFsDispatcher {
       this.pending = null;
       this.stats.pollCompletedCount++;
       finish(result);
+      this.resolvePendingTrace(addr);
       this.notifyComplete?.();
     });
     return true;
@@ -583,6 +670,7 @@ export class HostFsDispatcher {
       this.pending = null;
       this.stats.pollCompletedCount++;
       this.finishSearchFirst(addr, filbufPtr, queryName, queryExt, attr, entries);
+      this.resolvePendingTrace(addr);
       this.notifyComplete?.();
     });
 
@@ -681,6 +769,25 @@ export class HostFsDispatcher {
   }
 
   /**
+   * $51: _DRVCTRL。MD(+13)==0のときだけ状態を返す(定数定義のコメント参照)。
+   * MD!=0(イジェクト等の制御系)は未実装で、+18=0の成功扱いにするだけ。
+   * +14のポインタ(用途不明)には一切書き込まない。
+   */
+  private handleDrvCtrl(addr: number): void {
+    const md = readU8(this.mem, addr + HDR_DRVCTRL_MD_OFFSET);
+    if (md !== 0) {
+      writeI32BE(this.mem, addr + HDR_FILBUF_PTR_OFFSET, 0);
+      return;
+    }
+    const status = !this.fs.isConnected()
+      ? DRVCTRL_STATUS_NOT_CONNECTED
+      : this.fs.isWritable()
+        ? DRVCTRL_STATUS_CONNECTED_WRITABLE
+        : DRVCTRL_STATUS_CONNECTED_READONLY;
+    writeI32BE(this.mem, addr + HDR_FILBUF_PTR_OFFSET, status);
+  }
+
+  /**
    * $4a: 開く。ワイルドカード無しの厳密一致。非同期(内容取得までpoll待ち)。
    * 実測どおりヘッダに読み書きのモードは載っていない(+13は0)ため、開いたファイルは
    * 常に読み書き両用として扱う(親からの指示書のとおり)。以後の$4c/$4d/$4eは、
@@ -703,6 +810,7 @@ export class HostFsDispatcher {
       this.pending = null;
       this.stats.pollCompletedCount++;
       this.finishOpen(addr, fcbPtr, path, name, ext, content ?? null);
+      this.resolvePendingTrace(addr);
       this.notifyComplete?.();
     });
 
@@ -745,6 +853,7 @@ export class HostFsDispatcher {
       this.pending = null;
       this.stats.pollCompletedCount++;
       this.finishCd(addr, exists);
+      this.resolvePendingTrace(addr);
       this.notifyComplete?.();
     });
 

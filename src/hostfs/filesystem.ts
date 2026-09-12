@@ -67,6 +67,12 @@ export interface HostFsFileEntry {
 
 export interface HostFileSystem {
   /**
+   * $51(_DRVCTRL、MD=0)用: フォルダが接続されているか(未接続のNotConnectedFsだけ
+   * false)。書き込み可否はisWritable()と別に持つ(接続済み・読み取り専用の区別に使う)。
+   */
+  isConnected(): boolean;
+
+  /**
    * 指定パス(_NAMESTSから復元した '\' 区切りの文字列)のディレクトリ一覧を返す。
    * 非同期(Promise)であること自体が本機能の要件(dispatcher側で保留→ポーリングの
    * 経路を必ず通すため)。ワイルドカード('?')の照合はdispatcher側で行うため、
@@ -196,6 +202,9 @@ function makeFakeContent(entry: HostFsFileEntry): Uint8Array {
  * 扱うため、これだけで「検索は-2、開くは-2」の要件を満たす。
  */
 export class NotConnectedFs implements HostFileSystem {
+  isConnected(): boolean {
+    return false;
+  }
   listDir(_path: string): Promise<HostFsFileEntry[]> {
     return Promise.resolve([]);
   }
@@ -252,6 +261,9 @@ export class NotConnectedFs implements HostFileSystem {
 export class SwitchableFs implements HostFileSystem {
   current: HostFileSystem = new NotConnectedFs();
 
+  isConnected(): boolean {
+    return this.current.isConnected();
+  }
   listDir(path: string): Promise<HostFsFileEntry[]> {
     return this.current.listDir(path);
   }
@@ -298,6 +310,10 @@ export class SwitchableFs implements HostFileSystem {
 }
 
 export class FakeFs implements HostFileSystem {
+  // 検証用の固定ファイルシステムは常に「接続済み・読み取り専用」として振る舞う。
+  isConnected(): boolean {
+    return true;
+  }
   listDir(_path: string): Promise<HostFsFileEntry[]> {
     return new Promise((resolve) => {
       setTimeout(() => resolve(FAKE_ENTRIES.slice()), 0);

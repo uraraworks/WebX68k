@@ -326,6 +326,11 @@ export class HostFolderFs implements HostFileSystem {
     return null;
   }
 
+  // $51(_DRVCTRL)用: フォルダを接続した実体なので常にtrue(未接続はNotConnectedFsが担う)。
+  isConnected(): boolean {
+    return true;
+  }
+
   // --- ここから書き込み系(W2a)。dispatcherへの配線はまだ無い(コマンド番号未確定)。 ---
 
   isWritable(): boolean {

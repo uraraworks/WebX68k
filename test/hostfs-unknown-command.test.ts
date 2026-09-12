@@ -212,27 +212,29 @@ describe('HostFsDispatcher: VERIFY ON(コマンド番号の最上位ビット$80
     }
   });
 
-  it('$d1(印付きの$51、未対応)は未知コマンド$51として記録され、verify=trueが残る', () => {
+  // $51(_DRVCTRL)はこのコミットで対応済みになったため、ここでの「未対応コマンド」の
+  // 例には引き続き未実装のままの$52(_GETDPB、dispatcher.ts CMD_DRVCTRL付近のコメント参照)を使う。
+  it('$d2(印付きの$52、未対応)は未知コマンド$52として記録され、verify=trueが残る', () => {
     const { mem, ram } = makeFakeGuestMemory();
     const dispatcher = new HostFsDispatcher(mem, new FakeFs());
-    ram[HDR_ADDR + 2] = 0xd1; // 0x51 | 0x80
+    ram[HDR_ADDR + 2] = 0xd2; // 0x52 | 0x80
     dispatcher.request(HDR_ADDR);
 
     const summary = dispatcher.getUnknownCommandsSummary();
     expect(summary).toHaveLength(1);
-    expect(summary[0].cmd).toBe(0x51); // 印を外した後の番号で記録される
+    expect(summary[0].cmd).toBe(0x52); // 印を外した後の番号で記録される
     expect(summary[0].verify).toBe(true);
   });
 
   it('印なしの未知コマンドはverify=falseで記録される', () => {
     const { mem, ram } = makeFakeGuestMemory();
     const dispatcher = new HostFsDispatcher(mem, new FakeFs());
-    ram[HDR_ADDR + 2] = 0x51;
+    ram[HDR_ADDR + 2] = 0x52;
     dispatcher.request(HDR_ADDR);
 
     const summary = dispatcher.getUnknownCommandsSummary();
     expect(summary).toHaveLength(1);
-    expect(summary[0].cmd).toBe(0x51);
+    expect(summary[0].cmd).toBe(0x52);
     expect(summary[0].verify).toBe(false);
   });
 

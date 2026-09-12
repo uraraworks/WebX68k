@@ -83,6 +83,10 @@ export function installHostFsBridge(host: GuestMemoryHost): HostFsBridgeResult {
   const dispatcher = new HostFsDispatcher(mem, fs, () => {
     host.hostFsComplete?.();
   });
+  // `?hostfsTrace=1`(DEV限定、main.ts参照): __webx68kHostFsTrace===trueのときだけ
+  // dispatcher側のコマンド別トレースログを有効にする。hostGlobals経由でここまで届く
+  // (src/host-globals.tsのcollectHostGlobals()が'__webx68k'始まりの値を自動転写する)。
+  dispatcher.setTrace(g.__webx68kHostFsTrace === true);
 
   // ゲストの busy-loop(tools/x68/hostfs.sのrelay_poll)は1ティックの中で
   // ポート+5を何百〜何千回も読み直しうる。pollのたびに毎回ログを出すと

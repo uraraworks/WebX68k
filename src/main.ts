@@ -958,6 +958,16 @@ const hostfsParamRaw = import.meta.env.DEV ? new URLSearchParams(location.search
 const hostfsDirNameParam = import.meta.env.DEV
   ? new URLSearchParams(location.search).get('hostfsDirName')
   : null;
+// `?hostfsTrace=1` : HostFSのコマンド1件ごとにcmd/戻り値をconsole.logへ出す(DEV限定・
+// 実地確認用)。上のhostfsParamRaw等と同じ理由でDEVビルド限定にする(本番で常時ログを
+// 出さないようにするため。ゼロコスト: 本番ビルドではimport.meta.env.DEVがfalseに
+// 畳み込まれ、このブロックごと消える)。Worker側(src/hostfs/worker-bridge.ts)へは
+// __webx68kHostFsTrace という他の__webx68k*設定と同じ流儀のグローバル経由で渡す
+// (src/host-globals.tsのcollectHostGlobals()が'__webx68k'始まりのキーを自動で拾い、
+// hostGlobals経由でWorkerのglobalThisへ転写する。個別の配線コードは不要)。
+const hostfsTraceParam = import.meta.env.DEV
+  ? new URLSearchParams(location.search).get('hostfsTrace') === '1'
+  : false;
 // urlWorkerModeが確定した直後にHostFS行の初回描画を行う(TDZの都合。updateHostFsUi自体の
 // 定義箇所のコメント参照)。
 updateHostFsUi();
@@ -4656,6 +4666,13 @@ async function bootCore(): Promise<void> {
     // 同じHOSTFS_ATTACHメッセージ経由でバックエンドを差し替える、src/hostfs/worker-bridge.ts
     // 参照)。'fake' のときだけP1譲りの検証用FakeFsのまま固定する。
     (globalThis as Record<string, unknown>).__webx68kHostFsMode = hostfsParamRaw === 'fake' ? 'fake' : 'real';
+    // `?hostfsTrace=1`(DEV限定): trueのときだけ渡す。falseを渡してしまうと
+    // isTransferableHostGlobalValue()がbooleanを転写可能値として扱うため、Worker側に
+    // __webx68kHostFsTrace=falseが律儀に生えるだけで実害は無いが、既定は「そもそも
+    // キーを生やさない」方に揃える(他の__webx68k*デバッグフラグと同じ流儀)。
+    if (hostfsTraceParam) {
+      (globalThis as Record<string, unknown>).__webx68kHostFsTrace = true;
+    }
     await bootWorkerCore();
     if (hostfsParamRaw === 'opfs-test') {
       await setupHostFsOpfsTest('read', hostfsDirNameParam ?? undefined);
