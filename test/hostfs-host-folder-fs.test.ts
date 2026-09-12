@@ -75,6 +75,35 @@ describe('HostFolderFs', () => {
     expect(fs.rejectedCount).toBe(2);
   });
 
+  it('listDir: 出さなかった名前そのものをrejectedNamesに残す(通知用、追加分)', async () => {
+    const fs = new HostFolderFs(makeRoot() as unknown as FileSystemDirectoryHandle);
+    await fs.listDir('');
+    expect(fs.rejectedNames).toContain('this_name_is_way_too_long_for_human68k.txt');
+    expect(fs.rejectedNames).toContain('a.b.c');
+    expect(fs.rejectedNames.length).toBe(2);
+    expect(fs.lastListedPath).toBe('');
+  });
+
+  it('listDir: rejectedNamesも直近1回ぶんに戻る(累計しない)', async () => {
+    const fs = new HostFolderFs(makeRoot() as unknown as FileSystemDirectoryHandle);
+    await fs.listDir('');
+    await fs.listDir('');
+    expect(fs.rejectedNames.length).toBe(2);
+  });
+
+  it('listDir: rejectedNamesは上限20件までしか保持しない(rejectedCountは実数のまま)', async () => {
+    const root = new MockDirHandle('root');
+    for (let i = 0; i < 25; i++) {
+      // 拡張子なしで19文字超(本体8文字制限超え)にして必ず弾かれる名前にする。
+      root.addFile(`too_long_rejected_name_${i}`, 'x');
+    }
+    const fs = new HostFolderFs(root as unknown as FileSystemDirectoryHandle);
+    const entries = await fs.listDir('');
+    expect(entries.length).toBe(0);
+    expect(fs.rejectedCount).toBe(25);
+    expect(fs.rejectedNames.length).toBe(20);
+  });
+
   it('listDir: ディレクトリの属性は0x10、ファイルは0x20', async () => {
     const fs = new HostFolderFs(makeRoot() as unknown as FileSystemDirectoryHandle);
     const entries = await fs.listDir('');

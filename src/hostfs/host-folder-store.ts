@@ -6,6 +6,10 @@
 // W2a(書き込み): つなぐときに選んだモード(read/readwrite)もhandleと一緒に保存し、
 // 再接続では同じモードでrequestPermissionする(親からの指示書のとおり)。
 //
+// 覚え書き(メモ、追加分): File System Access API はフォルダの「名前」しか渡さず、
+// ホスト側のフルパスが分からない。利用者がフルパスなどをメモできるよう、任意の
+// 覚え書き(60文字まで)をhandleと同じレコードに保存し、再接続後もそのまま出す。
+//
 // 命名規約(CLAUDE.md): IndexedDBは `webx68k-<名詞>`。
 
 import type { HostFsConnectMode } from './filesystem';
@@ -15,9 +19,14 @@ const DB_VERSION = 1;
 const STORE_NAME = 'handle';
 const KEY = 'root';
 
+/** 覚え書きの最大文字数(利用者が決めたこと)。 */
+export const HOSTFS_NOTE_MAX_LENGTH = 60;
+
 export interface StoredHostFolder {
   handle: FileSystemDirectoryHandle;
   mode: HostFsConnectMode;
+  /** 覚え書き(任意)。未設定/空文字は「無し」として扱う(main.ts側)。 */
+  note?: string;
 }
 
 function openDb(): Promise<IDBDatabase> {
@@ -34,12 +43,16 @@ function openDb(): Promise<IDBDatabase> {
   });
 }
 
-export async function saveHostFolderHandle(handle: FileSystemDirectoryHandle, mode: HostFsConnectMode): Promise<void> {
+export async function saveHostFolderHandle(
+  handle: FileSystemDirectoryHandle,
+  mode: HostFsConnectMode,
+  note?: string,
+): Promise<void> {
   const db = await openDb();
   try {
     await new Promise<void>((resolve, reject) => {
       const tx = db.transaction(STORE_NAME, 'readwrite');
-      const record: StoredHostFolder = { handle, mode };
+      const record: StoredHostFolder = note ? { handle, mode, note } : { handle, mode };
       tx.objectStore(STORE_NAME).put(record, KEY);
       tx.oncomplete = () => resolve();
       tx.onerror = () => reject(tx.error ?? new Error('IndexedDB書き込み失敗'));
@@ -47,6 +60,16 @@ export async function saveHostFolderHandle(handle: FileSystemDirectoryHandle, mo
   } finally {
     db.close();
   }
+}
+
+/**
+ * 保存済みレコードのhandle/modeはそのままに、覚え書きだけ差し替える(「覚え書きを編集」用)。
+ * 保存済みレコードが無ければ何もしない(つないでいない状態で呼ばれることは想定していない)。
+ */
+export async function updateHostFolderNote(note: string): Promise<void> {
+  const existing = await loadHostFolderHandle();
+  if (!existing) return;
+  await saveHostFolderHandle(existing.handle, existing.mode, note);
 }
 
 /**

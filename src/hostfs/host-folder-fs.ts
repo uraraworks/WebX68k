@@ -138,6 +138,17 @@ export class HostFolderFs implements HostFileSystem {
    * 増えているように見えてしまうため、呼び出しごとに0へ戻す。
    */
   rejectedCount = 0;
+  /**
+   * 直近のlistDir()呼び出し1回ぶんで出さなかった名前そのもの(利用者向け通知用、追加分)。
+   * 「version.jsonが出ない理由が分からない」を防ぐため、UI側でツールチップに出す。
+   * 上限20件までしか保持しない(rejectedCountは実数のまま増える。「ほかN件」の
+   * 表示はrejectedCount - rejectedNames.lengthで求める)。
+   */
+  rejectedNames: string[] = [];
+  /** rejectedNames/rejectedCountがどのディレクトリの一覧結果かを示す(Human68k側パス、ルートは''）。 */
+  lastListedPath = '';
+  /** rejectedNamesを何件まで保持するか。 */
+  static readonly REJECTED_NAMES_LIMIT = 20;
 
   constructor(root: FileSystemDirectoryHandle, writable: boolean) {
     this.root = root;
@@ -162,12 +173,15 @@ export class HostFolderFs implements HostFileSystem {
     // 「今回の一覧で何件出さなかったか」という肝心の情報を隠してしまうため。
     // rejectedCountは「直近のlistDir呼び出し1回ぶんの件数」という意味に変える)。
     this.rejectedCount = 0;
+    this.rejectedNames = [];
+    this.lastListedPath = path;
     const entries: HostFsFileEntry[] = [];
     const it = (dir as unknown as { entries(): AsyncIterable<[string, FileSystemHandle]> }).entries();
     for await (const [childName, handle] of it) {
       const conv = convertHostNameToHuman68k(childName);
       if (!conv) {
         this.rejectedCount++;
+        if (this.rejectedNames.length < HostFolderFs.REJECTED_NAMES_LIMIT) this.rejectedNames.push(childName);
         continue;
       }
       if (handle.kind === 'directory') {
