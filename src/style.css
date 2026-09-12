@@ -324,6 +324,33 @@ main {
   image-rendering: auto;
 }
 
+/*
+ * #screen-sharp: 「シャープ・バイリニア」表示用に #screen の真上へ重ねる表示専用canvas
+ * (src/sharp-view.ts の SharpView が生成・制御する)。通常はこちらが#screenの上に
+ * 重なって見えており、#screenの実解像度バッファ自体は変更していない(マウス座標換算・
+ * スクリーンショット等の既存利用者はそのまま#screenを見ればよい)。
+ * .stage は position:relative の flex 中央寄せなので、inset:0 + margin:auto と
+ * SharpView側が付けるインラインwidth/height(#screenのCSS表示サイズと同一)を組み合わせれば
+ * #screenと同じ位置・同じ見た目サイズに重なる。
+ * 上の .stage.aspect-4-3 #screen / #screen.smooth-scaled は、#screen-sharpが使えない
+ * (JS無効などの)場合のフォールバックとして残してある。
+ */
+#screen-sharp {
+  position: absolute;
+  inset: 0;
+  margin: auto;
+  pointer-events: none;
+  image-rendering: auto;
+  display: block;
+}
+
+/* [hidden]は上のグローバルルールで !important 指定済みだが、#screen-sharp自身の
+   display:block指定がそれより詳細度の低い書き方に変わってしまった場合の保険として
+   明示しておく。 */
+#screen-sharp[hidden] {
+  display: none;
+}
+
 /* X68000仮想キーボード(画面とツールバーの間)。 */
 .virtual-keyboard {
   display: flex;

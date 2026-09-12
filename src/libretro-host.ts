@@ -428,6 +428,14 @@ export class LibretroHost {
   onResolutionChanged?: () => void;
 
   /**
+   * putImageData() でcanvas(#screen)へ新しいフレームを描いた直後に毎回呼ばれる。
+   * main.ts側はこれを使って#screen-sharp(シャープ・バイリニア表示用の重ねcanvas)を
+   * 描き直す(SharpView.present()参照)。呼び出し元(main.ts)が未配線でも動くよう
+   * 任意プロパティにしている。
+   */
+  onFramePresented?: () => void;
+
+  /**
    * retro_run() 冒頭、コアが Joystick_Update() 等で入力を読み出す前に呼ばれる input_poll コールバックのフック。
    * 結合テストで「このフレームでポーリングされたか」を検出する目的で任意プロパティにしている。
    */
@@ -1078,12 +1086,14 @@ export class LibretroHost {
 
     if (!probing) {
       this.ctx2d.putImageData(img, 0, 0);
+      this.onFramePresented?.();
       return;
     }
 
     const convertEndAtMs = performance.now();
     const putStartAtMs = performance.now();
     this.ctx2d.putImageData(img, 0, 0);
+    this.onFramePresented?.();
     const putEndAtMs = performance.now();
     frameProbe.videoEvents.push({
       frameIndex,

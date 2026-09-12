@@ -221,6 +221,7 @@ import type { HostFsConnectMode } from './hostfs/filesystem';
 import { HostFolderFs } from './hostfs/host-folder-fs';
 import { buildRejectedTooltipLines } from './hostfs/rejected-tooltip';
 import { shouldShowDriveRow } from './drive-visibility';
+import { SharpView } from './sharp-view';
 
 const canvas = document.getElementById('screen') as HTMLCanvasElement;
 const bootOverlay = document.getElementById('boot-overlay') as HTMLDivElement;
@@ -252,6 +253,9 @@ const stageEl = document.querySelector('.stage') as HTMLDivElement;
 // .stage を囲む領域確保用ラッパ(style.css の .stage-frame 参照)。4:3切替でレイアウトが
 // 動かないよう、rescale() が常に「4:3時のサイズ」をここへインラインで指定する。
 const stageFrameEl = document.querySelector('.stage-frame') as HTMLDivElement;
+// #screen(実解像度canvas)の上に重ねる「シャープ・バイリニア」表示専用canvas。
+// #screenのバッファサイズ・描画処理には一切触れない(src/sharp-view.ts 冒頭コメント参照)。
+const sharpView = new SharpView(stageEl, canvas);
 // ウィンドウ表示時のリスケール(後述の rescale())で高さ計算に使う周辺要素。
 const mainEl = document.querySelector('main') as HTMLElement;
 const consoleCardEl = document.querySelector('.console-card') as HTMLElement;
@@ -4338,6 +4342,7 @@ async function bootWorkerCore(): Promise<void> {
         // (HTML仕様上、渡した Uint8ClampedArray が ImageData.data そのものになる)。
         const imageData = new ImageData(new Uint8ClampedArray(bytes), width, height);
         wctx.putImageData(imageData, 0, 0);
+        sharpView.present();
         // バッファ返却(決定「バッファ返却あり」): putImageData() は同期的にピクセルを
         // 読み終えるので、この直後に同じ ArrayBuffer を Worker のプールへ返してよい。
         workerCoreProxy?.returnFrameBuffer(bytes);
@@ -4591,6 +4596,9 @@ async function bootCore(): Promise<void> {
   // X68000 は画面モード変更で実行中に canvas の実解像度(width/height)が変わる。
   // ウィンドウ表示のリスケールは実解像度基準で倍率を決めるため、変わった直後に再計算させる。
   host.onResolutionChanged = () => rescale();
+  // 毎フレームの putImageData 直後に#screen-sharpを描き直す(present()は軽量なdrawImage
+  // 1回なので、rescale()と違って解像度変化の有無に関わらず呼んでよい)。
+  host.onFramePresented = () => sharpView.present();
   // 2026-08-31追記(コーディネータ指摘への対応、手順9): 以前はここで文字列リテラルを
   // 直接setCoreOption()へ渡していたが、Worker経路(bootWorkerCore())側は同じ値の
   // つもりで別々に組み立てたオブジェクトを渡しており、実際に px68k_cpuspeed が
@@ -5883,6 +5891,10 @@ function rescale(): void {
   canvas.style.height = `${h}px`;
   stageFrameEl.style.width = `${frameW}px`;
   stageFrameEl.style.height = `${frameH}px`;
+  // #screen-sharp(シャープ・バイリニア表示)は、#screen側が補間ありになる場面
+  // (4:3モード、またはドット等倍で端数倍のため補間へ落ちた場合)でだけ有効にする。
+  // 最近傍のままでよいドット等倍時は無効化し、#screenをそのまま見せる。
+  sharpView.update(aspectMode === '4:3' || fitted.smooth, w, h, window.devicePixelRatio);
 
   // --- バーチャルパッドの配置決定 ---
   // 手順(このファイル冒頭の指示コメントの順序を守る。逆にすると自己参照して発振する):
@@ -5943,6 +5955,22 @@ function rescale(): void {
 // すると自前のリサイズがピンチ操作を引き戻してしまう(既知の罠。WebNP2でも同じ理由で避けている)。
 window.addEventListener('resize', rescale);
 window.addEventListener('orientationchange', rescale);
+
+// devicePixelRatio の変化(ウィンドウを別DPRのモニタへ移動した等)は resize イベントを
+// 伴わないことがあるため、別途 matchMedia で監視する。マッチさせるクエリ自体に現在のDPR値を
+// 埋め込む方式(`(resolution: ${dpr}dppx)`)なので、DPRが変わって一度発火したら、そのMQLは
+// もう二度と変化を検知できない(クエリが古いDPR値のまま固定されるため)。そのため、
+// change のたびに古いリスナーを外し、新しいDPRで作り直したMQLへ登録し直す。
+function watchDevicePixelRatio(): void {
+  const mql = window.matchMedia(`(resolution: ${window.devicePixelRatio}dppx)`);
+  const onChange = () => {
+    mql.removeEventListener('change', onChange);
+    rescale();
+    watchDevicePixelRatio();
+  };
+  mql.addEventListener('change', onChange);
+}
+watchDevicePixelRatio();
 
 // ネイティブ全画面の出入りに合わせて body.immersive を付け外し、rescale() を呼び直す。
 // かつては canvas.style.width/height の付け外しと、パッドをoverlayへ強制する処理を
