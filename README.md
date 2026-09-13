@@ -789,9 +789,9 @@ This repository is **GPLv2** ([COPYING](COPYING)).
   double right-click or the toolbar's "..." menu, release via Esc
 - Audio-drift correction so screen-mode changes (15kHz/31kHz) don't cause
   runaway audio delay
-- 4:3 display mode: reproduces the real hardware's fixed 4:3 aspect ratio by
-  enlarging one axis (never shrinking, to keep 1px text lines intact);
-  dot-for-dot remains the default
+- 4:3 display (default): reproduces the real hardware's fixed 4:3 aspect ratio by
+  enlarging one axis (never shrinking, to keep 1px text lines intact), with
+  sharp bilinear scaling so it stays crisp; dot-for-dot is available as a toggle
 - MCP bridge (`?bridge=1`) for AI-agent control: screenshot, TVRAM ANK/kanji text,
   key/mouse input, disk operations
 - Japanese/English UI toggle
