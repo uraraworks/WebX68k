@@ -509,11 +509,12 @@
               (CONFIG.SYSの行は増えません)。
             </p>
             <div class="note-box">
-              <strong>起動中のディスクには組み込まないでください。</strong>
-              エミュレータがメモリ上に持っている内容と食い違い、組み込みが消えたり、
-              ディスクの内容が壊れたりするおそれがあります。<strong>組み込みはページを
-              開いた直後(起動する前)に行い</strong>、組み込んだディスクをFDD0(HDDの場合は
-              HDDスロット)へ入れてから起動してください。
+              <strong>起動中のディスクには組み込めません。</strong>
+              起動中のディスクで「HostFSを組み込む」ボタンを押すと、
+              「起動中のディスクには組み込めません。ページを開き直し、起動する前に
+              組み込んでください。」と表示され、拒否されます。<strong>ページを開き直し、
+              起動する前(起動オーバーレイが出ている間)に組み込んでから</strong>、
+              組み込んだディスクをFDD0(HDDの場合はHDDスロット)へ入れて起動してください。
             </div>
           </div>
           <div class="lang-en">
@@ -529,11 +530,12 @@
               the new version (the CONFIG.SYS line is not duplicated).
             </p>
             <div class="note-box">
-              <strong>Don't install onto a disk that's currently running.</strong> Doing so can
-              fall out of sync with what the emulator has in memory, causing the install to be
-              lost or the disk's contents to become corrupted. <strong>Install right after
-              opening the page, before booting</strong>, then insert the installed disk into
-              FDD0 (or the HDD slot, for an HDD) before you boot.
+              <strong>Cannot install onto a disk that's currently running.</strong> Pressing
+              "Install HostFS" on a disk that's currently running is refused with the message
+              "Cannot install onto a disk that is currently running. Reload the page and
+              install it before booting." <strong>Reload the page and install it before
+              booting (while the boot overlay is still shown)</strong>, then insert the
+              installed disk into FDD0 (or the HDD slot, for an HDD) before you boot.
             </div>
           </div>
         </section>
