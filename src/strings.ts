@@ -139,7 +139,9 @@ interface Dict {
   hostfsNotePlaceholder(): string;
   hostfsNoteDialogTitle(): string;
   hostfsNoteDialogSave(): string;
-  /** ドライバ未組み込み警告: フォルダ接続済みなのにHOSTFS.SYSの初期化通知がまだ来ていないとき。 */
+  /** ドライバ未組み込み警告: フォルダ接続済みなのにHOSTFS.SYSの初期化通知がまだ来ていないとき。行のラベル本文。 */
+  hostfsWarningLabel(): string;
+  /** 同警告のツールチップ。 */
   hostfsDriverWarningTooltip(): string;
   /**
    * 表示していない名前の通知(行のラベルとツールチップ)。ツールチップ本文は
@@ -678,6 +680,7 @@ const STRINGS: Record<Lang, Dict> = {
     hostfsNotePlaceholder: () => '例: Desktop/資料/共有フォルダ',
     hostfsNoteDialogTitle: () => '覚え書きを編集',
     hostfsNoteDialogSave: () => '保存',
+    hostfsWarningLabel: () => '⚠ ゲストで HOSTFS.SYS が読み込まれていません',
     hostfsDriverWarningTooltip: () =>
       'ディスクライブラリの「このディスクにHostFSを組み込む」で組み込んだディスクから起動してください',
     hostfsRejectedNamesLabel: ({ count }) => `${count}件の名前は表示していません`,
@@ -1102,6 +1105,7 @@ const STRINGS: Record<Lang, Dict> = {
     hostfsNotePlaceholder: () => 'e.g. Desktop/Docs/Shared folder',
     hostfsNoteDialogTitle: () => 'Edit note',
     hostfsNoteDialogSave: () => 'Save',
+    hostfsWarningLabel: () => '⚠ HOSTFS.SYS is not loaded in the guest',
     hostfsDriverWarningTooltip: () =>
       'Boot from a disk with HostFS installed, using "Install HostFS onto this disk" in the disk library',
     hostfsRejectedNamesLabel: ({ count }) => `${count} name(s) not shown`,

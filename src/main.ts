@@ -479,6 +479,26 @@ function resetHostFsUiStatus(): void {
   };
 }
 
+/**
+ * フォルダ接続・再接続の直前に呼ぶ、フォルダ依存項目だけのリセット。
+ * driverDetected/driveNumberは「ゲストでHOSTFS.SYSが組み込まれているか」というゲスト側の
+ * 状態であり、ホスト側のフォルダの繋ぎ直しとは無関係。ここまでresetHostFsUiStatus()で
+ * false/nullへ戻していたため、既に組み込み済みのまま繋ぎ直した場合にWorker側
+ * (lastSentHostfsStatus、src/core-worker.ts)の状態が変化せずHOSTFS_STATUS_EVENTが
+ * 再送されず、警告が誤って残ったまま表示され続けるバグがあった。
+ * rejectedCount/rejectedPaths/unknownCommandsは接続していたフォルダに紐づく内容なので、
+ * 繋ぎ直し時にはここで素直にクリアする(新しいフォルダの状態はWorkerからの通知で追従する)。
+ */
+function resetHostFsUiStatusForReconnect(): void {
+  hostFsUiStatus = {
+    driverDetected: hostFsUiStatus.driverDetected,
+    driveNumber: hostFsUiStatus.driveNumber,
+    rejectedCount: 0,
+    rejectedPaths: [],
+    unknownCommands: [],
+  };
+}
+
 /** HostFS行に「つながっている」とみなす行の表示切替向け判定(再接続待ちも含む、親からの指示書のとおり)。 */
 function hostFsHasContent(): boolean {
   return hostFsHandle !== null || hostFsReconnectCandidate !== null;
@@ -512,9 +532,13 @@ function updateHostFsUi(): void {
 
   // ドライバ未組み込み警告(利用者が決めたこと): フォルダが接続済みなのに、まだ$40の
   // 初期化通知が来ていないときだけ出す。未接続時は出さない(親からの指示書のとおり)。
-  const showWarning = hostFsHandle !== null && !hostFsUiStatus.driverDetected;
+  // 追加分(コーディネータ指摘): この警告はゲストの状態についてのものなので、起動前
+  // オーバーレイが出ている間(running===false、まだゲストが動いていない)は、たとえ
+  // 「フォルダをつなぐ→組み込む→FDD0へ入れる」の正しい手順を踏んでいても出さない。
+  const showWarning = running && hostFsHandle !== null && !hostFsUiStatus.driverDetected;
   hostFsElements.warning.hidden = !showWarning;
   if (showWarning) {
+    hostFsElements.warning.textContent = t('hostfsWarningLabel');
     hostFsElements.warning.title = t('hostfsDriverWarningTooltip');
   }
 
@@ -635,7 +659,7 @@ async function pickHostFsFolder(mode: HostFsConnectMode): Promise<void> {
     hostFsMode = mode;
     hostFsNote = note || null;
     hostFsReconnectCandidate = null;
-    resetHostFsUiStatus();
+    resetHostFsUiStatusForReconnect();
     workerCoreProxy?.sendHostFsAttach(handle, mode);
     await saveHostFolderHandle(handle, mode, note || undefined);
     showToast(t('statusHostFsConnected', { name: handle.name }));
@@ -671,7 +695,7 @@ async function reconnectHostFsFolder(): Promise<void> {
   hostFsMode = candidate.mode;
   hostFsNote = candidate.note ?? null;
   hostFsReconnectCandidate = null;
-  resetHostFsUiStatus();
+  resetHostFsUiStatusForReconnect();
   workerCoreProxy?.sendHostFsAttach(candidate.handle, candidate.mode);
   showToast(t('statusHostFsConnected', { name: candidate.handle.name }));
   updateHostFsUi();
@@ -698,7 +722,7 @@ async function tryReattachHostFsFolder(): Promise<void> {
       hostFsHandle = saved.handle;
       hostFsMode = saved.mode;
       hostFsNote = saved.note ?? null;
-      resetHostFsUiStatus();
+      resetHostFsUiStatusForReconnect();
       workerCoreProxy?.sendHostFsAttach(saved.handle, saved.mode);
     } else {
       hostFsReconnectCandidate = saved;
@@ -721,7 +745,7 @@ async function setupHostFsOpfsTest(mode: HostFsConnectMode, dirName?: string): P
     const handle = await seedHostFsOpfsTest(dirName);
     hostFsHandle = handle;
     hostFsMode = mode;
-    resetHostFsUiStatus();
+    resetHostFsUiStatusForReconnect();
     workerCoreProxy?.sendHostFsAttach(handle, mode);
     // 覚え書きの検証(親からの指示書(e)): OPFSのhandleは毎回の起動でseedHostFsOpfsTest()が
     // 新しいJSオブジェクトとして作り直すが、同じ`webx68k-hostfs`ストアへ毎回保存し直す
@@ -968,6 +992,10 @@ const hostfsDirNameParam = import.meta.env.DEV
 const hostfsTraceParam = import.meta.env.DEV
   ? new URLSearchParams(location.search).get('hostfsTrace') === '1'
   : false;
+// ゲストが実行中かどうか(コーディネータ指摘への対応)。updateHostFsUi()のshowWarningが
+// 参照するため、host/coreProxy等の宣言より前だがここでTDZを避けて宣言しておく(直後の
+// 初回描画呼び出しの都合。この時点ではまだ起動していないのでfalseのまま)。
+let running = false;
 // urlWorkerModeが確定した直後にHostFS行の初回描画を行う(TDZの都合。updateHostFsUi自体の
 // 定義箇所のコメント参照)。
 updateHostFsUi();
@@ -1479,7 +1507,6 @@ serialTransport.onStateChange = (state) => {
   updateSerialUi();
 };
 cfgSerialBaud.value = String(loadSerialBaudRate());
-let running = false;
 let bootStarted = false;
 
 // --- ジョイスティック(ゲームパッド)入力 ---
@@ -4412,6 +4439,8 @@ async function bootWorkerCore(): Promise<void> {
     console.error('[worker] Workerコアが異常終了しました。', message);
     showToast(`Workerコアが異常終了しました: ${message}`, null);
     running = false;
+    // 異常終了でrunningが変わったのでHostFS行の警告表示も追従させる(コーディネータ指摘)。
+    updateHostFsUi();
   });
 
   proxy.setEventHandler((event: CoreEvent) => {
@@ -4630,6 +4659,8 @@ async function bootWorkerCore(): Promise<void> {
   resetResampleState(audioResampleState);
   updateSlotControls();
   resetAccessLamps();
+  // runningが変わったのでHostFS行の警告表示も追従させる(コーディネータ指摘)。
+  updateHostFsUi();
   // 手順6(2026-08-31)でキー・パッド・マウスボタン・加算マウスdelta、手順6後半(2026-08-31)で
   // マウスの閉ループ追従、手順8(2026-08-31)でFDDホットマウント/dirty capture/オートセーブ/
   // 終了flushは対応した。手順9(2026-08-31、コーディネータ指摘への対応)で速度ボタン・
@@ -4850,6 +4881,9 @@ async function bootCore(): Promise<void> {
   // running が立ってから更新する(HDD行のロック状態がここで確定する)
   updateSlotControls();
   resetAccessLamps();
+  // runningが変わったのでHostFS行の警告表示も追従させる(コーディネータ指摘。この経路
+  // (既定/非Worker)ではHostFS自体は未対応だが、対称性のためここでも呼んでおく)。
+  updateHostFsUi();
   scheduleNext();
 }
 
@@ -4878,6 +4912,10 @@ async function restartCore(): Promise<void> {
     flushAllSlots();
   }
   running = false;
+  // runningが変わったのでHostFS行の警告表示も追従させる(コーディネータ指摘)。この後の
+  // bootCore()が成功すればrunning=trueに戻ってすぐ描画し直されるが、途中で例外が起きて
+  // running=falseのまま終わる場合に備えてここでも一旦更新しておく。
+  updateHostFsUi();
   cancelScheduled();
   resetSerialBridge();
   host?.dispose();
