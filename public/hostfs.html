@@ -1,0 +1,790 @@
+<!doctype html>
+<html lang="ja">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <link rel="icon" type="image/png" href="./x68icon.png" />
+    <link rel="apple-touch-icon" href="./x68icon.png" />
+    <title>WebX68k HostFS 導入ガイド</title>
+    <style>
+      :root {
+        color-scheme: light;
+        --bg: #fafafa;
+        --bg-panel: #ffffff;
+        --border: #d5d5d5;
+        --text: #1a1a1a;
+        --text-dim: #666666;
+        --accent: #4a90d9;
+        --accent-dim: #2c5a86;
+        --danger: #d32f2f;
+        --header-bg: #0c0c0c;
+        --header-text: #f2f2f2;
+        --header-tagline-text: #a8a8a8;
+        --page-footer-bg: #ececec;
+        --page-footer-text: #6b6b6b;
+        --page-footer-border: rgba(0, 0, 0, 0.12);
+        --footer-btn-bg: #4a4a4a;
+        --footer-btn-border: #202020;
+        --footer-text: #e6e6e6;
+        --code-bg: #f1f1f1;
+      }
+
+      * {
+        box-sizing: border-box;
+      }
+
+      html {
+        height: 100%;
+      }
+
+      body {
+        margin: 0;
+        padding: 0;
+        background: var(--bg);
+        color: var(--text);
+        font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Hiragino Sans', 'Yu Gothic', sans-serif;
+        min-height: 100%;
+        display: flex;
+        flex-direction: column;
+      }
+
+      header.help-header {
+        flex: 0 0 auto;
+        background: var(--header-bg);
+        padding: 10px 16px;
+        box-shadow:
+          inset 0 -1px 0 rgba(255, 255, 255, 0.06),
+          0 2px 6px rgba(0, 0, 0, 0.4);
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 12px;
+      }
+
+      .help-header-title {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+      }
+
+      .help-header-title img {
+        width: 28px;
+        height: 28px;
+        display: block;
+      }
+
+      .help-header-title h1 {
+        font-size: 15px;
+        font-weight: 600;
+        margin: 0;
+        color: var(--header-text);
+        letter-spacing: 0.03em;
+      }
+
+      .lang-toggle-btn {
+        flex: 0 0 auto;
+        padding: 6px 14px;
+        font-size: 12px;
+        border-radius: 5px;
+        border: 1px solid var(--footer-btn-border);
+        background: var(--footer-btn-bg);
+        color: var(--footer-text);
+        cursor: pointer;
+      }
+
+      .lang-toggle-btn:hover {
+        background: #5c5c5c;
+      }
+
+      main {
+        flex: 1 1 auto;
+        display: flex;
+        justify-content: center;
+        padding: 24px 16px 40px;
+      }
+
+      .help-content {
+        width: 100%;
+        max-width: 800px;
+      }
+
+      .help-card {
+        background: var(--bg-panel);
+        border: 1px solid var(--border);
+        border-radius: 8px;
+        box-shadow: 0 4px 14px rgba(0, 0, 0, 0.08);
+        padding: 24px 28px;
+        margin-bottom: 20px;
+      }
+
+      .help-card h2 {
+        font-size: 17px;
+        margin: 0 0 12px;
+        padding-bottom: 8px;
+        border-bottom: 1px solid var(--border);
+      }
+
+      .help-card p {
+        line-height: 1.8;
+        font-size: 14px;
+      }
+
+      .help-card ul,
+      .help-card ol {
+        line-height: 1.8;
+        font-size: 14px;
+        padding-left: 22px;
+      }
+
+      .help-card img {
+        max-width: 100%;
+        border: 1px solid var(--border);
+        border-radius: 6px;
+        display: block;
+        margin: 12px 0;
+      }
+
+      .help-card code {
+        background: var(--code-bg);
+        padding: 1px 5px;
+        border-radius: 3px;
+        font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+        font-size: 13px;
+      }
+
+      .help-card a {
+        color: var(--accent-dim);
+      }
+
+      table.btn-table {
+        width: 100%;
+        border-collapse: collapse;
+        font-size: 13px;
+        margin: 12px 0;
+      }
+
+      table.btn-table th,
+      table.btn-table td {
+        border: 1px solid var(--border);
+        padding: 8px 10px;
+        text-align: left;
+        vertical-align: top;
+        line-height: 1.6;
+      }
+
+      table.btn-table th {
+        background: var(--code-bg);
+      }
+
+      .btn-icon-cell {
+        text-align: center;
+        width: 44px;
+      }
+
+      .btn-group-cell {
+        white-space: nowrap;
+        width: 1%;
+      }
+
+      .fake-icon-btn {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        width: 32px;
+        height: 32px;
+        border-radius: 5px;
+        background: var(--footer-btn-bg);
+        border: 1px solid var(--footer-btn-border);
+        color: var(--footer-text);
+      }
+
+      .fake-icon-btn svg {
+        width: 20px;
+        height: 20px;
+      }
+
+      .note-box {
+        background: #fff7e6;
+        border: 1px solid #e6c46a;
+        border-radius: 6px;
+        padding: 10px 14px;
+        font-size: 13px;
+        line-height: 1.7;
+        margin: 12px 0;
+      }
+
+      footer.help-footer {
+        flex: 0 0 auto;
+        width: 100%;
+        font-size: 11px;
+        color: var(--page-footer-text);
+        text-align: center;
+        padding: 8px 16px;
+        background: var(--page-footer-bg);
+        border-top: 1px solid var(--page-footer-border);
+      }
+
+      footer.help-footer a {
+        color: var(--page-footer-text);
+      }
+
+      .lang-en {
+        display: none;
+      }
+
+      /* このページに直接コンテキストを持たせるため、body[data-lang] で切り替える。 */
+      body[data-lang='en'] .lang-ja {
+        display: none;
+      }
+
+      body[data-lang='en'] .lang-en {
+        display: block;
+      }
+
+      body[data-lang='en'] table .lang-en {
+        display: table-row;
+      }
+
+      .step-title {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        margin: 0 0 8px;
+      }
+
+      .step-num {
+        flex: 0 0 auto;
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        width: 24px;
+        height: 24px;
+        border-radius: 50%;
+        background: var(--accent-dim);
+        color: #fff;
+        font-size: 13px;
+        font-weight: 600;
+      }
+    </style>
+  </head>
+  <body data-lang="ja">
+    <header class="help-header">
+      <div class="help-header-title">
+        <img src="./x68icon.png" alt="" width="28" height="28" />
+        <h1 class="lang-ja">WebX68k HostFS 導入ガイド</h1>
+        <h1 class="lang-en">WebX68k HostFS Setup Guide</h1>
+      </div>
+      <button type="button" class="lang-toggle-btn" id="langToggleBtn"></button>
+    </header>
+
+    <main>
+      <div class="help-content">
+        <!-- 1. HostFSとは -->
+        <section class="help-card">
+          <div class="lang-ja">
+            <h2>HostFSとは</h2>
+            <p>
+              HostFSは、ブラウザで選んだ手元のフォルダを、ゲスト側から1つのドライブ
+              (例: <code>C:</code>)として見せる機能です。ディスクイメージを介さず、
+              フォルダの中身をそのまま<code>dir</code>や<code>type</code>、コピーで
+              扱えます。画面下部のSCSI行の下にある「HostFS」行から操作します。
+            </p>
+            <p>
+              対応環境はChrome系のPC・Android(<code>showDirectoryPicker</code>が使える
+              ブラウザ)です。<strong>iPhone(Safari)とFirefoxでは使えません。</strong>
+            </p>
+          </div>
+          <div class="lang-en">
+            <h2>What is HostFS?</h2>
+            <p>
+              HostFS lets a folder you pick in the browser appear to the guest as a single
+              drive (e.g. <code>C:</code>), without going through a disk image — you can
+              <code>dir</code>, <code>type</code>, and copy files straight out of that folder.
+              Use the "HostFS" row below the SCSI row at the bottom of the player.
+            </p>
+            <p>
+              Supported on Chrome-family browsers on PC and Android (any browser with
+              <code>showDirectoryPicker</code>). <strong>Not supported on iPhone (Safari) or
+              Firefox.</strong>
+            </p>
+          </div>
+        </section>
+
+        <!-- 2. はじめての準備 -->
+        <section class="help-card">
+          <div class="lang-ja">
+            <h2>はじめての準備</h2>
+            <h3 class="step-title"><span class="step-num">1</span>HostFS行を表示する</h3>
+            <p>
+              「…」メニュー→「表示」グループ→「HostFSを表示」を押します。
+              フォルダがつながっていれば、再接続待ちの状態でも自動的に表示されます。
+            </p>
+            <img
+              src="./help/hostfs-guide/step1-show-row.png"
+              alt="「…」メニューの「表示」グループにある「HostFSを表示」トグル"
+            />
+            <h3 class="step-title"><span class="step-num">2</span>フォルダをつなぐ</h3>
+            <p>
+              HostFS行の「フォルダをつなぐ」ボタン(アイコン。マウスを乗せると名前が出ます)を
+              押すと、読み取り専用/書き込みも許可のどちらでつなぐか選ぶ
+              ダイアログが出ます。選んでから、覚え書き(任意)を書いて、フォルダを選びます。
+            </p>
+            <img
+              src="./help/hostfs-guide/step2-connect.png"
+              alt="「フォルダをつなぐ」ダイアログ。読み取り専用/書き込みも許可の選択ボタンと、覚え書き欄に記入した状態"
+            />
+            <h3 class="step-title"><span class="step-num">3</span>ディスクへHostFSを組み込む</h3>
+            <p>
+              「ディスクライブラリ」を開き、同梱ディスク行(<code>human302.xdf</code>)の
+              「HostFSを組み込む」を押します。確認ダイアログで「はい」を選ぶと、
+              ライブラリに<code>human302-hostfs.xdf</code>という行が新しく増えます。
+              <strong>自動では挿入されません。</strong>同梱ディスクそのものは書き換わりません。
+            </p>
+            <img
+              src="./help/hostfs-guide/step3-install.png"
+              alt="ディスクライブラリの同梱ディスク行にある「HostFSを組み込む」ボタン"
+            />
+            <h3 class="step-title"><span class="step-num">4</span>FDD0へ入れる</h3>
+            <p>
+              いま増えた <code>human302-hostfs.xdf</code> の行の「FDD0へ」を押します。
+              押すとライブラリは自動で閉じます。
+            </p>
+            <img
+              src="./help/hostfs-guide/step4-insert.png"
+              alt="ディスクライブラリの human302-hostfs.xdf の行にある「FDD0へ」ボタン"
+            />
+            <h3 class="step-title"><span class="step-num">5</span>起動する</h3>
+            <p>
+              まだ起動していなければ、起動オーバーレイの「セットしたディスクで起動」
+              を押します。すでに
+              起動中の場合は、ツールバー右端の丸い矢印(リセット)を押します。
+            </p>
+            <img
+              src="./help/hostfs-guide/step5-boot.png"
+              alt="起動オーバーレイの「セットしたディスクで起動」ボタン、またはツールバー右端のリセットボタン"
+            />
+            <h3 class="step-title"><span class="step-num">6</span>案内表示を確認する</h3>
+            <p>
+              起動画面に「<code>HostFS version 1.00 (WebX68k)</code>」と
+              「<code>ホストのフォルダを C: に割り当てました</code>」が表示されます
+              (HDDがある場合は<code>D:</code>等になることもあります)。
+            </p>
+            <img
+              src="./help/hostfs-guide/step6-banner.png"
+              alt="起動画面に表示される「HostFS version 1.00 (WebX68k)」「ホストのフォルダを C: に割り当てました」の案内"
+            />
+            <h3 class="step-title"><span class="step-num">7</span>使ってみる</h3>
+            <p>
+              ゲスト側で <code>dir c:</code> と打つと、つないだフォルダの中身が見えます。
+            </p>
+            <img
+              src="./help/hostfs-guide/step7-dir.png"
+              alt="Human68kのコマンドラインで dir c: を実行し、つないだフォルダの中身が一覧表示されている様子"
+            />
+            <div class="note-box">
+              <strong>ページの再読み込みは不要です(むしろ有害です)。</strong>
+              再読み込みするとFDD0に挿したディスクが外れ、そのまま起動するとエラーに
+              なります。うまくいかないときは、再読み込みではなくリセットを使ってください。
+            </div>
+          </div>
+          <div class="lang-en">
+            <h2>First-time setup</h2>
+            <h3 class="step-title"><span class="step-num">1</span>Show the HostFS row</h3>
+            <p>
+              Open the "…" menu → "Display" group → "Show HostFS". If a folder is connected, the
+              row also appears automatically even while it's waiting to reconnect.
+            </p>
+            <img
+              src="./help/hostfs-guide/step1-show-row-en.png"
+              alt="The 'Show HostFS' toggle in the 'Display' group of the '…' menu"
+            />
+            <h3 class="step-title"><span class="step-num">2</span>Connect a folder</h3>
+            <p>
+              Click the "Connect a folder" button (an icon; hover to see its name) on the
+              HostFS row — a dialog asks whether to connect read-only or with writes
+              allowed. Choose one, optionally jot down a note, then pick the folder.
+            </p>
+            <img
+              src="./help/hostfs-guide/step2-connect-en.png"
+              alt="The 'Connect a folder' dialog: read-only / allow-writes choice buttons, with a note filled in"
+            />
+            <h3 class="step-title"><span class="step-num">3</span>Install HostFS onto a disk</h3>
+            <p>
+              Open the "Disk Library" and click "Install HostFS" on the bundled disk's row
+              (<code>human302.xdf</code>). Confirm with "Yes", and a new row,
+              <code>human302-hostfs.xdf</code>, appears in the library.
+              <strong>It is not inserted automatically.</strong> The bundled disk itself is
+              never modified.
+            </p>
+            <img
+              src="./help/hostfs-guide/step3-install-en.png"
+              alt="The 'Install HostFS' button on the bundled disk row in the disk library"
+            />
+            <h3 class="step-title"><span class="step-num">4</span>Insert into FDD0</h3>
+            <p>
+              Click "To FDD0" on the new <code>human302-hostfs.xdf</code> row. The library
+              closes automatically.
+            </p>
+            <img
+              src="./help/hostfs-guide/step4-insert-en.png"
+              alt="The 'To FDD0' button on the human302-hostfs.xdf row in the disk library"
+            />
+            <h3 class="step-title"><span class="step-num">5</span>Boot</h3>
+            <p>
+              If not already running, click "Boot with the Selected Disks" on the start overlay.
+              If already running, click the round
+              arrow (Reset) at the right end of the toolbar.
+            </p>
+            <img
+              src="./help/hostfs-guide/step5-boot-en.png"
+              alt="The 'Boot with the Selected Disks' button on the start overlay, or the Reset button at the right end of the toolbar"
+            />
+            <h3 class="step-title"><span class="step-num">6</span>Check the banner</h3>
+            <p>
+              The startup screen shows "<code>HostFS version 1.00 (WebX68k)</code>" followed by
+              a line meaning "host folder assigned to drive C:" (it can be <code>D:</code>, etc.,
+              if an HDD is present).
+            </p>
+            <img
+              src="./help/hostfs-guide/step6-banner-en.png"
+              alt="The startup screen showing 'HostFS version 1.00 (WebX68k)' and the drive-assignment message"
+            />
+            <h3 class="step-title"><span class="step-num">7</span>Try it</h3>
+            <p>Type <code>dir c:</code> at the guest's command line to see the folder's contents.</p>
+            <img
+              src="./help/hostfs-guide/step7-dir-en.png"
+              alt="The Human68k command line running dir c:, listing the contents of the connected folder"
+            />
+            <div class="note-box">
+              <strong>Reloading the page is not needed — and actually harmful.</strong>
+              Reloading ejects the disk inserted in FDD0, and booting without it produces an
+              error. If something isn't working, use Reset instead of reloading.
+            </div>
+          </div>
+        </section>
+
+        <!-- 3. 2回目以降の使い方 -->
+        <section class="help-card">
+          <div class="lang-ja">
+            <h2>2回目以降の使い方</h2>
+            <p>
+              ページを開き直した後は、ディスクライブラリから、組み込み済みの
+              <code>human302-hostfs.xdf</code>を「FDD0へ」で入れ直してから起動してください。
+              フォルダは起動時に自動でつなぎ直されます。ブラウザが改めて許可を求める場合は、
+              HostFS行に「再接続(許可が必要です)」ボタン(アイコン)が出るので押してください。
+            </p>
+            <p>
+              起動後にフォルダをつないでも、組み込み済みのディスクで起動していれば、
+              リセットせずにそのまま使えます。
+            </p>
+          </div>
+          <div class="lang-en">
+            <h2>Using it after the first time</h2>
+            <p>
+              After reopening the page, reinsert the already-installed
+              <code>human302-hostfs.xdf</code> from the disk library using "To FDD0", then boot.
+              The folder reconnects automatically at boot. If the browser asks for permission
+              again, a "Reconnect (permission needed)" button (an icon) appears on the HostFS row — click it.
+            </p>
+            <p>
+              Connecting a folder after boot also works without a reset, as long as you're
+              running from a disk that already has HostFS installed.
+            </p>
+          </div>
+        </section>
+
+        <!-- 4. 自分のディスクに組み込む -->
+        <section class="help-card">
+          <div class="lang-ja">
+            <h2>自分のディスク(HDD／FAT12/16として扱えるFD)に組み込む場合</h2>
+            <p>
+              ゲストがHostFSを使うには、起動ディスクのCONFIG.SYSに
+              <code>DEVICE = \HOSTFS.SYS</code>という1行が必要です。ディスクライブラリの
+              各行(HDD、またはFAT12/16として扱えるFD)にある
+              <strong>「HostFSを組み込む」</strong>ボタンを押すと、その行のディスクへ
+              自動的に<code>HOSTFS.SYS</code>を書き込み、CONFIG.SYSにこの行を追加します
+              (すでにCONFIG.SYSがあれば末尾に追記、無ければ新規作成。同じ行が既にあれば
+              二重には追加しません)。古い版のHOSTFS.SYSで組み込み済みのディスクへ
+              「HostFSを組み込む」を再度押すと、HOSTFS.SYSだけ新しい版に置き換わります
+              (CONFIG.SYSの行は増えません)。
+            </p>
+            <div class="note-box">
+              <strong>起動中のディスクには組み込まないでください。</strong>
+              エミュレータがメモリ上に持っている内容と食い違い、組み込みが消えたり、
+              ディスクの内容が壊れたりするおそれがあります。<strong>組み込みはページを
+              開いた直後(起動する前)に行い</strong>、組み込んだディスクをFDD0(HDDの場合は
+              HDDスロット)へ入れてから起動してください。
+            </div>
+          </div>
+          <div class="lang-en">
+            <h2>Installing onto your own disk (an HDD, or an FD usable as FAT12/16)</h2>
+            <p>
+              For the guest to use HostFS, the boot disk's CONFIG.SYS needs the line
+              <code>DEVICE = \HOSTFS.SYS</code>. The <strong>"Install HostFS"</strong> button on
+              each disk library row (HDD, or an FD that can be handled as FAT12/16) writes
+              <code>HOSTFS.SYS</code> to that disk and adds this line to CONFIG.SYS
+              automatically (appended if CONFIG.SYS already exists, created new otherwise; it
+              won't be added twice if the line is already there). Pressing "Install HostFS"
+              again on a disk that already has an older HOSTFS.SYS replaces just that file with
+              the new version (the CONFIG.SYS line is not duplicated).
+            </p>
+            <div class="note-box">
+              <strong>Don't install onto a disk that's currently running.</strong> Doing so can
+              fall out of sync with what the emulator has in memory, causing the install to be
+              lost or the disk's contents to become corrupted. <strong>Install right after
+              opening the page, before booting</strong>, then insert the installed disk into
+              FDD0 (or the HDD slot, for an HDD) before you boot.
+            </div>
+          </div>
+        </section>
+
+        <!-- 5. うまくいかないとき -->
+        <section class="help-card">
+          <div class="lang-ja">
+            <h2>うまくいかないとき</h2>
+            <p>
+              <strong>ドライバ未組み込みの警告:</strong> フォルダをつないでいるのに、
+              起動したディスクにHostFSが組み込まれていない(ゲストのHOSTFS.SYSが
+              読み込まれていない)ときは、行に「⚠ ゲストで HOSTFS.SYS が読み込まれていません」
+              と出ます。上の「HostFSを組み込む」でHOSTFS.SYSを組み込んだディスクから
+              起動してください。読み込みが完了すると警告は消え、リセット・再起動すると
+              また知らせを待つ状態に戻ります。
+            </p>
+            <p>
+              <strong>「ドライブ名が無効です」と出る:</strong> 組み込んでいないディスクで
+              起動していると、<code>dir c:</code>は「ドライブ名が無効です」で失敗し、
+              HostFS行に上記の警告が出ます。組み込み済みのディスクで起動し直してください。
+            </p>
+            <img
+              src="./help/hostfs-guide/warning.png"
+              alt="HostFS行に表示される「⚠ ゲストで HOSTFS.SYS が読み込まれていません」などの警告表示"
+            />
+            <p>
+              <strong>表示していない名前の通知:</strong> Human68kの8.3形式で表せず
+              一覧(<code>dir</code>等)から外した名前があると、行に
+              「N件の名前は表示していません」と出ます。マウスオーバーで、
+              これまでに一覧を取ったフォルダの分をまとめて、つないだフォルダからの
+              相対パス付き(<code>/サブフォルダ/名前</code>の形、1行に1つ)で確認できます
+              (最大20行、それ以上は「ほかN件」)。あるフォルダをもう一度一覧すると、
+              そのフォルダの分だけ最新の内容に入れ替わります。
+            </p>
+            <p>
+              <strong>未対応の要求の警告:</strong> 常駐ソフトなど、こちらでまだ解読していない
+              HostFSへの要求が来ると、行に「⚠ 未対応の要求（$xx）」(複数の種類があれば
+              「⚠ 未対応の要求（$xx ほかN種）」)と出ます。<strong>この警告が出た場合は、
+              行をクリックすると診断情報がクリップボードにコピーされるので、それを添えて
+              <a href="https://github.com/uraraworks/WebX68k" target="_blank" rel="noopener"
+                >GitHub</a
+              >のIssue等で報告してください。</strong>
+              コピーされる内容はビルド刻印・ブラウザのUser-Agent・届いた要求の番号/回数/
+              先頭26バイトのヘッダ・(該当すれば)ポインタ先32バイト・HostFSの状態
+              (ドライバ検出有無・ドライブ番号・フォルダ接続有無・モード)だけで、
+              <strong>フォルダの中のファイル名・覚え書きの本文・ホストの実際のパスは
+              一切含まれません。</strong>
+              クリップボードが使えない環境では、代わりにテキストを選択してコピーできる
+              小さなダイアログが開きます。リセット・再起動すると記録は消えます。
+            </p>
+          </div>
+          <div class="lang-en">
+            <h2>Troubleshooting</h2>
+            <p>
+              <strong>Driver-not-installed warning:</strong> If a folder is connected but the disk you
+              booted doesn't have HostFS installed (the guest's HOSTFS.SYS hasn't loaded), the row
+              shows "⚠ HOSTFS.SYS is not loaded in the guest". Boot from a disk that has HOSTFS.SYS
+              installed, using "Install HostFS" above. The warning clears once it loads, and a reset
+              or reboot puts it back into "waiting" state.
+            </p>
+            <p>
+              <strong>Seeing "invalid drive specification":</strong> If you're running from a disk
+              that doesn't have HostFS installed, <code>dir c:</code> fails with "invalid drive
+              specification" and the HostFS row shows the warning above. Reboot from a disk that
+              has HostFS installed instead.
+            </p>
+            <img
+              src="./help/hostfs-guide/warning-en.png"
+              alt="The HostFS row showing the '⚠ HOSTFS.SYS is not loaded in the guest' warning"
+            />
+            <p>
+              <strong>Hidden-name notice:</strong> If a listing (<code>dir</code>, etc.) had to drop
+              names that don't fit Human68k's 8.3 format, the row shows "N name(s) not shown". Hover
+              to see the combined list from every folder listed so far, each shown as a path relative
+              to the connected folder (<code>/subfolder/name</code>, one per line; up to 20 lines,
+              with "N more" beyond that). Listing a given folder again replaces just that folder's
+              entries with the latest contents.
+            </p>
+            <p>
+              <strong>Unsupported-request warning:</strong> If a resident program or similar sends
+              HostFS a request we haven't decoded yet, the row shows "⚠ Unsupported request ($xx)"
+              (or "⚠ Unsupported request ($xx, +N more kinds)" when more than one kind has been
+              seen). <strong>If you see this warning, please click the row to copy diagnostic info
+              to the clipboard, and attach it when reporting the issue on
+              <a href="https://github.com/uraraworks/WebX68k" target="_blank" rel="noopener"
+                >GitHub</a
+              >.</strong>
+              The copied text only contains the build stamp, the browser's User-Agent, the
+              request number/count/first 26-byte header/[if applicable] the 32 bytes at the
+              pointer it carries, and HostFS's own state (driver detected, drive number, folder
+              connected, mode). <strong>It never includes file names inside the folder, the note
+              text, or the folder's actual host-side path.</strong> On environments without
+              clipboard access, a small dialog opens instead with the text ready to select and
+              copy. A reset or reboot clears the recorded requests.
+            </p>
+          </div>
+        </section>
+
+        <!-- 6. 知っておくこと -->
+        <section class="help-card">
+          <div class="lang-ja">
+            <h2>知っておくこと</h2>
+            <div class="note-box">
+              <strong>書き込みは、つなぐときに「書き込みも許可」を選んだときだけ行えます。</strong>
+              読み取り専用でつないだ場合、ファイルの新規作成・上書き・削除・改名・
+              属性変更はすべて失敗します(ゲストには「書き込み禁止です」等のエラーとして
+              表示されます)。
+            </div>
+            <div class="note-box">
+              <strong>削除・上書きはそのまま反映されます(ゴミ箱はありません)。</strong>
+              <code>del</code>で消したファイルや、<code>copy</code>・
+              <code>echo &gt;</code>等で上書きした内容は元に戻せません。
+            </div>
+            <div class="note-box">
+              書き込んだ内容は、<strong>ファイルを閉じたとき</strong>にまとめてホスト側の
+              実体へ反映されます(開いたまま・書き込んだままではホスト側にまだ現れません)。
+            </div>
+            <div class="note-box">
+              日時・属性(読み取り専用フラグ等)はホスト側に保存されません。
+              <code>_FILEDATE</code>(ファイルの日時取得・設定)は常に失敗(-6)します。
+              また、フォルダの改名(<code>ren</code>)は、ブラウザがフォルダの
+              改名操作(File System Access APIの<code>move()</code>)に対応していない環境では
+              失敗します(ファイルの改名は対応環境を問わず行えます)。
+            </div>
+            <p>
+              ホスト側のファイル名は、Human68kの8.3形式(名前8文字+拡張子3文字、ドットは
+              1つまで)に変換して見せます。次のいずれかに当てはまる名前は一覧に出ません。
+              拡張子が4文字以上/名前が18バイト超(日本語は1文字2バイト)/ドットが2つ以上/
+              ドットで始まる/<code>" * + , / : ; &lt; = &gt; ? [ ] |</code>のいずれかを含む/
+              CP932で表せない文字を含む(空白は使えます)。改行コードは変換せず、
+              ホスト上のバイト列をそのまま渡します。
+            </p>
+            <p>
+              <strong>覚え書き:</strong> File System Access API はフォルダの「名前」しか渡さず、
+              ホスト側のフルパス(どこにあるフォルダか)は分かりません。「フォルダをつなぐ」ダイアログの
+              覚え書き欄(任意・60文字まで)にメモしておくと、行に
+              「フォルダ名 — 覚え書き」の形で表示されます(長いときは省略され、
+              マウスオーバーで全文を見られます)。行の鉛筆アイコンから後で編集できます。
+            </p>
+          </div>
+          <div class="lang-en">
+            <h2>Things to know</h2>
+            <div class="note-box">
+              <strong>Writes only happen if you chose "allow writes" when connecting.</strong>
+              If connected read-only, creating, overwriting, deleting, renaming, or changing
+              attributes of a file all fail (the guest sees errors such as "write protected").
+            </div>
+            <div class="note-box">
+              <strong>Deletes and overwrites are applied directly — there is no trash.</strong>
+              A file removed with <code>del</code>, or content overwritten via
+              <code>copy</code> / <code>echo &gt;</code>, cannot be recovered.
+            </div>
+            <div class="note-box">
+              Written content is only flushed to the real file <strong>when the file is
+              closed</strong> — it does not appear on the host side while the file is still
+              open or mid-write.
+            </div>
+            <div class="note-box">
+              Timestamps and attributes (e.g. read-only flag) are not stored on the host.
+              <code>_FILEDATE</code> (get/set the file's date/time) always fails (-6).
+              Renaming a folder (<code>ren</code>) also fails on browsers that don't support
+              the File System Access API's directory <code>move()</code> (renaming a file works
+              regardless of that).
+            </div>
+            <p>
+              Host file names are converted to Human68k's 8.3 format (8-character name + 3-character
+              extension, at most one dot) before being shown. A name is omitted from listings if
+              any of the following hold: extension is 4+ characters / name is over 18 bytes
+              (Japanese characters are 2 bytes each) / more than one dot / starts with a dot /
+              contains any of <code>" * + , / : ; &lt; = &gt; ? [ ] |</code> / contains a character
+              not representable in CP932 (spaces are fine). Line endings are not converted — the
+              host's byte stream is passed through as-is.
+            </p>
+            <p>
+              <strong>Note:</strong> The File System Access API only hands you the folder's name, not
+              its full host-side path (where it actually lives). You can jot down a note (optional,
+              up to 60 characters) in the "Connect a folder" dialog's note field; the row then shows
+              "folder name — note" (truncated with an ellipsis when long, with the full text in a
+              tooltip). Edit it later from the pencil icon on the row.
+            </p>
+          </div>
+        </section>
+      </div>
+    </main>
+
+    <footer class="help-footer">
+      <span class="lang-ja">
+        <a href="./index.html">WebX68k プレイヤーに戻る</a> /
+        <a href="./help.html?lang=ja">使い方に戻る</a> /
+        <a href="./about.html?lang=ja">WebX68kについて</a> /
+        <a href="https://github.com/uraraworks/WebX68k" target="_blank" rel="noopener">GitHubで見る</a>
+      </span>
+      <span class="lang-en">
+        <a href="./index.html">Back to the WebX68k player</a> /
+        <a href="./help.html?lang=en">Back to Help</a> /
+        <a href="./about.html?lang=en">About WebX68k</a> /
+        <a href="https://github.com/uraraworks/WebX68k" target="_blank" rel="noopener">View on GitHub</a>
+      </span>
+    </footer>
+
+    <script>
+      (function () {
+        'use strict';
+
+        var STORAGE_KEY = 'webx68k.lang';
+
+        function readStoredLang() {
+          try {
+            var v = localStorage.getItem(STORAGE_KEY);
+            return v === 'ja' || v === 'en' ? v : null;
+          } catch (e) {
+            return null;
+          }
+        }
+
+        // 優先順位: URL ?lang= ＞ localStorage ＞ navigator.language(ja判定) ＞ 既定 'en'。
+        // src/strings.ts の resolveLang() と同じロジック。
+        function resolveLang() {
+          var params = new URLSearchParams(location.search);
+          var fromUrl = params.get('lang');
+          if (fromUrl === 'ja' || fromUrl === 'en') return fromUrl;
+
+          var stored = readStoredLang();
+          if (stored) return stored;
+
+          if (navigator.language && navigator.language.toLowerCase().indexOf('ja') === 0) return 'ja';
+
+          return 'en';
+        }
+
+        function setLang(lang) {
+          try {
+            localStorage.setItem(STORAGE_KEY, lang);
+          } catch (e) {
+            // localStorageが使えない環境ではメモリ上の切替のみ有効。
+          }
+          document.body.setAttribute('data-lang', lang);
+          document.documentElement.setAttribute('lang', lang);
+          document.title = lang === 'ja' ? 'WebX68k HostFS 導入ガイド' : 'WebX68k HostFS Setup Guide';
+          var toggleBtn = document.getElementById('langToggleBtn');
+          if (toggleBtn) toggleBtn.textContent = lang === 'ja' ? 'EN' : '日本語';
+        }
+
+        var currentLang = resolveLang();
+        setLang(currentLang);
+
+        document.getElementById('langToggleBtn').addEventListener('click', function () {
+          currentLang = currentLang === 'ja' ? 'en' : 'ja';
+          setLang(currentLang);
+        });
+      })();
+    </script>
+  </body>
+</html>

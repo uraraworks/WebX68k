@@ -13,6 +13,7 @@ X68000 エミュレータ [px68k-libretro](https://github.com/uraraworks/px68k-l
 - **公開ページ**: <https://uraraworks.github.io/WebX68k/>
 - **紹介ページ**: <https://uraraworks.github.io/WebX68k/about.html?lang=ja>
 - **使い方ページ**: <https://uraraworks.github.io/WebX68k/help.html?lang=ja>
+- **HostFS 導入ガイド**: <https://uraraworks.github.io/WebX68k/hostfs.html?lang=ja>
 
 ## 使い方
 
@@ -190,14 +191,21 @@ Android版Firefox、iOS/iPadOS上のブラウザ、およびmacOS版Safariは現
 
 HostFSは、ブラウザで選んだ手元のフォルダを、ディスクイメージを介さずゲスト側から
 1つのドライブ(例: `C:`)として見せる機能です。SCSI行の下にある「HostFS」行から
-操作します。
+操作します。スクショ付きの手順は
+[HostFS 導入ガイド](https://uraraworks.github.io/WebX68k/hostfs.html?lang=ja)
+を参照してください。
 
-1. 「つなぐ」ボタンを押すと、読み取り専用/書き込みも許可のどちらでつなぐか選ぶ
-   ダイアログが出るので選んでからフォルダを選ぶ。
+1. HostFS行にあるアイコンだけの**「フォルダをつなぐ」**ボタンを押すと、
+   読み取り専用/書き込みも許可のどちらでつなぐか選ぶダイアログが出るので
+   選んでからフォルダを選ぶ。
 2. 起動したいディスク(FD/HDD)のディスクライブラリの行にある
    **「HostFSを組み込む」**ボタンで組み込む。
-3. (必要なら)ページを再読み込みしてから起動する。
-4. 起動後、ゲスト側で `dir c:` のように使う。
+3. 組み込んだディスクをライブラリの**「FDD0へ」**ボタンで入れる(同梱ディスクに
+   組み込んだ場合は、増えたコピー`human302-hostfs.xdf`を入れる。自動では
+   挿入されない)。
+4. 起動する(すでに起動中ならリセットする)。ページの再読み込みは不要で、
+   FDD0のディスクが外れてしまうため避けること。
+5. 起動後、ゲスト側で `dir c:` のように使う。
 
 - **書き込みは、つなぐときに「書き込みも許可」を選んだときだけ**行えます。読み取り専用
   でつないだ場合、ファイルの新規作成・上書き・削除・改名・属性変更はすべて失敗します

@@ -13,6 +13,7 @@ See [docs/DESIGN.md](docs/DESIGN.md) for design and implementation details.
 - **Live site**: <https://uraraworks.github.io/WebX68k/>
 - **Introduction page**: <https://uraraworks.github.io/WebX68k/about.html?lang=en>
 - **Help page**: <https://uraraworks.github.io/WebX68k/help.html?lang=en>
+- **HostFS Setup Guide**: <https://uraraworks.github.io/WebX68k/hostfs.html?lang=en>
 
 ## Usage
 
@@ -257,14 +258,21 @@ be mounted at the same time.
 
 HostFS lets a folder you pick in the browser appear to the guest as a
 single drive (e.g. `C:`), without going through a disk image. It's
-controlled from the "HostFS" row below the SCSI row.
+controlled from the "HostFS" row below the SCSI row. See the
+[HostFS Setup Guide](https://uraraworks.github.io/WebX68k/hostfs.html?lang=en)
+for a step-by-step walkthrough with screenshots.
 
-1. Click "Connect" — a dialog asks whether to connect **read-only** or
-   **with writes allowed** — then pick the folder to expose.
+1. Click the icon-only **"Connect a folder"** button on the HostFS row — a
+   dialog asks whether to connect **read-only** or **with writes allowed** —
+   then pick the folder to expose.
 2. Install HostFS onto the disk (FD/HDD) you want to boot, using the
    **"Install HostFS"** button on that disk's row in the Disk Library.
-3. Reload the page if needed, then boot.
-4. From the guest, use it like `dir c:`.
+3. Insert the installed disk using the Disk Library's **"To FDD0"** button
+   (if you installed onto the bundled disk, insert the new copy
+   `human302-hostfs.xdf` that appeared — it is not inserted automatically).
+4. Boot (or, if already running, click Reset) — reloading the page is not
+   needed and ejects the FDD0 disk, so avoid it.
+5. From the guest, use it like `dir c:`.
 
 - **Writes only happen if you chose "allow writes" when connecting.** With
   a read-only connection, creating, overwriting, deleting, renaming, or

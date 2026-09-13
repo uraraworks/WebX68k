@@ -715,129 +715,23 @@
               フォルダの中身をそのまま<code>dir</code>や<code>type</code>、コピーで
               扱えます。画面下部のSCSI行の下にある「HostFS」行から操作します。
             </p>
-            <img
-              src="./help/hostfs.png"
-              alt="「フォルダをつなぐ」ダイアログ。読み取り専用/書き込みも許可の選択ボタンと、覚え書き欄に記入した状態"
-            />
-            <div class="note-box">
-              <strong>HostFS行が見当たらないとき:</strong> ドライブ行のHostFSは既定で
-              非表示です。「…」メニューの「表示」グループの「HostFSを表示」トグルで
-              出せます(フォルダがつながっていれば、再接続待ちの状態でも自動的に
-              表示されます)。
-            </div>
-            <ol>
-              <li>
-                「つなぐ」ボタンを押すと、読み取り専用/書き込みも許可のどちらでつなぐか選ぶ
-                ダイアログが出るので選んでからフォルダを選ぶ。
-              </li>
-              <li>
-                起動したいディスク(FD/HDD)に、下記の「組み込みボタン」でHostFSを組み込む。
-              </li>
-              <li>(必要なら)ページを再読み込みしてから起動する。</li>
-              <li>起動後、ゲスト側で <code>dir c:</code> のように使う。</li>
-            </ol>
-            <div class="note-box">
-              <strong>書き込みは、つなぐときに「書き込みも許可」を選んだときだけ行えます。</strong>
-              読み取り専用でつないだ場合、ファイルの新規作成・上書き・削除・改名・
-              属性変更はすべて失敗します(ゲストには「書き込み禁止です」等のエラーとして
-              表示されます)。
-            </div>
-            <div class="note-box">
-              <strong>削除・上書きはそのまま反映されます(ゴミ箱はありません)。</strong>
-              <code>del</code>で消したファイルや、<code>copy</code>・
-              <code>echo &gt;</code>等で上書きした内容は元に戻せません。
-            </div>
-            <div class="note-box">
-              書き込んだ内容は、<strong>ファイルを閉じたとき</strong>にまとめてホスト側の
-              実体へ反映されます(開いたまま・書き込んだままではホスト側にまだ現れません)。
-            </div>
-            <div class="note-box">
-              日時・属性(読み取り専用フラグ等)はホスト側に保存されません。
-              <code>_FILEDATE</code>(ファイルの日時取得・設定)は常に失敗(-6)します。
-              また、フォルダの改名(<code>ren</code>)は、ブラウザがフォルダの
-              改名操作(File System Access APIの<code>move()</code>)に対応していない環境では
-              失敗します(ファイルの改名は対応環境を問わず行えます)。
-            </div>
-            <p>
-              ゲストがHostFSを使うには、起動ディスクのCONFIG.SYSに
-              <code>DEVICE = \HOSTFS.SYS</code>という1行が必要です。ディスクライブラリの
-              各行(HDD、またはFAT12/16として扱えるFD)にある
-              <strong>「HostFSを組み込む」</strong>ボタンを押すと、その行のディスクへ
-              自動的に<code>HOSTFS.SYS</code>を書き込み、CONFIG.SYSにこの行を追加します
-              (すでにCONFIG.SYSがあれば末尾に追記、無ければ新規作成。同じ行が既にあれば
-              二重には追加しません)。起動すると、起動画面に
-              「<code>HostFS version 1.00 (WebX68k)</code>」
-              「<code>ホストのフォルダを C: に割り当てました</code>」のように、実際に
-              割り当てられたドライブ名(HDDがあれば<code>D:</code>等になることもあります)
-              が案内表示されます。古い版のHOSTFS.SYSで
-              組み込み済みのディスクへ「HostFSを組み込む」を再度押すと、HOSTFS.SYS
-              だけ新しい版に置き換わります(CONFIG.SYSの行は増えません)。
-            </p>
-            <div class="note-box">
-              <strong>同梱システムディスク(human302.xdf)は書き換えません。</strong>
-              同梱ディスクの行で「HostFSを組み込む」を押すと、まずライブラリへコピーを
-              1枚作り、そのコピーへ組み込みます。同梱ディスクそのものは無改変のまま
-              残ります。
-            </div>
-            <div class="note-box">
-              <strong>起動中のディスクには組み込めません。</strong> 実行中に対象へ
-              書き込むと、コアがマウントしている内容とずれてしまうため、稼働中のディスク
-              には組み込みボタンが働きません。停止してから操作してください。
-            </div>
             <p>
               対応環境はChrome系のPC・Android(<code>showDirectoryPicker</code>が使える
               ブラウザ)です。<strong>iPhone(Safari)とFirefoxでは使えません。</strong>
             </p>
             <p>
-              ホスト側のファイル名は、Human68kの8.3形式(名前8文字+拡張子3文字、ドットは
-              1つまで)に変換して見せます。次のいずれかに当てはまる名前は一覧に出ません。
-              拡張子が4文字以上/名前が18バイト超(日本語は1文字2バイト)/ドットが2つ以上/
-              ドットで始まる/<code>" * + , / : ; &lt; = &gt; ? [ ] |</code>のいずれかを含む/
-              CP932で表せない文字を含む(空白は使えます)。改行コードは変換せず、
-              ホスト上のバイト列をそのまま渡します。
+              大まかな流れは、「フォルダをつなぐ」→ 起動したいディスクへ
+              「HostFSを組み込む」→ 組み込んだディスクを「FDD0へ」入れる→ 起動、です。
             </p>
-            <p>接続したフォルダのハンドルはブラウザに保存され、「再接続」で次回も使えます。</p>
+            <img
+              src="./help/hostfs.png"
+              alt="「フォルダをつなぐ」ダイアログ。読み取り専用/書き込みも許可の選択ボタンと、覚え書き欄に記入した状態"
+            />
             <p>
-              <strong>覚え書き:</strong> File System Access API はフォルダの「名前」しか渡さず、
-              ホスト側のフルパス(どこにあるフォルダか)は分かりません。「つなぐ」ダイアログの
-              覚え書き欄(任意・60文字まで)にメモしておくと、行に
-              「フォルダ名 — 覚え書き」の形で表示されます(長いときは省略され、
-              マウスオーバーで全文を見られます)。行の鉛筆アイコンから後で編集できます。
-            </p>
-            <p>
-              <strong>ドライバ未組み込みの警告:</strong> フォルダをつないでいるのに、
-              起動したディスクにHostFSが組み込まれていない(ゲストのHOSTFS.SYSが
-              読み込まれていない)ときは、行に「⚠ ゲストで HOSTFS.SYS が読み込まれていません」
-              と出ます。上の「HostFSを組み込む」でHOSTFS.SYSを組み込んだディスクから
-              起動してください。読み込みが完了すると警告は消え、リセット・再起動すると
-              また知らせを待つ状態に戻ります。
-            </p>
-            <p>
-              <strong>表示していない名前の通知:</strong> Human68kの8.3形式で表せず
-              一覧(<code>dir</code>等)から外した名前があると、行に
-              「N件の名前は表示していません」と出ます。マウスオーバーで、
-              これまでに一覧を取ったフォルダの分をまとめて、つないだフォルダからの
-              相対パス付き(<code>/サブフォルダ/名前</code>の形、1行に1つ)で確認できます
-              (最大20行、それ以上は「ほかN件」)。あるフォルダをもう一度一覧すると、
-              そのフォルダの分だけ最新の内容に入れ替わります。外れる条件は本節の
-              上記のとおりです(拡張子が4文字以上/名前が18バイト超/ドットが2つ以上/
-              ドットで始まる/使えない記号を含む/CP932で表せない文字を含む)。
-            </p>
-            <p>
-              <strong>未対応の要求の警告:</strong> 常駐ソフトなど、こちらでまだ解読していない
-              HostFSへの要求が来ると、行に「⚠ 未対応の要求（$xx）」(複数の種類があれば
-              「⚠ 未対応の要求（$xx ほかN種）」)と出ます。<strong>この警告が出た場合は、
-              行をクリックすると診断情報がクリップボードにコピーされるので、それを添えて
-              <a href="https://github.com/uraraworks/WebX68k" target="_blank" rel="noopener"
-                >GitHub</a
-              >のIssue等で報告してください。</strong>
-              コピーされる内容はビルド刻印・ブラウザのUser-Agent・届いた要求の番号/回数/
-              先頭26バイトのヘッダ・(該当すれば)ポインタ先32バイト・HostFSの状態
-              (ドライバ検出有無・ドライブ番号・フォルダ接続有無・モード)だけで、
-              <strong>フォルダの中のファイル名・覚え書きの本文・ホストの実際のパスは
-              一切含まれません。</strong>
-              クリップボードが使えない環境では、代わりにテキストを選択してコピーできる
-              小さなダイアログが開きます。リセット・再起動すると記録は消えます。
+              <strong
+                ><a href="./hostfs.html?lang=ja">スクショ付きの導入手順と詳しい説明は
+                HostFS 導入ガイドへ</a></strong
+              >
             </p>
           </div>
           <div class="lang-en">
@@ -848,128 +742,24 @@
               <code>dir</code>, <code>type</code>, and copy files straight out of that folder.
               Use the "HostFS" row below the SCSI row at the bottom of the player.
             </p>
-            <img
-              src="./help/hostfs-en.png"
-              alt="The 'Connect a folder' dialog: read-only / allow-writes choice buttons, with a note filled in"
-            />
-            <div class="note-box">
-              <strong>Don't see the HostFS row?</strong> The HostFS drive row is hidden by
-              default. Show it from "Show HostFS" in the "Display" group of the "…" menu (it also
-              appears automatically whenever a folder is connected, including a pending
-              reconnect).
-            </div>
-            <ol>
-              <li>
-                Click "Connect" — a dialog asks whether to connect read-only or with writes
-                allowed — then choose the folder to expose.
-              </li>
-              <li>Install HostFS onto the disk (FD/HDD) you want to boot, using the button below.</li>
-              <li>(If needed) reload the page, then boot.</li>
-              <li>After boot, use it from the guest with e.g. <code>dir c:</code>.</li>
-            </ol>
-            <div class="note-box">
-              <strong>Writes only happen if you chose "allow writes" when connecting.</strong>
-              If connected read-only, creating, overwriting, deleting, renaming, or changing
-              attributes of a file all fail (the guest sees errors such as "write protected").
-            </div>
-            <div class="note-box">
-              <strong>Deletes and overwrites are applied directly — there is no trash.</strong>
-              A file removed with <code>del</code>, or content overwritten via
-              <code>copy</code> / <code>echo &gt;</code>, cannot be recovered.
-            </div>
-            <div class="note-box">
-              Written content is only flushed to the real file <strong>when the file is
-              closed</strong> — it does not appear on the host side while the file is still
-              open or mid-write.
-            </div>
-            <div class="note-box">
-              Timestamps and attributes (e.g. read-only flag) are not stored on the host.
-              <code>_FILEDATE</code> (get/set the file's date/time) always fails (-6).
-              Renaming a folder (<code>ren</code>) also fails on browsers that don't support
-              the File System Access API's directory <code>move()</code> (renaming a file works
-              regardless of that).
-            </div>
-            <p>
-              For the guest to use HostFS, the boot disk's CONFIG.SYS needs the line
-              <code>DEVICE = \HOSTFS.SYS</code>. The <strong>"Install HostFS"</strong> button on
-              each disk library row (HDD, or an FD that can be handled as FAT12/16) writes
-              <code>HOSTFS.SYS</code> to that disk and adds this line to CONFIG.SYS
-              automatically (appended if CONFIG.SYS already exists, created new otherwise; it
-              won't be added twice if the line is already there). At boot, the startup screen shows
-              "<code>HostFS version 1.00 (WebX68k)</code>" followed by a Japanese line meaning
-              "host folder assigned to drive C:" (the driver's messages are Japanese regardless of
-              this page's language), naming the drive letter that was actually assigned — it can be
-              <code>D:</code>, etc., if an HDD is present. Pressing
-              "Install HostFS" again on a disk that already has an older HOSTFS.SYS replaces just
-              that file with the new version (the CONFIG.SYS line is not duplicated).
-            </p>
-            <div class="note-box">
-              <strong>The bundled system disk (human302.xdf) is never modified.</strong>
-              Pressing "Install HostFS" on the bundled disk's row first makes a copy in the
-              library and installs onto that copy — the bundled disk itself stays unchanged.
-            </div>
-            <div class="note-box">
-              <strong>Can't install onto a disk that's currently running.</strong> Writing to a
-              disk while it's mounted by the running core would fall out of sync with what the
-              core has in memory, so the install button is disabled for a running disk. Stop
-              first.
-            </div>
             <p>
               Supported on Chrome-family browsers on PC and Android (any browser with
               <code>showDirectoryPicker</code>). <strong>Not supported on iPhone (Safari) or
               Firefox.</strong>
             </p>
             <p>
-              Host file names are converted to Human68k's 8.3 format (8-character name + 3-character
-              extension, at most one dot) before being shown. A name is omitted from listings if
-              any of the following hold: extension is 4+ characters / name is over 18 bytes
-              (Japanese characters are 2 bytes each) / more than one dot / starts with a dot /
-              contains any of <code>" * + , / : ; &lt; = &gt; ? [ ] |</code> / contains a character
-              not representable in CP932 (spaces are fine). Line endings are not converted — the
-              host's byte stream is passed through as-is.
+              The gist: "Connect a folder" → "Install HostFS" onto the disk you want to boot →
+              insert that disk with "To FDD0" → boot.
             </p>
-            <p>The connected folder's handle is remembered by the browser; use "Reconnect" next time.</p>
+            <img
+              src="./help/hostfs-en.png"
+              alt="The 'Connect a folder' dialog: read-only / allow-writes choice buttons, with a note filled in"
+            />
             <p>
-              <strong>Note:</strong> The File System Access API only hands you the folder's name, not
-              its full host-side path (where it actually lives). You can jot down a note (optional,
-              up to 60 characters) in the "Connect" dialog's note field; the row then shows
-              "folder name — note" (truncated with an ellipsis when long, with the full text in a
-              tooltip). Edit it later from the pencil icon on the row.
-            </p>
-            <p>
-              <strong>Driver-not-installed warning:</strong> If a folder is connected but the disk you
-              booted doesn't have HostFS installed (the guest's HOSTFS.SYS hasn't loaded), the row
-              shows "⚠ HOSTFS.SYS is not loaded in the guest". Boot from a disk that has HOSTFS.SYS
-              installed, using "Install HostFS" above. The warning clears once it loads, and a reset
-              or reboot puts it back into "waiting" state.
-            </p>
-            <p>
-              <strong>Hidden-name notice:</strong> If a listing (<code>dir</code>, etc.) had to drop
-              names that don't fit Human68k's 8.3 format, the row shows "N name(s) not shown". Hover
-              to see the combined list from every folder listed so far, each shown as a path relative
-              to the connected folder (<code>/subfolder/name</code>, one per line; up to 20 lines,
-              with "N more" beyond that). Listing a given folder again replaces just that folder's
-              entries with the latest contents. The conditions for being dropped are the same as
-              described above in this section (extension 4+ characters, name over 18 bytes, more
-              than one dot, starts with a dot, a disallowed symbol, or a character that doesn't fit
-              CP932).
-            </p>
-            <p>
-              <strong>Unsupported-request warning:</strong> If a resident program or similar sends
-              HostFS a request we haven't decoded yet, the row shows "⚠ Unsupported request ($xx)"
-              (or "⚠ Unsupported request ($xx, +N more kinds)" when more than one kind has been
-              seen). <strong>If you see this warning, please click the row to copy diagnostic info
-              to the clipboard, and attach it when reporting the issue on
-              <a href="https://github.com/uraraworks/WebX68k" target="_blank" rel="noopener"
-                >GitHub</a
-              >.</strong>
-              The copied text only contains the build stamp, the browser's User-Agent, the
-              request number/count/first 26-byte header/[if applicable] the 32 bytes at the
-              pointer it carries, and HostFS's own state (driver detected, drive number, folder
-              connected, mode). <strong>It never includes file names inside the folder, the note
-              text, or the folder's actual host-side path.</strong> On environments without
-              clipboard access, a small dialog opens instead with the text ready to select and
-              copy. A reset or reboot clears the recorded requests.
+              <strong
+                ><a href="./hostfs.html?lang=en">See the HostFS Setup Guide for step-by-step
+                screenshots and full details</a></strong
+              >
             </p>
           </div>
         </section>
