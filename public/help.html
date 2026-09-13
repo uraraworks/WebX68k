@@ -396,8 +396,9 @@
               例えば 512x512 系の画面(テキスト画面など)は横方向に、768x512 の画面は縦方向に
               補正されます(実解像度がどちらへ寄っているかで補正の向きが変わります)。補正は
               常に<strong>拡大方向</strong>で行うため、ドット等倍で見えていたドットが間引かれて
-              消えることはありません。また 4:3表示のときだけ補間(にじみ)が有効になり、
-              実機CRTの見え方に近づきます。
+              消えることはありません。4:3表示では、まずドットを崩さずに整数倍へ拡大してから
+              端数ぶんだけを補間する「シャープ・バイリニア」で描くため、Retina などの
+              高解像度ディスプレイでもぼやけずにくっきり表示されます。
             </p>
             <p>
               切り替えた設定はブラウザに保存され、次回訪問時も引き継がれます。
@@ -415,8 +416,10 @@
               For example, 512x512-family screens (such as text mode) stretch horizontally, while
               768x512 screens stretch vertically — which way it corrects depends on which side the
               native resolution leans toward. The correction always <strong>enlarges</strong>, so
-              dots that were visible at 1:1 are never dropped. Interpolation (a soft blur) is only
-              enabled while 4:3 display is on, giving a look closer to a real CRT.
+              dots that were visible at 1:1 are never dropped. In 4:3 display, the image is first
+              upscaled to an integer multiple without blurring the dots, then only the leftover
+              fractional amount is smoothed — this "sharp bilinear" approach stays crisp even on
+              high-DPI displays like Retina.
             </p>
             <p>
               Your choice is saved in your browser and carries over to your next visit.
@@ -1866,14 +1869,16 @@
             descJa:
               '実機のX68000は解像度に関わらず4:3のモニタいっぱいに表示されていたため、その見え方を' +
               '再現します。512x512系の画面は横に広がり、768x512の画面は縦に伸びます(補正は常に' +
-              '拡大方向で行うためドットは失われません。ONのときだけ補間がかかり、実機CRTの滲みに' +
-              '近い見え方になります)。既定でONで、切り替えた設定はブラウザに保存されます。',
+              '拡大方向で行うためドットは失われません。ONのときはドットを崩さず整数倍へ拡大して' +
+              'から端数だけを補間する「シャープ・バイリニア」で描くため、高解像度ディスプレイでも' +
+              'くっきり表示されます)。既定でONで、切り替えた設定はブラウザに保存されます。',
             descEn:
               'Real X68000 hardware always fills a 4:3 monitor regardless of resolution; this' +
               ' reproduces that look. 512x512-family screens stretch horizontally, and 768x512' +
               ' stretches vertically (the correction always enlarges, so no dots are lost —' +
-              ' interpolation only kicks in while this is on, giving a look closer to a real CRT).' +
-              ' This is on by default, and your choice is saved in your browser.',
+              ' when on, it upscales to an integer multiple without blurring the dots, then' +
+              ' smooths only the leftover fraction via sharp bilinear, staying crisp even on' +
+              ' high-DPI displays). This is on by default, and your choice is saved in your browser.',
           },
           {
             icon: 'M4 5h16v6H4z M4 13h16v6H4z M7 8h.01 M7 16h.01',

@@ -589,8 +589,11 @@ horizontally, 768x512-family modes (aspect ratio above 4:3) stretch
 vertically. Shrinking is deliberately avoided: the canvas uses
 `image-rendering: pixelated`, and scaling a mode like the 768x512 text
 screen down would drop 1px-wide character strokes, making text unreadable.
-Interpolation is only enabled while 4:3 mode is active — dot-for-dot stays
-crisp. The frame around the screen always reserves the 4:3-sized box, so
+In 4:3 mode, the image is first upscaled to an integer multiple without
+blurring the dots, then only the leftover fractional amount is smoothed —
+this "sharp bilinear" approach stays crisp even on high-DPI displays like
+Retina. Dot-for-dot mode still uses no interpolation at all. The frame
+around the screen always reserves the 4:3-sized box, so
 toggling the mode never shifts the surrounding layout.
 
 ### Fullscreen
