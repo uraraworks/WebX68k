@@ -388,9 +388,9 @@
             <h2>画面表示（ドット等倍 / 4:3表示）</h2>
             <p>
               実機のX68000は、画面モードの解像度に関わらず4:3のブラウン管モニタいっぱいに
-              映像を映していました。WebX68k は既定では<strong>ドット等倍</strong>(コアの実解像度を
-              そのまま正方形ピクセルで描く、Web系エミュレータで一般的な表示)ですが、
-              「…」→「表示」→「4:3表示」で、この実機の見え方を再現するモードへ切り替えられます。
+              映像を映していました。WebX68k は既定で<strong>4:3表示</strong>(この実機の見え方を
+              再現するモード)ですが、「…」→「表示」→「ドット等倍表示」で、コアの実解像度を
+              そのまま正方形ピクセルで描く表示に切り替えられます。
             </p>
             <p>
               例えば 512x512 系の画面(テキスト画面など)は横方向に、768x512 の画面は縦方向に
@@ -407,10 +407,9 @@
             <h2>Screen display (1:1 pixels / 4:3 display)</h2>
             <p>
               Real X68000 hardware always filled a 4:3 CRT monitor, regardless of the resolution of
-              the current screen mode. WebX68k defaults to <strong>1:1 pixel display</strong> (the
-              core's native resolution drawn with square pixels, the common look for web-based
-              emulators), but you can switch to a mode that reproduces the real hardware's look via
-              "…" → "Display" → "4:3 display".
+              the current screen mode. WebX68k defaults to <strong>4:3 display</strong>, reproducing
+              that real-hardware look, but you can switch to the core's native resolution drawn with
+              square pixels via "…" → "Display" → "1:1 pixel display".
             </p>
             <p>
               For example, 512x512-family screens (such as text mode) stretch horizontally, while
@@ -1868,13 +1867,13 @@
               '実機のX68000は解像度に関わらず4:3のモニタいっぱいに表示されていたため、その見え方を' +
               '再現します。512x512系の画面は横に広がり、768x512の画面は縦に伸びます(補正は常に' +
               '拡大方向で行うためドットは失われません。ONのときだけ補間がかかり、実機CRTの滲みに' +
-              '近い見え方になります)。既定はドット等倍で、切り替えた設定はブラウザに保存されます。',
+              '近い見え方になります)。既定でONで、切り替えた設定はブラウザに保存されます。',
             descEn:
               'Real X68000 hardware always fills a 4:3 monitor regardless of resolution; this' +
               ' reproduces that look. 512x512-family screens stretch horizontally, and 768x512' +
               ' stretches vertically (the correction always enlarges, so no dots are lost —' +
               ' interpolation only kicks in while this is on, giving a look closer to a real CRT).' +
-              ' The default is 1:1 pixels, and your choice is saved in your browser.',
+              ' This is on by default, and your choice is saved in your browser.',
           },
           {
             icon: 'M4 5h16v6H4z M4 13h16v6H4z M7 8h.01 M7 16h.01',

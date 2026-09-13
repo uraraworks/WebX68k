@@ -62,19 +62,20 @@ describe('4:3表示モードの目標サイズ(src/aspect.ts の getTargetSize)'
 });
 
 // 表示モードの既定値判定(src/aspect.ts の resolveAspectMode)。
-// localStorage 未設定(初回起動)時の既定は 'native'(ドット等倍)。既存ユーザーの見た目を
-// 変えないこと、および Web 系の軽量エミュレータでは等倍表示が一般的なため。
-// 4:3 は明示的に選ぶオプション(RetroArch/MAMEなど据置きエミュレータではアスペクト補正が
-// 既定だが、ここではあえて等倍を既定に選んでいる)。
+// localStorage 未設定(初回起動)時の既定は '4:3'(実機モニタ相当)。
+// 2026-09-12 (bc9498d) のシャープ・バイリニア導入で4:3表示のぼやけが解消したため、
+// 2026-09-13 に既定を native から 4:3 へ変更した(2026-08 時点では既存ユーザーの見た目を
+// 変えないことを優先して native を既定にしていた)。
+// native は明示的に選ぶオプション。
 // ただし既に明示的に選んで保存済みの値がある場合はそれを尊重し、上書きしないこと。
 describe('表示モードの既定値判定(src/aspect.ts の resolveAspectMode)', () => {
-  it('localStorage 未設定(null)のときは既定の native になる', () => {
-    expect(resolveAspectMode(null)).toBe('native');
+  it('localStorage 未設定(null)のときは既定の 4:3 になる', () => {
+    expect(resolveAspectMode(null)).toBe('4:3');
   });
 
-  it('不正な値が保存されていた場合も既定の native にフォールバックする', () => {
-    expect(resolveAspectMode('bogus')).toBe('native');
-    expect(resolveAspectMode('')).toBe('native');
+  it('不正な値が保存されていた場合も既定の 4:3 にフォールバックする', () => {
+    expect(resolveAspectMode('bogus')).toBe('4:3');
+    expect(resolveAspectMode('')).toBe('4:3');
   });
 
   it("保存済みの 'native' は尊重され、既定値で上書きされない", () => {

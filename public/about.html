@@ -494,9 +494,9 @@
           <div class="lang-ja">
             <h2>実機同様の4:3表示モード</h2>
             <p>
-              既定はドット等倍(コアの実解像度をそのまま正方形ピクセルで描く)表示ですが、
-              実機の X68000 は画面モードによらず常に4:3のモニタいっぱいに表示されます。
-              ツールバーの「…」メニュー(表示グループ)にある「4:3表示」で、その見え方に
+              実機の X68000 は画面モードによらず常に4:3のモニタいっぱいに表示されるため、
+              WebX68k も既定で4:3表示です。ツールバーの「…」メニュー(表示グループ)にある
+              「ドット等倍表示」で、コアの実解像度をそのまま正方形ピクセルで描く表示に
               いつでも切り替えられます(設定は保存されます)。補正は常に拡大方向のみで、
               512x512系の画面は横に、768x512系の画面は縦に伸びます。縮小方向にしないのは、
               テキスト画面のような1ドット幅の文字線が縮小で間引かれて読めなくなるためです。
@@ -505,10 +505,10 @@
           <div class="lang-en">
             <h2>4:3 display mode, just like real hardware</h2>
             <p>
-              WebX68k defaults to dot-for-dot (the core's native resolution at square pixels), but
-              real X68000 hardware always fills a 4:3 monitor regardless of the active video mode.
-              The "4:3 display" toggle in the toolbar's "..." menu (Display group) switches to that
-              look at any time (the choice is saved). The correction is always applied by enlarging —
+              Real X68000 hardware always fills a 4:3 monitor regardless of the active video mode,
+              so WebX68k defaults to 4:3 display too. The "1:1 pixel display" toggle in the
+              toolbar's "..." menu (Display group) switches to the core's native resolution at
+              square pixels at any time (the choice is saved). The correction is always applied by enlarging —
               512x512-family modes stretch horizontally, 768x512-family modes stretch vertically. It's
               never done by shrinking, since that would drop the 1px-wide strokes of text-mode
               characters and make them unreadable.

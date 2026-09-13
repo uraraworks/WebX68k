@@ -575,11 +575,13 @@ mouse only has left/right buttons, with no wheel concept to map it to.
 
 ### Display mode (dot-for-dot / 4:3)
 
-WebX68k defaults to dot-for-dot: the core's native resolution drawn at
-square pixels, unchanged since the emulator's first release. Real X68000
-hardware, however, always fills a 4:3 monitor regardless of the active video
-mode. The "..." menu's Display group offers a **4:3 display** toggle that
-reproduces that look; the choice is saved to `localStorage`.
+WebX68k defaults to 4:3 display: real X68000 hardware always fills a 4:3
+monitor regardless of the active video mode, and 4:3 is closer to that look.
+(Before 2026-09-13 the default was dot-for-dot, kept unchanged from the
+emulator's first release for existing users; it switched to 4:3 once sharp
+bilinear scaling removed the blurriness that used to come with it.) The
+"..." menu's Display group offers a **dot-for-dot** toggle for the original
+square-pixel look; the choice is saved to `localStorage`.
 
 The correction is always applied by *enlarging* one axis, never by
 shrinking — 512x512-family modes (aspect ratio below 4:3) stretch
