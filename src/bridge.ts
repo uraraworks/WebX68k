@@ -20,6 +20,8 @@ export interface BridgeHost {
   setKey(retrok: number, down: boolean): void;
   /** ASCII 文字列をキー入力として流し込む */
   typeText(text: string): Promise<{ typed: number; skipped: string[] }>;
+  /** コアがn回ポーリングするまで待つ(key_sequence が打鍵の間隔を空けるために使う)。 */
+  waitPolls(n: number): Promise<void>;
   mouseMove(dx: number, dy: number): void;
   mouseButton(button: 'left' | 'right', down: boolean): void;
   saveState(): Promise<void>;
@@ -172,6 +174,9 @@ export class Bridge {
 
       case 'key_sequence': {
         // steps: [{ code: RETROK値, ms?: 押し下げ時間 }]
+        // ms は「押し下げ時間」の意味のままsetTimeout(壁時計)で計る。離した後だけ、
+        // type_textと同じ理由(化けの再発防止)でwaitPolls()に置き換え、次のステップの
+        // pressへ進む前にコアが最低2回はポーリングし終えているのを確認してから進む。
         const steps = Array.isArray(args.steps) ? (args.steps as Array<Record<string, unknown>>) : [];
         for (const step of steps) {
           const code = Number(step.code);
@@ -179,7 +184,7 @@ export class Bridge {
           h.setKey(code, true);
           await delay(holdMs);
           h.setKey(code, false);
-          await delay(60);
+          await h.waitPolls(2);
         }
         return { sent: steps.length };
       }

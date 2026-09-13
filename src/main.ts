@@ -68,7 +68,8 @@ import { buildFileManagerDialog, type FmTarget } from './filemanager';
 import type { TouchMouseButton } from './touch-mouse';
 import { createDiskPersistence } from './disk-persist';
 import { Bridge, resolveBridgeUrl, type BridgeHost } from './bridge';
-import { RETROK, charToKey, codeToRetrok } from './keyboard';
+import { RETROK, codeToRetrok } from './keyboard';
+import { typeTextSequence } from './type-text';
 import { LibretroHost, type AvInfo } from './libretro-host';
 import {
   LocalCoreProxy,
@@ -1862,6 +1863,67 @@ function clearWorkerInputGeneration(): void {
   if (!urlWorkerMode || !workerCoreProxy) return;
   workerInput.bumpGeneration();
   sendWorkerInputUpdate();
+}
+
+// --- コアのポーリング回数カウンタ(type_text/key_sequenceの化け対策で使う) -----------
+// MCPブリッジのtype_text(化けの原因調査・修正)で必要になった、「コアが状態変更を
+// 確実に読んだ」と言えるタイミングを待つための仕組み。既定経路(host.onPoll、
+// retro_run駆動)とWorker経路(frame eventの受信)の両方で1本のカウンタを進め、
+// waitCorePolls()の待機者を起こす。bumpCorePollCount()の呼び出し元は下記の2箇所のみ:
+// bootCore()内のhost.onPollと、bootWorkerCore()内のframe eventハンドラ。
+let corePollCount = 0;
+interface CorePollWaiter {
+  target: number;
+  resolve: () => void;
+  timer: ReturnType<typeof setTimeout>;
+}
+const corePollWaiters: CorePollWaiter[] = [];
+
+function bumpCorePollCount(): void {
+  corePollCount++;
+  // 後ろから走査して削除しても前方のインデックスがずれないようにする。
+  for (let i = corePollWaiters.length - 1; i >= 0; i--) {
+    const waiter = corePollWaiters[i];
+    if (corePollCount >= waiter.target) {
+      corePollWaiters.splice(i, 1);
+      clearTimeout(waiter.timer);
+      waiter.resolve();
+    }
+  }
+}
+
+// コアが止まっている・フレームが来ない等でポーリングが進まないまま待ち続けることの
+// ないよう、上限時間を置く。この時間を超えたら呼び出し元にErrorを投げて打ち切る
+// (打ち切った後、呼び出し元が「次の文字へ進む」ことはしない設計にすること。
+// 進めてしまうと化けが再発する)。
+const CORE_POLL_WAIT_TIMEOUT_MS = 5000;
+
+/**
+ * コアがn回ポーリングし終えるまで待つ。type-text.ts(typeTextSequence)・bridge.tsの
+ * key_sequenceが、キーの状態を1つ変えるごとに、次の変更へ進む前に呼ぶ。
+ *
+ * 既定経路(!urlWorkerMode): host.onPollの発火回数をそのまま数える。onPollは
+ * retro_run内でコアが入力状態を読む直前に呼ばれるため、呼び出し時点からn回
+ * onPollが発火すれば、状態変更後にコアがn回入力を読む機会があったと言える。
+ *
+ * Worker経路(urlWorkerMode): frame eventの受信をポーリング1回として数えるが、
+ * 状態変更の直後に届くframe eventは「sendWorkerInputUpdate()で更新をWorkerへ
+ * 送った」合図に過ぎない。Workerはその更新を次のtickから使うため、実際にコアが
+ * その状態を読んだと言えるのは、その次のframe event以降になる。そのため既定経路
+ * より1回多く待つ。
+ */
+function waitCorePolls(n: number): Promise<void> {
+  const need = urlWorkerMode ? n + 1 : n;
+  const target = corePollCount + need;
+  if (corePollCount >= target) return Promise.resolve();
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(() => {
+      const idx = corePollWaiters.findIndex((w) => w.timer === timer);
+      if (idx >= 0) corePollWaiters.splice(idx, 1);
+      reject(new Error(`waitCorePolls(${n}): コアのポーリングが停止しています(タイムアウト)`));
+    }, CORE_POLL_WAIT_TIMEOUT_MS);
+    corePollWaiters.push({ target, resolve, timer });
+  });
 }
 
 /**
@@ -4513,6 +4575,9 @@ async function bootWorkerCore(): Promise<void> {
 
   proxy.setEventHandler((event: CoreEvent) => {
     if (event.event === 'frame') {
+      // waitCorePolls()向け(コアポーリング回数カウンタ、上のbumpCorePollCount定義の
+      // コメント参照)。frame eventの受信そのものをWorker経路のポーリング1回として数える。
+      bumpCorePollCount();
       const snapshot: FrameSnapshot = event.snapshot;
       workerLastPoolMisses = snapshot.poolMisses;
       // ∞MHzの自動クロック調整(呼び出し元指摘の是正、stepAutoClock()参照)。loop()の
@@ -4884,6 +4949,7 @@ async function bootCore(): Promise<void> {
   let keyRepeatPollFrameCount = 0;
   let lastKeyRepeatConfig: { delayMs: number; intervalMs: number } | null = null;
   host.onPoll = () => {
+    bumpCorePollCount();
     keyRepeatPollFrameCount++;
     if (keyRepeatPollFrameCount >= 60) {
       keyRepeatPollFrameCount = 0;
@@ -8247,24 +8313,18 @@ const bridgeHost: BridgeHost = {
     // Worker経路(?worker=1)ではhostが常にnullなので、`running`で起動済みかを判定する
     // (host基準のままだとWorker経路のキー入力(手順6で対応済み)がtypeTextだけ塞がれてしまう)。
     if (!running) throw new Error('not booted');
-    const skipped: string[] = [];
-    let typed = 0;
-    for (const ch of text) {
-      const key = charToKey(ch);
-      if (!key) {
-        skipped.push(ch);
-        continue;
-      }
-      if (key.shift) sharedKeyInput.press('bridge:type', RETROK.LSHIFT);
-      sharedKeyInput.press('bridge:type', key.code);
-      await new Promise((r) => setTimeout(r, 90));
-      sharedKeyInput.release('bridge:type', key.code);
-      if (key.shift) sharedKeyInput.release('bridge:type', RETROK.LSHIFT);
-      await new Promise((r) => setTimeout(r, 60));
-      typed++;
-    }
-    return { typed, skipped };
+    // 化け(シフトの有無が入れ替わる)対策: 壁時計のsetTimeoutだけで押す/離すを進めていた
+    // 従来実装は、Worker経路でシフトの解放と次のキーの押下が同じframe eventの更新に
+    // まとまってしまうことがあり、コアがmake/breakを見る順序が入れ替わっていた
+    // (src/type-text.ts先頭のコメント参照)。手順そのものはtypeTextSequence()に切り出し、
+    // 状態変更のたびにwaitCorePolls()でコアが確実に読むまで待つ。
+    return typeTextSequence(text, {
+      press: (code) => sharedKeyInput.press('bridge:type', code),
+      release: (code) => sharedKeyInput.release('bridge:type', code),
+      waitPolls: (n) => waitCorePolls(n),
+    });
   },
+  waitPolls: (n) => waitCorePolls(n),
   mouseMove: (dx, dy) => applyMouseDelta(dx, dy),
   mouseButton: (button, down) => applyMouseButton(button, down),
   saveState: () => handleSaveState(),
