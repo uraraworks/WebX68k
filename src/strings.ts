@@ -773,7 +773,8 @@ const STRINGS: Record<Lang, Dict> = {
       `「${name}」のルートへHOSTFS.SYSを書き込み、CONFIG.SYSに DEVICE = \\HOSTFS.SYS を追加します。よろしいですか？`,
     installHostFsConfirmBundled: () =>
       '同梱システムディスクは書き換えないため、コピーを作ってからHostFSを組み込みます。よろしいですか？',
-    installHostFsLockedError: () => '起動中のディスクには組み込めません。停止してから操作してください。',
+    installHostFsLockedError: () =>
+      '起動中のディスクには組み込めません。ページを開き直し、起動する前に組み込んでください。',
     installHostFsDone: ({ name }) => `「${name}」にHostFSを組み込みました`,
     installHostFsFailed: ({ message }) => `HostFSの組み込みに失敗しました: ${message}`,
     dropNoDiskImage: () => 'ディスクイメージが見つかりませんでした。',
@@ -1199,7 +1200,8 @@ const STRINGS: Record<Lang, Dict> = {
       `This will write HOSTFS.SYS to the root of "${name}" and add DEVICE = \\HOSTFS.SYS to CONFIG.SYS. Continue?`,
     installHostFsConfirmBundled: () =>
       'The bundled system disk is never modified, so a copy will be made first and HostFS installed on that copy. Continue?',
-    installHostFsLockedError: () => 'Cannot install onto a disk that is currently running. Stop it first.',
+    installHostFsLockedError: () =>
+      'Cannot install onto a disk that is currently running. Reload the page and install it before booting.',
     installHostFsDone: ({ name }) => `HostFS installed onto "${name}"`,
     installHostFsFailed: ({ message }) => `Failed to install HostFS: ${message}`,
     dropNoDiskImage: () => 'No disk image was found.',

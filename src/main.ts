@@ -1403,6 +1403,19 @@ let coreProxy: LibretroHostProxy | null = null;
 // メソッドのため、型を絞った専用の参照を別途持つ。bootCore()呼び出しのたびに前回のものを
 // disposeしてから作り直す。
 let workerCoreProxy: WorkerCoreProxy | null = null;
+
+/**
+ * コアが実際に動いているか(既定経路・Worker経路のどちらでも判定できる版)。
+ * `host !== null && running` は既定経路(?worker=0)専用の判定で、Worker経路では
+ * host が常に null のため、これで判定している箇所はWorker経路で無言で素通りしてしまう
+ * (isSlotLocked/isMountedWhileRunning で実際に起きていた。HDDロックとHostFS組み込み拒否
+ * がWorker経路で効かなかった)。読み出し系(readLiveSlotImage)は既定経路専用のまま残すが、
+ * 「動いているか」の判定はこちらを使うこと。
+ */
+function isCoreRunning(): boolean {
+  return running && (host !== null || workerCoreProxy !== null);
+}
+
 // DEV専用: 駆動ループ内訳プローブ(src/core-worker.ts の workerTickProbe)の制御状態。
 // bootWorkerCore() は起動のたびに proxy を作り直すため、「有効にしたい」という意思は
 // proxy インスタンスをまたいで持ち回る必要がある(起動前に window.__webx68kDebug 経由で
@@ -2612,9 +2625,14 @@ async function restoreBios(): Promise<void> {
  * HDD(SASI)は実機でも活線挿抜する機器ではなく、差し替えるとゲスト側が握っている
  * マウント情報・キャッシュと実体がズレてしまうため、起動後は挿入も取り出しも禁止する
  * (FDD は px68k の FDD_SetFD/FDD_EjectFD でホットマウントできるので対象外)。
+ *
+ * `host !== null && running` ではなく isCoreRunning() を使う: Worker経路(?worker=1)では
+ * host が常に null のため、host基準だとWorker経路で起動中のHDDロックが無言で外れてしまう
+ * (2026-09-13実測、insertDiskBytes/ejectSlot/handleCreateBlankHdd/openSlotVolume/
+ * fmListTargets 全てがここを経由する)。
  */
 function isSlotLocked(slot: SlotId): boolean {
-  return slot === 'hdd' && host !== null && running;
+  return slot === 'hdd' && isCoreRunning();
 }
 
 /** いずれかのスロットにディスクがセット済みか。起動オーバーレイのボタン文言の出し分けに使う。 */
@@ -2949,6 +2967,55 @@ function readLiveSlotImage(slot: SlotId): Uint8Array | null {
     return host.readFile(path);
   } finally {
     host.setFddImage(drive, path);
+  }
+}
+
+/**
+ * readLiveSlotImage() のWorker経路(?worker=1)対応版。既定経路はそのまま
+ * readLiveSlotImage() に委譲する(host基準の同期読み出しのままでよい)。
+ *
+ * Worker経路では host が常に null なので readLiveSlotImage() は使えない。実行中かつ
+ * そのスロットがマウント済みのときだけ workerCoreProxy.captureDirtyMedia() でゲスト側の
+ * 書き込みを反映した最新バイト列を捕獲する(captureSlot()はマウント済みなら無条件で読む。
+ * dirtyかどうかは見ない。src/worker-dirty-capture.ts 参照)。
+ *
+ * 注意: captureDirtyMedia() はWorker側のdirtyフラグ(コア本体+影)を呼び出しと同時に
+ * クリアしてしまう。ここで捕獲した内容をpersistCapturedSlot()でライブラリとslots[]へ
+ * 書き戻しておかないと、次のオートセーブ(pollWorkerAutoSave)はdirtyが消えているため
+ * 二度と拾わず、捕獲した内容が宙に浮いたまま失われる。persistCapturedSlot()は同梱ディスクや
+ * sourceKey無しのときは保存しない(BUNDLED_DISK_SOURCE_KEY等)ので、その場合は捕獲した
+ * bytesをslots[slot].dataへ直接入れ直す。ただし差し替え・排出がawait中に起きていたら
+ * 上書きしない(同じディスクが入ったままの時だけ反映する)。
+ *
+ * dirtyでなくbytesが得られなければ(=未マウント)null を返す。呼び出し元はいずれの場合も
+ * slots[slot].data へフォールバックできる。
+ */
+async function readLiveSlotImageAsync(slot: SlotId): Promise<Uint8Array | null> {
+  if (!urlWorkerMode) return readLiveSlotImage(slot);
+  if (!workerCoreProxy || !running) return null;
+  if (!mountedPaths[slot]) return null;
+  const pendingBefore = slots[slot];
+  try {
+    const result = await workerCoreProxy.captureDirtyMedia({ slots: [slot] });
+    const entry = result.captured.find((c) => c.slot === slot);
+    if (!entry || !entry.bytes) return null;
+    const saved = await persistCapturedSlot(slot, entry.bytes);
+    const bytes = new Uint8Array(entry.bytes);
+    if (!saved) {
+      const pending = slots[slot];
+      if (
+        pending &&
+        pendingBefore &&
+        pending.name === pendingBefore.name &&
+        pending.sourceKey === pendingBefore.sourceKey
+      ) {
+        slots[slot] = { ...pending, data: bytes };
+      }
+    }
+    return bytes;
+  } catch (err) {
+    console.error('Worker経路の最新ディスクイメージ捕獲に失敗しました。', err);
+    return null;
   }
 }
 
@@ -4278,10 +4345,11 @@ async function handleDownloadDisk(slot: SlotId): Promise<void> {
     return;
   }
   // 起動中でFSへ書き込み済みなら、ゲスト側の書き込みを反映した最新バイト列を読み直す
-  // (FDD はコアのメモリ上にあるので readLiveSlotImage() が Eject 経由で吸い出す)。
+  // (FDD はコアのメモリ上にあるので readLiveSlotImageAsync() が Eject 経由で吸い出す。
+  // Worker経路(?worker=1)ではcaptureDirtyMedia経由になる)。
   let bytes: Uint8Array = pending.data;
   try {
-    bytes = readLiveSlotImage(slot) ?? pending.data;
+    bytes = (await readLiveSlotImageAsync(slot)) ?? pending.data;
   } catch (err) {
     console.error('FS からのディスク読み出しに失敗しました。挿入時点のバイト列を使用します。', err);
   }
@@ -7680,17 +7748,18 @@ interface FmVolumeHandle {
 
 /**
  * スロットのディスクイメージをFATボリュームとして開く。
- * 実行中かつ実際にコアへマウント済みなら、readLiveSlotImage() でゲスト側の書き込みを
+ * 実行中かつ実際にコアへマウント済みなら、readLiveSlotImageAsync() でゲスト側の書き込みを
  * 反映した最新バイト列を取り出す(FDD はコアのメモリ上にあり、Eject しないとファイルへ
- * 出てこないため。ここを怠るとゲストが作ったファイルが見えず、書き戻しで消える)。
+ * 出てこないため。ここを怠るとゲストが作ったファイルが見えず、書き戻しで消える。
+ * Worker経路(?worker=1)ではcaptureDirtyMedia経由になる)。
  * persist() は書き換え結果を slots[] へ書き戻し、実行中なら反映する。反映方法は
  * 通常のディスク差し替えと揃えており、FDD はホットマウントで入れ替え(リセット無し)。
  * 起動中の HDD は交換禁止(isSlotLocked)なので、読み出し専用として扱い persist() は拒否する。
  */
-function openSlotVolume(slot: SlotId): FmVolumeHandle {
+async function openSlotVolume(slot: SlotId): Promise<FmVolumeHandle> {
   const pending = slots[slot];
   if (!pending) throw new Error('ディスクが挿入されていません');
-  const image = readLiveSlotImage(slot) ?? pending.data;
+  const image = (await readLiveSlotImageAsync(slot)) ?? pending.data;
   const vol = openDiskImage(image, pending.name);
   return {
     vol,
@@ -7702,6 +7771,23 @@ function openSlotVolume(slot: SlotId): FmVolumeHandle {
       if (pending.sourceKey && pending.sourceKey !== BUNDLED_DISK_SOURCE_KEY) {
         await saveDisk({ sourceKey: pending.sourceKey, name: pending.name, bytes: image, savedAt: Date.now() });
         if (!libraryBackdrop.classList.contains('hidden')) void refreshLibraryList();
+      }
+      if (urlWorkerMode && running) {
+        // Worker経路: FDDはworkerHotSwapFdd()でホットマウントして反映する。HDDは
+        // isSlotLocked()で既にpersist()自体が拒否されているためここへは来ない。
+        const drive = fddDriveOf(slot);
+        if (drive !== null) {
+          // previousSlot に null を渡すこと: workerHotSwapFdd() は差し替え前の
+          // 内容(previousImage、Eject時点の値)を previousSlot.sourceKey へ
+          // saveDisk() で書き戻す仕様だが、ここは「同じ sourceKey への編集の反映」
+          // なので、そのpreviousImage(=編集前の内容)で直前に保存した編集結果
+          // (上のsaveDisk())を上書きされては困る。nullを渡して旧内容の保存自体を
+          // 止める(既定経路のhotSwapFdd()と同じく、編集を開いてからここに至るまでの
+          // 間にゲストが書いた内容は失われる性質を許容する。コメントは
+          // workerHotSwapFdd()側にもある)。
+          await workerHotSwapFdd(slot, drive, { name: pending.name, data: image }, null);
+        }
+        return;
       }
       if (host && running) {
         const drive = fddDriveOf(slot);
@@ -7734,10 +7820,14 @@ async function openLibraryVolume(sourceKey: string): Promise<FmVolumeHandle> {
   };
 }
 
-/** ディスクライブラリのentry.sourceKeyが、現在稼働中(host!==null && running)のスロットにマウント中か。 */
+/**
+ * ディスクライブラリのentry.sourceKeyが、現在稼働中のスロットにマウント中か。
+ * isCoreRunning() を使う(host基準だとWorker経路で常にfalseになり、起動中のディスクへの
+ * HostFS組み込みが無言で通ってしまう。2026-09-13実測)。
+ */
 function isMountedWhileRunning(sourceKey: string): boolean {
   const slot = SLOT_IDS.find((s) => slots[s]?.sourceKey === sourceKey);
-  return slot !== undefined && host !== null && running;
+  return slot !== undefined && isCoreRunning();
 }
 
 /**
