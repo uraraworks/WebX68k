@@ -677,6 +677,36 @@ int webx68k_scsi_sram_boot_addr(void)
 }
 
 /*
+ * 段階1a-i 実験: SRAM の任意1バイトをホストから壊す(署名破壊の介入実験用)。
+ * docs/STORAGE-SCSI.md「SCSI起動 段階1a」参照。offset は $ed0000 からの相対、
+ * value はそこへ書く1バイト。globalThis.__webx68kSramCorruptOffset が数値でなければ
+ * -1(無効)を返し、既定では何もしない。実際の書き込みは x68k/scsi.c の
+ * SCSI_Init() から行う(CPUが1命令も実行する前に呼ばれるため、IPLの署名比較より
+ * 確実に先に書ける)。
+ */
+EM_JS(int, js_sram_corrupt_offset, (), {
+  var v = globalThis.__webx68kSramCorruptOffset;
+  return (typeof v === 'number') ? (v | 0) : -1;
+});
+
+__attribute__((used))
+int webx68k_sram_corrupt_offset(void)
+{
+  return js_sram_corrupt_offset();
+}
+
+EM_JS(int, js_sram_corrupt_value, (), {
+  var v = globalThis.__webx68kSramCorruptValue;
+  return (typeof v === 'number') ? (v | 0) : 0;
+});
+
+__attribute__((used))
+int webx68k_sram_corrupt_value(void)
+{
+  return js_sram_corrupt_value();
+}
+
+/*
  * 初期化コマンド($00)への返答値。再ビルドせずに振れるよう JS 側から読む。
  * どの欄が Human68k の判断に効くかを切り分けるための実験用スイッチ。
  * 既定値のままなら、いままでのハードコード値と同じ動作になる。

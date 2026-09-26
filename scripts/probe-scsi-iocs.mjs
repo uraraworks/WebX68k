@@ -57,6 +57,21 @@ const SRAM_INIT = args['scsi-sram'] !== undefined;
 // 段階0実験: SRAM の起動デバイス設定をROM起動に書き換える。値はROM起動アドレス
 // ($ea0020 + n*4、nはSCSIボードのID。資料の知識、未実測)。0/未指定なら書かない。
 const SRAM_BOOT_ADDR = args['scsi-sram-boot'] === undefined ? null : Number(args['scsi-sram-boot']);
+// 段階1a-i 実験: SRAM の任意1バイトをホストから壊す(署名破壊の介入実験用)。
+// --sram-corrupt=<相対offset>:<値> 。offsetは$ed0000起点(16進0x接頭辞可)、値は0-255。
+// 未指定なら何もしない(挙動を変えない)。
+const SRAM_CORRUPT =
+  args['sram-corrupt'] === undefined
+    ? null
+    : (() => {
+        const [o, v] = String(args['sram-corrupt']).split(':');
+        const offset = parseRamWatchAddr(o);
+        const value = Number(v);
+        if (!Number.isFinite(value) || value < 0 || value > 0xff) {
+          throw new Error(`--sram-corrupt の値が不正です: ${args['sram-corrupt']}`);
+        }
+        return { offset, value };
+      })();
 // テスト専用のRAMオーバーレイで書き込み経路(core-shim.c の __webx68kScsiWrite/
 // __webx68kScsiRead フック)を有効にする。永続化はしない。本命の書き戻し経路
 // (OPFS)が入るまで、書き込み経路を端から端まで確かめるためだけのもの。
@@ -561,6 +576,12 @@ try {
     await page.evaluateOnNewDocument((v) => {
       window.__webx68kScsiSramBoot = v;
     }, SRAM_BOOT_ADDR);
+  }
+  if (SRAM_CORRUPT !== null) {
+    await page.evaluateOnNewDocument((offset, value) => {
+      window.__webx68kSramCorruptOffset = offset;
+      window.__webx68kSramCorruptValue = value;
+    }, SRAM_CORRUPT.offset, SRAM_CORRUPT.value);
   }
   if (SCSI_RAM_WRITES) {
     // テスト専用のRAMオーバーレイ。書き込みは永続化しない。
