@@ -660,6 +660,23 @@ int webx68k_scsi_sram_init(void)
 }
 
 /*
+ * 段階0実験: SRAM の起動デバイス設定($ed0018=起動選択、$ed000c=ROM起動アドレス)を
+ * 「ROM起動」に書き換えるかどうか。既定 0(未指定/0)なら何もしない(挙動を変えない)。
+ * 非0なら、その値を ROM起動アドレスとして SRAM に書く(具体的な書き方は scsi.c 側)。
+ * 値そのものは知識であり未実測。効果は読み返しログと起動有無で確かめる。
+ */
+EM_JS(int, js_scsi_sram_boot_addr, (), {
+  var v = globalThis.__webx68kScsiSramBoot;
+  return (typeof v === 'number') ? (v | 0) : 0;
+});
+
+__attribute__((used))
+int webx68k_scsi_sram_boot_addr(void)
+{
+  return js_scsi_sram_boot_addr();
+}
+
+/*
  * 初期化コマンド($00)への返答値。再ビルドせずに振れるよう JS 側から読む。
  * どの欄が Human68k の判断に効くかを切り分けるための実験用スイッチ。
  * 既定値のままなら、いままでのハードコード値と同じ動作になる。

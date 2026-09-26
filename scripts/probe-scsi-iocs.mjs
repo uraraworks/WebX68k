@@ -54,6 +54,9 @@ const INIT_A4 = args['init-a4'] === undefined ? null : Number(args['init-a4']);
 // デバイスドライバヘッダの属性ワード(+4)。意味が未確定のため振れるようにしてある。
 const DRV_ATTR = args['drv-attr'] === undefined ? null : Number(args['drv-attr']);
 const SRAM_INIT = args['scsi-sram'] !== undefined;
+// 段階0実験: SRAM の起動デバイス設定をROM起動に書き換える。値はROM起動アドレス
+// ($ea0020 + n*4、nはSCSIボードのID。資料の知識、未実測)。0/未指定なら書かない。
+const SRAM_BOOT_ADDR = args['scsi-sram-boot'] === undefined ? null : Number(args['scsi-sram-boot']);
 // テスト専用のRAMオーバーレイで書き込み経路(core-shim.c の __webx68kScsiWrite/
 // __webx68kScsiRead フック)を有効にする。永続化はしない。本命の書き戻し経路
 // (OPFS)が入るまで、書き込み経路を端から端まで確かめるためだけのもの。
@@ -525,6 +528,11 @@ try {
     await page.evaluateOnNewDocument(() => {
       window.__webx68kScsiSramInit = true;
     });
+  }
+  if (SRAM_BOOT_ADDR !== null) {
+    await page.evaluateOnNewDocument((v) => {
+      window.__webx68kScsiSramBoot = v;
+    }, SRAM_BOOT_ADDR);
   }
   if (SCSI_RAM_WRITES) {
     // テスト専用のRAMオーバーレイ。書き込みは永続化しない。
