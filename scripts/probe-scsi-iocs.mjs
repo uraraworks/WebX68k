@@ -373,6 +373,14 @@ const DRV_HOOK_INTERRUPT =
   args['drv-hook-interrupt'] === undefined ? null : parseRamWatchAddr(String(args['drv-hook-interrupt']));
 const DRV_HOOK_OUTSIDE =
   args['drv-hook-outside'] === undefined ? null : parseRamWatchAddr(String(args['drv-hook-outside']));
+// 【調査用・段階1b】ボードROMの外(ディスクから読んだコード)へ初めて制御が
+// 移った瞬間のPC・レジスタを観測する(px68k-libretro x68k/scsi.c 参照)。
+// 値を取らないフラグ。既定は無効で速度に影響しない。
+const LEAVE_ROM_WATCH = args['leave-rom-watch'] !== undefined;
+// 【調査用・段階1b】SCSI IOCS(trap #15, d0=$F5)呼び出しをtrap命令自体から
+// 観測する(本物ROM使用時は$e9f800経路を通らないため)。最初の30件を記録する。
+// 値を取らないフラグ。既定は無効で速度に影響しない。
+const IOCS_F5_WATCH = args['iocs-f5-watch'] !== undefined;
 
 /**
  * 基準器イメージを Range 対応で配信する小さなサーバ。
@@ -816,6 +824,16 @@ try {
     await page.evaluateOnNewDocument((v) => {
       window.__webx68kDrvHookOutside = v;
     }, DRV_HOOK_OUTSIDE);
+  }
+  if (LEAVE_ROM_WATCH) {
+    await page.evaluateOnNewDocument(() => {
+      window.__webx68kLeaveRomWatch = 1;
+    });
+  }
+  if (IOCS_F5_WATCH) {
+    await page.evaluateOnNewDocument(() => {
+      window.__webx68kIocsF5Watch = 1;
+    });
   }
   if (ROM !== null) {
     const romBytes = Array.from(await readFile(ROM));

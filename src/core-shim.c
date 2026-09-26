@@ -1513,6 +1513,48 @@ void webx68k_drv_hook_refresh(void)
   webx68k_drv_hook_outside = outside;
 }
 
+/*
+ * 【調査用フック・段階1b】ボードROMの外(ディスクから読んだコード)へ初めて
+ * 制御が移った瞬間のPC・レジスタを観測する(px68k-libretro x68k/scsi.c の
+ * webx68k_leave_rom_pc_check() 参照)。既定は無効(0)。
+ * globalThis.__webx68kLeaveRomWatch を真値にすると有効化する。
+ */
+EM_JS(int, js_leave_rom_watch, (), {
+  return globalThis.__webx68kLeaveRomWatch ? 1 : 0;
+});
+
+extern int32_t webx68k_leave_rom_watch_enabled;
+
+__attribute__((used))
+void webx68k_leave_rom_watch_refresh(void)
+{
+  int v = js_leave_rom_watch();
+  if (v != webx68k_leave_rom_watch_enabled)
+    printf("[SCSI-LEAVE-ROM] 監視設定: enabled=%d\n", v);
+  webx68k_leave_rom_watch_enabled = v;
+}
+
+/*
+ * 【調査用フック・段階1b】SCSI IOCS(trap #15, d0=$F5)呼び出しを観測する
+ * (px68k-libretro m68000/musashi/m68kops.c の m68k_op_trap()、
+ * x68k/scsi.c の webx68k_iocs_f5_trap_check() 参照)。既定は無効(0)。
+ * globalThis.__webx68kIocsF5Watch を真値にすると有効化する。
+ */
+EM_JS(int, js_iocs_f5_watch, (), {
+  return globalThis.__webx68kIocsF5Watch ? 1 : 0;
+});
+
+extern int32_t webx68k_iocs_f5_watch_enabled;
+
+__attribute__((used))
+void webx68k_iocs_f5_watch_refresh(void)
+{
+  int v = js_iocs_f5_watch();
+  if (v != webx68k_iocs_f5_watch_enabled)
+    printf("[SCSI-F5] 監視設定: enabled=%d\n", v);
+  webx68k_iocs_f5_watch_enabled = v;
+}
+
 
 /*
  * 調査用(2026-09-04): 「新規複数クラスタ割り当ての直後にHuman68kが
