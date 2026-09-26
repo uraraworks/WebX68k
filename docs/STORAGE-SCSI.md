@@ -10357,3 +10357,105 @@ node scripts/probe-scsi-iocs.mjs \
 上記はすべて`--worker=0`(メインスレッド経路)。既定のWorker経路での確認は
 今回未実施(効果検証・分岐点の報告を優先したため)。次に進める場合はここも
 確認が必要。
+
+## SCSI起動 段階2 完走(コーディネータ指示: 資料知識ベースのIOCS $F5実装、2026-09-26)
+
+コーディネータの指示どおり、分岐(1)「IOCS $F5のHLEを続ける」で進めた。
+`$25`を独自の「逐次READ」仮説から**資料知識(未実測)の`_S_READCAP`**に訂正し、
+`$21`を`_S_READ`として実装した。実装は`SCSI_SpcCdbExecute()`のREAD CAPACITY/READ
+と同じ計算・同じ応答形式を再利用し、`d5`(ブロック長符号 0:256/1:512/2:1024)で
+論理ブロックを物理512バイトセクタへバイト数換算する(256バイト符号は未観測のため
+未対応のまま)。戻り値はd0(0=成功、$ffffffff=失敗)。
+
+### 実測での裏取り: 本物ROMのCDB列と一致
+
+実装した`_S_READ`/`_S_READCAP`が実際に読んだLBA/個数を`[SCSI-IOCS-CDB]`として
+出すようにし、**段階1bで実測した本物ROMのCDB列(表「1. 読まれたLBAの順」)と
+比較したところ、$2000以降の部分が完全に一致した**:
+
+| 順 | 自前スタブ(今回実測、IOCS $F5経由) | 本物ROM(段階1b実測、生CDB) |
+|---|---|---|
+| (起動前処理、host command $07) | LBA0-1確認・LBA2-3ロード | 同じ(段階0実測) |
+| 1 | _S_READCAP → last_lba=204799 block=512 | READ CAPACITY → 同じ値 |
+| 2 | _S_READ start=4 count=2 → lba=4 count=2 | READ(6) lba=4 count=2 |
+| 3 | _S_READ start=64 count=2 → lba=64 count=2 | READ(6) lba=64 count=2 |
+| 4 | _S_READCAP(再) | READ CAPACITY(再) |
+| 5 | _S_READ start=66 count=3 → lba=66 count=3 | READ(6) lba=66 count=3 |
+| 6 | _S_READ start=466 count=3 → lba=466 count=3 | READ(6) lba=466 count=3 |
+| 7 | _S_READ start=498 count=3 → lba=498 count=3 | READ(6) lba=498 count=3 |
+| 8 | _S_READ start=498 count=112 → lba=498 count=112 | READ(6) lba=498 count=112(段階1b表の「3→112」に相当) |
+
+`d5=1`(ブロック長512)が全呼び出しで使われており、論理ブロック番号と物理LBAが
+1:1(バイト数換算後も差が出ない)だった。`d2`=先頭ブロック、`d3`=ブロック数、
+`d4`=ID、`a1`=バッファという資料知識の当てはめは、この一致によって裏取りできた
+と判断する。
+
+### 起動結果: プロンプトまで到達、`dir`一覧が本物ROMと一致
+
+**`--worker=0`・既定のWorker経路の両方で、`A>`プロンプトまで到達し、`dir`で
+本物ROMと同じ18ファイルの一覧が表示された**(ファイル名・サイズ・日付すべて
+一致。起動ドライブは`A:`。段階1bの「ROM起動でG:になる」現象は、複数SCSI ID
+応答という実験的設定に起因していたもので、単一ID構成の自前スタブでは
+再現しない)。
+
+| # | 条件 | 経路 | 結果 |
+|---|---|---|---|
+| 本命 | 自前スタブ・FDなし・ROM起動・起動可能HDS | `--worker=0` | `booted:true`。`A>dir`で18ファイル一覧一致 |
+| 本命(Worker既定) | 同上 | 既定(Worker) | `booted:true`。`A>dir`で18ファイル一覧一致(同一) |
+| 比較用1 | ROM起動設定あり・真の空イメージ(全ゼロ) | `--worker=0` | `booted:true`(FD起動、退行なし) |
+| 比較用2 | ROM起動設定なし・起動可能HDS・同梱システムディスク | 既定(Worker) | `booted:true`(FD起動)。`dir c:`で18ファイル一覧一致(退行なし) |
+
+### 宿題4: 本物ROMでフォーマット済み空イメージをROM起動した挙動
+
+`createFormattedScsi(1MiB)`(パーティション表はあるがブートコードは実データを
+書いていない空イメージ)を本物ROM・SPC設定あり・ROM起動設定ありで実行したところ:
+
+```
+[SCSI-SPC] コマンド=TEST UNIT READY
+[SCSI-SPC] コマンド=REZERO UNIT
+[SCSI-SPC] コマンド=READ CAPACITY size=1081344 -> last_lba=2111 block=512
+[SCSI-SPC] コマンド=READ(10) lba=0 count=2   (パーティション情報、"X68SCSI1")
+[SCSI-SPC] コマンド=READ(10) lba=2 count=2   (ブートコード領域)
+```
+
+の後、**`$2000`区画への`[SCSI-CODE-ENTRY]`は発火しなかった**(`booted:false`、
+画面は文字化けした箱枠のみ)。つまり本物ROMは、LBA0の署名確認だけでなく
+**LBA2-3(ブートコード領域)の中身を読んだ後に何らかの検査をして、
+そこで「起動不可」と判断し$2000へ飛ばずに終わる**(検査の内容は逆アセ無しでは
+確定できない。チェックサムや先頭バイトの妥当性確認などが考えられるが未確認)。
+
+自前スタブの起動判定(LBA0の署名のみ)はこの検査を欠いており、
+**段階2で記録した「比較用1'(無効)」の限界はそのまま残る**(既知の制約として
+再確認。今回の修正範囲では対応していない)。
+
+### コミット・実装ファイル
+
+`x68k/scsi.c`の`SCSI_IOCSPort_Write()`内、`data==0x25`(旧: 独自の「逐次READ」
+仮説→ 訂正: `_S_READCAP`、`SCSI_SpcCdbExecute()`のREAD CAPACITY計算を再利用)・
+`data==0x21`(新規: `_S_READ`、ブロック長符号によるバイト数換算)。
+`$20`(_S_INQUIRY)・`$22`(_S_WRITE)・`$26`(_S_READEXT)は今回観測されなかったため
+実装していない。
+
+### 再現コマンド
+
+```
+# 本命(自前スタブ、既定Worker経路)
+node scripts/probe-scsi-iocs.mjs \
+  --image=.../scsi_bootable_20260823.HDS \
+  --no-system --scsi-sram-boot=0xea0020 --timeout=90000 \
+  --profile=<dir> --type=dir --type-wait=8000
+
+# 宿題4(本物ROM、フォーマット済み空イメージ)
+node scripts/probe-scsi-iocs.mjs \
+  --rom=_local/scsi/Scsiexrom.dat \
+  --image=/tmp/scsi_blank.hds \
+  --no-system --worker=0 --scsi-sram-boot=0xea0020 --timeout=60000 \
+  --profile=<dir> \
+  --spc-ints-sel=0x10 --spc-clear-on-pctl=0 --spc-ssts-data-bit=0x30 --spc-ssts-tc0=0 \
+  --code-entry0=0x2000:0x2400 --type=dir --type-wait=6000
+```
+
+段階2は、この時点で「SCSI単独起動から自前スタブでHuman68kのプロンプトまで
+起動し、`dir`一覧が本物ROMと一致する」という目標を達成したため、ここで
+区切りとする。残課題(宿題4で見えた「ブートコード内容の検査」の実装、
+`$20`/`$22`/`$26`等未観測コマンドの扱い)は次段階以降。
