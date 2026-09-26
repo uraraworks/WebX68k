@@ -608,9 +608,79 @@ async function run() {
       });
       await sleep(400);
 
-      // --- serial: 設定ダイアログ最下部のシリアルポート節 ---
+      // --- bootdevice: 設定ダイアログの「起動デバイス」節(SCSI起動 段階4) ---
       await clickToolbarButton(page, 'btn-settings');
+      // 設定ダイアログは開いている間、1秒間隔(BOOT_DEVICE_UI_POLL_MS)でSRAMを読み直して
+      // 起動デバイス節を再描画するポーリングを回している(src/main.ts参照)。このポーリングが
+      // scrollIntoViewの直後に発火すると、注記の折返し行数が変わって縦位置がずれ、上の
+      // RAM節が写り込んだり注記が見切れたりする事故が2026-09-26に起きた(ja/enどちらで
+      // 起きるかはタイミング次第で不安定)。そのため、ポーリングの周期をまたいでも位置が
+      // 変わらなくなる(=再描画が収まる)まで、直前の座標と比較しながら撮り直す。
       await sleep(800);
+      // alt文の説明(「SCSI(ID 0)が選ばれた状態」)と絵を一致させるため、撮る前に選択肢を
+      // SCSIへ切り替える(SRAMへ実際に書き込まれるが、撮影用プロファイルは毎回まっさらなので
+      // 手元の環境には影響しない)。
+      await page.evaluate(() => {
+        const select = document.getElementById('cfg-bootdevice');
+        if (!select) throw new Error('cfg-bootdevice not found');
+        select.value = 'scsi';
+        select.dispatchEvent(new Event('change', { bubbles: true }));
+      });
+      // ポーリング周期(1000ms)をまるまる1周待ち、SRAM書き込み→読み直し→再描画を
+      // 収まらせてから位置合わせに入る。
+      await sleep(1300);
+
+      const BOOTDEVICE_SELECTORS = ['#settings-bootdevice-title', '#cfg-bootdevice', '#settings-bootdevice-note'];
+      let lastRects = null;
+      for (let attempt = 0; attempt < 6; attempt++) {
+        await page.evaluate((sels) => {
+          const el = document.querySelector(sels[2]);
+          if (!el) throw new Error(`element not found: ${sels[2]}`);
+          el.scrollIntoView({ block: 'center' });
+        }, BOOTDEVICE_SELECTORS);
+        await sleep(250);
+        const rects = await page.evaluate((sels) => {
+          const modal = document.querySelector('#settings-backdrop .rom-modal');
+          if (!modal) throw new Error('.rom-modal not found');
+          const modalRect = modal.getBoundingClientRect();
+          const out = { modalTop: modalRect.top, modalBottom: modalRect.bottom, items: [] };
+          for (const sel of sels) {
+            const el = document.querySelector(sel);
+            if (!el) throw new Error(`element not found: ${sel}`);
+            const rect = el.getBoundingClientRect();
+            out.items.push({ sel, top: rect.top, bottom: rect.bottom, left: rect.left, width: rect.width, height: rect.height });
+          }
+          return out;
+        }, BOOTDEVICE_SELECTORS);
+        const contained = rects.items.every(
+          (it) => it.height > 0 && it.top >= rects.modalTop - 1 && it.bottom <= rects.modalBottom + 1,
+        );
+        const stable =
+          lastRects !== null &&
+          rects.items.every((it, i) => Math.abs(it.top - lastRects.items[i].top) < 0.5 && Math.abs(it.bottom - lastRects.items[i].bottom) < 0.5);
+        lastRects = rects;
+        if (contained && stable) break;
+        if (attempt === 5) {
+          throw new Error(
+            `bootdevice section did not settle into view (contained=${contained}, stable=${stable}): ${JSON.stringify(rects)}`,
+          );
+        }
+        await sleep(300);
+      }
+      // serial節と同じ理由(別ダイアログに覆われていないか)の確認。
+      await page.evaluate((sels) => {
+        for (const sel of sels) {
+          const el = document.querySelector(sel);
+          const rect = el.getBoundingClientRect();
+          const topEl = document.elementFromPoint(rect.left + rect.width / 2, rect.top + rect.height / 2);
+          if (!topEl || !topEl.closest('#settings-backdrop')) {
+            throw new Error(`${sel} is covered by another dialog`);
+          }
+        }
+      }, BOOTDEVICE_SELECTORS);
+      await shootUnion(page, BOOTDEVICE_SELECTORS, `bootdevice${suffix}.png`, 12, { captureBeyondViewport: false });
+
+      // --- serial: 設定ダイアログ最下部のシリアルポート節 ---
       await page.evaluate(() => {
         const el = document.getElementById('settings-serial-controls');
         if (!el) throw new Error('settings-serial-controls not found');

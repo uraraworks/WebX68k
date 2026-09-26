@@ -431,6 +431,11 @@
               SCSIライブラリのイメージも並びます(起動中にSCSIスロットへ挿入中のイメージと、
               256MBを超えるイメージは対象外)。
             </p>
+            <p>
+              設定ダイアログの「起動デバイス」で「SCSI(ID 0)」を選べば、SCSIからの起動にも
+              対応しています(反映はリセットから。起動可能でないイメージならフロッピー起動へ
+              自動フォールバックします)。
+            </p>
           </div>
           <div class="lang-en">
             <h2>SCSI hard disk support</h2>
@@ -450,6 +455,11 @@
               addressable via URL parameters, but its library images do appear as targets in the
               file transfer (browser ⇔ disk image) dialog (excluding an image that's currently
               inserted in the SCSI slot while running, or larger than 256MB).
+            </p>
+            <p>
+              You can also boot from SCSI: choose "SCSI (ID 0)" under "Boot Device" in the settings
+              dialog (it takes effect from the next reset, and falls back to booting from floppy if
+              the image isn't actually bootable).
             </p>
           </div>
         </section>
