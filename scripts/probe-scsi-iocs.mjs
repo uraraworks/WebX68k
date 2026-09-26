@@ -979,7 +979,11 @@ try {
       .catch(() => null);
     if (dump?.lines) {
       lastLines = dump.lines;
-      if (dump.lines.some((l) => l.includes('A>'))) {
+      // 【2026-09-26修正】'A>' 固定判定だと、FDが無くSCSI(または他パーティション)から
+      // 起動した場合にドライブレターがA以外(実測でG:)になり、実際は起動しているのに
+      // booted=false のまま扱われてしまう(段階1bで実際に踏んだ)。任意の1文字ドライブ
+      // レター+'>'にマッチするよう緩めた。
+      if (dump.lines.some((l) => /[A-Z]>/.test(l))) {
         booted = true;
         break;
       }
@@ -1102,7 +1106,7 @@ try {
     if (typedScreen) {
       const echoed = typedScreen
         .map((l) => l.trim())
-        .filter((l) => l.startsWith('A>') && l.length > 2 && l !== 'A>ECHO OFF')
+        .filter((l) => /^[A-Z]>/.test(l) && l.length > 2 && !/^[A-Z]>ECHO OFF$/.test(l))
         .map((l) => l.slice(2).trim());
       const wanted = TYPE_TEXT.split(';;').map((t) => t.trim());
       const missing = wanted.filter((w) => !echoed.includes(w));
