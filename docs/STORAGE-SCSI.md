@@ -10741,3 +10741,75 @@ node scripts/_export-scsi-opfs.mjs /tmp/profile 5311 /tmp/readback.hds
 # 比較対象(FD起動+SCSIデータドライブ、既存の検証。単独で実行すること)
 node scripts/verify-scsi-persistence.mjs --fault=all
 ```
+
+## SCSI起動 段階3 追加：拡大方向の上書きと複数クラスタの大容量ファイル（実測、2026-09-26）
+
+段階3(直前の節)は縮小方向の上書き・非セクタ整列の小さい新規ファイルまでしか
+確かめていなかった。コーディネータの指示で、**拡大方向の上書き(クラスタ境界を
+またぐ)**と**複数クラスタにまたがる大容量の新規ファイル**を追加で実測した。
+条件・道具・作法は直前の節と同じ(SCSI起動・Worker既定経路・1本ずつ順番に実行・
+`_fixtures`の元イメージは書き換えない・逆アセンブル禁止)。
+
+### 1. 検体・手順
+
+このイメージはFAT16(big-endian)、1クラスタ=2048B(2セクタ×1024B)。
+
+| # | 操作 | サイズ変化 | 検証内容 |
+|---|---|---|---|
+| 拡大上書き | `copy autoexec.bat grow1.dat`→`copy uskcg.sys grow1.dat` | 179B(1クラスタ)→8028B(4クラスタ) | クラスタ境界をまたぐ拡大上書きでバイト完全一致・クラスタ数一致 |
+| 複数クラスタの新規大容量ファイル | `copy command.x+command.x test3.dat` → `copy test3.dat+test3.dat+test3.dat+test3.dat+test3.dat+uskcg.sys big.dat` | 新規291848B(143クラスタ、非セクタ整列・非クラスタ整列) | COMMAND.X×10+USKCG.SYSとバイト完全一致・クラスタ数一致・空き容量の辻褄 |
+
+**わかった副産物**: `copy human.sys ...`(単体でも)は毎回
+`コピー元ファイルが見つかりません`で失敗した。**現在起動しているHUMAN.SYS自身は
+コピー元にできない**(起動中のシステムファイルのロック/隠し属性によるものと見られ、
+逆アセンブルせずブラックボックスの挙動として確認しただけ。製品側の不具合ではない)。
+そのため大容量ファイルの材料はCOMMAND.X(コピー可能)を使う経路に変更した。
+`copy command.x+command.x test3.dat`のような`+`連結自体は通常に成立する
+(HUMAN.SYSだけが特別)。
+
+### 2. 結果
+
+| 検証 | 結果 |
+|---|---|
+| `grow1.dat`(179B→8028B) ホストFAT比較 | `USKCG.SYS`(元イメージ)と**完全一致**。クラスタ数=4(期待どおり) |
+| `big.dat`(新規291848B) ホストFAT比較 | `COMMAND.X`(元)×10+`USKCG.SYS`(元)の期待値と**完全一致**。クラスタ数=143(期待どおり、`ceil(291848/2048)`と一致) |
+| 空き容量の辻褄 | 書き込み前`18790K使用/82368K可能`→書き込み後`19168K使用/81990K可能`。使用量増分378K = クラスタ丸め後のgrow1.dat(8K)+test2.dat(28K)+test3.dat(56K)+big.dat(286K)の合計と**完全一致** |
+| 故障注入(`big.dat`をホスト側でFAT経由で1バイト反転、サイズ・クラスタ数は不変) | `_verify-scsi-fat-grow.mts`が`big.dat`のみ「完全一致:false」に変わり、無関係な`grow1.dat`は「true」のまま(検出力を確認。前回はCOMMAND.Xを対象にしたが、今回は新たに作った`big.dat`自身を対象にした) |
+
+**拡大方向の上書き(クラスタ境界をまたぐ)・複数クラスタの大容量新規ファイルのいずれも、
+バイト単位で完全一致した。** 前節の縮小方向の上書きと合わせ、SCSI起動状態での
+書き込み永続化に問題は見つかっていない。
+
+### 3. 道具
+
+- `scripts/_verify-scsi-fat-grow.mts`を追加(`grow1.dat`/`big.dat`のバイト比較と、
+  FAT16(big-endian)のクラスタ鎖を自前で辿るクラスタ数検証)
+- `scripts/_fault-inject-scsi-fat.mts`を拡張し、対象ファイル名・反転オフセットを
+  引数で指定できるようにした(既定は従来どおり`COMMAND.X`のオフセット100)
+
+### 再現コマンド
+
+```
+# 拡大上書き+複数クラスタ新規ファイル(同じprofileへ順に打鍵。1コマンドずつでも良い)
+node scripts/probe-scsi-iocs.mjs --image=/tmp/work.hds --no-system \
+  --scsi-sram-boot=0xea0020 --scsi-opfs --timeout=100000 --profile=/tmp/profile \
+  --type='copy autoexec.bat grow1.dat' --type-wait=6000
+node scripts/probe-scsi-iocs.mjs --image=/tmp/work.hds --no-system \
+  --scsi-sram-boot=0xea0020 --scsi-opfs --timeout=100000 --profile=/tmp/profile \
+  --type='copy uskcg.sys grow1.dat' --type-wait=6000
+node scripts/probe-scsi-iocs.mjs --image=/tmp/work.hds --no-system \
+  --scsi-sram-boot=0xea0020 --scsi-opfs --timeout=100000 --profile=/tmp/profile \
+  --type='copy command.x+command.x test3.dat' --type-wait=6000
+node scripts/probe-scsi-iocs.mjs --image=/tmp/work.hds --no-system \
+  --scsi-sram-boot=0xea0020 --scsi-opfs --timeout=120000 --profile=/tmp/profile \
+  --type='copy test3.dat+test3.dat+test3.dat+test3.dat+test3.dat+uskcg.sys big.dat' --type-wait=8000
+
+# ホストFAT比較(devサーバを単独で起動してから)
+npm run dev -- --port 5311 --strictPort &
+node scripts/_export-scsi-opfs.mjs /tmp/profile 5311 /tmp/readback.hds
+./node_modules/.bin/vite-node scripts/_verify-scsi-fat-grow.mts /tmp/readback.hds /tmp/work.hds
+
+# 故障注入(big.datを対象に)
+./node_modules/.bin/vite-node scripts/_fault-inject-scsi-fat.mts /tmp/readback.hds /tmp/readback_FAULT.hds big.dat 285000
+./node_modules/.bin/vite-node scripts/_verify-scsi-fat-grow.mts /tmp/readback_FAULT.hds /tmp/work.hds
+```
