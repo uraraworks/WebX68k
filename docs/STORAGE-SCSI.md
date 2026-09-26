@@ -10593,3 +10593,151 @@ node scripts/probe-scsi-iocs.mjs \
 コア変更: `x68k/scsi.c`の`SCSI_HostCommand()`ホストコマンド`$07`のみ
 (`sec2[0]==0x60`のチェックを追加)。WebX68k側の変更は無し(コアの
 再ビルドのみ)。
+
+## SCSI起動 段階3：SCSI起動時の書き込みと永続化（実測、2026-09-26）
+
+段階2bで「起動可否の判定」が固まったので、今回は**SCSIから起動した状態
+(A:がSCSI区画)でゲストが書いた内容が正しく保存されるか**を実測した。
+過去にSCSIをデータドライブとして使う構成で「端数セクタとFATの書き戻しが
+来ない」不具合があった(本ドキュメント2026-09-04の節)。その後 `--scsi-opfs`
+(OPFS書き戻し、Worker専用)と `scripts/verify-scsi-persistence.mjs` による
+検証が固まっている(2026-09-04以降)が、いずれも**SCSIをデータドライブ
+(FD起動+C:)として使う構成**でしか検証していなかった。**SCSI起動(A:自体
+がSCSI)**での永続化は今回が初めての実測。
+
+### 1. 検体・手順
+
+基準器イメージ(`_fixtures/scsi_bootable_20260823.HDS`、100MiB)のコピーを使い、
+`probe-scsi-iocs.mjs --no-system --scsi-sram-boot=0xea0020 --scsi-opfs`で
+SCSIから起動、`copy`/`mkdir`/`del`をゲストへ打鍵した後、同じChromeプロファイル
+(=同じOPFS)で新しいプロセス(コアを起動し直す。リロード相当)を何度も
+起動して`dir`で読み返した。さらにOPFS上のイメージをホスト側へ書き出し
+(`scripts/_export-scsi-opfs.mjs`、`<a download>`+CDPのダウンロード経由。
+100MB級を`page.evaluate()`の戻り値でシリアライズしない)、`src/api/fat.ts`
+(`openDiskImage`/`fatReadFile`)で**バイト単位**に元イメージと比較した
+(`scripts/_verify-scsi-fat.mts`)。
+
+書き込み内容:
+
+| # | 操作 | 内容 |
+|---|---|---|
+| (a) | 新規作成 | `copy beep.sys new1.dat`(1023B、非セクタ整列)。最終的に(d)で削除 |
+| (b) | 上書き(縮小) | `copy uskcg.sys dst2.dat`(8028B作成)→`copy autoexec.bat dst2.dat`(179Bで上書き。過去に末尾が落ちた「縮小方向の上書き」条件) |
+| (c) | ディレクトリ作成+コピー | `mkdir newdir`→`copy config.sys newdir\cc.dat`(468B) |
+| (d) | 削除 | `del new1.dat` |
+
+(打鍵は文字の入れ替わり/脱落が一定確率で起きる既知の癖(本ドキュメント既出)で、
+このセッションでも`mkdir newdir`が`nwedir`になる等の打鍵事故が複数回起きた。
+道具の事故と製品の不具合を区別するため、`typedMismatch`が出た回は同じ内容を
+再送し、事故で出来た余分なファイル/ディレクトリは`del`/`rmdir`で片付けたうえで
+最終状態を確認している。)
+
+### 2. 結果
+
+**Workerの既定経路(`--scsi-opfs`、Worker専用)**:
+
+| 検証 | 結果 |
+|---|---|
+| 新しいコアでの再起動後、`dir`で(a)(b)(c)(d)とも期待通り(新規あり・上書き後サイズ一致・新ディレクトリと中身あり・削除済みで残っていない) | 一致 |
+| ホスト側でOPFSのイメージを書き出し、`fat.ts`でバイト単位比較 | `dst2.dat`(179B)は`AUTOEXEC.BAT`(元イメージ)と**完全一致**。`newdir/cc.dat`(468B)は`CONFIG.SYS`(元イメージ)と**完全一致**。`new1.dat`はルートに残っていない |
+| 無関係な既存ファイル(`COMMAND.X`/`KEY.SYS`/`USKCG.SYS`/`BEEP.SYS`/`STARTUP.ENV`)がバイト単位で不変か | 全て不変(退行なし) |
+
+**過去の不具合(「縮小方向の上書きで末尾が落ちる」)は、SCSI起動構成では再現しなかった。**
+`dst2.dat`は8028B→179Bへの縮小上書きでも、末尾を含め`AUTOEXEC.BAT`と1バイトも
+違わなかった。
+
+### 3. 故障注入(検証自体の検出力の確認)
+
+上記の比較(手順1)が「常に合格を返すだけ」になっていないかを、書き出した
+イメージの`COMMAND.X`の中身をホスト側で1バイト反転してから同じ比較スクリプトに
+通して確認した(`scripts/_fault-inject-scsi-fat.mts`)。**「不変のはず」の判定が
+正しく`変化あり`に変わり、検出力があることを確認した。** (無改変のイメージでは
+「不変」と出て、改変したイメージでは「変化あり」と出る対比が取れている。)
+
+### 4. 比較対象: FD起動+SCSIをデータドライブ(既存の`verify-scsi-persistence.mjs`)
+
+SCSI起動特有の問題かどうかを見るため、既存の検証(`node scripts/verify-scsi-persistence.mjs
+--fault=all`。FD起動・SCSIはC:としてマウント・検体は8MiBブランク+HEAD/TAILマーカー)を
+**単独で(他の検証と並行させずに)**実行した。
+
+| 段 | 結果 |
+|---|---|
+| 書き込み→リロード後の読み返し(HEAD/TAIL) | pass |
+| 陰性対照(検体を入れていない別プロファイルでHEAD/TAILが出ないこと) | pass(出現なし) |
+| 故障注入+陽性対照(`--scsi-oracle-reply=0`で書き込みを壊した状態) | pass(「copyは画面上成立したが、リロード後にTAILは現れなかった」= 検出力あり) |
+
+**SCSI起動(A:)とFD起動+SCSIデータドライブ(C:)の両条件で、書き込み後の永続化は
+正しく動作し、いずれの検証も故障注入を正しく検出した。** 今回の実測範囲では
+SCSI起動に特有の永続化問題は見つからなかった。
+
+### 5. Worker既定経路とメインスレッド経路(`--worker=0`)
+
+`--scsi-opfs`は`createSyncAccessHandle()`を使うためWorker専用(本ドキュメント
+既出)であり、`--worker=0`とは構造的に同時指定できない。そのため`--worker=0`側は
+「SCSI起動が成立し、書き込みがドライバまで届くか」を`--scsi-ram-writes`
+(ゲストRAM経由の書き込みフック、非永続)で確認した。
+
+| 経路 | 起動 | 書き込み |
+|---|---|---|
+| Worker既定 | `booted:true`。18→20ファイルへ変化、`dir`一致 | OPFSへの永続化を確認済み(上記) |
+| `--worker=0`(`--scsi-ram-writes`) | `booted:true`。`copy beep.sys new1.dat`成立、`dir`で`new1.dat`(1023B)を確認 | `writeSucceededCount=4`・`writeRefused=false`(ドライバまで書き込みが届いている。OPFS自体はWorker専用のため永続化はこの経路では検証不能) |
+
+### 6. 分かったこと・分かっていないこと
+
+分かったこと:
+- SCSI起動状態での新規作成・縮小方向の上書き・ディレクトリ作成+コピー・削除は、
+  リロード(新しいコア)を挟んでもホスト側バイト比較で完全一致する
+- 過去に踏んだ「端数セクタ/FATの書き戻しが来ない」不具合(2026-09-04、データドライブ構成)は、
+  SCSI起動構成では再現しなかった(縮小上書きを含めて再現しなかった)
+- FD起動+SCSIデータドライブの既存経路と比べて、SCSI起動に特有の永続化問題は
+  今回の範囲では見つからなかった
+- メインスレッド経路(`--worker=0`)でもSCSI起動・書き込みのドライバ到達は確認できる
+  (OPFS永続化自体はWorker専用なためこの経路では検証対象外)
+
+分かっていないこと・やっていないこと:
+- 拡大方向の上書き(小さいファイルを大きいファイルで上書き。今回は縮小方向のみ)
+- 複数クラスタにまたがる大きいファイルでの端数セクタ挙動
+- 「保存前にリロードする」形の故障注入(flushのデバウンス窓(250ms)を割り込む形の実測)は
+  行っていない。各書き込み後の待ち時間(型入力後5秒+新しいコアの起動に数十秒)が
+  デバウンス窓より十分長く、今回の実測ではこの窓を突く条件を作っていない
+- `--scsi-ui`(製品のUI経由でSCSIを挿す経路)でのSCSI起動は未実測(`--scsi-opfs`
+  (プローブが直接立てる経路)のみ)
+
+### 7. 道具について
+
+- `scripts/_export-scsi-opfs.mjs`・`scripts/_verify-scsi-fat.mts`・
+  `scripts/_fault-inject-scsi-fat.mts`を今回のためにリポジトリへ追加した
+  (`scripts/_gen-scsi-marker.mts`と同じ「使い捨てだが再現のため残す」扱い)。
+  OPFSは同一origin内でWorker/メインスレッドを問わず共有されるため、
+  メインスレッドの`page.evaluate()`から`navigator.storage.getDirectory()`で
+  Worker側が書いたファイルを読める(`createSyncAccessHandle()`はWorker専用だが
+  `getFile()`はそうではない)
+- **同じdevサーバ・同じChromeプロファイルを2つの検証で同時に使うと、互いの保存を
+  上書きし合い結果が偽物になる**(このセッションで実際に1回踏んだ:
+  手動で起動したままにしていたdevサーバ(port 5311)へ`verify-scsi-persistence.mjs`が
+  相乗りした状態で走らせてしまった。結果は採用せず、devサーバを止めてから
+  やり直した)。**検証は1本ずつ順番に走らせること。**
+
+### 再現コマンド
+
+```
+# SCSI起動(A:)+OPFS書き戻しでの書き込み(Worker既定経路、単発の例)
+cp _fixtures/scsi_bootable_20260823.HDS /tmp/work.hds
+node scripts/probe-scsi-iocs.mjs \
+  --image=/tmp/work.hds --no-system --scsi-sram-boot=0xea0020 --scsi-opfs \
+  --timeout=90000 --profile=/tmp/profile \
+  --type='copy beep.sys new1.dat' --type-wait=5000
+
+# 同じプロファイルで読み返す(新しいコア=リロード相当)
+node scripts/probe-scsi-iocs.mjs \
+  --image=/tmp/work.hds --no-system --scsi-sram-boot=0xea0020 --scsi-opfs \
+  --timeout=90000 --profile=/tmp/profile --type=dir --type-wait=5000
+
+# OPFSのイメージをホストへ書き出し、FATとしてバイト比較する(devサーバを単独で起動してから)
+npm run dev -- --port 5311 --strictPort &
+node scripts/_export-scsi-opfs.mjs /tmp/profile 5311 /tmp/readback.hds
+./node_modules/.bin/vite-node scripts/_verify-scsi-fat.mts /tmp/readback.hds /tmp/work.hds
+
+# 比較対象(FD起動+SCSIデータドライブ、既存の検証。単独で実行すること)
+node scripts/verify-scsi-persistence.mjs --fault=all
+```
