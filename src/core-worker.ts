@@ -1004,6 +1004,53 @@ async function handleFetchAvInfo(
   }
 }
 
+/** SCSI起動 段階4(UI): SRAMの指定オフセット群を読む(src/core-proxy.ts LocalCoreProxy#readSramBytes
+ * 参照。readMemory と違い、この2opはWorker経路でも実処理する)。 */
+async function handleReadSramBytes(
+  cmd: Extract<CoreCommand, { op: 'readSramBytes' }>,
+): Promise<void> {
+  const { generation, requestId } = cmd;
+  if (!proxy) {
+    post({
+      kind: 'response',
+      generation,
+      requestId,
+      ok: false,
+      error: createCoreError('INVALID_STATE', 'initialize が完了していません', { operation: 'readSramBytes' }),
+    });
+    return;
+  }
+  try {
+    const result = await proxy.readSramBytes(cmd.payload.offsets);
+    post({ kind: 'response', generation, requestId, ok: true, completedFrameNo: frameNo, result });
+  } catch (err) {
+    post({ kind: 'response', generation, requestId, ok: false, error: toCoreError(err, 'readSramBytes') });
+  }
+}
+
+/** SCSI起動 段階4(UI): SRAMの指定オフセット群へ書く。 */
+async function handleWriteSramBytes(
+  cmd: Extract<CoreCommand, { op: 'writeSramBytes' }>,
+): Promise<void> {
+  const { generation, requestId } = cmd;
+  if (!proxy) {
+    post({
+      kind: 'response',
+      generation,
+      requestId,
+      ok: false,
+      error: createCoreError('INVALID_STATE', 'initialize が完了していません', { operation: 'writeSramBytes' }),
+    });
+    return;
+  }
+  try {
+    const result = await proxy.writeSramBytes(cmd.payload.entries);
+    post({ kind: 'response', generation, requestId, ok: true, completedFrameNo: frameNo, result });
+  } catch (err) {
+    post({ kind: 'response', generation, requestId, ok: false, error: toCoreError(err, 'writeSramBytes') });
+  }
+}
+
 async function handleReadTextScreen(
   cmd: Extract<CoreCommand, { op: 'serialize' | 'readTextScreen' | 'screenshot' }>,
 ): Promise<void> {
@@ -1319,6 +1366,14 @@ ctx.onmessage = (ev) => {
       return;
     case 'fetchAvInfo':
       recordCommandTiming(cmd.op, commandStartAtMs, handleFetchAvInfo(cmd));
+      return;
+    // SCSI起動 段階4(UI): readMemory等と違い、Worker経路でも実処理する(host.peekSramByte/
+    // writeSramByte/hasValidSramSignature経由。docs/STORAGE-SCSI.md「SCSI起動 段階4」参照)。
+    case 'readSramBytes':
+      recordCommandTiming(cmd.op, commandStartAtMs, handleReadSramBytes(cmd));
+      return;
+    case 'writeSramBytes':
+      recordCommandTiming(cmd.op, commandStartAtMs, handleWriteSramBytes(cmd));
       return;
     case 'setRunning':
       handleSetRunning(cmd);

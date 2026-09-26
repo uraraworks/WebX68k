@@ -427,6 +427,28 @@ int webx68k_sram_read(int offset)
   return SRAM_Read(0x00ed0000 + (uint32_t)offset);
 }
 
+/*
+ * SCSI起動 段階4(UI)用: SRAMへ1バイト書く(利用者が設定ダイアログで起動デバイスを
+ * 変更したときに使う。SWITCH.Xがゲスト内でやっているのと同じ操作をホストから行う)。
+ * SRAM_Write()は write_enabled が立っていないと書き込みを無言で捨てるため
+ * (x68k/sram.c参照)、SRAM_WriteEnable(1)で開けてから書き、直後に(0)で閉じる。
+ * 開けたままにしないのは、CPU側の他の書き込み経路(通常は閉じているはず)に
+ * 影響を与えないため。
+ */
+extern void SRAM_WriteEnable(int enable);
+extern void SRAM_Write(uint32_t adr, uint8_t data);
+
+__attribute__((used))
+int webx68k_sram_write(int offset, int value)
+{
+  if (offset < 0 || offset >= 0x4000)
+    return -1;
+  SRAM_WriteEnable(1);
+  SRAM_Write(0x00ed0000 + (uint32_t)offset, (uint8_t)(value & 0xff));
+  SRAM_WriteEnable(0);
+  return 0;
+}
+
 /* px68k-libretro の libretro/keyboard.c にある。第2引数は 2=make(P6K_DOWN) / 1=break(P6K_UP)。 */
 extern void send_keycode(uint8_t code, int flag);
 

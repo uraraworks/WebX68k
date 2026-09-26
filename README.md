@@ -220,11 +220,15 @@ drop targets).
 A SCSI hard disk (`.hds`) is a **separate slot from HDD (SASI)** — both can
 be mounted at the same time.
 
-- **WebX68k can't boot from SCSI.** The SCSI implementation is HLE and
-  doesn't implement the SCSI board ROM's boot entry point, so a bootable
-  `.HDS` won't boot from the SCSI slot — boot from a floppy or the HDD
-  (SASI) instead, and use SCSI as a data drive. (On real hardware, an SRAM
-  setting can boot from SCSI; WebX68k doesn't support this.)
+- **WebX68k can boot from SCSI.** A custom boot-entry stub is implemented.
+  Open Settings (gear icon) → "Boot Device" and choose "SCSI (ID 0)"; it
+  reads/writes the same SRAM setting as the guest's SWITCH.X
+  (`$ed0018`/`$ed000c`), so changes made with SWITCH.X inside the guest are
+  reflected in the dialog too. The change takes effect from the next reset.
+  If the mounted SCSI image isn't actually bootable, it falls back to
+  booting from floppy instead of erroring out. While actually booted from
+  SCSI, the SCSI slot is locked the same way the HDD (SASI) slot is while
+  running (no eject/swap; download stays available read-only).
 - Blank creation takes an integer size from **1 to 2047MB**, formatted as
   FAT16 (the 2047MB ceiling comes from the SCSI HLE implementation handling
   the image size as a signed 32-bit integer).

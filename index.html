@@ -370,6 +370,26 @@
         </select>
       </div>
 
+      <!-- SCSI起動 段階4(UI)。SRAMが正: 表示・変更ともに$ed0018/$ed000cを読み書きするだけ。 -->
+      <div class="settings-machine-heading">
+        <h3 class="rom-modal-section-title">
+          <span id="settings-bootdevice-title">起動デバイス</span>
+        </h3>
+        <p id="settings-bootdevice-reset-note" class="status-bundled">変更を反映するにはリセットが必要です(SRAMの値、次回起動から反映)。</p>
+      </div>
+      <div class="field-row">
+        <label id="settings-bootdevice-label" for="cfg-bootdevice">起動デバイス</label>
+        <select id="cfg-bootdevice">
+          <option value="standard">標準(SASI/FD)</option>
+          <option value="scsi">SCSI(ID 0)</option>
+          <option id="bootdevice-opt-other" value="other" hidden>その他</option>
+        </select>
+        <span id="settings-bootdevice-raw" class="rom-modal-section-note"></span>
+      </div>
+      <p id="settings-bootdevice-note" class="rom-modal-section-note">
+        SRAM($ed0018/$ed000c、SWITCH.Xと同じ設定)を読み書きします。ゲスト内のSWITCH.Xで変更した場合もここに反映されます。
+      </p>
+
       <!-- マシン構成(リセット必須)とは別枠。速度倍率は実行中に即時反映されるため注記も別にする。 -->
       <div class="settings-machine-heading">
         <h3 id="settings-speed-title" class="rom-modal-section-title">エミュレーション速度</h3>

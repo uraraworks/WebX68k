@@ -615,13 +615,16 @@
               出せます(ディスクが入っていれば自動的に表示されます)。
             </div>
             <div class="note-box">
-              <strong>SCSIからは起動できません。</strong> WebX68kのSCSI実装はHLE(高水準
-              エミュレーション)で、SCSIボードROMの「起動エントリ」を実装していません。
-              起動可能な<code>.HDS</code>を挿しても、そこからは起動しません。フロッピー、
-              またはHDD(SASI)から起動し、SCSIはデータ用のドライブとして使ってください。
-              (参考: 実機ではSRAMの設定(『Human68k version 3.0』の<code>SWITCH</code>の
-              起動デバイス設定。既定の探索順はFDD0→FDD1→SCSI ID0→SCSI ID1)でSCSIからの
-              起動が可能ですが、WebX68kでは未対応です。)
+              <strong>SCSIから起動できます。</strong> 設定(歯車アイコン)の「起動デバイス」で
+              「SCSI(ID 0)」を選ぶと、実機の<code>SWITCH.X</code>と同じSRAM設定
+              (<code>$ed0018</code>/<code>$ed000c</code>)を読み書きします。この設定はSRAMが
+              正なので、ゲスト内で<code>SWITCH.X</code>を使って変更した場合も設定ダイアログの
+              表示に反映されます。<strong>変更はリセットしてから反映されます。</strong>
+              マウントしたSCSIイメージが実際には起動可能でない(フォーマットしただけ等)場合は、
+              エラーにはならずフロッピーからの起動へ自動的にフォールバックします。
+              SCSIから実際に起動している間は、HDD(SASI)と同じくSCSIスロットの差し替え・
+              取り出しができません(ダウンロードは読み出し専用で引き続き可能)。
+              フロッピーから起動してSCSIをデータドライブとして使っている間はロックされません。
             </div>
             <div class="note-box">
               <strong>挿入は次回の起動から有効です。</strong> 挿すと「SCSIディスクを挿しました。
@@ -666,14 +669,16 @@
               also appears automatically whenever a disk is loaded).
             </div>
             <div class="note-box">
-              <strong>You can't boot from SCSI.</strong> WebX68k's SCSI implementation is HLE
-              (high-level emulation) and doesn't implement the SCSI board ROM's "boot entry
-              point." Inserting a bootable <code>.HDS</code> won't make it bootable — boot from a
-              floppy or the HDD (SASI) instead, and use SCSI as a data drive.
-              (For reference: on real hardware, an SRAM setting — the boot device setting in
-              <code>SWITCH</code> from Human68k version 3.0, whose default search order is
-              FDD0 → FDD1 → SCSI ID0 → SCSI ID1 — can boot from SCSI, but WebX68k doesn't support
-              this.)
+              <strong>You can boot from SCSI.</strong> Open Settings (gear icon) → "Boot Device"
+              and choose "SCSI (ID 0)"; it reads/writes the same SRAM setting as the guest's
+              <code>SWITCH.X</code> (<code>$ed0018</code>/<code>$ed000c</code>). SRAM is the
+              source of truth, so changes made with <code>SWITCH.X</code> inside the guest are
+              reflected in the dialog too. <strong>The change takes effect from the next
+              reset.</strong> If the mounted SCSI image isn't actually bootable (e.g. it was only
+              formatted), it falls back to booting from floppy instead of erroring out. While
+              actually booted from SCSI, the SCSI slot can't be swapped or ejected, same as the
+              HDD (SASI) slot (download stays available read-only). It stays unlocked while
+              booted from floppy and using SCSI only as a data drive.
             </div>
             <div class="note-box">
               <strong>An inserted disk takes effect from the next boot.</strong> Inserting one shows

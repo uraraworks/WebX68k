@@ -10813,3 +10813,111 @@ node scripts/_export-scsi-opfs.mjs /tmp/profile 5311 /tmp/readback.hds
 ./node_modules/.bin/vite-node scripts/_fault-inject-scsi-fat.mts /tmp/readback.hds /tmp/readback_FAULT.hds big.dat 285000
 ./node_modules/.bin/vite-node scripts/_verify-scsi-fat-grow.mts /tmp/readback_FAULT.hds /tmp/work.hds
 ```
+
+## SCSI起動 段階4：UI（実装、2026-09-26）
+
+段階0〜3で確立した「実験用スイッチ(`globalThis.__webx68kScsiSramBoot`)＋IPL初期化後の
+再注入フック」を、利用者向けのUI機能にした。実装は既定経路(`?worker=0`)・Worker経路
+(`?worker=1`、既定)の両方で動く。
+
+### 仕様
+
+1. **SRAMが正。** 設定ダイアログ(歯車アイコン)に「起動デバイス」セクションを追加し、
+   表示・変更ともにSRAMの値($ed0018/$ed000c)を読み書きするだけにした。ゲスト内で
+   SWITCH.Xを使って変更した場合も、設定ダイアログを開いている間は1秒間隔でSRAMを
+   読み直すため追従する(`refreshBootDeviceUi()`/`startBootDeviceUiPolling()`、
+   `src/main.ts`)。選択肢は「標準(SASI/FD)」「SCSI(ID 0)」の2つ。SRAMがどちらでもない
+   値のときは「その他($ed0018=$xxxx $ed000c=$xxxxxxxx)」と表示し、シグネチャ不一致
+   (未初期化)のときは「不明(SRAM未初期化)」と表示する。どちらもユーザーは選べない
+   (読み取り専用の表示項目)。
+   - 値: 標準は`$ed0018=$0000`。SCSIは`$ed0018=$a000`、`$ed000c=$00ea0020`
+     (段階0で確認済み)。標準へ戻すときの`$ed000c`は、段階1aで実測したIPL初期化時の
+     固定値`$00bffffc`に戻す(`src/sram-boot-device.ts` の`STANDARD_000C`)。書く範囲は
+     `$ed000c`〜`$ed000f`と`$ed0018`〜`$ed0019`の6バイトのみ(元々SCSI_Init()が書いていた
+     範囲と同じ)。
+   - 書き込みはSRAMの書き込み許可を開けてから書き、直後に閉じる。x68k/sram.cの
+     `SRAM_WriteEnable(1)`→`SRAM_Write()`→`SRAM_WriteEnable(0)`を、新設した
+     `webx68k_sram_write()`(`src/core-shim.c`、コア再ビルドが必要)がラップする。
+   - **まっさらなSRAM(署名無効・IPLが起動時に既定値で初期化する状態)のときだけ**、
+     IPL初期化後に1回だけ再注入する。実装は「今の再注入フックを実験用スイッチではない
+     正式な経路にする」という指示のとおり、`x68k/sram.c`のフック自体(`$ed001b`書き込み
+     直後に`webx68k_scsi_sram_boot_addr()`の値を再注入する箇所)は変更していない。
+     `globalThis.__webx68kScsiSramBoot`を、実験者が手で立てる値ではなく、
+     `src/main.ts`の`applyDesiredBootDeviceGlobal()`が「希望する起動デバイス
+     (`desiredBootDevicePref`、localStorage永続化)」から毎回計算してセットする形に
+     した(値は`reinjectBootAddrFor()`: SCSIなら`$00ea0020`、標準なら`0`=「何もしない」。
+     標準はIPL既定と一致するため再注入不要)。この再注入フックは構造的に「$ed001bへの
+     書き込みが起きたとき」=「IPLの虚無初期化処理が走ったとき」にしか発火しないため、
+     「まっさらなときだけ」という条件は元のフックの構造がそのまま保証する。
+     Worker経路への転写は、`collectHostGlobalsFromWindow()`が`globalThis.__webx68k*`を
+     まとめてWorkerへ渡す既存の仕組みにそのまま乗るため、専用の配線は不要だった。
+2. **SCSIから起動しているときはSCSIスロットの交換を禁止する。** `isScsiLocked()`
+   (`src/main.ts`)を、従来の`running`(起動中かどうかだけ)から
+   `shouldLockScsiSlot(running, bootedFromScsi)`(`src/sram-boot-device.ts`、起動中かつ
+   SCSI起動のときだけロック)へ変更した。HDD(SASI)と違い、SCSIはデータドライブとしても
+   使えるため、「起動中かどうか」だけでロックすると、FDから起動してSCSIをデータドライブに
+   している間まで誤って禁止してしまう(段階4確認2で実測)。
+   - **「実際にSCSIから起動したか」の判定根拠**: コアに「起動エントリを通過した」という
+     専用フラグは無いため、直接の事実は取れない。代わりに、コアが既に公開している
+     SCSI読み出しカウンタ(`get_scsi_read_count`)とFDDアクセス通知(既存のアクセスランプ
+     配線、`applyDiskAccess()`)を組み合わせて実測ベースで判定する
+     (`computeBootedFromScsi()`+`fddAccessedSinceReset`、`decideBootedFromScsiOnce()`、
+     リセットから約180フレーム=約3.2秒後に1回だけ確定):
+     - 「SRAMの起動デバイスがSCSIで、SCSIがマウントされていた」だけを使う案(指示に
+       示されたフォールバック)も検討したが、段階2bの「起動可否判定に合わせてFDへ
+       フォールバックする」ケース(SRAMはSCSIのままだが実際にはFDから起動する)を
+       誤ってSCSI起動と判定してしまい、段階4確認5の退行検知に落ちるため採用しなかった。
+     - 代わりに、SCSI読み出しカウンタがリセット時点から増えている(SCSIスタブが実際に
+       セクタを読んだ)**かつ**リセット後に一度もFDDアクセスが無い(段階2bでFDへ
+       フォールバックした場合はFD自体の読み出しで検出できる)の両方を条件にした。
+       どちらのカウンタも古いコア(再ビルド前)で取れない場合は、指示どおり
+       「SRAMがSCSI起動で、SCSIがマウントされていた」で代用する
+       (`computeBootedFromScsi()`のフォールバック分岐)。
+
+### 実装ファイル
+
+- `src/sram-boot-device.ts`(新規): SRAM値の解釈・書き込みバイト列生成・ロック判定の
+  純粋関数群。`test/sram-boot-device.test.ts`で単体テスト(15件)。
+- `src/core-shim.c` / `scripts/build-core.sh`: `webx68k_sram_write()`を追加・export
+  (コア再ビルド必須。px68k-libretro側の`SRAM_WriteEnable`/`SRAM_Write`は無変更で
+  そのまま使えたため、px68k-libretroリポジトリの変更は無し)。
+- `src/libretro-host.ts`: `writeSramByte()`/`hasValidSramSignature()`を追加。
+- `src/core-protocol.ts` / `src/core-worker.ts` / `src/core-proxy.ts`: Worker経路でも
+  SRAMの読み書きができるよう、`readSramBytes`/`writeSramBytes`の2 opを追加した
+  (`readMemory`等と違い、この2つはWorker経路でも実処理する。SRAM専用に絞ったのは、
+  `readMemory`(`_webx68k_peek8`)がSRAM領域をフラットな`MEM[]`として読んでしまい
+  `SRAM_Read()`を経由しない罠があるため、既存の汎用readMemoryを流用せず専用opにした)。
+- `src/main.ts`: 設定ダイアログのUI配線(`refreshBootDeviceUi()`等)、
+  `applyDesiredBootDeviceGlobal()`、`isScsiLocked()`の変更、
+  `decideBootedFromScsiOnce()`とその間引き(既定経路は`host.onPoll`、Worker経路は
+  `frame` eventの`ranThisEvent`積算)。
+- `index.html` / `src/strings.ts`: 「起動デバイス」セクションのマークアップと日英文言。
+
+### 確認結果(2026-09-26、実機Chromeで手動確認)
+
+dev サーバ(`webx68k-check`、port 5313)を`?worker=1`(既定)と`?worker=0`の両方で確認。
+起動可能な`_fixtures/scsi_bootable_20260823.HDS`をコピーしてSCSIスロットへドラッグ&ドロップ
+(合成`DragEvent`+`DataTransfer`)で挿入した。
+
+| # | 確認内容 | 経路 | 結果 |
+|---|---|---|---|
+| 1 | FDなし・SCSI選択でリセット→SCSIから`A>`まで起動、SCSIスロットがロック | `?worker=1` | ○(`Human68k for X680x0 version 3.02`起動、SCSI行の挿入/ライブラリ/ブランク/取出が全てdisabled、ダウンロードのみ有効) |
+| 1' | 設定ダイアログのSRAM読み取り表示 | `?worker=1` | ○(「SCSI(ID 0)」選択・`$ed0018=$a000 $ed000c=$00ea0020`を正しく表示。Worker経由の`readSramBytes`往復を確認) |
+| 2 | 実行中に「標準」へSRAMを書き換え(ライブ書き込み) | `?worker=1` | ○(`writeSramBytes`が反映され、読み直すと`$ed0018=$0000 $ed000c=$00bffffc`) |
+| 2' | 「標準」+システムディスクでリセット→FD(`human302.xdf`)から起動、SCSIはロックされない | `?worker=1` | ○(SCSI行の挿入/ライブラリ/ブランク/取出/ダウンロード全て有効) |
+| — | 設定ダイアログのSRAM読み取り表示 | `?worker=0`(既定経路) | ○(`$ed0018=$0000 $ed000c=$00bffffc`を正しく表示。ローカル(同期)経路でも往復を確認) |
+| 3 | まっさらなプロファイルでSCSI選択→初回起動でSCSIから起動 | — | 未確認(このセッションでは同一プロファイルを使い回したため実施できず。ロジック上は
+  `applyDesiredBootDeviceGlobal()`がSRAM未初期化時にも再注入アドレスをセットし、既存の
+  段階0〜1aで確認済みの再注入フックがそのまま効くはずだが、実機確認は次回に持ち越す) |
+| 4 | ゲスト側SWITCH.Xでの変更が設定ダイアログに追従 | — | 未確認(SWITCH.Xの起動そのものをこのセッションでは行っていない。`startBootDeviceUiPolling()`
+  による1秒間隔の再読み込みで追従する設計だが、実機確認は次回に持ち越す) |
+| 5 | フォーマットのみの空SCSIで「SCSI」選択→FDへフォールバック(段階2b退行検知) | — | 未確認(このセッションでは起動可能なSCSIイメージのみで確認。段階2bの既存判定自体は
+  今回無変更のため退行は無いはずだが、`bootedFromScsi`判定(FDDアクセス検出)の実機確認は
+  次回に持ち越す) |
+
+未実施の3項目(3・4・5)は、実装のロジック上は仕様を満たす設計になっているが、
+時間の都合でこのセッションでは実機確認できなかった。次回セッションで
+`_fixtures`配下に未フォーマットSCSIイメージを用意し、まっさらなプロファイル
+(`localStorage.clear()`+IndexedDB/OPFS削除)から確認することを推奨する。
+
+`npm test`は全1176件(既存分含む)通過、`npx tsc --noEmit`もクリア。

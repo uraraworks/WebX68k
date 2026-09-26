@@ -202,6 +202,16 @@ interface Dict {
   settingsMachineResetNote(): string;
   settingsCpuSpeedLabel(): string;
   settingsRamSizeLabel(): string;
+  settingsBootDeviceSectionTitle(): string;
+  settingsBootDeviceResetNote(): string;
+  settingsBootDeviceLabel(): string;
+  settingsBootDeviceNote(): string;
+  settingsBootDeviceStandard(): string;
+  settingsBootDeviceScsi(): string;
+  settingsBootDeviceOther(): string;
+  settingsBootDeviceUnknown(): string;
+  settingsBootDevicePending(): string;
+  settingsBootDeviceWriteFailed(): string;
   settingsSpeedTitle(): string;
   settingsSpeedNote(): string;
   settingsSpeedLabel(): string;
@@ -726,6 +736,17 @@ const STRINGS: Record<Lang, Dict> = {
     settingsMachineResetNote: () => '変更を反映するにはリセットが必要です。',
     settingsCpuSpeedLabel: () => 'CPU速度',
     settingsRamSizeLabel: () => 'RAM',
+    settingsBootDeviceSectionTitle: () => '起動デバイス',
+    settingsBootDeviceResetNote: () => '変更を反映するにはリセットが必要です(SRAMの値、次回起動から反映)。',
+    settingsBootDeviceLabel: () => '起動デバイス',
+    settingsBootDeviceNote: () =>
+      'SRAM($ed0018/$ed000c、SWITCH.Xと同じ設定)を読み書きします。ゲスト内のSWITCH.Xで変更した場合もここに反映されます。',
+    settingsBootDeviceStandard: () => '標準(SASI/FD)',
+    settingsBootDeviceScsi: () => 'SCSI(ID 0)',
+    settingsBootDeviceOther: () => 'その他',
+    settingsBootDeviceUnknown: () => '不明(SRAM未初期化)',
+    settingsBootDevicePending: () => '(起動時に反映されます)',
+    settingsBootDeviceWriteFailed: () => 'SRAMへの書き込みに失敗しました(このコアでは未対応の可能性があります)。',
     settingsSpeedTitle: () => 'エミュレーション速度',
     settingsSpeedNote: () =>
       'ツールバーの速度ボタンをONにしたときの倍率です。リセット不要で即時反映し、設定は保存されません。無制限モードでは音は出ません。',
@@ -1152,6 +1173,17 @@ const STRINGS: Record<Lang, Dict> = {
     settingsMachineResetNote: () => 'Reset is required for changes to take effect.',
     settingsCpuSpeedLabel: () => 'CPU Speed',
     settingsRamSizeLabel: () => 'RAM',
+    settingsBootDeviceSectionTitle: () => 'Boot Device',
+    settingsBootDeviceResetNote: () => 'Reset is required for changes to take effect (SRAM value, applied from the next boot).',
+    settingsBootDeviceLabel: () => 'Boot Device',
+    settingsBootDeviceNote: () =>
+      'Reads and writes SRAM ($ed0018/$ed000c, the same setting SWITCH.X uses). Changes made from SWITCH.X inside the guest are also reflected here.',
+    settingsBootDeviceStandard: () => 'Standard (SASI/FD)',
+    settingsBootDeviceScsi: () => 'SCSI (ID 0)',
+    settingsBootDeviceOther: () => 'Other',
+    settingsBootDeviceUnknown: () => 'Unknown (SRAM not initialized)',
+    settingsBootDevicePending: () => '(applied at next boot)',
+    settingsBootDeviceWriteFailed: () => 'Failed to write to SRAM (this core build may not support it).',
     settingsSpeedTitle: () => 'Emulation Speed',
     settingsSpeedNote: () =>
       'The multiplier used when the toolbar speed button is turned on. Applied instantly, no reset needed, and not saved. Unlimited mode has no audio.',

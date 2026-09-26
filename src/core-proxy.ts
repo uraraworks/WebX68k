@@ -74,6 +74,15 @@ export interface LibretroHostProxy {
   writeFile(path: string, data: ArrayBuffer): Promise<void>;
   readFile(path: string): Promise<ArrayBuffer>;
   removeFile(path: string): Promise<void>;
+  /**
+   * SCSI起動 段階4(UI)用: SRAMの指定オフセット群を読む。SRAM先頭8バイトの機種
+   * シグネチャが一致しなければ sigValid:false(bytesは全オフセット-1)を返す
+   * (readSram()/readKeyRepeatConfig()と同じ健全性チェック)。
+   */
+  readSramBytes(offsets: number[]): Promise<{ sigValid: boolean; bytes: number[] }>;
+  /** SCSI起動 段階4(UI)用: SRAMの指定オフセット群へ書く。戻り値は実際に書けたか
+   * (古いコア(再ビルド前)で _webx68k_sram_write が無ければ false)。 */
+  writeSramBytes(entries: { offset: number; value: number }[]): Promise<boolean>;
   dispose(): Promise<void>;
 }
 
@@ -94,6 +103,9 @@ export interface CoreHostSurface {
   unserialize(bytes: Uint8Array): boolean;
   readTextScreen(): TextScreenDump;
   peekByte(addr: number): number;
+  peekSramByte(offset: number): number | null;
+  writeSramByte(offset: number, value: number): boolean;
+  hasValidSramSignature(): boolean;
   setFddImage(drive: number, path: string): void;
   writeFile(path: string, data: Uint8Array): void;
   readFile(path: string): Uint8Array;
@@ -313,6 +325,24 @@ export class LocalCoreProxy implements LibretroHostProxy {
       const bytes = new Uint8Array(length);
       for (let i = 0; i < length; i++) bytes[i] = this.host.peekByte(address + i);
       return toOwnedArrayBuffer(bytes);
+    });
+  }
+
+  async readSramBytes(offsets: number[]): Promise<{ sigValid: boolean; bytes: number[] }> {
+    this.assertInitialized('readSramBytes');
+    return this.run('readSramBytes', () => {
+      const sigValid = this.host.hasValidSramSignature();
+      if (!sigValid) return { sigValid: false, bytes: offsets.map(() => -1) };
+      return { sigValid: true, bytes: offsets.map((offset) => this.host.peekSramByte(offset) ?? -1) };
+    });
+  }
+
+  async writeSramBytes(entries: { offset: number; value: number }[]): Promise<boolean> {
+    this.assertInitialized('writeSramBytes');
+    return this.run('writeSramBytes', () => {
+      let ok = true;
+      for (const { offset, value } of entries) ok = this.host.writeSramByte(offset, value) && ok;
+      return ok;
     });
   }
 
@@ -1118,6 +1148,17 @@ export class WorkerCoreProxy implements LibretroHostProxy {
 
   async readMemory(_address: number, _length: number): Promise<ArrayBuffer> {
     return this.unsupported('readMemory');
+  }
+
+  /** SCSI起動 段階4(UI): readMemory等と違い、Worker経路でも実処理する
+   * (src/core-worker.ts の handleReadSramBytes)。 */
+  async readSramBytes(offsets: number[]): Promise<{ sigValid: boolean; bytes: number[] }> {
+    return this.issue<{ sigValid: boolean; bytes: number[] }>('readSramBytes', { offsets });
+  }
+
+  /** SCSI起動 段階4(UI): 同上(src/core-worker.ts の handleWriteSramBytes)。 */
+  async writeSramBytes(entries: { offset: number; value: number }[]): Promise<boolean> {
+    return this.issue<boolean>('writeSramBytes', { entries });
   }
 
   /** 手順8: FDDホットマウント。Eject→旧内容回収→(新イメージがあれば)write→insert を

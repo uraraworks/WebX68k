@@ -508,6 +508,26 @@ export type CoreCommand =
       payload: { address: number; length: number };
     }
   | {
+      // SCSI起動 段階4(UI)用: SRAMの指定オフセット群を読む(webx68k_sram_read経由。
+      // readMemory/_webx68k_peek8はSRAM領域をフラットなMEM[]として読んでしまい
+      // SRAM_Read()を経由しないため、必ずこちらを使う。docs/STORAGE-SCSI.md
+      // 「SRAM (ゲスト側 $ED0000-$ED3FFF) 読み出し用」の罠コメント参照)。
+      kind: 'command';
+      generation: Generation;
+      requestId: RequestId;
+      op: 'readSramBytes';
+      payload: { offsets: number[] };
+    }
+  | {
+      // SCSI起動 段階4(UI)用: SRAMの指定オフセット群へ書く(webx68k_sram_write経由。
+      // SRAM_WriteEnable()で開けてから書き、直後に閉じる。core-shim.c参照)。
+      kind: 'command';
+      generation: Generation;
+      requestId: RequestId;
+      op: 'writeSramBytes';
+      payload: { entries: { offset: number; value: number }[] };
+    }
+  | {
       kind: 'command';
       generation: Generation;
       requestId: RequestId;
@@ -1019,6 +1039,8 @@ export function collectTransferables(
       case 'fetchAvInfo':
       case 'dispose':
       case 'readMemory':
+      case 'readSramBytes':
+      case 'writeSramBytes':
       // captureDirtyMedia/markDirty の payload はスロット名の配列だけで ArrayBuffer を
       // 含まない(結果側の captured[].bytes だけが transferable。下の
       // collectResultTransferables 参照)。

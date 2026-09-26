@@ -213,6 +213,9 @@ export interface PX68KModule {
   // SRAM($ED0000-$ED3FFF)読み出し用(core-shim.c 経由でx68k/sram.cのSRAM_Read()を公開)。
   // 古いwasm(再ビルド前)でも落ちないよう任意プロパティにしている。
   _webx68k_sram_read?(offset: number): number;
+  // SCSI起動 段階4(UI)用: SRAMへ1バイト書く(core-shim.c経由でSRAM_WriteEnable+SRAM_Writeを公開)。
+  // 古いwasm(再ビルド前)でも落ちないよう任意プロパティにしている。
+  _webx68k_sram_write?(offset: number, value: number): number;
   // 実機と同じmakeのみのキーリピート注入用。古いwasmでも落ちないよう任意プロパティ。
   _webx68k_send_key_make?(scancode: number): void;
   // 調査用(2026-09-04、docs/STORAGE-SCSI.md参照): console/log_cbを一切経由しない
@@ -533,6 +536,32 @@ export class LibretroHost {
     const sramRead = this.mod._webx68k_sram_read;
     if (!sramRead) return null;
     return sramRead(offset);
+  }
+
+  /**
+   * SCSI起動 段階4(UI)用: SRAMへ1バイト書く(利用者が設定ダイアログで起動デバイスを
+   * 変更したときに使う)。_webx68k_sram_write が無い古いコア(再ビルド前)では何もせず
+   * false を返す(呼び出し側はUIで「反映できませんでした」を出す)。
+   */
+  writeSramByte(offset: number, value: number): boolean {
+    const sramWrite = this.mod._webx68k_sram_write;
+    if (!sramWrite) return false;
+    sramWrite(offset, value & 0xff);
+    return true;
+  }
+
+  /**
+   * SRAM先頭8バイトが機種シグネチャ「Ｘ68000W」と一致するか(readSram()/readKeyRepeatConfig()
+   * と同じ健全性チェックを、起動デバイス読み取り専用に切り出したもの)。
+   * _webx68k_sram_read が無い古いコアでは false。
+   */
+  hasValidSramSignature(): boolean {
+    const sramRead = this.mod._webx68k_sram_read;
+    if (!sramRead) return false;
+    for (let i = 0; i < SRAM_SIGNATURE.length; i++) {
+      if (sramRead(i) !== SRAM_SIGNATURE[i]) return false;
+    }
+    return true;
   }
 
   /**
