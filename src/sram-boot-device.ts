@@ -77,40 +77,51 @@ export function bootDeviceWriteEntries(
  * 標準のまま)、非0ならその値を $ed000c〜$ed000f へ再注入する(現状の実装は $ed0018 も
  * 併せて $a000 に固定して書くため、SCSI以外の値を再注入する経路は無い。標準を再注入したい
  * 場合は単に 0 を渡して「何もしない」でよい。IPL既定=標準と一致するため)。
+ *
+ * **呼び出し側は、この値を「起動前のSRAM署名が無効だったとき」だけ渡すこと。** 署名が
+ * 有効(=一度でも正常に永続化された後)なら常に `reinjectBootAddrFor` を呼ばず
+ * グローバルへ0をセットする(`shouldArmSramReinject`参照)。理由(2026-09-26、UI実装後の
+ * 是正): x68k/sram.c の再注入フックは元々「$ed001bへの書き込みであれば発生源を問わず
+ * 発火する」実装で、IPL自身のまっさらなSRAM初期化コピーだけでなくHuman68k自身の
+ * 無関係な書き込み(実測: pc=$001a2c02)でも反応していた(段階1a参照)。フック側は
+ * 「この起動で最初の1回だけ」に絞ったが、それでも「起動のたびにSCSIを再注入し続ける」
+ * 状態のままだと、SRAMが既に有効(署名一致)なのに1回目の$ed001b書き込みで無条件に
+ * 上書きしてしまい、「SWITCH.Xで標準に変えた直後の起動でSCSIへ戻る」という
+ * 「SRAMを正とする」仕様違反が起きる。署名が有効なブートでは常に0(=何もしない)を
+ * 渡すことで、このケースでは再注入自体が起きないようにする。
  */
 export function reinjectBootAddrFor(device: SelectableBootDevice): number {
   return device === 'scsi' ? SCSI_000C : 0;
 }
 
+/** SRAMの機種シグネチャ(「Ｘ68000W」、先頭8バイト)。src/libretro-host.ts の
+ * SRAM_SIGNATURE と同じ値(実測で確定済み)。値の出どころは1つだが、Node単体テストで
+ * ブラウザ専用コードを経由せずに検証したいため、ここに複製する。 */
+export const SRAM_SIGNATURE_BYTES = [0x82, 0x77, 0x36, 0x38, 0x30, 0x30, 0x30, 0x57];
+
 /**
- * SCSIから実際に起動した(=自前スタブの起動エントリがディスクへ制御を渡した)と
- * 判定してよいか。
- *
- * 望ましい判定(自前スタブの起動エントリが実行されたという事実)は、コアに
- * 「起動エントリを通過した」専用フラグが無いため直接には取れない
- * (docs/STORAGE-SCSI.md「SCSI起動 段階4」参照)。代わりに、コアが既に公開している
- * SCSI読み出しカウンタ(get_scsi_read_count)を使い、「リセット直後の値」から
- * 「起動完了とみなす時点の値」が増えていれば、SCSIスタブが実際にセクタを読んだ
- * =制御が渡った、とみなす。これは「起動時のSRAMがSCSI起動で、SCSIがマウントされていた」
- * という設定ベースの推測より一段実測に近い(実際にディスクへアクセスしたかを見ている)。
- *
- * 呼び出し側は、リセット直後に scsiReadCountAtReset を記録し、起動完了とみなす時点で
- * この関数へ渡すこと。desiredDevice が 'scsi' でなければ常に false(標準選択時にSCSI側の
- * 読み出しがあっても、それはデータドライブとしての読み出しでロック対象にはしない)。
+ * 起動前(コア初期化前)に読み込んだSRAMバイト列(IndexedDBの永続化ファイル、
+ * `loadSramFile()`の戻り値)の先頭8バイトが機種シグネチャと一致するか。
+ * bytesがnull(初回起動でまだ何も永続化されていない)、または長さが足りない場合はfalse
+ * (未初期化=まっさらとみなす)。
  */
-export function computeBootedFromScsi(
-  desiredDevice: SelectableBootDevice,
-  scsiMounted: boolean,
-  scsiReadCountAtReset: number,
-  scsiReadCountNow: number,
-): boolean {
-  if (desiredDevice !== 'scsi' || !scsiMounted) return false;
-  if (scsiReadCountAtReset < 0 || scsiReadCountNow < 0) {
-    // 古いコア(再ビルド前)等でカウンタが取れない場合のフォールバック
-    // (「起動時のSRAMがSCSI起動で、SCSIがマウントされていた」で代用する)。
-    return true;
+export function hasValidSramSignatureBytes(bytes: Uint8Array | null | undefined): boolean {
+  if (!bytes || bytes.length < SRAM_SIGNATURE_BYTES.length) return false;
+  for (let i = 0; i < SRAM_SIGNATURE_BYTES.length; i++) {
+    if (bytes[i] !== SRAM_SIGNATURE_BYTES[i]) return false;
   }
-  return scsiReadCountNow > scsiReadCountAtReset;
+  return true;
+}
+
+/**
+ * SRAM再注入フック(x68k/sram.c、`globalThis.__webx68kScsiSramBoot`経由)を、今回の起動で
+ * 武装(非0にする)してよいか。**「起動前のSRAM署名が無効だったとき」だけ**武装する
+ * (reinjectBootAddrForのコメント参照)。署名が有効なら、SCSIを選んでいても常にfalseを
+ * 返し、呼び出し側は`globalThis.__webx68kScsiSramBoot`へ0をセットすること
+ * (SRAM自体が既に正しい値を持っているので、再注入という強制上書きの出番が無い)。
+ */
+export function shouldArmSramReinject(sramSignatureValidBeforeBoot: boolean): boolean {
+  return !sramSignatureValidBeforeBoot;
 }
 
 /** SCSIスロットの交換等を禁止すべきか。 */

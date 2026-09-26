@@ -10921,3 +10921,71 @@ dev サーバ(`webx68k-check`、port 5313)を`?worker=1`(既定)と`?worker=0`�
 (`localStorage.clear()`+IndexedDB/OPFS削除)から確認することを推奨する。
 
 `npm test`は全1176件(既存分含む)通過、`npx tsc --noEmit`もクリア。
+
+## SCSI起動 段階4 是正：再注入の誤発火・ロック判定・UI見た目（2026-09-26）
+
+段階4(UI)実装直後のコーディネータレビューで4点の指摘を受け、いずれも対応した。
+
+### 1. 再注入フックが「SRAMを正とする」を破る恐れ
+
+段階1aの記録どおり、`x68k/sram.c`の再注入フックは`$ed001b`への書き込みなら発生源を
+問わず発火し(Human68k自身の無関係な書き込み`pc=$001a2c02`でも発火)、`desiredBootDevicePref`
+(JS側の希望値)がSCSIのまま残っていると、SWITCH.Xで標準に変えた次の起動でSCSIへ
+戻ってしまう恐れがあった。対応:
+- `x68k/sram.c`: `webx68k_sram_reinject_done`ラッチを追加し、1ブートにつき最初の
+  `$ed001b`書き込みだけで消費して以後発火しないようにした(各起動でwasmモジュールが
+  丸ごと作り直されるため、明示的なクリアは不要)。
+- `src/main.ts`: `applyDesiredBootDeviceGlobal(sramSignatureValidBeforeBoot)`を
+  「起動前のSRAM署名が無効だったとき」だけ武装するよう変更(`shouldArmSramReinject()`、
+  `src/sram-boot-device.ts`)。署名有効時は常に0(何もしない)を渡す。
+- 実機確認(Worker経路、`?worker=1`既定): 主スレッド経路で1回実起動し(標準、システム
+  ディスクで起動)、`host.startSramAutosave()`で実際に完全なSRAM(16KB、標準値)を
+  IndexedDBへ永続化させた。その後`localStorage`の`webx68k.bootDevicePref`だけを
+  `scsi`に書き換え(JS側の希望値がステイルなままの状態を再現)、Worker経路でリセット→
+  FDから起動し、設定ダイアログの表示も実際のSRAM値も「標準」のままであることを確認した
+  (SCSIへは戻らなかった)。
+
+### 2. 「SCSIから起動したか」の判定をコアの事実に変える
+
+以前はSCSI読み出しカウンタの増加+FDDアクセス無しという推定だったが、SCSI起動後に
+利用者がFDを読むとロックが外れる恐れがあった。対応: `x68k/scsi.c`のcmd $07ハンドラで
+`bootable`が確定しjmp $2000用のレジスタを整える瞬間(実際にディスクへ制御を渡す瞬間)に
+`SCSIBootControlTransferred`ラッチを立てるようにした。起動(コア再生成)ごとに1回だけ
+立つラッチで、`get_scsi_boot_control_transferred()`(`core-shim.c`)経由でUIが読む。
+Worker経路は`FrameSnapshot.scsiBootControlTransferred`(DEVプローブと無関係に常時送る)
+で毎フレーム反映する。`src/main.ts`の`isScsiLocked()`はこのラッチ(`bootedFromScsi`)
+だけを見る。以前のSCSI読み出しカウンタ+FDDアクセスの推定ロジック
+(`computeBootedFromScsi`/`decideBootedFromScsiOnce`等)は削除した。
+実機確認(Worker経路): まっさらなプロファイルでSCSI選択→起動可能なSCSIから起動→
+SCSIスロットがロックされた状態で、実行中にFDD0へ`human302.xdf`をホットマウントして
+挿入した。SCSIスロットはロックされたままだった(ゲスト内でのFD読み出し自体は、この
+セッションでは自動化されたキー入力の信頼性の問題で確実な確認はできなかったが、
+ロック判定はコアのラッチのみに依存する構造になっており、FDDアクセスの有無で
+変化する経路は実装上存在しない)。
+
+### 3. 未確認だった3項目(Worker経路で確認)
+
+- **まっさらなプロファイルで最初からSCSIを選んで起動**: `indexedDB.deleteDatabase
+  ('webx68k-sram')`で仮想的にまっさらな状態を作り、`webx68k.bootDevicePref=scsi`で
+  起動可能なSCSIイメージから起動、SCSIスロットのロックを確認した(○)。
+- **SWITCH.Xへの追従**: このセッションでは自動化されたキー入力がゲスト内で安定せず
+  (`switch.x`等の複数文字コマンドが正しく打鍵できなかった)、実機確認は次回に持ち越した。
+  設定ダイアログを開いている間の1秒間隔ポーリング(`startBootDeviceUiPolling`)自体は、
+  段階1・2の確認(Worker経路での`coreProxy.readSramBytes`往復、ライブ書き込み→再読み込み
+  の一致)で動作を確認済みのため、機構としては動くはずだが、ゲスト起点の変更への実追従は
+  未確認のまま。
+- **フォーマットのみの空SCSIでFD起動に戻る(段階2b退行チェック)**: `handleCreateBlankScsi()`
+  の`prompt()`をテストで上書きして`blank_scsi_10mb.hds`(フォーマット済み・起動不可)を
+  作成し、`webx68k.bootDevicePref=scsi`+FDありでリセット。FDから起動し、SCSIスロットは
+  ロックされなかった(段階2bの判定に退行が無いことを確認、○)。
+
+### 4. 設定ダイアログの見た目
+
+`#settings-machine-reset-note`/`#settings-speed-note`のID指定フォントサイズ(12px)を
+新設した`.settings-bootdevice-*`が引き継げず、ブラウザ既定(16px)で表示され他の節より
+浮いて見えていた。共通クラス`.settings-section-note`へ寄せ、3節すべてに適用した
+(`src/style.css`)。また起動デバイス節の注意文が「変更を反映するにはリセットが必要です」
+(見出し直下)と「(起動時に反映されます)」(セレクト脇)の2箇所に重複していたのを統合し、
+`$ed0018`等の番地はダイアログの文言から外した(help.htmlには残す)。
+
+`npm test`(1178件)・`npx tsc --noEmit`は全て通過。

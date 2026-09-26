@@ -735,6 +735,17 @@ export interface FrameSnapshot {
    */
   frameCostMs: number;
   /**
+   * SCSI起動 段階4(UI)是正: 自前スタブの起動エントリが実際にディスクへ制御を渡したか
+   * (host.scsiBootControlTransferred()、コア自身のラッチ)。DEVプローブと違い常時
+   * (本番ビルドでも)載る値だが、フィールド自体はoptionalにしてある: 既存テストが
+   * FrameSnapshotをオブジェクトリテラルで直接組み立てており、必須フィールドにすると
+   * 無関係な既存テストを巻き込んで壊すため(serialフィールドと同じ理由)。古いwasm
+   * (再ビルド前)ではフィールド自体が存在しない。一度trueになったら、そのgenerationの
+   * 間は送り続ける(SCSIBootControlTransferredはコア内のラッチなので、host側の値も
+   * そのまま一度trueになれば以後trueであり続ける)。
+   */
+  scsiBootControlTransferred?: boolean;
+  /**
    * DEV専用・既定off: KeyBuf(wasm内128バイトリングバッファ)全体のスナップショット
    * (docs/STORAGE-SCSI.md「KeyBufプローブのWorker対応」参照)。
    *

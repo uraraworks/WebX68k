@@ -1745,6 +1745,8 @@ extern unsigned int SCSILastWriteLogsec;
  * 独立カウンタ)を、get_scsi_req_total()等と同じ流儀で素通しする。 */
 extern unsigned int SCSIStrategyCallCount;
 extern unsigned int SCSIInterruptCallCount;
+/* SCSI起動 段階4(UI)是正: 「実際に制御が渡ったか」のラッチ(x68k/scsi.c参照)。 */
+extern unsigned int SCSIBootControlTransferred;
 
 __attribute__((used))
 unsigned int get_scsi_req_total(void)
@@ -1804,6 +1806,16 @@ __attribute__((used))
 unsigned int get_scsi_interrupt_call_count(void)
 {
   return SCSIInterruptCallCount;
+}
+
+/* SCSI起動 段階4(UI)是正: 自前スタブの起動エントリが実際にディスクへ制御を渡した
+ * (jmp $2000させる直前)ときだけ1になるラッチ。起動(コア再生成)ごとにゼロから
+ * 再初期化される。UIのSCSIスロットロック判定はこれだけを見る
+ * (SCSI読み出しカウンタ+FDDアクセス有無からの推定はもう使わない)。 */
+__attribute__((used))
+unsigned int get_scsi_boot_control_transferred(void)
+{
+  return SCSIBootControlTransferred;
 }
 
 /*

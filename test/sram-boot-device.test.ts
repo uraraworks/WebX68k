@@ -5,12 +5,14 @@
 import { describe, expect, it } from 'vitest';
 import {
   bootDeviceWriteEntries,
-  computeBootedFromScsi,
   describeBootDevice,
+  hasValidSramSignatureBytes,
   reinjectBootAddrFor,
+  shouldArmSramReinject,
   shouldLockScsiSlot,
   SCSI_000C,
   SCSI_0018,
+  SRAM_SIGNATURE_BYTES,
   STANDARD_000C,
   STANDARD_0018,
 } from '../src/sram-boot-device';
@@ -80,21 +82,39 @@ describe('reinjectBootAddrFor', () => {
   });
 });
 
-describe('computeBootedFromScsi', () => {
-  it('標準を選んでいれば常にfalse(SCSI側の読み出しがあってもロック対象にしない)', () => {
-    expect(computeBootedFromScsi('standard', true, 0, 5)).toBe(false);
+describe('hasValidSramSignatureBytes', () => {
+  it('nullは未初期化扱い', () => {
+    expect(hasValidSramSignatureBytes(null)).toBe(false);
   });
-  it('SCSIを選んでいてもマウントされていなければfalse', () => {
-    expect(computeBootedFromScsi('scsi', false, 0, 5)).toBe(false);
+  it('undefinedは未初期化扱い', () => {
+    expect(hasValidSramSignatureBytes(undefined)).toBe(false);
   });
-  it('SCSIを選び、マウント済みで、リセット後に読み出しカウンタが増えていればtrue', () => {
-    expect(computeBootedFromScsi('scsi', true, 3, 4)).toBe(true);
+  it('長さが足りないバイト列は未初期化扱い', () => {
+    expect(hasValidSramSignatureBytes(new Uint8Array(SRAM_SIGNATURE_BYTES.slice(0, 4)))).toBe(false);
   });
-  it('SCSIを選び、マウント済みでも読み出しカウンタが増えていなければfalse(制御が渡っていない=段階2b等)', () => {
-    expect(computeBootedFromScsi('scsi', true, 3, 3)).toBe(false);
+  it('シグネチャ一致(先頭8バイトのみ見る。以降は任意)なら有効', () => {
+    const bytes = new Uint8Array(0x4000);
+    bytes.set(SRAM_SIGNATURE_BYTES, 0);
+    bytes[0x18] = 0xff; // 以降は判定に無関係
+    expect(hasValidSramSignatureBytes(bytes)).toBe(true);
   });
-  it('カウンタが取れない古いコア(-1)ではフォールバックしてtrue', () => {
-    expect(computeBootedFromScsi('scsi', true, -1, -1)).toBe(true);
+  it('シグネチャ1バイトでも食い違えば無効', () => {
+    const bytes = new Uint8Array(0x4000);
+    bytes.set(SRAM_SIGNATURE_BYTES, 0);
+    bytes[3] = 0x00; // 段階1aの故障注入実験と同じ壊し方
+    expect(hasValidSramSignatureBytes(bytes)).toBe(false);
+  });
+});
+
+describe('shouldArmSramReinject', () => {
+  it('起動前のSRAM署名が無効(まっさら)なら武装する', () => {
+    expect(shouldArmSramReinject(false)).toBe(true);
+  });
+  it('起動前のSRAM署名が有効(一度でも永続化済み)なら武装しない', () => {
+    // 「SRAMを正とする」仕様: 署名が有効なら、たとえSCSIを選んでいても
+    // 再注入という強制上書きは行わない(2026-09-26 是正: これが無いと
+    // SWITCH.Xで標準に変えた直後の起動でSCSIへ戻ってしまう)。
+    expect(shouldArmSramReinject(true)).toBe(false);
   });
 });
 

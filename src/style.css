@@ -1360,12 +1360,13 @@ main {
   color: var(--status-bundled);
 }
 
-#settings-machine-reset-note {
-  margin: 2px 0 8px;
-  font-size: 12px;
-}
-
-#settings-speed-note {
+/* 設定ダイアログの各セクション見出し直下の注意・説明文。マシン構成・エミュレーション速度・
+ * 起動デバイスの3節で共通(以前は#settings-machine-reset-note/#settings-speed-noteの
+ * ID指定だけで、新しい節を足すたびに個別のID規則を増やす作りだった。2026-09-26是正:
+ * 起動デバイス節を追加する際、この指定が無い新IDにはブラウザ既定の本文サイズ(16px)が
+ * 適用されてしまい、他の節だけ小さく浮いて見える不具合になった。共通クラスへ寄せて
+ * 今後同じ事故が起きないようにする)。 */
+.settings-section-note {
   margin: 2px 0 8px;
   font-size: 12px;
 }

@@ -231,6 +231,10 @@ export interface PX68KModule {
   _get_scsi_last_write_logsec?(): number;
   _get_scsi_strategy_call_count?(): number;
   _get_scsi_interrupt_call_count?(): number;
+  // SCSI起動 段階4(UI)是正: 自前スタブの起動エントリが実際にディスクへ制御を渡した
+  // 瞬間だけ1になるラッチ(x68k/scsi.c参照)。DEV限定のscsiDebugCountersとは別に、
+  // 常時(本番ビルドでも)読める専用exportにしてある(SCSIスロットのロック判定に使うため)。
+  _get_scsi_boot_control_transferred?(): number;
   // 調査用(2026-09-04、docs/STORAGE-SCSI.md参照): SASI(成功する側)の裏取り用カウンタ。
   // SCSI用と同じ趣旨(log_cbを経由しない)。古いwasm(再ビルド前)でも落ちないよう任意プロパティ。
   _get_sasi_req_total?(): number;
@@ -648,6 +652,18 @@ export class LibretroHost {
       sasiWriteCount: this.mod._get_sasi_write_count?.() ?? -1,
       sasiLastWriteLba: this.mod._get_sasi_last_write_lba?.() ?? -1,
     };
+  }
+
+  /**
+   * SCSI起動 段階4(UI)是正: 自前スタブの起動エントリが実際にディスクへ制御を渡したか
+   * (コア自身のラッチ、x68k/scsi.cのSCSIBootControlTransferred)。scsiDebugCounters()と
+   * 違いDEVプローブの有効化フラグに関係なく常時読める(本番ビルドでもSCSIスロットの
+   * ロック判定に使うため)。exportが無い古いwasm(再ビルド前)ではnullを返す。
+   */
+  scsiBootControlTransferred(): boolean | null {
+    const getter = this.mod._get_scsi_boot_control_transferred;
+    if (!getter) return null;
+    return getter() !== 0;
   }
 
   /**

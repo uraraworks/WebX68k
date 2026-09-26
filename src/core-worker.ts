@@ -791,6 +791,12 @@ function sendFrame(
     poolMisses: framePool.misses,
     frameCostMs,
   };
+  // SCSI起動 段階4(UI)是正: DEVプローブ(keyBufProbeEnabled)とは無関係に、本番ビルドでも
+  // 毎フレーム載せる(SCSIスロットのロック判定がこれに依存するため)。古いwasm(再ビルド前)
+  // ではnullなのでフィールド自体を載せない(既存テストのFrameSnapshotオブジェクトリテラル
+  // を壊さないよう、他のoptionalフィールドと同じ作法)。
+  const scsiBootControlTransferred = host.scsiBootControlTransferred();
+  if (scsiBootControlTransferred !== null) snapshot.scsiBootControlTransferred = scsiBootControlTransferred;
   // 所有権はsnapshotへ移した(transferableとしてpost()で送る)。次tickぶんの蓄積を
   // 新しい配列で始める(snapshot.audio.chunksが指す配列そのものは元のままなので
   // ここでresetしてもsnapshotの内容には影響しない)。

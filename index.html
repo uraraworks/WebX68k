@@ -337,7 +337,7 @@
         <h3 class="rom-modal-section-title">
           <span id="settings-machine-title">マシン構成</span> <small id="settings-machine-note" class="rom-modal-section-note">(既定: X68000 XVI 相当 = 16MHz / 2MB)</small>
         </h3>
-        <p id="settings-machine-reset-note" class="status-bundled">変更を反映するにはリセットが必要です。</p>
+        <p id="settings-machine-reset-note" class="status-bundled settings-section-note">変更を反映するにはリセットが必要です。</p>
       </div>
       <div class="field-row">
         <label id="settings-cpuspeed-label" for="cfg-cpuspeed">CPU速度</label>
@@ -370,12 +370,15 @@
         </select>
       </div>
 
-      <!-- SCSI起動 段階4(UI)。SRAMが正: 表示・変更ともに$ed0018/$ed000cを読み書きするだけ。 -->
+      <!-- SCSI起動 段階4(UI)。SRAMが正: 表示・変更ともにSRAMの起動デバイス設定を読み書きするだけ。
+           番地($ed0018等)は利用者向けの文言には出さない(help.html側に記載)。
+           注意書きはこの1か所(settings-bootdevice-reset-note)にまとめ、
+           重複する「起動時に反映されます」等は個別には出さない。 -->
       <div class="settings-machine-heading">
         <h3 class="rom-modal-section-title">
           <span id="settings-bootdevice-title">起動デバイス</span>
         </h3>
-        <p id="settings-bootdevice-reset-note" class="status-bundled">変更を反映するにはリセットが必要です(SRAMの値、次回起動から反映)。</p>
+        <p id="settings-bootdevice-reset-note" class="status-bundled settings-section-note">変更を反映するにはリセットが必要です。</p>
       </div>
       <div class="field-row">
         <label id="settings-bootdevice-label" for="cfg-bootdevice">起動デバイス</label>
@@ -384,16 +387,15 @@
           <option value="scsi">SCSI(ID 0)</option>
           <option id="bootdevice-opt-other" value="other" hidden>その他</option>
         </select>
-        <span id="settings-bootdevice-raw" class="rom-modal-section-note"></span>
       </div>
-      <p id="settings-bootdevice-note" class="rom-modal-section-note">
-        SRAM($ed0018/$ed000c、SWITCH.Xと同じ設定)を読み書きします。ゲスト内のSWITCH.Xで変更した場合もここに反映されます。
+      <p id="settings-bootdevice-note" class="rom-modal-section-note settings-section-note">
+        SWITCH.Xと同じ設定を読み書きします。ゲスト内でSWITCH.Xを使って変更した場合もここに反映されます。
       </p>
 
       <!-- マシン構成(リセット必須)とは別枠。速度倍率は実行中に即時反映されるため注記も別にする。 -->
       <div class="settings-machine-heading">
         <h3 id="settings-speed-title" class="rom-modal-section-title">エミュレーション速度</h3>
-        <p id="settings-speed-note" class="rom-modal-section-note">ツールバーの速度ボタンをONにしたときの倍率です。リセット不要で即時反映し、設定は保存されません。</p>
+        <p id="settings-speed-note" class="rom-modal-section-note settings-section-note">ツールバーの速度ボタンをONにしたときの倍率です。リセット不要で即時反映し、設定は保存されません。</p>
       </div>
       <div class="field-row">
         <label id="settings-speed-label" for="cfg-speed">速度ボタンON時の倍率</label>

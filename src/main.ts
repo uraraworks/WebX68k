@@ -31,9 +31,10 @@ import { computeAttributionBreakdown } from './keybuf-attribution';
 import { loadSramFile, saveSramFile } from './sram-store';
 import {
   bootDeviceWriteEntries,
-  computeBootedFromScsi,
   describeBootDevice,
+  hasValidSramSignatureBytes,
   reinjectBootAddrFor,
+  shouldArmSramReinject,
   shouldLockScsiSlot as shouldLockScsiSlotBySramBoot,
   type BootDeviceInfo,
   type SelectableBootDevice,
@@ -318,7 +319,6 @@ const cfgRamSize = document.getElementById('cfg-ramsize') as HTMLSelectElement;
 // SCSI起動 段階4(UI)
 const cfgBootDevice = document.getElementById('cfg-bootdevice') as HTMLSelectElement;
 const bootDeviceOtherOption = document.getElementById('bootdevice-opt-other') as HTMLOptionElement;
-const settingsBootDeviceRaw = document.getElementById('settings-bootdevice-raw') as HTMLSpanElement;
 const cfgSpeed = document.getElementById('cfg-speed') as HTMLSelectElement;
 const speedActualEl = document.getElementById('speed-actual') as HTMLSpanElement;
 const serialControlsEl = document.getElementById('settings-serial-controls') as HTMLDivElement;
@@ -957,20 +957,34 @@ function loadBootDevicePref(): SelectableBootDevice {
 let desiredBootDevicePref: SelectableBootDevice = loadBootDevicePref();
 
 /**
- * まっさらなSRAM(署名無効)のときだけ効く再注入フック(x68k/sram.c の SRAM_Write() 参照)を、
- * 現在の希望値に合わせてセットする。既定経路・Worker経路どちらのブート関数からも、
- * host.init()/proxy.init() を呼ぶ直前に呼ぶこと。
+ * まっさらなSRAM(起動前の署名が無効)のときだけ効く再注入フック
+ * (x68k/sram.c の SRAM_Write() 参照)を、現在の希望値に合わせてセットする。
+ *
+ * 2026-09-26是正(コーディネータ指摘): 以前はここを「毎回、希望値がSCSIなら常に武装する」
+ * 実装にしていたが、それだと以下の事故が起きる: 1回目の起動(まっさらなSRAM)でSCSIを
+ * 選んで起動→ゲスト内でSWITCH.Xを使って「標準」に変える→リセット。この時点でSRAMは
+ * 既に有効(署名一致)で値も「標準」なのに、希望値(desiredBootDevicePref)はダイアログで
+ * 明示的に変えない限り「SCSI」のまま残っている。もし毎回武装していたら、次の起動で
+ * Human68k自身の無関係な$ed001b書き込み(実測: pc=$001a2c02、段階1a参照)がIPLの
+ * まっさらな初期化コピーと区別できず、有効なはずのSRAMがSCSIへ強制的に上書きされ、
+ * 「SRAMを正とする」という仕様に反してしまう。
+ * 直し方: 引数で「起動前のSRAM署名が有効だったか」を渡してもらい、
+ * shouldArmSramReinject()で無効なときだけ武装する(有効なら常に0=何もしない)。
+ * 呼び出し側(bootCore()/bootWorkerCore())は、host.init()/proxy.init()へ渡す直前の
+ * savedSramの署名を見てこれを呼ぶこと。
  * Worker経路への転写は collectHostGlobalsFromWindow() が globalThis.__webx68k* を
  * まとめて拾う既存の仕組みに乗る(専用の転写コードは不要)。
  */
-function applyDesiredBootDeviceGlobal(): void {
-  (globalThis as Record<string, unknown>).__webx68kScsiSramBoot = reinjectBootAddrFor(desiredBootDevicePref);
+function applyDesiredBootDeviceGlobal(sramSignatureValidBeforeBoot: boolean): void {
+  const armed = shouldArmSramReinject(sramSignatureValidBeforeBoot);
+  (globalThis as Record<string, unknown>).__webx68kScsiSramBoot = armed
+    ? reinjectBootAddrFor(desiredBootDevicePref)
+    : 0;
 }
-applyDesiredBootDeviceGlobal();
 
-/** SCSI起動 段階4(UI): 直近のリセット時点でのSCSI読み出しカウンタ(computeBootedFromScsi用)。 */
-let scsiReadCountAtLastReset = -1;
-/** 「実際にSCSIから起動した」と判定できたか(isScsiLockedがこれでロックするかを決める)。 */
+/** 「実際にSCSIから起動した」と判定できたか(isScsiLockedがこれでロックするかを決める)。
+ * host.scsiBootControlTransferred()/FrameSnapshot.scsiBootControlTransferredのラッチを
+ * そのまま反映する(updateScsiBootControlTransferred参照)。 */
 let bootedFromScsi = false;
 
 // ?cpu=<10..1000|auto|auto-max> : 起動時のみ CPU クロックを上書きする(共有URLで推奨環境を再現するため)。
@@ -1499,43 +1513,21 @@ let workerLastMouseTrackProbe: MouseTrackFrameProbe | null = null;
 // mouseTrackProbeと同じ相乗り方式(workerKeyBufProbeWanted)。
 let workerLastScsiDebugProbe: ScsiDebugFrameProbe | null = null;
 
-/** 既定経路・Worker経路の両方から同じ形で読めるようにした、現在のSCSI読み出しカウンタ。
- * 古いコア(再ビルド前)ではscsiDebugCounters()自体がnullなので-1(computeBootedFromScsiの
- * フォールバック対象)。 */
-function currentScsiReadCount(): number {
-  const probe = urlWorkerMode ? workerLastScsiDebugProbe : host?.scsiDebugCounters() ?? null;
-  return probe?.readCount ?? -1;
-}
-
-// SCSI起動 段階4(UI): 「実際にSCSIから起動した」判定用の状態(isScsiLocked参照)。
-// リセットのたびに bootCore()/bootWorkerCore() が作り直す(古いコアの値を持ち越さない)。
-let fddAccessedSinceReset = false;
-let bootedFromScsiDecided = false;
-/** 約180フレーム(55.4Hzで約3.2秒)。IPL/起動処理が完走するのに十分な余裕を見た値。 */
-const BOOTED_FROM_SCSI_CHECK_FRAMES = 180;
-
 /**
- * リセット完了から一定時間(段階4実装時の実測: 55.4Hzで約180フレーム=約3.2秒あれば、
- * SCSI起動が成功していれば追加のセクタ読み出しが、段階2bのフォールバックでFD起動した
- * 場合はFDDアクセスが、どちらも十分観測できる)経った時点で1回だけ確定させる。
- * 「起動エントリが実際にディスクへ制御を渡したか」の直接フラグはコアに無いため、
- * (1)SCSI読み出しカウンタがリセット時点から増えている(=起動処理がSCSIから読んだ)
- * (2)かつFDDアクセスが一度も無い(=段階2bの判定でFDへフォールバックしていない。
- *    退行検知: フォールバックした場合はFD自体の読み出しでFDDアクセスが立つ)
- * の両方をコアの既存カウンタから見て判定する(「SRAMがSCSI起動でSCSIがマウントされていた」
- * だけの代用では、段階2bでFDへフォールバックした場合を誤ってSCSI起動と判定してしまうため、
- * こちらの実測ベースの判定を優先する)。
+ * SCSI起動 段階4(UI)是正(2026-09-26、コーディネータ指摘対応): 「SCSIの読み出しが増えて
+ * FDDアクセスが無い」という推定は、SCSIから起動した後で利用者がFDを読んだ時点で
+ * ロックが外れてしまう(起動ディスクを抜けられる)危険があった。自前スタブの起動エントリが
+ * 実際にディスクへ制御を渡す瞬間(cmd $07でjmp $2000させる直前)にコア自身が立てる
+ * ラッチ(host.scsiBootControlTransferred()、x68k/scsi.cのSCSIBootControlTransferred)を
+ * 直接見るように変更した。起動(リセット)ごとに1回だけ立ち、そのブートの間はfalseに
+ * 戻らない(=FDを後から挿して読んでもロックされたまま)。既定経路はhost.onPollで毎回
+ * 直接読む。Worker経路はFrameSnapshot.scsiBootControlTransferredを毎フレーム見る
+ * (updateScsiBootControlTransferred参照)。古いコア(再ビルド前)ではnull/undefinedになり、
+ * その場合はfalseのまま(=常にロックしない。安全側)。
  */
-function decideBootedFromScsiOnce(): void {
-  if (bootedFromScsiDecided) return;
-  bootedFromScsiDecided = true;
-  const scsiActuallyRead = computeBootedFromScsi(
-    desiredBootDevicePref,
-    scsiName !== null,
-    scsiReadCountAtLastReset,
-    currentScsiReadCount(),
-  );
-  bootedFromScsi = scsiActuallyRead && !fddAccessedSinceReset;
+function updateScsiBootControlTransferred(transferred: boolean | null | undefined): void {
+  if (bootedFromScsi || !transferred) return; // 一度trueになったら以後は変えない(latch)
+  bootedFromScsi = true;
   updateScsiControls();
 }
 
@@ -4525,8 +4517,6 @@ function sanitizeFileName(name: string): string {
  * 唯一の保持場所(バッファ返却が効いているかの確認用。docs/STORAGE-SCSI.md参照)。 */
 let workerLastPoolMisses = 0;
 let workerLastFrameNo = 0;
-/** SCSI起動 段階4(UI): decideBootedFromScsiOnce()の間引き用(Worker経路)。 */
-let workerBootCheckFrameCount = 0;
 
 /** Worker経路(?worker=1)で `proxy.fetchAvInfo()` が返した値。既定経路の `host.avInfo` に相当する
  * 値がWorker経路には無いため、計測フック(__webx68kDebug.stat/bridgeHost.status)の
@@ -4620,6 +4610,9 @@ async function bootWorkerCore(): Promise<void> {
   // SRAM/ステートの永続化はスコープ外だが、初回のSWITCH.X設定(起動ドライブ等)を引き継ぐため
   // 初期値として渡すことだけは既定経路と揃える(以後の自動保存は行わない。startSramAutosave
   // 相当はWorker側に無い)。
+  // SCSI起動 段階4(UI): 再注入フックの武装は、この起動前のSRAM署名を見てから
+  // (applyDesiredBootDeviceGlobalのコメント参照)。proxy.init()より前に必ず呼ぶ。
+  applyDesiredBootDeviceGlobal(hasValidSramSignatureBytes(savedSram));
   const proxy = new WorkerCoreProxy();
   workerCoreProxy = proxy;
   coreProxy = proxy;
@@ -4676,12 +4669,9 @@ async function bootWorkerCore(): Promise<void> {
       const ranThisEvent = snapshot.frameNo - workerLastFrameNo;
       autoClockFrames += ranThisEvent;
       workerLastFrameNo = snapshot.frameNo;
-      // SCSI起動 段階4(UI): 既定経路のhost.onPoll側と同じ判定を、Worker経路ではframe event
-      // の受信ぶんの経過フレーム数で間引いて行う。
-      if (!bootedFromScsiDecided) {
-        workerBootCheckFrameCount += ranThisEvent;
-        if (workerBootCheckFrameCount >= BOOTED_FROM_SCSI_CHECK_FRAMES) decideBootedFromScsiOnce();
-      }
+      // SCSI起動 段階4(UI): コア自身のラッチをそのまま反映する(latch、一度trueなら
+      // 以後は変えない。updateScsiBootControlTransferredのコメント参照)。
+      updateScsiBootControlTransferred(snapshot.scsiBootControlTransferred);
       if (snapshot.scsiDebugProbe) workerLastScsiDebugProbe = snapshot.scsiDebugProbe;
       // 実測表示(「実測 xx% / CPU xxxMHz」)。既定経路は loop() から呼んでいるが、
       // Worker経路では loop() が回らないため、ここが唯一の呼び出し口になる。
@@ -4886,8 +4876,7 @@ async function bootWorkerCore(): Promise<void> {
   resetResampleState(audioResampleState);
   updateSlotControls();
   resetAccessLamps();
-  resetBootedFromScsiTracking();
-  workerBootCheckFrameCount = 0;
+  bootedFromScsi = false; // SCSI起動 段階4(UI): 新しいブートなのでラッチをまず倒す
   // runningが変わったのでHostFS行の警告表示も追従させる(コーディネータ指摘)。
   updateHostFsUi();
   // 手順6(2026-08-31)でキー・パッド・マウスボタン・加算マウスdelta、手順6後半(2026-08-31)で
@@ -5026,6 +5015,9 @@ async function bootCore(): Promise<void> {
   // リロード後もSWITCH.Xの設定(起動ドライブ・キーリピート等)が残るよう、前回保存したSRAMを
   // retro_load_game()より前に渡す(無ければ未初期化のままIPLが既定値を書く=初回起動相当)。
   const savedSram = await loadSramFile();
+  // SCSI起動 段階4(UI): 再注入フックの武装は、この起動前のSRAM署名を見てから
+  // (applyDesiredBootDeviceGlobalのコメント参照)。host.init()より前に必ず呼ぶ。
+  applyDesiredBootDeviceGlobal(hasValidSramSignatureBytes(savedSram));
   await host.init(biosIplBytes!, biosCgBytes!, savedSram ?? undefined);
   // host.init() は上で直接完了させた(段階移行の途中でinit経路自体は変えない)。
   // 以後の観測系呼び出し(screenText/readMemory等)だけをこの proxy 経由にする。
@@ -5044,15 +5036,11 @@ async function bootCore(): Promise<void> {
   // 次のコアへ引きずることはない。
   let keyRepeatPollFrameCount = 0;
   let lastKeyRepeatConfig: { delayMs: number; intervalMs: number } | null = null;
-  // SCSI起動 段階4(UI): decideBootedFromScsiOnce()と同じ間引き変数だが、こちらは1回
-  // 確定したらそのブート中は増やし続けない(BOOT_CHECK_FRAMESコメント参照)。
-  let bootCheckFrameCount = 0;
   host.onPoll = () => {
     bumpCorePollCount();
-    if (!bootedFromScsiDecided) {
-      bootCheckFrameCount++;
-      if (bootCheckFrameCount >= BOOTED_FROM_SCSI_CHECK_FRAMES) decideBootedFromScsiOnce();
-    }
+    // SCSI起動 段階4(UI): コア自身のラッチを直接読む(毎回呼んでも安い。
+    // updateScsiBootControlTransferredのコメント参照)。
+    updateScsiBootControlTransferred(host!.scsiBootControlTransferred());
     keyRepeatPollFrameCount++;
     if (keyRepeatPollFrameCount >= 60) {
       keyRepeatPollFrameCount = 0;
@@ -5118,7 +5106,7 @@ async function bootCore(): Promise<void> {
   // running が立ってから更新する(HDD行のロック状態がここで確定する)
   updateSlotControls();
   resetAccessLamps();
-  resetBootedFromScsiTracking();
+  bootedFromScsi = false; // SCSI起動 段階4(UI): 新しいブートなのでラッチをまず倒す
   // runningが変わったのでHostFS行の警告表示も追従させる(コーディネータ指摘。この経路
   // (既定/非Worker)ではHostFS自体は未対応だが、対称性のためここでも呼んでおく)。
   updateHostFsUi();
@@ -5408,10 +5396,13 @@ const BOOT_DEVICE_UI_POLL_MS = 1000;
 let bootDeviceUiGeneration = 0;
 let bootDeviceUiPollTimer: ReturnType<typeof setInterval> | null = null;
 
-function hex(value: number, digits: number): string {
-  return value < 0 ? '?'.padStart(digits, '?') : value.toString(16).padStart(digits, '0');
-}
-
+/**
+ * 2026-09-26是正(コーディネータ指摘): 以前はここで $ed0018/$ed000c の生の値を
+ * 「(起動時に反映されます)」等の注記と一緒に表示していたが、(1)番地は利用者向けの
+ * 文言としては専門的すぎる(help.htmlに書けば十分)、(2)セクション見出し直下の
+ * settings-bootdevice-reset-note と意味が重複する、の2点で見た目・文言とも整理した。
+ * ここではセレクトの表示値(standard/scsi/other)を決めるだけにする。
+ */
 async function refreshBootDeviceUi(): Promise<void> {
   const myGen = ++bootDeviceUiGeneration;
   const state = await readBootDeviceState();
@@ -5419,10 +5410,9 @@ async function refreshBootDeviceUi(): Promise<void> {
   if (state.source === 'pref') {
     cfgBootDevice.value = state.device;
     bootDeviceOtherOption.hidden = true;
-    settingsBootDeviceRaw.textContent = t('settingsBootDevicePending');
     return;
   }
-  const { kind, raw0018, raw000c } = state.info;
+  const { kind } = state.info;
   if (kind === 'standard' || kind === 'scsi') {
     bootDeviceOtherOption.hidden = true;
     cfgBootDevice.value = kind;
@@ -5431,8 +5421,6 @@ async function refreshBootDeviceUi(): Promise<void> {
     bootDeviceOtherOption.textContent = kind === 'unknown' ? t('settingsBootDeviceUnknown') : t('settingsBootDeviceOther');
     cfgBootDevice.value = 'other';
   }
-  settingsBootDeviceRaw.textContent =
-    raw0018 >= 0 ? `($ed0018=$${hex(raw0018, 4)} $ed000c=$${hex(raw000c, 8)})` : '';
 }
 
 function startBootDeviceUiPolling(): void {
@@ -5457,9 +5445,11 @@ cfgBootDevice.addEventListener('change', () => {
   const device: SelectableBootDevice = value;
   desiredBootDevicePref = device;
   localStorage.setItem(BOOT_DEVICE_PREF_KEY, device);
-  applyDesiredBootDeviceGlobal();
   if (!coreProxy) {
-    // 起動前(まっさらなSRAM用の希望値のみ変更。次回起動時にIPL初期化直後へ再注入される)。
+    // 起動前(まっさらなSRAM用の希望値のみ変更)。実際にグローバルへセットするのは
+    // 次回の実起動時(bootCore()/bootWorkerCore())で、そのときの実際のSRAM署名を
+    // 見てからにする(applyDesiredBootDeviceGlobalのコメント参照。ここで先にセットしても
+    // 意味が無い上、判断の根拠が古くなるだけなので呼ばない)。
     void refreshBootDeviceUi();
     return;
   }
@@ -6623,18 +6613,6 @@ function resetAccessLamps(): void {
   for (const slot of SLOT_IDS) slotElements[slot].lamp.classList.remove('active');
 }
 
-/**
- * SCSI起動 段階4(UI): リセット直後に呼ぶ。「SCSI起動したか」判定の基準点
- * (decideBootedFromScsiOnce)をリセットする。resetAccessLamps()と同じ位置づけ
- * (両方のブート経路のrunning=true直後)で呼ぶため、この専用関数に切り出す。
- */
-function resetBootedFromScsiTracking(): void {
-  scsiReadCountAtLastReset = currentScsiReadCount();
-  fddAccessedSinceReset = false;
-  bootedFromScsiDecided = false;
-  bootedFromScsi = false;
-}
-
 /** アクセスランプの残光管理そのもの(値の出所は問わない)。既定経路(pollDiskAccess、
  * host.readDiskAccess()を毎フレーム読む)とWorker経路(frame eventのdisk.access、手順5・7)の
  * 両方から呼べるよう切り出す。 */
@@ -6645,9 +6623,6 @@ function applyDiskAccess(
   if (access.fddReading) {
     if (access.fddDrive === 0) lastAccessAt.fdd0 = now;
     else if (access.fddDrive === 1) lastAccessAt.fdd1 = now;
-    // SCSI起動 段階4(UI): decideBootedFromScsiOnce()の退行検知用(段階2bでFDへ
-    // フォールバックした場合、FD自体の読み出しでここが立つ)。
-    fddAccessedSinceReset = true;
   }
   if (access.hddAccessing) lastAccessAt.hdd = now;
 
