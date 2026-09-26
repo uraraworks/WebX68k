@@ -9683,3 +9683,93 @@ node scripts/probe-scsi-iocs.mjs \
   --worker=0 --timeout=60000 --profile=<新しい空ディレクトリ> --scsi-sram-boot=0xea0020 \
   --peek-sram=0:8,0xc:16 --mem-read-watch=0xed000c:0xed001b
 ```
+
+## SCSI起動 段階1b：本物ROMで SCSI 単独起動（実測、2026-09-26）
+
+### 目的
+
+本物のSCSIボードROM(`_local/scsi/Scsiexrom.dat`、走らせて観測するのみ・逆アセ禁止)で、
+FDを挿さず(`--no-system`、FDD空)にSCSIだけからHuman68kの`A>`まで起動するかを実測する。
+
+### 腕と結果
+
+| 腕 | 条件 | 結果 |
+|---|---|---|
+| B1(本命) | 本物ROM＋`--no-system`＋起動可能HDS＋SRAM ROM起動設定(`--scsi-sram-boot=0xea0020`) | **起動せず**。画面は文字化けした罫線ブロックのみで停止(60秒でタイムアウト) |
+| B1対照(ROM起動設定なし) | 上記から`--scsi-sram-boot`を外す | IPLは`$ea0020`域を一切読まない(`$ed0018=$0000`のまま)。本命と明確に異なる→対照は無効化されていない |
+| B1-alt(実験) | B1に`--spc-psns=-3`(PSNS交互応答)を追加 | 変化なし。同じPCで停止 |
+
+### 陽性対照(確認できた)
+
+- `[SCSI-BOOT]`/`peek-sram`で`$ed0018=$a000`,`$ed000c=$00ea0020`の書き込み・生存を確認。
+- `[SCSI-BUS] #2 R adr=$ea0020 data=$00 pc=$00ff0252`など、IPLが背景資料どおり
+  `pc=$00ff0252`から`$ea0020`〜`$ea0023`(ボード起動アドレス欄)を読みに来ることを確認。
+  これは対照(ROM起動設定なし)には現れない。
+
+### 観測した規約・止まった場所
+
+1. IPLは`$ea0020`域読み出し後、SCSIボードROM内(`$ea0500`〜`$ea1xxx`)へ実際に飛び、
+   ボードのシグネチャ確認・デバイス列挙(`$ea04b6`〜`$ea04b9`、`$ea051a`〜`$ea056d`)を行う。
+2. SPCレジスタ(`$ea0001`〜`$ea001d`)へ一連の初期化書き込みをした後、
+   `SEL($ea0009)`書き込みでSELECTを発行し、これは自前実装で「成功」として処理される
+   (`セレクト scmd=$20 TEMP=$07 ... -> 成功`、フェーズ BUSFREE→COMMAND)。
+3. その直後、ROMは`INTS($ea0009)`→`SSTS($ea000d)`→`INTS`クリア→`PSNS($ea000b)`の順に
+   ポーリングし、**`PSNS`から一度`$8a`(またはB案の`$0a`)を読み取った後、同じ番地・同じ値の
+   読み出しをループし続け、CDBバイトを一度も`$ea000b`(DREG)やTEMPへ書き込まない**。
+   つまりCOMMANDフェーズへ遷移した直後で足踏みし、**CDB転送フェーズへ進めない**。
+4. 数百フレーム後、実行はSCSIボードROMの外(`$ff1ae6`・`$ff89ba`・`$ff9040`等、IPL本体側)へ
+   戻り、他の起動デバイスの探索ループに合流する(推測: ROM内部のリトライ/タイムアウトで
+   このデバイスを諦めている)。**ディスク上のセクタは1つも読まれず、LBAは1件も発行されず、
+   ボードROMの外(ディスクからロードされたコード)へは一度も制御が渡らない。**
+5. `--spc-psns=-3`(PSNS交互応答、コア既存の実験機能)を試したが同じ場所で停止した。
+   1回だけ交互値(`$0a`)を返した形跡はあるが、以後は同じ値の読み出しループに入り、
+   ROM側のCOMMANDフェーズ進行条件を満たせなかった。
+
+### 分かったこと(確定)
+
+- 本物ROM単独では、現状のpx68k-libretroの最小SPC実装(SELECTの成立までしか実質的に
+  実装されておらず、COMMANDフェーズでのCDBバイト転送(REQ/ACKハンドシェイク)が
+  実装されていない)では**`A>`はおろか1LBAも読めない**。段階1a末尾の脚注5
+  (「本物のSCSIボードROMは基準器にならなかった」)と整合する結果。
+- SCSI IOCS($F5)経由の要求はHuman68k起動前の段階であり、そもそも到達していない
+  (`byCmd`が空、Human68k起動後のtrap#15フックも発火せず)。
+- 段階0/1aで確認したIPLの`$ea0020`読み出し自体(SRAM起動デバイス設定の効果)は
+  今回も再現し、正しく機能している。**ボトルネックはSRAM/IPL側ではなく、
+  SCSIボードROM自身のSPCコマンドフェーズ実装(px68k側)にある。**
+
+### 分かっていないこと・未実測
+
+- 実機のMB89352(SPC)がCOMMANDフェーズでどうREQ/ACKを進めるか(1バイトごとにREQを
+  トグルするのか、まとめて読めるのか)は未実測・未逆アセ(方針上禁止)。
+  `x68k/scsi.c`の`SCSI_SpcXferStart`系はDATAフェーズ用のみで、COMMANDフェーズの
+  CDBバイト転送そのものを実装していないと見られる(未確認、コード直接確認はしていない)。
+- リトライ/タイムアウトでボードROMを抜ける具体的な条件(何回ポーリングしたら諦めるか、
+  タイムアウトの実体が何か)は未特定。
+- この壁を越えるための本格修正(COMMANDフェーズのCDBバイト転送実装)は、
+  「原因が明白かつ小さい」の範囲を超えると判断し、今回は着手していない。
+
+### 再現コマンド
+
+```
+# B1(本命)
+node scripts/probe-scsi-iocs.mjs \
+  --rom=_local/scsi/Scsiexrom.dat \
+  --image=/Users/haruurara/MyProject/_emulator/X68K/_fixtures/scsi_bootable_20260823.HDS \
+  --no-system --worker=0 --scsi-sram-boot=0xea0020 --timeout=60000 \
+  --profile=<永続ディレクトリ> \
+  --peek-sram=0:8,0x18:4,0xc:16 --mem-read-watch=0xea0000:0xea002f
+
+# B1対照(ROM起動設定なし)
+node scripts/probe-scsi-iocs.mjs \
+  --rom=_local/scsi/Scsiexrom.dat \
+  --image=/Users/haruurara/MyProject/_emulator/X68K/_fixtures/scsi_bootable_20260823.HDS \
+  --no-system --worker=0 --timeout=20000 \
+  --profile=<別ディレクトリ> \
+  --peek-sram=0:8,0x18:4,0xc:16 --mem-read-watch=0xea0000:0xea002f
+```
+
+### 次にやること
+
+- COMMANDフェーズのCDBバイト転送(REQ/ACKハンドシェイク)をpx68k-libretro側に
+  実装しない限り、本物ROM・自前ROMいずれの経路でもSCSI単独起動の先(LBA読み出し・
+  Human68k起動)には進めない。段階2はこの実装を主眼にする必要がある。
