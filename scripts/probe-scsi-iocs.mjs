@@ -399,6 +399,13 @@ const IOCS_F5_WATCH = args['iocs-f5-watch'] !== undefined;
 // 【調査用・段階1b項目2】READ完了時にそのセクタの先頭16バイトをゲストRAM
 // 全域から一回きりで探す。値を取らないフラグ。既定は無効。
 const RAM_LOCATE_WATCH = args['ram-locate-watch'] !== undefined;
+// --rom-entry-trace-watch: RAM上のコードからボードROM窓($ea0000-$eaffff)への
+// PC遷移を、leave-rom-watchのように1回限りでなく複数回([SCSI-ROM-ENTRY]/
+// [SCSI-ROM-RETURN]、最大48件)記録する(段階2追加)。
+const ROM_ENTRY_TRACE_WATCH = args['rom-entry-trace-watch'] !== undefined;
+// --boot-pc-trace-watch: $2000〜のディスク上コードに入った後の命令単位トレース
+// ([SCSI-BOOT-TRACE]、最大200件、段階2追加)。
+const BOOT_PC_TRACE_WATCH = args['boot-pc-trace-watch'] !== undefined;
 // 【調査用・段階1b項目3】ディスク上のコードへPCが初めて入った瞬間を観測する。
 // --code-entry0=<lo>:<hi> --code-entry1=<lo>:<hi> で番地範囲(両端含む)を指定する
 // (10進・16進(0x接頭辞)どちらも可)。未指定のスロットは無効のまま。
@@ -879,6 +886,16 @@ try {
   if (RAM_LOCATE_WATCH) {
     await page.evaluateOnNewDocument(() => {
       window.__webx68kRamLocateWatch = 1;
+    });
+  }
+  if (ROM_ENTRY_TRACE_WATCH) {
+    await page.evaluateOnNewDocument(() => {
+      window.__webx68kRomEntryTraceWatch = 1;
+    });
+  }
+  if (BOOT_PC_TRACE_WATCH) {
+    await page.evaluateOnNewDocument(() => {
+      window.__webx68kBootPcTraceWatch = 1;
     });
   }
   if (CODE_ENTRY0_LO !== null) {

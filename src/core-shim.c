@@ -1657,6 +1657,48 @@ void webx68k_code_entry_watch_refresh(void)
   webx68k_code_entry_watch_enabled = enabled;
 }
 
+/*
+ * 【調査用フック・段階2追加】RAM上のコードからボードROM窓へのPC遷移を
+ * (leave-rom-watchのように1回限りでなく)複数回記録する
+ * (px68k-libretro x68k/scsi.c の webx68k_rom_entry_trace_check() 参照)。
+ * 既定は無効(0)。globalThis.__webx68kRomEntryTraceWatch を真値にすると有効化する。
+ */
+EM_JS(int, js_rom_entry_trace_watch, (), {
+  return globalThis.__webx68kRomEntryTraceWatch ? 1 : 0;
+});
+
+extern int32_t webx68k_rom_entry_trace_enabled;
+
+__attribute__((used))
+void webx68k_rom_entry_trace_watch_refresh(void)
+{
+  int v = js_rom_entry_trace_watch();
+  if (v != webx68k_rom_entry_trace_enabled)
+    printf("[SCSI-ROM-ENTRY] 監視設定: enabled=%d\n", v);
+  webx68k_rom_entry_trace_enabled = v;
+}
+
+/*
+ * 【調査用フック・段階2追加】$2000〜のディスク上コードに入った後の
+ * 命令単位トレース(px68k-libretro x68k/scsi.c の
+ * webx68k_boot_pc_trace_check() 参照)。既定は無効(0)。
+ * globalThis.__webx68kBootPcTraceWatch を真値にすると有効化する。
+ */
+EM_JS(int, js_boot_pc_trace_watch, (), {
+  return globalThis.__webx68kBootPcTraceWatch ? 1 : 0;
+});
+
+extern int32_t webx68k_boot_pc_trace_enabled;
+
+__attribute__((used))
+void webx68k_boot_pc_trace_watch_refresh(void)
+{
+  int v = js_boot_pc_trace_watch();
+  if (v != webx68k_boot_pc_trace_enabled)
+    printf("[SCSI-BOOT-TRACE] 監視設定: enabled=%d\n", v);
+  webx68k_boot_pc_trace_enabled = v;
+}
+
 
 /*
  * 調査用(2026-09-04): 「新規複数クラスタ割り当ての直後にHuman68kが
