@@ -6863,6 +6863,10 @@ if (import.meta.env.DEV) {
     // Pointer Lock を経由せずに相対移動/ボタンを注入する。自動テスト用で、
     // 将来の MCP ブリッジ(mouse_move 相当)もこの経路をそのまま使う想定。
     peek: (addr: number) => host?.peekWord(addr) ?? null,
+    // 調査用(2026-09-26、docs/STORAGE-SCSI.md「SRAM 段階0」参照): peek()はMEM[]を
+    // フラットに読むだけでSRAM($ED0000-$ED3FFF)を経由しないため、SRAM専用に別で
+    // 用意する。offsetは$ED0000からの相対、SRAM_Read()経由(バイトスワップ処理済み)。
+    sram: (offset: number) => host?.peekSramByte(offset) ?? null,
     // 調査用(2026-09-04、docs/STORAGE-SCSI.md参照): console/log_cbを経由しない
     // SCSI要求カウンタ。「本当にSCSI要求が来なくなったか」をログの取りこぼしや
     // 上限とは無関係に確かめる用。Worker経路(urlWorkerMode)では host が常にnullのため、

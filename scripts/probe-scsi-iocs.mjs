@@ -1221,6 +1221,49 @@ try {
     }
   }
 
+  // --peek-sram=<相対offset>:<長さ>[,...] で、実行の終わりにSRAM($ED0000起点の相対offset)を
+  // 覗く。--peek は host.peekWord() 経由(MEM[]をフラットに読むだけでSRAM領域には届かず、
+  // 一律ダミー値が返る罠がある。docs/STORAGE-SCSI.md参照)なので、SRAMは必ずこちらを使う。
+  // dbg.sram(offset) は SRAM_Read() 経由(バイトスワップ処理済み)でバイト単位に読む。
+  // --worker=0 前提(--peek と同じ制約)。未指定なら1バイトも挙動を変えない。
+  let peeksSram = null;
+  if (args['peek-sram'] !== undefined) {
+    peeksSram = {};
+    for (const part of String(args['peek-sram']).split(',')) {
+      const [o, n] = part.split(':');
+      const base = parseRamWatchAddr(o);
+      const len = Number(n);
+      if (!Number.isFinite(len) || len <= 0) {
+        throw new Error(`--peek-sram の長さが不正です: ${part}`);
+      }
+      const bytes = await page
+        .evaluate(
+          (base, len) => {
+            const dbg = window.__webx68kDebug;
+            if (!dbg?.sram) return { error: 'sram がない' };
+            const out = [];
+            for (let i = 0; i < len; i++) {
+              const b = dbg.sram(base + i);
+              if (b === null) return { error: `sram(${base + i}) が null` };
+              out.push(b & 0xff);
+            }
+            return out;
+          },
+          base,
+          len,
+        )
+        .catch((err) => ({ error: String(err) }));
+      const hex = Array.isArray(bytes)
+        ? bytes.map((b) => b.toString(16).padStart(2, '0')).join(' ')
+        : bytes;
+      const key = `$ed${base.toString(16).padStart(4, '0')}`;
+      peeksSram[key] = hex;
+      console.error(
+        `[probe] peek-sram ${key}: ${Array.isArray(bytes) ? hex : `(失敗: ${JSON.stringify(bytes)})`}`,
+      );
+    }
+  }
+
   // --scan=<16進バイト列>:<開始番地>:<終了番地> で、ゲストRAM上から指定バイト列を探す。
   // 独自デバイスドライバの名前文字列(8バイト)など、番地が未知のものを見つけるための
   // 調査用。dbg.peek はワード単位でしか読めないため、探索自体はページ内(evaluate)で
@@ -1317,6 +1360,7 @@ try {
         scsiDebugSamples,
         dumps,
         peeks,
+        peeksSram,
         scanMatches,
         screenshot: shot,
         iocsVectors: vectors,

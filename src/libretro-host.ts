@@ -523,6 +523,19 @@ export class LibretroHost {
   }
 
   /**
+   * SRAM($ED0000-$ED3FFF)を1バイト読む(調査用)。offsetは$ED0000からの相対。
+   * 罠(docs/STORAGE-SCSI.md参照): peekByte/peekWordはMEM[]をフラットに読むだけで
+   * SRAM領域(SRAM_Read/SRAM_Write経由の別配列)を経由しないため、SRAM領域では
+   * 一律ダミー値が返ってしまう。SRAM_Read()に届く_webx68k_sram_read()を必ず使うこと。
+   * 古いコア(再ビルド前のwasm)には_webx68k_sram_readが無いため、そのときはnull。
+   */
+  peekSramByte(offset: number): number | null {
+    const sramRead = this.mod._webx68k_sram_read;
+    if (!sramRead) return null;
+    return sramRead(offset);
+  }
+
+  /**
    * HostFS (feature/hostfs) 用: ゲストRAMをブロックで読む。
    * _webx68k_mem_read が無い古いwasm(再ビルド前)では全域0バイトの配列を返す
    * (呼び出し側でその旨を判定できるようにするのが理想だが、この経路は
