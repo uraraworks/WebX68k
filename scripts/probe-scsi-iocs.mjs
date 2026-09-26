@@ -381,6 +381,26 @@ const LEAVE_ROM_WATCH = args['leave-rom-watch'] !== undefined;
 // 観測する(本物ROM使用時は$e9f800経路を通らないため)。最初の30件を記録する。
 // 値を取らないフラグ。既定は無効で速度に影響しない。
 const IOCS_F5_WATCH = args['iocs-f5-watch'] !== undefined;
+// 【調査用・段階1b項目2】READ完了時にそのセクタの先頭16バイトをゲストRAM
+// 全域から一回きりで探す。値を取らないフラグ。既定は無効。
+const RAM_LOCATE_WATCH = args['ram-locate-watch'] !== undefined;
+// 【調査用・段階1b項目3】ディスク上のコードへPCが初めて入った瞬間を観測する。
+// --code-entry0=<lo>:<hi> --code-entry1=<lo>:<hi> で番地範囲(両端含む)を指定する
+// (10進・16進(0x接頭辞)どちらも可)。未指定のスロットは無効のまま。
+let CODE_ENTRY0_LO = null, CODE_ENTRY0_HI = null;
+if (args['code-entry0'] !== undefined) {
+  const m = /^(.+):(.+)$/.exec(String(args['code-entry0']));
+  if (!m) throw new Error('--code-entry0 は <lo>:<hi> の形で指定してください');
+  CODE_ENTRY0_LO = parseRamWatchAddr(m[1]);
+  CODE_ENTRY0_HI = parseRamWatchAddr(m[2]);
+}
+let CODE_ENTRY1_LO = null, CODE_ENTRY1_HI = null;
+if (args['code-entry1'] !== undefined) {
+  const m = /^(.+):(.+)$/.exec(String(args['code-entry1']));
+  if (!m) throw new Error('--code-entry1 は <lo>:<hi> の形で指定してください');
+  CODE_ENTRY1_LO = parseRamWatchAddr(m[1]);
+  CODE_ENTRY1_HI = parseRamWatchAddr(m[2]);
+}
 
 /**
  * 基準器イメージを Range 対応で配信する小さなサーバ。
@@ -834,6 +854,23 @@ try {
     await page.evaluateOnNewDocument(() => {
       window.__webx68kIocsF5Watch = 1;
     });
+  }
+  if (RAM_LOCATE_WATCH) {
+    await page.evaluateOnNewDocument(() => {
+      window.__webx68kRamLocateWatch = 1;
+    });
+  }
+  if (CODE_ENTRY0_LO !== null) {
+    await page.evaluateOnNewDocument((lo, hi) => {
+      window.__webx68kCodeEntryLo0 = lo;
+      window.__webx68kCodeEntryHi0 = hi;
+    }, CODE_ENTRY0_LO, CODE_ENTRY0_HI);
+  }
+  if (CODE_ENTRY1_LO !== null) {
+    await page.evaluateOnNewDocument((lo, hi) => {
+      window.__webx68kCodeEntryLo1 = lo;
+      window.__webx68kCodeEntryHi1 = hi;
+    }, CODE_ENTRY1_LO, CODE_ENTRY1_HI);
   }
   if (ROM !== null) {
     const romBytes = Array.from(await readFile(ROM));

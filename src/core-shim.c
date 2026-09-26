@@ -1555,6 +1555,78 @@ void webx68k_iocs_f5_watch_refresh(void)
   webx68k_iocs_f5_watch_enabled = v;
 }
 
+/*
+ * 【調査用フック・段階1b項目2】READ完了時にそのセクタの先頭16バイトを
+ * ゲストRAM全域から一回きりで探す(px68k-libretro x68k/scsi.c の
+ * webx68k_ram_locate_check() 参照)。既定は無効(0)。
+ * globalThis.__webx68kRamLocateWatch を真値にすると有効化する。
+ */
+EM_JS(int, js_ram_locate_watch, (), {
+  return globalThis.__webx68kRamLocateWatch ? 1 : 0;
+});
+
+extern int32_t webx68k_ram_locate_watch_enabled;
+
+__attribute__((used))
+void webx68k_ram_locate_watch_refresh(void)
+{
+  int v = js_ram_locate_watch();
+  if (v != webx68k_ram_locate_watch_enabled)
+    printf("[SCSI-RAM-LOCATE] 監視設定: enabled=%d\n", v);
+  webx68k_ram_locate_watch_enabled = v;
+}
+
+/*
+ * 【調査用フック・段階1b項目3】ディスク上のコード(2区画ぶん、それぞれ
+ * 独立な番地範囲)へPCが初めて入った瞬間を記録する(px68k-libretro
+ * x68k/scsi.c の webx68k_code_entry_pc_check() 参照)。既定は無効
+ * (範囲外=lo>hi)。globalThis.__webx68kCodeEntryLo0/Hi0・Lo1/Hi1 で
+ * 番地範囲(両端含む)を指定する。
+ */
+EM_JS(int, js_code_entry_lo0, (), {
+  var v = globalThis.__webx68kCodeEntryLo0;
+  return (typeof v === 'number') ? (v | 0) : 1;
+});
+EM_JS(int, js_code_entry_hi0, (), {
+  var v = globalThis.__webx68kCodeEntryHi0;
+  return (typeof v === 'number') ? (v | 0) : 0;
+});
+EM_JS(int, js_code_entry_lo1, (), {
+  var v = globalThis.__webx68kCodeEntryLo1;
+  return (typeof v === 'number') ? (v | 0) : 1;
+});
+EM_JS(int, js_code_entry_hi1, (), {
+  var v = globalThis.__webx68kCodeEntryHi1;
+  return (typeof v === 'number') ? (v | 0) : 0;
+});
+
+extern int32_t webx68k_code_entry_watch_enabled;
+extern int32_t webx68k_code_entry_lo[2];
+extern int32_t webx68k_code_entry_hi[2];
+
+__attribute__((used))
+void webx68k_code_entry_watch_refresh(void)
+{
+  int lo0 = js_code_entry_lo0();
+  int hi0 = js_code_entry_hi0();
+  int lo1 = js_code_entry_lo1();
+  int hi1 = js_code_entry_hi1();
+  int enabled = (lo0 <= hi0) || (lo1 <= hi1);
+
+  if (lo0 != webx68k_code_entry_lo[0] || hi0 != webx68k_code_entry_hi[0] ||
+      lo1 != webx68k_code_entry_lo[1] || hi1 != webx68k_code_entry_hi[1])
+  {
+    printf("[SCSI-CODE-ENTRY] 監視設定: 区画1=$%08x..$%08x 区画2=$%08x..$%08x\n",
+           (unsigned)lo0, (unsigned)hi0, (unsigned)lo1, (unsigned)hi1);
+  }
+
+  webx68k_code_entry_lo[0] = lo0;
+  webx68k_code_entry_hi[0] = hi0;
+  webx68k_code_entry_lo[1] = lo1;
+  webx68k_code_entry_hi[1] = hi1;
+  webx68k_code_entry_watch_enabled = enabled;
+}
+
 
 /*
  * 調査用(2026-09-04): 「新規複数クラスタ割り当ての直後にHuman68kが
