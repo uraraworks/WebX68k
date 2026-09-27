@@ -899,6 +899,7 @@ export function createVirtualPad(overlay: HTMLElement, input: SharedKeyInput): V
   return {
     setVisible(visible: boolean): void {
       overlay.classList.toggle('hidden', !visible);
+      document.body.classList.toggle('vpad-shown', visible);
       if (visible) doRefreshLayout();
       else releaseAllInternal();
     },

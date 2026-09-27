@@ -24,8 +24,10 @@
    * カードの外だけを暗くしたいので、body 専用の変数を用意する。
    * 実機(iPhone)で、白い余白がゲスト画面の左右に出て目に刺さるという指摘を受けての変更。
    * カード自体は box-shadow を持つので、真っ黒より少し明るくして輪郭を残す。
+   * その後、WebNP2 と揃えてベージュ(#f3ead8)に変更。バーチャルパッド表示中だけ
+   * body.vpad-shown で暗色へ戻す(下記)。
    */
-  --page-bg: #101010;
+  --page-bg: #f3ead8;
   --page-footer-bg: #1a1a1a;
   --page-footer-text: #8c8c8c;
   --page-footer-border: rgba(255, 255, 255, 0.1);
@@ -37,6 +39,14 @@
   --header-tagline-text: #a8a8a8;
   --status-ok: #2e7d32;
   --status-bundled: #b8860b;
+}
+
+/* バーチャルパッドは白半透明で描画されるため、ベージュ背景では視認できない。
+   パッド表示中だけページ背景を旧来の暗色へ戻す。html は --page-bg を直接参照するため、
+   body のクラスだけでなく html 側にも同じ変数を効かせる必要がある */
+html:has(body.vpad-shown),
+body.vpad-shown {
+  --page-bg: #101010;
 }
 
 * {
@@ -193,9 +203,11 @@ main {
    * 上限は器(card/stage)側だけに掛ける。
    */
   max-width: 100%;
+  /* ページ背景をベージュにしたため、暗背景前提の大きな影(0 18px 40px)だと
+     スマホ幅で下に帯状に伸びて見える。短く薄くした(WebNP2 と同じ値) */
   box-shadow:
-    0 18px 40px rgba(0, 0, 0, 0.35),
-    0 4px 14px rgba(0, 0, 0, 0.25);
+    0 6px 16px rgba(0, 0, 0, 0.18),
+    0 2px 6px rgba(0, 0, 0, 0.12);
 }
 
 /*
