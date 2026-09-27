@@ -3,23 +3,28 @@ import { computePrescale } from '../src/sharp-view';
 
 /*
  * computePrescale(): 実解像度→CSS表示サイズへの拡大のうち、最近傍で行うべき
- * 整数倍率(kx, ky)を求める。残りの端数倍だけがCSS側の補間(auto)に任される。
+ * 整数倍率(kx, ky)を求める。目標の物理px以上になる最小の整数倍(ceil)を選び、
+ * 整数倍で割り切れない端数ぶんだけがCSS側の補間(auto、わずかに縮小)に任される。
  */
 describe('computePrescale', () => {
-  it('768x512 を 4:3 で css 1536x1152, dpr 2 → 4倍', () => {
-    expect(computePrescale(768, 512, 1536, 1152, 2)).toEqual({ kx: 4, ky: 4 });
+  it('768x512 を 4:3 で css 1536x1152, dpr 2 → kx=4(ちょうど), ky=5(4.5倍をceil)', () => {
+    expect(computePrescale(768, 512, 1536, 1152, 2)).toEqual({ kx: 4, ky: 5 });
   });
 
-  it('768x512 を css 768x576, dpr 1 → 1倍', () => {
-    expect(computePrescale(768, 512, 768, 576, 1)).toEqual({ kx: 1, ky: 1 });
+  it('768x512 を css 768x576, dpr 1 → kx=1(ちょうど), ky=2(1.125倍をceil)', () => {
+    expect(computePrescale(768, 512, 768, 576, 1)).toEqual({ kx: 1, ky: 2 });
   });
 
-  it('768x512 を css 768x576, dpr 2 → 2倍', () => {
-    expect(computePrescale(768, 512, 768, 576, 2)).toEqual({ kx: 2, ky: 2 });
+  it('768x512 を css 768x576, dpr 2 → kx=2(ちょうど), ky=3(2.25倍をceil)', () => {
+    expect(computePrescale(768, 512, 768, 576, 2)).toEqual({ kx: 2, ky: 3 });
   });
 
-  it('512x512 を css 1365x1024 (4:3, 2倍), dpr 1 → 2倍', () => {
-    expect(computePrescale(512, 512, 1365, 1024, 1)).toEqual({ kx: 2, ky: 2 });
+  it('512x512 を css 1365x1024 (4:3, 2倍), dpr 1 → kx=3(2.666倍をceil), ky=2(ちょうど)', () => {
+    expect(computePrescale(512, 512, 1365, 1024, 1)).toEqual({ kx: 3, ky: 2 });
+  });
+
+  it('768x512 を css 1472x1104(4:3、1.917倍相当), dpr 1 → kx=2, ky=3', () => {
+    expect(computePrescale(768, 512, 1472, 1104, 1)).toEqual({ kx: 2, ky: 3 });
   });
 
   it('dpr が 0/NaN のときは1として扱う', () => {

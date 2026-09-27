@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { DEVICE_SNAP_TOLERANCE, fitDeviceScale } from '../src/aspect';
+import { DEVICE_SNAP_TOLERANCE, fitDeviceScale, pickUpscale } from '../src/aspect';
 
 /*
  * fitDeviceScale(): 端数倍のときに「物理ピクセルで整数倍」へ寄せる判定。
@@ -53,5 +53,46 @@ describe('fitDeviceScale', () => {
         if (!got.smooth) expect((raw - got.scale) / raw).toBeLessThanOrEqual(DEVICE_SNAP_TOLERANCE + 1e-9);
       }
     }
+  });
+});
+
+/*
+ * pickUpscale(): 1倍以上のスケールの決め方。整数倍(n=round(fit))の近傍(目標サイズ
+ * 基準でINTEGER_SNAP_PX=16px以内)なら吸着してドットのまま、それ以外は縦横比を保った
+ * 端数倍のままシャープ・バイリニア表示(smooth)に委ねる。target は WebX68k の
+ * reserveTarget(4:3基準の目標サイズ)相当として 768x576 を例に使う。
+ */
+describe('pickUpscale', () => {
+  it('ちょうど整数倍(fit=2.0)は吸着してsmooth=false', () => {
+    expect(pickUpscale(2.0, 768, 576)).toEqual({ scale: 2, smooth: false });
+  });
+
+  it('ちょうど1.0倍はそのまま1倍', () => {
+    expect(pickUpscale(1.0, 768, 576)).toEqual({ scale: 1, smooth: false });
+  });
+
+  it('整数倍との差が16px以内(下方向、fit=1.98)なら吸着する', () => {
+    // n=2との差0.02 * 768 = 15.36px <= 16px
+    const r = pickUpscale(1.98, 768, 576);
+    expect(r).toEqual({ scale: 2, smooth: false });
+  });
+
+  it('整数倍との差が16px以内(上方向、fit=2.02)なら吸着する', () => {
+    // n=2との差0.02 * 768 = 15.36px <= 16px
+    const r = pickUpscale(2.02, 768, 576);
+    expect(r).toEqual({ scale: 2, smooth: false });
+  });
+
+  it('整数倍との差が大きい(fit=1.5)ときは端数倍のまま補間', () => {
+    const r = pickUpscale(1.5, 768, 576);
+    expect(r.smooth).toBe(true);
+    expect(r.scale).toBe(1.5);
+  });
+
+  it('1673x1232ウィンドウ相当の1.917倍(768x576)は端数のまま補間', () => {
+    // n=2との差0.083 * 768 ≒ 63.7px > 16px なので吸着しない。
+    const r = pickUpscale(1.917, 768, 576);
+    expect(r.smooth).toBe(true);
+    expect(r.scale).toBe(1.917);
   });
 });

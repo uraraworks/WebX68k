@@ -204,7 +204,7 @@ import {
   type StateDiskConfig,
 } from './state-store';
 import { describeError, getLang, langSelfName, setLang, t } from './strings';
-import { fitDeviceScale, getTargetSize, resolveAspectMode, type AspectMode } from './aspect';
+import { fitDeviceScale, getTargetSize, pickUpscale, resolveAspectMode, type AspectMode } from './aspect';
 import { isIOS } from './platform';
 import {
   isSerialBaudRateMismatch,
@@ -6202,8 +6202,9 @@ document.addEventListener('webkitfullscreenchange', updateFullscreenControl);
  * インラインの width/height(px)を直接指定する。
  */
 
-// ユーザーの明示的な指定(WebNP2 の見た目に揃える)。整数倍スケールはこれを超えて拡大しない。
-const MAX_SCALE = 2;
+// かつては「整数倍スケールはこれを超えて拡大しない」固定上限(MAX_SCALE=2)を持っていたが、
+// 整数倍±16px近傍だけ吸着し、それ以外は端数倍+シャープ・バイリニア表示に委ねる方式
+// (pickUpscale、src/aspect.ts)へ移行したため、固定上限は不要になり撤廃した。
 // 実解像度(canvas.width/height)がまだ0(起動前・BIOS未設定時など)の場合のフォールバック。
 // X68000起動直後の既定解像度(768x512, テキストV-RAM相当)を使う。
 const FALLBACK_NATIVE_WIDTH = 768;
@@ -6254,7 +6255,8 @@ btnAspect.addEventListener('click', () => {
 updateAspectControl();
 
 /**
- * canvas の表示倍率(等倍〜整数倍、収まらない場合は端数の縮小)を実測して決める。
+ * canvas の表示倍率(1倍以上は整数倍近傍のみ吸着、それ以外は端数倍+シャープ・バイリニア表示、
+ * 収まらない場合は端数の縮小)を実測して決める。
  * かつてはフルスクリーン中は CSS 側(.stage:fullscreen #screen の object-fit:contain)に
  * 表示サイズを丸投げして早期returnしていたが、フルスクリーン対象が .stage から
  * .console-card に変わり、中の stage サイズを決めるCSSルールが無くなったため、
@@ -6326,21 +6328,29 @@ function rescale(): void {
   // 1パスだけ計算して終わる(自分自身の呼び直しをトリガーする仕組みを持たない)ため、
   // この収縮ループは原理的に起こらない。よってここでは単純に幅・高さ両方の fit を使う。
   // 没入モード中(ネイティブ全画面 or 疑似フルスクリーン、isImmersive() 参照)は整数倍への
-  // 丸めと MAX_SCALE の上限を外し、fit をそのまま使って画面いっぱいに拡大する
-  // (下限 0.3 は維持)。ネイティブ全画面も疑似フルスクリーンも同じ「画面を最大限使う」
-  // 見え方に揃えるのが狙いで、フルスクリーン対象が .console-card になった今はどちらも
-  // このJS計算がサイズを決める(旧 object-fit:contain へ丸投げする経路は無くなった)。
-  const rawScale = isImmersive()
+  // 丸めを外し、fit をそのまま使って画面いっぱいに拡大する(下限 0.3 は維持)。
+  // ネイティブ全画面も疑似フルスクリーンも同じ「画面を最大限使う」見え方に揃えるのが狙いで、
+  // フルスクリーン対象が .console-card になった今はどちらもこのJS計算がサイズを決める
+  // (旧 object-fit:contain へ丸投げする経路は無くなった)。
+  // 非没入かつ fit>=1 のときは pickUpscale() で「整数倍±16px近傍なら吸着、それ以外は
+  // 端数倍のままシャープ・バイリニア表示に委ねる」(reserveTarget 基準。fit 自体が
+  // reserveTarget から計算されているため、吸着判定もそれに揃える)。かつての
+  // MAX_SCALE(固定上限2倍)や Math.floor による切り下げは撤廃済み(上のコメント参照)。
+  const immersive = isImmersive();
+  const upscale = fit >= 1 && !immersive ? pickUpscale(fit, reserveTarget.width, reserveTarget.height) : null;
+  const rawScale = immersive
     ? Math.max(0.3, fit)
-    : fit >= 1
-      ? Math.min(MAX_SCALE, Math.floor(fit))
+    : upscale
+      ? upscale.scale
       : Math.max(0.3, Math.min(1, fit));
   // 端数倍のときは物理ピクセル整数倍へ寄せる(寄せられなければ補間へ落とす)。
-  // 非没入かつ fit>=1 の経路は既にCSS整数倍なので触らない(DPRが整数の環境では物理も整数倍)。
-  // 没入モードは fit をそのまま使う設計なので、1倍以上でも端数倍になるのが常態であり、
-  // ここを通さないと最近傍のまま端数倍になって1ドット幅の線が周期的に間引かれる。
-  const fractional = isImmersive() || fit < 1;
-  const fitted = fractional ? fitDeviceScale(rawScale, window.devicePixelRatio) : { scale: rawScale, smooth: false };
+  // 非没入かつ fit>=1 の経路は pickUpscale() が既に吸着/端数判定と smooth を決めているので
+  // ここでは触らない。没入モードは fit をそのまま使う設計なので、1倍以上でも端数倍になるのが
+  // 常態であり、ここを通さないと最近傍のまま端数倍になって1ドット幅の線が周期的に間引かれる。
+  const fractional = immersive || fit < 1;
+  const fitted = fractional
+    ? fitDeviceScale(rawScale, window.devicePixelRatio)
+    : { scale: rawScale, smooth: upscale ? upscale.smooth : false };
   const scale = fitted.scale;
   // 補間へ落とす指定。4:3モード側は .stage.aspect-4-3 #screen で常に auto にしてあるので、
   // このクラスが効くのはドット等倍モードのときだけ。

@@ -94,3 +94,38 @@ export function fitDeviceScale(rawScale: number, dpr: number): { scale: number; 
   }
   return { scale: rawScale, smooth: true };
 }
+
+/**
+ * 1倍以上のスケールを整数倍へ吸着させる際に許容する、目標サイズ(target*)基準での
+ * はみ出し/不足の最大量(px)。近傍の整数倍との差がこれ以内なら吸着し、それ以外は
+ * 端数倍のまま(シャープ・バイリニア表示に委ねる)にする(WebNP2 からの移植)。
+ */
+export const INTEGER_SNAP_PX = 16;
+
+/**
+ * 1倍以上のスケールを決める(WebNP2 の pickUpscale() 移植)。
+ *
+ * 整数倍(n = round(fit))の近傍なら吸着してドットをそのまま最近傍表示する。
+ * 「近傍」は目標サイズ(targetWidth/targetHeight)基準の絶対px差で判定し、
+ * INTEGER_SNAP_PX 以内(切り上げ方向のはみ出しも含む)なら吸着する。
+ * それ以外は縦横比を保った端数倍のまま使い、シャープ・バイリニア表示(補間)に委ねる。
+ *
+ * かつては fit>=1 を常に Math.floor で切り下げ、かつ MAX_SCALE(2倍)で頭打ちにしていた。
+ * この方式だと例えば fit=1.917 のような1倍超の端数倍でも1倍にしか拡大できず、
+ * 本来もっと大きく表示できるはずのウィンドウで画面が小さいままになる不具合があった。
+ * pickUpscale + シャープ・バイリニア表示(sharp-view.ts)の組み合わせにより、整数倍の
+ * 近傍だけ吸着し、それ以外は端数倍のまま補間表示することで、固定上限なしに
+ * 画面を最大限使えるようにしている。
+ */
+export function pickUpscale(
+  fit: number,
+  targetWidth: number,
+  targetHeight: number,
+): { scale: number; smooth: boolean } {
+  const n = Math.max(1, Math.round(fit));
+  const diff = Math.abs(fit - n);
+  if (diff * targetWidth <= INTEGER_SNAP_PX && diff * targetHeight <= INTEGER_SNAP_PX) {
+    return { scale: n, smooth: false };
+  }
+  return { scale: fit, smooth: true };
+}
