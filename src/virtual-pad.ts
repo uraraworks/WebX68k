@@ -499,9 +499,16 @@ export function layoutVpadSides(boxes: VpadSideBoxes, boundIds: ReadonlySet<stri
  * アナログスティック風UIの不感帯半径・ノブ最大変位半径。いずれもベース円の"直径"に対する比
  * (SBOP2 の手本 updateStick() と同じ基準。半径ではなく直径を基準にしているのは手本の実装に
  * 合わせるため。rect.w===rect.h の正方形前提)。
+ * 手本の updateStick() はノブの「中心」がベース円の外周まで届く maxR(=0.5)を使っていたが、
+ * それだとノブ自身の半径ぶん外周をはみ出す。はみ出したまま反対方向へ切り返すと指の移動量が
+ * 余計に大きくなりがちなので、ここでは STICK_KNOB_RATIO(src/style.css の .vpad-stick-knob の
+ * width/height 47% と一致させること)を使い、ノブの縁がベース円の外周でちょうど止まる値に
+ * 補正している。
  */
 export const STICK_DEADZONE_RATIO = 0.18;
-export const STICK_MAX_RADIUS_RATIO = 0.5;
+/** ノブ直径のベース直径に対する比。src/style.css の .vpad-stick-knob width/height と一致させる。 */
+export const STICK_KNOB_RATIO = 0.47;
+export const STICK_MAX_RADIUS_RATIO = 0.5 - STICK_KNOB_RATIO / 2;
 
 /**
  * ベース円の中心からのオフセットを8方向へスナップし、押されている方向ID(0〜2個)を返す。
@@ -545,7 +552,11 @@ export function stickDirsFromPoint(
 
 /**
  * ノブの表示オフセット(px, ベース中心からの相対座標)。最大半径(直径*STICK_MAX_RADIUS_RATIO)で
- * クランプする(手本の updateStick() の maxR と同じ)。translate() にそのまま渡せる値を返す。
+ * クランプする。手本の updateStick() の maxR はノブの「中心」がベース円の外周まで届く値
+ * (直径*0.5)だったが、それだとノブの縁がベース円の外へはみ出してしまう。はみ出したまま
+ * 反対方向へ切り返すと指を余計に遠くまで動かす必要が出るため、ここではノブの縁がベース円の
+ * 外周の内側で止まるよう STICK_KNOB_RATIO ぶん縮めた値を使う。translate() にそのまま渡せる
+ * 値を返す。
  */
 export function stickKnobOffset(rect: VpadRect, px: number, py: number): { x: number; y: number } {
   const cx = rect.x + rect.w / 2;

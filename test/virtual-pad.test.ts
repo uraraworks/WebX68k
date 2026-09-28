@@ -9,6 +9,7 @@ import {
   stickDirsFromPoint,
   stickKnobOffset,
   STICK_DEADZONE_RATIO,
+  STICK_KNOB_RATIO,
   STICK_MAX_RADIUS_RATIO,
   vpadWidgetsFor,
   VPAD_SLANT_PCT_OVERLAY,
@@ -127,7 +128,7 @@ describe('stickKnobOffset', () => {
     expect(y).toBeCloseTo(0, 9);
   });
 
-  it('遠い点は最大半径(直径*0.5)にクランプされる(距離で検証)', () => {
+  it('遠い点は最大半径(直径*STICK_MAX_RADIUS_RATIO)にクランプされる(距離で検証)', () => {
     const { x, y } = stickKnobOffset(rect, 500, 100); // dx=400, dy=0
     const dist = Math.hypot(x, y);
     expect(dist).toBeCloseTo(maxR, 9);
@@ -140,6 +141,13 @@ describe('stickKnobOffset', () => {
     const { x, y } = stickKnobOffset(rect, 100, 100);
     expect(x).toBe(0);
     expect(y).toBe(0);
+  });
+
+  it('遠い点でもノブの縁(オフセット長+ノブ半径)がベース円の外周(直径/2)を超えない', () => {
+    const { x, y } = stickKnobOffset(rect, 500, 300); // 斜め方向の遠い点
+    const dist = Math.hypot(x, y);
+    const knobRadius = (rect.w * STICK_KNOB_RATIO) / 2;
+    expect(dist + knobRadius).toBeLessThanOrEqual(rect.w / 2 + 1e-9);
   });
 });
 

@@ -531,7 +531,8 @@ main {
   left: 50%;
   top: 50%;
   /* ベース直径の47%程度(手本は120pxベースに56pxノブ≒47%)。widthは要素自体には付けず、
-     ベース側の em 相対サイズ(下記 width/height 47%)で決める。 */
+     ベース側の em 相対サイズ(下記 width/height 47%)で決める。
+     この47%は src/virtual-pad.ts の STICK_KNOB_RATIO と一致させること。 */
   width: 47%;
   height: 47%;
   margin-left: -23.5%;
