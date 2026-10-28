@@ -22,6 +22,9 @@ JOBS="${JOBS:-8}"
 CLEAN_BUILD="${CLEAN_BUILD:-1}"
 ALLOW_DIRTY="${ALLOW_DIRTY:-0}"
 CORE_TEST_EXPORTS="${CORE_TEST_EXPORTS:-0}"
+CORE_OPT_CFLAGS="${CORE_OPT_CFLAGS:--O2}"
+CORE_OPT_LDFLAGS="${CORE_OPT_LDFLAGS:--O2}"
+read -r -a CORE_LINK_FLAGS <<< "$CORE_OPT_LDFLAGS"
 if [ "$CORE_TEST_EXPORTS" = "1" ] && [ -z "$OUT_DIR_INPUT" ]; then
   echo "エラー: CORE_TEST_EXPORTS=1 はSCC診断用exportを含む結合テスト専用ビルドです。" >&2
   echo "       配布用の $OUT_DIR を上書きしないよう、OUT_DIR にリポジトリ外の一時ディレクトリを明示してください。" >&2
@@ -67,7 +70,7 @@ fi
 emmake make -f Makefile.libretro platform=emscripten C68K=0 \
   STATIC_LINKING=1 TARGET=px68k_libretro_emscripten.bc \
   GIT_VERSION="$CORE_GIT_VERSION" \
-  WEBX68K_CORE_TEST_EXPORTS="$CORE_TEST_EXPORTS" -j"$JOBS"
+  WEBX68K_CORE_TEST_EXPORTS="$CORE_TEST_EXPORTS" WEBX68K_OPT_FLAGS="$CORE_OPT_CFLAGS" -j"$JOBS"
 
 CORE_BC="$CORE_SRC_DIR/px68k_libretro_emscripten.bc"
 if [ ! -f "$CORE_BC" ]; then
@@ -91,7 +94,7 @@ fi
 emcc "$SHIM_C" "$WORK_A" "${SHIM_DEFINES[@]}" \
   -I"$CORE_SRC_DIR" -I"$CORE_SRC_DIR/libretro" -I"$CORE_SRC_DIR/x68k" \
   -I"$CORE_SRC_DIR/libretro-common/include" \
-  -O2 -o "$OUT_DIR/px68k_libretro.js" \
+  "${CORE_LINK_FLAGS[@]}" -o "$OUT_DIR/px68k_libretro.js" \
   -sDEFAULT_TO_CXX=1 \
   -sMODULARIZE=1 \
   -sEXPORT_NAME=PX68K \
@@ -114,7 +117,10 @@ cat > "$OUT_DIR/px68k_libretro.build.json" <<EOF
   "coreDescribe": "$CORE_GIT_DESCRIBE",
   "dirty": $CORE_DIRTY,
   "emscriptenVersion": "$EMCC_VERSION",
-  "testExports": $CORE_TEST_EXPORTS_JSON
+  "testExports": $CORE_TEST_EXPORTS_JSON,
+  "compileOptimizationFlags": $(printf %s "$CORE_OPT_CFLAGS" | python3 -c 'import json,sys; print(json.dumps(sys.stdin.read()))'),
+  "compileCommonFlags": "-ffast-math -fomit-frame-pointer",
+  "linkOptimizationFlags": $(printf %s "$CORE_OPT_LDFLAGS" | python3 -c 'import json,sys; print(json.dumps(sys.stdin.read()))')
 }
 EOF
 

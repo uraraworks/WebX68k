@@ -1,7 +1,7 @@
 import { createHash } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import { createRequire } from 'node:module';
-import { dirname } from 'node:path';
+import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { runInThisContext } from 'node:vm';
 import { expect, it, vi } from 'vitest';
@@ -15,12 +15,13 @@ import { deliverWorkerAudio } from '../src/worker-audio';
 vi.mock('../src/scsi-opfs', () => ({ setupScsiOpfs: async () => ({ mode: 'none' }) }));
 vi.mock('../src/hostfs/worker-bridge', async (original) => ({ ...(await original()), installHostFsBridge: () => ({ installed: false }) }));
 
+const coreDir = process.env.WEBX68K_CORE_DIR || fileURLToPath(new URL('../public/core', import.meta.url));
 const asset = (path: string) => readFileSync(fileURLToPath(new URL(`../public/${path}`, import.meta.url)));
 const bytes = (data: Buffer) => Uint8Array.from(data).buffer;
 
 it('実 Worker の提示画像をフレーム番号に対応するゴールデンと照合する', async () => {
   const golden: { video: string; audio: string }[] = JSON.parse(readFileSync(fileURLToPath(new URL('./fixtures/golden-av-trace.json', import.meta.url)), 'utf8'));
-  const path = fileURLToPath(new URL('../public/core/px68k_libretro.js', import.meta.url));
+  const path = join(coreDir, 'px68k_libretro.js');
   const module = { exports: {} as unknown };
   runInThisContext(`(function(module,exports,require,__filename,__dirname){${readFileSync(path, 'utf8')}\n})`, { filename: path })(module, module.exports, createRequire(path), path, dirname(path));
   const factory = module.exports as (options: Record<string, unknown>) => Promise<PX68KModule>;
@@ -128,7 +129,7 @@ it('実 Worker の提示画像をフレーム番号に対応するゴールデ�
   vi.stubGlobal('OffscreenCanvas', class { width = 1; height = 1; pixels = new Uint8ClampedArray(); getContext() { return { createImageData: (w: number, h: number) => ({ data: new Uint8ClampedArray(w * h * 4), width: w, height: h }), putImageData: (img: ImageData) => { this.pixels = new Uint8ClampedArray(img.data); }, getImageData: () => ({ data: this.pixels }) }; } });
   vi.stubGlobal('fetch', async () => ({ ok: true, text: async () => '' }));
   vi.stubGlobal('__BUILD_ID__', 'test');
-  vi.stubGlobal('PX68K', (options: Record<string, unknown>) => factory({ ...options, locateFile: () => fileURLToPath(new URL('../public/core/px68k_libretro.wasm', import.meta.url)) }));
+  vi.stubGlobal('PX68K', (options: Record<string, unknown>) => factory({ ...options, locateFile: () => join(coreDir, 'px68k_libretro.wasm') }));
   try {
     await import('../src/core-worker');
     const send = (data: unknown) => worker.onmessage({ data });

@@ -1,7 +1,10 @@
 {
-  "coreRevision": "b51e5845367b686171f6515eeaad6b58f727330d",
-  "coreDescribe": "b51e584",
+  "coreRevision": "c7f831fc7ad6892c46f774ce15764644304cb328",
+  "coreDescribe": "c7f831f",
   "dirty": false,
   "emscriptenVersion": "6.0.7",
-  "testExports": false
+  "testExports": false,
+  "compileOptimizationFlags": "-O2",
+  "compileCommonFlags": "-ffast-math -fomit-frame-pointer",
+  "linkOptimizationFlags": "-O2"
 }

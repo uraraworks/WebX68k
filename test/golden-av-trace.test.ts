@@ -4,7 +4,7 @@
 import { createHash } from 'node:crypto';
 import { readFileSync, writeFileSync } from 'node:fs';
 import { createRequire } from 'node:module';
-import { dirname } from 'node:path';
+import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { runInThisContext } from 'node:vm';
 import { expect, it, vi } from 'vitest';
@@ -14,13 +14,14 @@ import { RETROK } from '../src/keyboard';
 
 const frames = 1200;
 const fixture = fileURLToPath(new URL('./fixtures/golden-av-trace.json', import.meta.url));
+const coreDir = process.env.WEBX68K_CORE_DIR || fileURLToPath(new URL('../public/core', import.meta.url));
 const asset = (path: string) => readFileSync(fileURLToPath(new URL(`../public/${path}`, import.meta.url)));
 const hash = (data: Uint8Array) => createHash('sha256').update(data).digest('hex');
 type Trace = { video: string; audio: string }[];
 type Factory = (options: Record<string, unknown>) => Promise<PX68KModule>;
 
 function coreFactory(): Factory {
-  const path = fileURLToPath(new URL('../public/core/px68k_libretro.js', import.meta.url));
+  const path = join(coreDir, 'px68k_libretro.js');
   const module = { exports: {} as unknown };
   const wrapper = runInThisContext(`(function(module,exports,require,__filename,__dirname){${readFileSync(path, 'utf8')}\n})`, { filename: path });
   wrapper(module, module.exports, createRequire(path), path, dirname(path));
@@ -51,7 +52,7 @@ async function trace(interval = 1): Promise<Trace> {
   const factory = coreFactory();
   const oldFactory = (globalThis as unknown as { PX68K?: unknown }).PX68K;
   (globalThis as unknown as { PX68K: unknown }).PX68K = async (options: Record<string, unknown>) => {
-    const mod = await factory({ ...options, locateFile: () => fileURLToPath(new URL('../public/core/px68k_libretro.wasm', import.meta.url)) });
+    const mod = await factory({ ...options, locateFile: () => join(coreDir, 'px68k_libretro.wasm') });
     // もう一つの本番変換器へ生のコールバックを渡す。配送を省略しても
     // コアが出した画像と最終提示画像を各フレームで比較できる。
     (reference as unknown as { mod: PX68KModule }).mod = mod;
