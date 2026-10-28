@@ -1,3 +1,4 @@
+import { deliverWorkerAudio } from './worker-audio';
 import './style.css';
 import { AudioEngine } from './audio';
 import { buildCoreOptions } from './core-options';
@@ -1265,6 +1266,7 @@ const audioResampleState = createResampleState();
 function recomputeSpeedMultiplier(): void {
   unlimitedActive = speedEnabled && selectedSpeed === 'unlimited';
   speedMultiplier = speedEnabled && !unlimitedActive ? (selectedSpeed as SpeedStep) : 1;
+  if (host) host.audioMuted = unlimitedActive;
 }
 
 /** 速度・状態の切り替わりでフレーム供給と音声リサンプラの持ち越し状態をリセットする。 */
@@ -4712,12 +4714,7 @@ async function bootWorkerCore(): Promise<void> {
       // audioがnullになりうる(AudioWorkletが使えない環境)のは既定経路と同じ: 行き先が
       // 無いときはサンプルを捨てるだけでよい(bootCore()のコメント参照。ここを`audio!`に
       // すると無音環境で起動ごと壊れる)。
-      for (const chunkBuf of snapshot.audio.chunks) {
-        const samples = new Float32Array(chunkBuf);
-        const out =
-          speedMultiplier === 1 ? samples : resampleSpeed(samples, speedMultiplier, audioResampleState);
-        audio?.push(out);
-      }
+      deliverWorkerAudio(snapshot.audio.chunks, speedMultiplier, audioResampleState, audio);
       // シリアル(SCCチャネルA、master取り込み後のWorker配線の穴の是正)。音声chunkと同じ
       // 「frame eventへの相乗り」方式。snapshot.serialはWorker側core-worker.tsのsendFrame()が
       // 毎フレーム必ず積むが、型はoptional(既存のFrameSnapshotオブジェクトリテラルを使う
@@ -4956,7 +4953,7 @@ async function bootCore(): Promise<void> {
     // それ以外は速度倍率ぶん可変レートでリサンプルし、テープ早送りのようにピッチを変える。
     const out =
       speedMultiplier === 1 ? samples : resampleSpeed(samples, speedMultiplier, audioResampleState);
-    audio?.push(out);
+    audio?.push(out, true);
   });
   host.setVideoHidden(document.visibilityState === 'hidden');
   if (import.meta.env.DEV) host.audioProbeEnabled = urlAudioProbe;

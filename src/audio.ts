@@ -364,11 +364,11 @@ export class AudioEngine {
   }
 
   /** Float32 ステレオ interleaved サンプルを再生キューへ送る */
-  push(samples: Float32Array): void {
+  push(samples: Float32Array, transferOwnership = false): void {
     if (!this.node) return;
-    // 転送用にコピー(postMessage は Transferable を使うと元配列が空になるため複製して渡す)
-    const copy = new Float32Array(samples);
-    this.node.port.postMessage(copy, [copy.buffer]);
+    // 呼び出し元が再利用する場合だけ複製する。ビューも長さを保ったまま転送できる。
+    const chunk = transferOwnership && samples.buffer instanceof ArrayBuffer ? samples : new Float32Array(samples);
+    this.node.port.postMessage(chunk, [chunk.buffer as ArrayBuffer]);
   }
 
   /** 再生待ちのキューを破棄する(ステートロード直後に旧状態の音が残るのを防ぐ) */

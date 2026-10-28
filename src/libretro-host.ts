@@ -361,6 +361,8 @@ export class LibretroHost {
   private canvas: HTMLCanvasElement;
   private ctx2d: CanvasRenderingContext2D;
   private audioPush: AudioPushFn;
+  // 無制限時はコアの消費数を変えず、再生しないサンプルの変換だけを省く。
+  audioMuted = false;
 
   private systemDirPtr = 0;
   private saveDirPtr = 0;
@@ -947,7 +949,7 @@ export class LibretroHost {
     const videoRefreshCb = (data: number, width: number, height: number, pitch: number): void =>
       this.handleVideoRefresh(data, width, height, pitch);
     const audioSampleCb = (left: number, right: number): void => {
-      this.audioPush(new Float32Array([left / 32768, right / 32768]));
+      if (!this.audioMuted) this.audioPush(new Float32Array([left / 32768, right / 32768]));
     };
     const audioSampleBatchCb = (data: number, frames: number): number => this.handleAudioBatch(data, frames);
     const inputPollCb = (): void => {
@@ -1202,7 +1204,7 @@ export class LibretroHost {
   }
 
   private handleAudioBatch(data: number, frames: number): number {
-    if (frames <= 0) return frames;
+    if (frames <= 0 || this.audioMuted) return frames;
     const mod = this.mod;
     const base = data >> 1;
     const count = frames * 2;

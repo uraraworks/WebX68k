@@ -8,6 +8,9 @@ import { expect, it, vi } from 'vitest';
 import { LibretroHost, type PX68KModule } from '../src/libretro-host';
 import { buildCoreOptions } from '../src/core-options';
 import { RETROK } from '../src/keyboard';
+import { AudioEngine } from '../src/audio';
+import { createResampleState } from '../src/speed';
+import { deliverWorkerAudio } from '../src/worker-audio';
 
 vi.mock('../src/scsi-opfs', () => ({ setupScsiOpfs: async () => ({ mode: 'none' }) }));
 vi.mock('../src/hostfs/worker-bridge', async (original) => ({ ...(await original()), installHostFsBridge: () => ({ installed: false }) }));
@@ -16,7 +19,7 @@ const asset = (path: string) => readFileSync(fileURLToPath(new URL(`../public/${
 const bytes = (data: Buffer) => Uint8Array.from(data).buffer;
 
 it('実 Worker の提示画像をフレーム番号に対応するゴールデンと照合する', async () => {
-  const golden: { video: string }[] = JSON.parse(readFileSync(fileURLToPath(new URL('./fixtures/golden-av-trace.json', import.meta.url)), 'utf8'));
+  const golden: { video: string; audio: string }[] = JSON.parse(readFileSync(fileURLToPath(new URL('./fixtures/golden-av-trace.json', import.meta.url)), 'utf8'));
   const path = fileURLToPath(new URL('../public/core/px68k_libretro.js', import.meta.url));
   const module = { exports: {} as unknown };
   runInThisContext(`(function(module,exports,require,__filename,__dirname){${readFileSync(path, 'utf8')}\n})`, { filename: path })(module, module.exports, createRequire(path), path, dirname(path));
@@ -26,6 +29,17 @@ it('実 Worker の提示画像をフレーム番号に対応するゴールデ�
   let lastSource = 0, lastPitch = 0;
   let resizedPixels = Buffer.alloc(0);
   const responses = new Map<number, any>();
+  const audio = new AudioEngine();
+  const audioState = createResampleState();
+  let delivered: Buffer[] = [];
+  (audio as any).node = { port: { postMessage: (chunk: Float32Array, transfer: ArrayBuffer[]) => {
+    const received = structuredClone(chunk, { transfer });
+    expect(chunk.buffer.byteLength).toBe(0);
+    delivered.push(Buffer.from(received.buffer, received.byteOffset, received.byteLength));
+  } } };
+  let lastAudioFrame = 0;
+  const frameAudioBytes: number[] = [];
+  let currentAudioBytes = 0;
   const previousTZ = process.env.TZ;
   process.env.TZ = 'UTC';
   const date = vi.spyOn(Date, 'now').mockImplementation(() => now);
@@ -43,6 +57,20 @@ it('実 Worker の提示画像をフレーム番号に対応するゴールデ�
       if (received.kind === 'response') responses.set(received.requestId, received);
       if (received.event !== 'frame') return;
       const frame = received.snapshot;
+      delivered = [];
+      deliverWorkerAudio(frame.audio.chunks, 1, audioState, audio);
+      if (frame.frameNo <= 1200) {
+        // tick が複数フレームを含む場合も、コールバックの長さで境界を復元する。
+        const combined = Buffer.concat(delivered);
+        let offset = 0;
+        for (let i = lastAudioFrame; i < frame.frameNo; i++) {
+          const end = offset + frameAudioBytes[i];
+          expect(createHash('sha256').update(combined.subarray(offset, end)).digest('hex'), `audio frame ${i + 1}`).toBe(golden[i].audio);
+          offset = end;
+        }
+        expect(offset).toBe(combined.length);
+        lastAudioFrame = frame.frameNo;
+      }
       if (frame.video.kind === 'rgba') {
         const video = frame.video;
         pixels = Buffer.from(video.bytes.slice(0)); width = video.width; height = video.height; rgba++;
@@ -67,6 +95,11 @@ it('実 Worker の提示画像をフレーム番号に対応するゴールデ�
   };
   // 実コアの映像コールバックを捕捉し、最後に解像度変更と dupe を注入する。
   const proto = LibretroHost.prototype as any;
+  const audioBatch = proto.handleAudioBatch;
+  vi.spyOn(proto, 'handleAudioBatch').mockImplementation(function (this: LibretroHost, data: number, frames: number) {
+    currentAudioBytes += frames * 8;
+    return audioBatch.call(this, data, frames);
+  });
   const videoRefresh = proto.handleVideoRefresh;
   vi.spyOn(proto, 'handleVideoRefresh').mockImplementation(function (this: LibretroHost, data: number, width: number, height: number, pitch: number) {
     if (data) { lastSource = data; lastPitch = pitch; }
@@ -78,7 +111,7 @@ it('実 Worker の提示画像をフレーム番号に対応するゴールデ�
     if (pos >= 0 && pos < 48 && (pos % 12 === 0 || pos % 12 === 6)) {
       worker.onmessage({ data: { kind: 'inputUpdate', update: { keys: pos % 12 === 0 ? [keys[Math.floor(pos / 12)]] : [], pads: [0, 0], mouseButtons: { left: false, right: false }, mouseDelta: { dx: 0, dy: 0 }, inputGeneration: 0, keyMakes: [] } } });
     }
-    count++; now += 18; originalRun.call(this);
+    count++; now += 18; currentAudioBytes = 0; originalRun.call(this); frameAudioBytes.push(currentAudioBytes);
     if (count === 1201) {
       const heap = (this as any).mod.HEAPU16 as Uint16Array;
       const pixels: number[] = [];

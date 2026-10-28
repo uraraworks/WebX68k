@@ -873,6 +873,7 @@ async function handleInitialize(
     resetPendingAudio();
     const newHost = new LibretroHost(scratchCanvas as unknown as HTMLCanvasElement, pushAudioSamples);
     if (videoHidden) newHost.setVideoHidden(true);
+    newHost.audioMuted = unlimitedActive;
     newHost.acquireVideoBuffer = (width, height) => {
       if (pendingVideo) framePool.release(pendingVideo);
       videoWidth = width;
@@ -1309,6 +1310,9 @@ ctx.onmessage = (ev) => {
     // この穴の是正(docs/STORAGE-SCSI.md参照): 未指定はfalse扱い(SpeedUpdateMessage.unlimited
     // のコメント参照)。
     unlimitedActive = data.unlimited === true;
+    if (host) host.audioMuted = unlimitedActive;
+    // 切り替え前に未送信の音があっても後から再生しない。
+    resetPendingAudio();
     // 速度切り替え直後は必ず1tick即座に走らせる(main.tsのresetSpeedState()と同じ考え方。
     // 古いnextAllowedAtMsを持ち越すと、切り替え直前の占有率制限が残ったままになる)。
     workerUnlimitedNextAllowedAtMs = 0;

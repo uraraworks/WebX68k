@@ -72,12 +72,16 @@ describe('Worker経路の音声出力移行(静的検査)', () => {
     expect(handlerMatch, 'proxy.setEventHandler(...) が見つからない(main.ts の構造が変わった?)').toBeTruthy();
     const handlerBody = handlerMatch![0];
 
-    // chunk単位でループし、既定経路と同じ「speedMultiplier===1ならそのまま・それ以外は
-    // resampleSpeed」の形でAudioEngineへ渡していること。
-    expect(handlerBody).toMatch(/for\s*\(\s*const\s+chunkBuf\s+of\s+snapshot\.audio\.chunks\s*\)/);
-    expect(handlerBody).toMatch(/new Float32Array\(chunkBuf\)/);
-    expect(handlerBody).toMatch(/speedMultiplier === 1 \? samples : resampleSpeed\(samples, speedMultiplier, audioResampleState\)/);
-    expect(handlerBody).toMatch(/audio\?\.push\(out\)/);
+    // 2026-10-28: 配送処理は src/worker-audio.ts の deliverWorkerAudio() へ切り出した
+    // (実コアを通す配送試験 test/audio-delivery.test.ts から同じ関数を呼ぶため)。
+    // ハンドラがそれを呼び、関数側が既定経路と同じ「speedMultiplier===1ならそのまま・
+    // それ以外はresampleSpeed」の形でAudioEngineへ渡していること。
+    expect(handlerBody).toMatch(/deliverWorkerAudio\(snapshot\.audio\.chunks, speedMultiplier, audioResampleState, audio\)/);
+    const deliver = stripComments(readSrc('src/worker-audio.ts'));
+    expect(deliver).toMatch(/for\s*\(\s*const\s+buffer\s+of\s+chunks\s*\)/);
+    expect(deliver).toMatch(/new Float32Array\(buffer\)/);
+    expect(deliver).toMatch(/speed === 1 \? samples : resampleSpeed\(samples, speed, state\)/);
+    expect(deliver).toMatch(/audio\?\.push\(out, true\)/);
 
     // Worker側でリサンプルしていないこと(経路を1本に保つ制約)。resampleSpeedの呼び出しが
     // core-worker.ts側に無いことは別ファイルなのでここでは検査しない(下のテスト参照)。
