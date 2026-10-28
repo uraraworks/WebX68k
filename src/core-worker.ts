@@ -1263,7 +1263,7 @@ ctx.onmessage = (ev) => {
       pendingVideo = null;
     }
     if (host?.setVideoHidden(videoHidden)) {
-      // ポーズ中でも次の retro_run を待たずに保存した画像を送る。
+      // 合成が後回しでなければ保存した画像を即座に送り、後回しなら次のフレームを待つ。
       sendFrame(host.readDiskAccess(), 0);
     }
     return;

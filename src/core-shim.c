@@ -1940,3 +1940,8 @@ int webx68k_scc_test_irq_pending(void)
   return IRQH_IsPending(5);
 }
 #endif
+
+extern int webx68k_draw_changed, webx68k_draw_skip;
+
+int webx68k_video_changed(void) { return webx68k_draw_changed; }
+void webx68k_video_skip(int skip) { webx68k_draw_skip = skip; }

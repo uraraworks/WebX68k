@@ -156,6 +156,8 @@ export interface PX68KModule {
   _retro_get_system_av_info(infoPtr: number): void;
   _retro_reset(): void;
   _retro_run(): void;
+  _webx68k_video_changed?(): number;
+  _webx68k_video_skip?(skip: number): void;
   _retro_load_game(gameInfoPtr: number): number;
   _retro_unload_game(): void;
   _retro_serialize_size(): number;
@@ -427,16 +429,20 @@ export class LibretroHost {
    */
   private videoSkip = false;
   private videoHidden = false;
+  private videoPending = true;
+  private lastVideoPointer = 0;
+  private videoCompositionDeferred = false;
   private hiddenFrame: { data: number; width: number; height: number; pitch: number } | null = null;
 
   /** 非表示は間引きより優先する。復帰時は dupe だけでも最後の生画像を提示する。 */
   setVideoHidden(hidden: boolean): boolean {
     if (this.videoHidden === hidden) return false;
     this.videoHidden = hidden;
-    if (!hidden && this.hiddenFrame) {
+    if (!hidden && this.hiddenFrame && !this.videoCompositionDeferred) {
       const frame = this.hiddenFrame;
       this.hiddenFrame = null;
       this.convertVideoFrame(frame.data, frame.width, frame.height, frame.pitch);
+      this.videoPending = false;
       return true;
     }
     return false;
@@ -1106,6 +1112,12 @@ export class LibretroHost {
   }
 
   private handleVideoRefresh(data: number, width: number, height: number, pitch: number): void {
+    const changed = this.mod._webx68k_video_changed?.() ?? 1;
+    this.videoPending ||= !!changed || (data !== 0 && data !== this.lastVideoPointer) || width !== this.lastWidth || height !== this.lastHeight;
+    if (data) this.lastVideoPointer = data;
+    if ((this.videoHidden || this.videoSkip) && changed && this.mod._webx68k_video_skip) {
+      this.videoCompositionDeferred = true;
+    }
     if (this.videoHidden) {
       if (data && width && height) {
         // windraw.c の ScrBuf は起動時に確保され、終了時または起動失敗時に解放される。
@@ -1115,7 +1127,12 @@ export class LibretroHost {
       return;
     }
     if (this.videoSkip) return; // 無制限モードの中間フレーム
-    this.convertVideoFrame(data, width, height, pitch);
+    if (!data || !width || !height) return;
+    if (this.videoPending) {
+      this.convertVideoFrame(data, width, height, pitch);
+      this.videoPending = false;
+      this.videoCompositionDeferred = false;
+    }
   }
 
   private convertVideoFrame(data: number, width: number, height: number, pitch: number): void {
@@ -1396,6 +1413,7 @@ export class LibretroHost {
   }
 
   runFrame(): void {
+    this.mod._webx68k_video_skip?.(this.videoSkip || this.videoHidden ? 1 : 0);
     // 目的B「フレーム時間の分布」計測(docs/STORAGE-SCSI.md参照)。DEVかつ frameProbe.enabled の
     // ときだけ計測コードを実行する。無効時はこの分岐自体を通らず、常時コストを持ち込まない。
     if (import.meta.env.DEV && frameProbe.enabled) {

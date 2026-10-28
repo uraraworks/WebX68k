@@ -38,7 +38,7 @@ function canvasCapture() {
   return { canvas, digest: () => hash(Buffer.concat([Buffer.from(`${width}x${height}:`), pixels])) };
 }
 
-async function trace(): Promise<Trace> {
+async function trace(interval = 1): Promise<Trace> {
   let now = 946684800000;
   const date = vi.spyOn(Date, 'now').mockImplementation(() => now);
   const previousTZ = process.env.TZ;
@@ -80,9 +80,10 @@ async function trace(): Promise<Trace> {
       }
       chunks = [];
       now += 18;
+      host.setVideoSkip(frame % interval !== interval - 1);
       host.runFrame();
       const video = display.digest();
-      expect(video, `frame ${frame}: core image and displayed image`).toBe(coreDisplay.digest());
+      if (interval === 1) expect(video, `frame ${frame}: core image and displayed image`).toBe(coreDisplay.digest());
       result.push({ video, audio: hash(Buffer.concat(chunks)) });
     }
     const screen = host.readTextScreen().lines.join('\n');
@@ -105,3 +106,15 @@ it('実コアの各フレームの提示画像と音声がゴールデンに一�
   if (process.env.GOLDEN_AV_UPDATE === '1') writeFileSync(fixture, JSON.stringify(first, null, 0) + '\n');
   expect(first).toEqual(JSON.parse(readFileSync(fixture, 'utf8')));
 }, 180_000);
+
+for (const interval of [2, 3, 7]) {
+  it(`${interval} フレームに一度の提示でも映像と全音声が一致する`, async () => {
+    const actual = await trace(interval);
+    const golden: Trace = JSON.parse(readFileSync(fixture, 'utf8'));
+    for (let frame = 0; frame < frames; frame++) {
+      expect(actual[frame].audio, `audio frame ${frame}`).toBe(golden[frame].audio);
+      if (frame % interval === interval - 1)
+        expect(actual[frame].video, `video frame ${frame}`).toBe(golden[frame].video);
+    }
+  }, 180_000);
+}
