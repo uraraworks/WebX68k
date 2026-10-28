@@ -11,6 +11,16 @@
 #include "x68k/scc.h"
 #include "x68k/irqh.h"
 
+extern uint8_t webx68k_key_state[512];
+extern int webx68k_key_state_enabled;
+
+__attribute__((used))
+uint8_t *webx68k_get_key_state(void)
+{
+  webx68k_key_state_enabled = 1;
+  return webx68k_key_state;
+}
+
 EM_JS(void, js_retro_log, (int level, const char *msg), {
   var s = UTF8ToString(msg);
   if (level >= 3) console.error('[px68k]', s);

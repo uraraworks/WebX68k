@@ -1,3 +1,4 @@
+import { LibretroHost } from '../src/libretro-host';
 import { readFileSync } from 'node:fs';
 import { createRequire } from 'node:module';
 import { dirname } from 'node:path';
@@ -198,11 +199,24 @@ describe('実ROMでのmakeのみキーリピート結合', () => {
     vi.useRealTimers();
   });
 
-  it('押しっぱなし中は300ms後から35ms間隔でmakeだけを5回追加し、解放時のbreakは1回だけ', async () => {
+  it.each([false, true])('押しっぱなし中のmakeと解放時のbreak (一括入力=%s)', async (bulk) => {
     const { mod, pressedKeys } = await initializeCoreWithRealRom();
     const writePointer = mod._webx68k_keybuf_write_pointer!;
+    let host: LibretroHost | undefined;
+    if (bulk) {
+      const wrapper = Object.create(mod) as CoreModule;
+      wrapper._retro_set_environment = () => {};
+      wrapper._retro_set_video_refresh = () => {};
+      wrapper._retro_set_audio_sample = () => {};
+      wrapper._retro_set_audio_sample_batch = () => {};
+      host = new LibretroHost({ getContext: () => ({}) } as unknown as HTMLCanvasElement, () => {});
+      const internal = host as unknown as { mod: CoreModule; registerCallbacks(): void };
+      internal.mod = wrapper;
+      internal.registerCallbacks();
+    }
     const sharedKeyInput = new SharedKeyInput((retrok, down) => {
-      if (down) pressedKeys.add(retrok);
+      if (host) host.setKey(retrok, down);
+      else if (down) pressedKeys.add(retrok);
       else pressedKeys.delete(retrok);
     });
     vi.useFakeTimers();

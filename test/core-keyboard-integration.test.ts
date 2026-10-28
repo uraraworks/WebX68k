@@ -5,6 +5,7 @@ import { fileURLToPath } from 'node:url';
 import { runInThisContext } from 'node:vm';
 import { describe, expect, it } from 'vitest';
 import { RETROK, RETROK_TO_SCANCODE } from '../src/keyboard';
+import { LibretroHost } from '../src/libretro-host';
 
 const RETRO_DEVICE_KEYBOARD = 3;
 const RETRO_ENVIRONMENT_GET_SYSTEM_DIRECTORY = 9;
@@ -190,6 +191,56 @@ describe('px68k-libretro キーボード結合', () => {
           (start + expectedMakeWrites * 2) & KEYBUF_MASK,
         );
       }
+    }
+  }, 30_000);
+});
+
+
+describe('一括キー入力', () => {
+  it('短い打鍵と同時押しの各フレームが従来経路と一致し、キー問い合わせがなくなる', async () => {
+    async function setup(bulk: boolean) {
+      const { mod } = await initializeCore();
+      let keyCalls = 0;
+      const originalAdd = mod.addFunction.bind(mod);
+      const wrapper = Object.create(mod) as CoreModule & { _webx68k_get_key_state?: () => number };
+      if (!bulk) wrapper._webx68k_get_key_state = undefined;
+      wrapper._retro_set_environment = () => {};
+      wrapper._retro_set_video_refresh = () => {};
+      wrapper._retro_set_audio_sample = () => {};
+      wrapper._retro_set_audio_sample_batch = () => {};
+      wrapper.addFunction = (fn, sig) => originalAdd(sig === 'iiiii' ? (...args: number[]) => {
+        if (args[1] === RETRO_DEVICE_KEYBOARD) keyCalls++;
+        return fn(...args);
+      } : fn, sig);
+      const host = new LibretroHost({ getContext: () => ({}) } as unknown as HTMLCanvasElement, () => {});
+      const internal = host as unknown as { mod: CoreModule; registerCallbacks(): void };
+      internal.mod = wrapper;
+      internal.registerCallbacks();
+      return { mod, host, calls: () => keyCalls };
+    }
+    const legacy = await setup(false);
+    const bulk = await setup(true);
+    const frame = (instance: typeof legacy, changes: [number, boolean][]) => {
+      instance.host.onPoll = () => { for (const [key, down] of changes) instance.host.setKey(key, down); };
+      const start = instance.mod._webx68k_keybuf_write_pointer!();
+      const calls = instance.calls();
+      instance.host.runFrame();
+      const end = instance.mod._webx68k_keybuf_write_pointer!();
+      const bytes: number[] = [];
+      for (let i = start; i !== end; i = (i + 1) & KEYBUF_MASK) bytes.push(instance.mod._webx68k_keybuf_peek!(i));
+      return { bytes, calls: instance.calls() - calls };
+    };
+    const sequence: [number, boolean][][] = [
+      [[RETROK.a, true]], [[RETROK.a, false]],
+      [[RETROK.LSHIFT, true], [RETROK.b, true]], [], [],
+      [[RETROK.b, false], [RETROK.LSHIFT, false]],
+    ];
+    for (const changes of sequence) {
+      const before = frame(legacy, changes);
+      const after = frame(bulk, changes);
+      expect(after.bytes).toEqual(before.bytes);
+      expect(before.calls).toBe(342);
+      expect(after.calls).toBe(0);
     }
   }, 30_000);
 });

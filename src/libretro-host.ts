@@ -156,6 +156,7 @@ export interface PX68KModule {
   _retro_get_system_av_info(infoPtr: number): void;
   _retro_reset(): void;
   _retro_run(): void;
+  _webx68k_get_key_state?(): number;
   _webx68k_video_changed?(): number;
   _webx68k_video_skip?(skip: number): void;
   _retro_load_game(gameInfoPtr: number): number;
@@ -374,6 +375,8 @@ export class LibretroHost {
   private coreOptionsDirty = false;
 
   private keyState = new Set<number>();
+  private dirtyKeys = new Set<number>();
+  private keyStatePtr = 0;
 
   // dev限定・受動的な音声振幅プローブ(予備確認: docs/STORAGE-SCSI.md「音声遅延」参照)。
   // handleAudioBatch が既に全サンプルをFloat32へ変換するループを回しているため、その場で
@@ -507,8 +510,10 @@ export class LibretroHost {
   }
 
   setKey(retrok: number, down: boolean): void {
+    if (this.keyState.has(retrok) === down) return;
     if (down) this.keyState.add(retrok);
     else this.keyState.delete(retrok);
+    if (Number.isInteger(retrok) && retrok >= 0 && retrok < 512) this.dirtyKeys.add(retrok);
   }
 
   /** 押下状態を変えず、RETROKに対応するmakeだけをコアへ追加する。 */
@@ -958,9 +963,24 @@ export class LibretroHost {
       if (!this.audioMuted) this.audioPush(new Float32Array([left / 32768, right / 32768]));
     };
     const audioSampleBatchCb = (data: number, frames: number): number => this.handleAudioBatch(data, frames);
+    this.keyStatePtr = mod._webx68k_get_key_state?.() ?? 0;
+    if (this.keyStatePtr) {
+      mod.HEAPU8.fill(0, this.keyStatePtr, this.keyStatePtr + 512);
+      for (const key of this.keyState) {
+        if (Number.isInteger(key) && key >= 0 && key < 512) this.dirtyKeys.add(key);
+      }
+    }
+    const syncKeys = (): void => {
+      if (this.keyStatePtr && this.dirtyKeys.size) {
+        for (const key of this.dirtyKeys) {
+          mod.HEAPU8[this.keyStatePtr + key] = this.keyState.has(key) ? 0x80 : 0;
+        }
+        this.dirtyKeys.clear();
+      }
+    };
     const inputPollCb = (): void => {
-      /* keyState/mouse は DOM イベントで直接更新される。joyState 用のフックのみ呼ぶ */
       this.onPoll?.();
+      syncKeys();
     };
     const inputStateCb = (port: number, device: number, _index: number, id: number): number => {
       if (device === RETRO_DEVICE_KEYBOARD) return this.keyState.has(id) ? 1 : 0;
@@ -979,6 +999,8 @@ export class LibretroHost {
           case RETRO_DEVICE_ID_MOUSE_LEFT:
             return this.mouseButtons.left ? 1 : 0;
           case RETRO_DEVICE_ID_MOUSE_RIGHT:
+            // キー読み取り直前の最後のコールバック。ゲスト実行中の変更も反映する。
+            syncKeys();
             return this.mouseButtons.right ? 1 : 0;
           default:
             return 0;
