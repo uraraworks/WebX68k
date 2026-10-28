@@ -14,14 +14,8 @@
 // 2026-08-31実装)は src/worker-dirty-capture.ts の WorkerMediaState、および
 // handleHotSwapFdd/handleCaptureDirtyMedia/handleMarkDirty 参照。
 //
-// 実コアの駆動には既存の LibretroHost / LocalCoreProxy をそのまま再利用する。
-// LibretroHost は内部で canvas.getContext('2d') / width / height / createImageData /
-// putImageData しか使わない(src/libretro-host.ts 参照)ため、Worker内では
-// OffscreenCanvas を「実際には誰も画面として表示しない描画先」として渡す。
-// docs の決定A(転送方式・メイン側canvas維持): OffscreenCanvasをメインへ渡す方式は採らない
-// (メイン側で getImageData が使えなくなり screenHash が壊れる等、docs/STORAGE-SCSI.md
-// 「決定」参照)。代わりに、この scratch canvas に描かれた1フレームぶんのRGBAを
-// 毎フレーム getImageData() で読み出し、transferable として main へ postMessage する。
+// Worker では変換先に転送可能なバッファを使い、canvas の画素を経由しない。
+// dupe は画像更新なしとして送り、main の直前の表示を維持する。
 //
 // バッファ返却: main が putImageData() し終えた ArrayBuffer を送り返してもらい、
 // 同じ byteLength のプールへ積んで次フレームの送信に使い回す(RETURN_FRAME_BUFFER_KIND、
@@ -82,6 +76,7 @@ import {
   isMouseTrackResyncMessage,
   isMouseTrackUpdateMessage,
   isPauseUpdateMessage,
+  isVisibilityUpdateMessage,
   isReturnFrameBufferMessage,
   isSerialResetMessage,
   isSerialRxMessage,
@@ -148,7 +143,7 @@ export interface WorkerTickEvent {
   accumulatorAfterMs: number;
   /** runFrameOnce()(retro_run+readDiskAccess)にこのtickで費やした合計時間(ms)。 */
   runTotalMs: number;
-  /** getImageData()によるRGBA読み出し時間(ms)。フレームを送らなかったtickはnull。 */
+  /** 映像送信準備時間(ms)。フレームを送らなかったtickはnull。 */
   convertMs: number | null;
   /** postMessage(transfer込み)の所要時間(ms)。フレームを送らなかったtickはnull。 */
   postMs: number | null;
@@ -298,10 +293,11 @@ let coreModuleLoaded = false;
 /** 現在の generation。initialize command から受け取ったものをそのまま event に載せ続ける。 */
 let currentGeneration: Generation = 0;
 
-/** 誰も画面として読まない scratch 描画先(コメント冒頭参照)。ここへ描かれた内容だけを
- * 毎フレーム getImageData() で吸い出し、main へ転送する。 */
+/** 解像度の保持に使う canvas と、未送信の変換済み画像。 */
 let scratchCanvas: OffscreenCanvas | null = null;
-let scratchCtx: OffscreenCanvasRenderingContext2D | null = null;
+let pendingVideo: ArrayBuffer | null = null;
+let videoWidth = 0;
+let videoHeight = 0;
 
 function post(message: WorkerToMain): void {
   ctx.postMessage(message, collectTransferables(message));
@@ -506,6 +502,7 @@ let frameNo = 0;
  * 送られるポーズ状態。既定経路のpausedByUser(loop()冒頭の早期return)に相当する
  * Worker側のフラグ(core-protocol.ts の PAUSE_UPDATE_KIND コメント参照)。 */
 let paused = false;
+let videoHidden = false;
 /** 手順9で追加。main側(src/main.ts)からSPEED_UPDATE_KINDで送られる実効速度倍率。
  * 1が等倍。ファイル冒頭コメント「速度倍率」参照。 */
 let speedMultiplier = 1;
@@ -545,7 +542,7 @@ function stopDriveLoop(): void {
 }
 
 function startDriveLoop(): void {
-  if (driveIntervalId !== undefined) return;
+  if (driveIntervalId !== undefined || paused) return;
   lastTickAtMs = 0;
   accumulator = 0;
   driveIntervalId = ctx.setInterval(tick, TICK_MS);
@@ -553,19 +550,8 @@ function startDriveLoop(): void {
 
 function tick(): void {
   if (!running || !host) return;
-  // ポーズ(呼び出し元指摘の是正、2026-09-05)。既定経路のloop()冒頭のpausedByUser早期return
-  // と同じ位置(シリアル受信のdrain・retro_run()より前)に置く。lastTickAtMs/accumulatorを
-  // ここで更新しておかないと、ポーズ解除の瞬間に「止まっていた分」をdt/accumulatorが
-  // 一気に取り戻そうとして大量のフレームを走らせてしまう(既定経路には無いWorker固有の罠。
-  // 既定経路はpausedByUser中もloop()自体が呼ばれ続けるだけでdt計算に関与しないため
-  // この問題が起きない)。次のtickは startDriveLoop() が張ったsetIntervalが自動的に
-  // 呼び続けるため、ここで改めてスケジュールし直す必要は無い(scheduleNext()相当の処理は
-  // setIntervalが肩代わりしている)。
-  if (paused) {
-    lastTickAtMs = ctx.performance.now();
-    accumulator = 0;
-    return;
-  }
+  // clearInterval 前にキューへ入った tick も実行しない。
+  if (paused) return;
   const now = ctx.performance.now();
   const sinceLastTickMs = lastTickAtMs === 0 ? 0 : now - lastTickAtMs;
   if (lastTickAtMs === 0) lastTickAtMs = now;
@@ -738,15 +724,14 @@ function sendFrame(
   frameCostMs: number,
   onProbe?: (convertMs: number, postMs: number) => void,
 ): void {
-  if (!host || !scratchCanvas || !scratchCtx) return;
-  const width = scratchCanvas.width;
-  const height = scratchCanvas.height;
-  if (width === 0 || height === 0) return; // まだ1度も解像度が確定していない(dupeフレームのみ)。
+  if (!host) return;
+  const width = videoWidth || host.hiddenVideoSize?.width || 0;
+  const height = videoHeight || host.hiddenVideoSize?.height || 0;
+
 
   const convertStart = onProbe ? ctx.performance.now() : 0;
-  const imageData = scratchCtx.getImageData(0, 0, width, height);
-  const buffer = framePool.acquire(imageData.data.byteLength);
-  new Uint8ClampedArray(buffer).set(imageData.data);
+  const buffer = pendingVideo;
+  pendingVideo = null;
   const convertEnd = onProbe ? ctx.performance.now() : 0;
 
   // シリアル送信(SCCチャネルA): host.drainSerialTx()はコア側TX FIFOからバイト列を
@@ -768,7 +753,7 @@ function sendFrame(
       width,
       height,
     },
-    video: { kind: 'rgba', bytes: buffer, width, height },
+    video: buffer ? { kind: 'rgba', bytes: buffer, width, height } : { kind: 'offscreen', changed: false },
     // 前回のsendFrame()以降に貯まった生サンプルをそのまま運ぶ(リサンプルはmain側)。
     // 所有権はここでtransferするため、直後にpendingをリセットする。
     audio: { chunks: pendingAudioChunks, sampleFrames: pendingAudioSampleFrames },
@@ -881,9 +866,20 @@ async function handleInitialize(
     await ensureCoreModuleLoaded(payload.coreBaseUrl);
     // scratch canvas: ファイル冒頭のコメント参照。
     scratchCanvas = new OffscreenCanvas(1, 1);
-    scratchCtx = scratchCanvas.getContext('2d');
+    if (pendingVideo) framePool.release(pendingVideo);
+    pendingVideo = null;
+    videoWidth = 0;
+    videoHeight = 0;
     resetPendingAudio();
     const newHost = new LibretroHost(scratchCanvas as unknown as HTMLCanvasElement, pushAudioSamples);
+    if (videoHidden) newHost.setVideoHidden(true);
+    newHost.acquireVideoBuffer = (width, height) => {
+      if (pendingVideo) framePool.release(pendingVideo);
+      videoWidth = width;
+      videoHeight = height;
+      pendingVideo = framePool.acquire(width * height * 4);
+      return pendingVideo;
+    };
     // コアオプションは newHost.init() (内部で mod._retro_init() を同期呼び出しする) より
     // 前に設定する。px68k-libretro の retro_init() は末尾で update_variables(0) を呼び、
     // その場で environ_cb(GET_VARIABLE) 経由の現在値を Config へ読み込む(px68k-libretro/
@@ -952,6 +948,8 @@ async function handleInitialize(
     mediaState.setMountedPath('fdd1', fdd1 ? fdd1Path : null);
     mediaState.setMountedPath('hdd', hdd ? hddPath : null);
 
+    // init の await 中に表示状態が変わっても、駆動開始前に最新値を反映する。
+    newHost.setVideoHidden?.(videoHidden);
     host = newHost;
     proxy = new LocalCoreProxy(newHost, { initialized: true });
     const avInfo = newHost.fetchAvInfo();
@@ -1257,10 +1255,25 @@ ctx.onmessage = (ev) => {
     applyMouseTrackResync();
     return;
   }
+  if (isVisibilityUpdateMessage(data)) {
+    videoHidden = data.hidden;
+    if (videoHidden && pendingVideo) {
+      framePool.release(pendingVideo);
+      pendingVideo = null;
+    }
+    if (host?.setVideoHidden(videoHidden)) {
+      // ポーズ中でも次の retro_run を待たずに保存した画像を送る。
+      sendFrame(host.readDiskAccess(), 0);
+    }
+    return;
+  }
   // ポーズ(呼び出し元指摘の是正、2026-09-05)。ユーザー操作契機の低頻度専用メッセージ。
-  // 実際の停止はtick()冒頭のpausedゲートで行う(このハンドラはフラグを保持するだけ)。
   if (isPauseUpdateMessage(data)) {
-    paused = data.update.paused;
+    if (paused !== data.update.paused) {
+      paused = data.update.paused;
+      if (paused) stopDriveLoop();
+      else if (running) startDriveLoop();
+    }
     return;
   }
   // シリアル(SCCチャネルA)の受信バイト列。毎接続中は高頻度になりうる片道メッセージなので、

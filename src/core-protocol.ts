@@ -189,6 +189,14 @@ export function isPauseUpdateMessage(message: unknown): message is PauseUpdateMe
   return typeof update === 'object' && update !== null && typeof (update as { paused?: unknown }).paused === 'boolean';
 }
 
+// 表示状態はコアの駆動と独立して更新する。
+export const VISIBILITY_UPDATE_KIND = 'visibilityUpdate' as const;
+export function isVisibilityUpdateMessage(message: unknown): message is { kind: typeof VISIBILITY_UPDATE_KIND; hidden: boolean } {
+  return typeof message === 'object' && message !== null &&
+    (message as { kind?: unknown }).kind === VISIBILITY_UPDATE_KIND &&
+    typeof (message as { hidden?: unknown }).hidden === 'boolean';
+}
+
 // --- 速度倍率(コーディネータ指摘への対応、2026-08-31: 「速度変更がWorker経路で
 // 効かないのに効いたように見える」欠陥の是正) --------------------------------------
 //

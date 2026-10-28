@@ -424,6 +424,28 @@ export class LibretroHost {
    * 稼げなくなる。中間フレームは変換ごと捨て、tick末尾の1フレームだけ画面に出す。
    */
   private videoSkip = false;
+  private videoHidden = false;
+  private hiddenFrame: { data: number; width: number; height: number; pitch: number } | null = null;
+
+  /** 非表示は間引きより優先する。復帰時は dupe だけでも最後の生画像を提示する。 */
+  setVideoHidden(hidden: boolean): boolean {
+    if (this.videoHidden === hidden) return false;
+    this.videoHidden = hidden;
+    if (!hidden && this.hiddenFrame) {
+      const frame = this.hiddenFrame;
+      this.hiddenFrame = null;
+      this.convertVideoFrame(frame.data, frame.width, frame.height, frame.pitch);
+      return true;
+    }
+    return false;
+  }
+
+  get hiddenVideoSize(): { width: number; height: number } | null {
+    return this.hiddenFrame;
+  }
+
+  /** Worker 用の変換先。未設定なら従来どおり canvas に描画する。 */
+  acquireVideoBuffer?: (width: number, height: number) => ArrayBuffer;
 
   /**
    * X68000 は画面モード変更で実行中に canvas.width/height(実解像度)が変わる。
@@ -1082,7 +1104,19 @@ export class LibretroHost {
   }
 
   private handleVideoRefresh(data: number, width: number, height: number, pitch: number): void {
-    if (this.videoSkip) return; // 無制限モードの中間フレーム: 変換・描画とも省略する
+    if (this.videoHidden) {
+      if (data && width && height) {
+        // windraw.c の ScrBuf は起動時に確保され、終了時または起動失敗時に解放される。
+        // retro_run 中は同じ領域に最新の全画面が保持される。
+        this.hiddenFrame = { data, width, height, pitch };
+      }
+      return;
+    }
+    if (this.videoSkip) return; // 無制限モードの中間フレーム
+    this.convertVideoFrame(data, width, height, pitch);
+  }
+
+  private convertVideoFrame(data: number, width: number, height: number, pitch: number): void {
 
     const probing = import.meta.env.DEV && frameProbe.enabled;
     // frameCounterはrunFrame()側で既にインクリメント済みなので、対応する直近フレームは-1。
@@ -1109,11 +1143,11 @@ export class LibretroHost {
     if (width !== this.lastWidth || height !== this.lastHeight) {
       this.canvas.width = width;
       this.canvas.height = height;
-      this.imageData = this.ctx2d.createImageData(width, height);
+      this.imageData = this.acquireVideoBuffer ? null : this.ctx2d.createImageData(width, height);
       // imageData を作り直したら、Uint32Array のビューも必ず同時に作り直す。
       // 忘れると解像度変化後も古いバッファへ書き続け、putImageDataでも新しいimg.dataは
       // 更新されないまま画面が固まる。
-      this.imageData32 = new Uint32Array(this.imageData.data.buffer);
+      this.imageData32 = this.imageData ? new Uint32Array(this.imageData.data.buffer) : null;
       this.lastWidth = width;
       this.lastHeight = height;
       // 実解像度が変わった直後だけ通知する(このコールバックは毎フレーム発生するhandleVideoRefresh
@@ -1121,19 +1155,20 @@ export class LibretroHost {
       this.onResolutionChanged?.();
     }
 
-    const mod = this.mod;
     const img = this.imageData;
-    const out32 = this.imageData32;
-    if (!img || !out32) return;
+    const out32 = this.acquireVideoBuffer
+      ? new Uint32Array(this.acquireVideoBuffer(width, height))
+      : this.imageData32;
+    if (!out32) return;
 
     if (!rgb565Lut) rgb565Lut = buildRgb565Lut(LITTLE_ENDIAN);
     const lut = rgb565Lut;
 
     const convertStartAtMs = probing ? performance.now() : 0;
 
-    const src16 = mod.HEAPU16;
-    const strideSamples = pitch >> 1; // pitch はバイト単位、RGB565は1pixel=2byte
+    const src16 = this.mod.HEAPU16;
     const base = data >> 1;
+    const strideSamples = pitch >> 1; // pitch はバイト単位、RGB565は1pixel=2byte
     for (let y = 0; y < height; y++) {
       let srcIdx = base + y * strideSamples;
       let dstIdx = y * width; // 32bit単位のインデックス(y*width*4 ではない)
@@ -1143,14 +1178,14 @@ export class LibretroHost {
     }
 
     if (!probing) {
-      this.ctx2d.putImageData(img, 0, 0);
+      if (img) this.ctx2d.putImageData(img, 0, 0);
       this.onFramePresented?.();
       return;
     }
 
     const convertEndAtMs = performance.now();
     const putStartAtMs = performance.now();
-    this.ctx2d.putImageData(img, 0, 0);
+    if (img) this.ctx2d.putImageData(img, 0, 0);
     this.onFramePresented?.();
     const putEndAtMs = performance.now();
     frameProbe.videoEvents.push({
@@ -1289,6 +1324,7 @@ export class LibretroHost {
   }
 
   unloadGame(): void {
+    this.hiddenFrame = null;
     this.mod._retro_unload_game();
   }
 
@@ -1335,6 +1371,7 @@ export class LibretroHost {
   }
 
   reset(): void {
+    this.hiddenFrame = null;
     this.mod._retro_reset();
   }
 
@@ -1350,6 +1387,7 @@ export class LibretroHost {
 
   /** シリアライズ済みの状態を復元する(ステートロード)。成功したら true。 */
   unserialize(bytes: Uint8Array): boolean {
+    this.hiddenFrame = null;
     const mod = this.mod;
     if (!mod || bytes.length === 0) return false;
     return unserializeCoreState(mod, bytes);
@@ -1508,6 +1546,7 @@ export class LibretroHost {
 
   /** コールバック用関数テーブルエントリを解放する */
   dispose(): void {
+    this.hiddenFrame = null;
     this.stopSramAutosave();
     this.setSerialConnected(false);
     if (this.serialBridgePtr) {

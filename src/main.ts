@@ -2020,7 +2020,10 @@ window.addEventListener('blur', () => {
   clearWorkerInputGeneration();
 });
 document.addEventListener('visibilitychange', () => {
-  if (document.visibilityState === 'hidden') {
+  const hidden = document.visibilityState === 'hidden';
+  workerCoreProxy?.setVideoHidden(hidden);
+  host?.setVideoHidden(hidden);
+  if (hidden) {
     host?.setJoyState(0, 0);
     host?.setJoyState(1, 0);
     releaseAllGamepadKeys();
@@ -4615,6 +4618,7 @@ async function bootWorkerCore(): Promise<void> {
   applyDesiredBootDeviceGlobal(hasValidSramSignatureBytes(savedSram));
   const proxy = new WorkerCoreProxy();
   workerCoreProxy = proxy;
+  proxy.setVideoHidden(document.visibilityState === 'hidden');
   coreProxy = proxy;
 
   // DEV専用の計測プローブ応答(workerTickProbeRead()参照)。以前のpending readはこの
@@ -4954,6 +4958,7 @@ async function bootCore(): Promise<void> {
       speedMultiplier === 1 ? samples : resampleSpeed(samples, speedMultiplier, audioResampleState);
     audio?.push(out);
   });
+  host.setVideoHidden(document.visibilityState === 'hidden');
   if (import.meta.env.DEV) host.audioProbeEnabled = urlAudioProbe;
   // X68000 は画面モード変更で実行中に canvas の実解像度(width/height)が変わる。
   // ウィンドウ表示のリスケールは実解像度基準で倍率を決めるため、変わった直後に再計算させる。

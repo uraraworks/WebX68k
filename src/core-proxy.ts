@@ -24,6 +24,7 @@ import {
   MOUSE_TRACK_RESYNC_KIND,
   MOUSE_TRACK_UPDATE_KIND,
   PAUSE_UPDATE_KIND,
+  VISIBILITY_UPDATE_KIND,
   RETURN_FRAME_BUFFER_KIND,
   SERIAL_RESET_KIND,
   SERIAL_RX_KIND,
@@ -1045,6 +1046,10 @@ export class WorkerCoreProxy implements LibretroHostProxy {
    * ユーザー操作契機(ツールバーのポーズボタン)の低頻度メッセージ。
    * core-protocol.ts の PAUSE_UPDATE_KIND コメント参照(既定経路のloop()早期returnに
    * 相当する処理がWorker経路に無かった欠陥の是正)。 */
+  setVideoHidden(hidden: boolean): void {
+    this.worker.postMessage({ kind: VISIBILITY_UPDATE_KIND, hidden });
+  }
+
   setPaused(paused: boolean): void {
     if (this.disposed || this.failed) return;
     this.worker.postMessage({ kind: PAUSE_UPDATE_KIND, update: { paused } });
